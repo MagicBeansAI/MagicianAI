@@ -1,0 +1,134 @@
+name: search_memory
+description: Hybrid (BM25 + vector) semantic search across every memory surface the agent has — every tier (user-scope, agent-scope including personality_profile, agent-goal-scope across every goal) AND every native episode the agent has saved. Returns ranked matches the LLM can quote or follow up on. Tier candidates use lancedb hybrid scoring when the index is fresh; episodes (not in the index today) and unindexed tier entries fall back to per-candidate keyword scoring. Each match carries a `kind` field — `"tier_field"` or `"episode"` — a `semantic_memory_type` lane such as `"user_preference"`, `"procedure"`, `"entity"`, or `"episode"`, and a `temperature_tier` such as `"t1"` or `"t3"`.
+version: "1.5.0"
+result_projection:
+  contract_id: ranked_records_v1
+  records_paths:
+    - /matches
+  priority_fields:
+    - id
+    - key
+    - relationship
+    - value
+    - status
+    - source
+    - confidence
+    - score
+  spoken_fields:
+    - speech_live
+    - voice_summary
+    - answer
+    - summary
+  atomic_field_groups:
+    - [relationship, value]
+guide: |
+  Tool name: `search_memory`
+
+  Use when you want to retrieve previously-stored memory items relevant to
+  a query — past preferences, environment knowledge, distilled insights, or
+  any item-level memory candidate the agent has accumulated.
+
+  ## Coverage
+
+  Searches every memory surface the agent has access to:
+
+  - **User-scope tiers** (per-principal, survive across all agents +
+    sessions): the `user_knowledge.json` blob covering preferences,
+    profile, skills, contacts, organization, accounts, channels,
+    routines, identity, workflows, research_findings — plus any
+    custom user-scope tier defined on the agent.
+  - **Agent-scope tiers** (per-(principal, agent_id)): `entities`,
+    `insights`, `archive`, `environment_knowledge`,
+    `personality_profile` (when seeded from the agent template),
+    plus any custom agent-scope tier.
+  - **Agent-goal-scope tiers** (per-(principal, agent_id, goal_id)):
+    `task_progress`, `recent_activity`, plus any custom goal-scoped
+    tier — across every goal that has saved entries for that tier.
+  - **Native episodes** (per-agent execution traces under
+    `memory/agents/<agent_id>/episodes/<id>.json`): one searchable
+    candidate per episode, flattening `outcome_summary`,
+    `outcome_remaining`, `task_title`, `task_description`,
+    `strategy_summary`, `context_at_start`, and `observations` into
+    a single text blob. Episodes match with `kind: "episode"` and
+    `semantic_memory_type: "episode"` plus a usually-cold
+    `temperature_tier` in the response; their `metadata` carries
+    `episode_id`, `goal_key`, `trigger_seq`, `outcome_kind`,
+    `task_title`, `completed_at`.
+
+  Tier candidates rank via the lancedb hybrid backend (BM25 + vector)
+  when the derived index is fresh — same backend the system prompt's
+  auto-injected `memory_tiers_block` uses, so explicit
+  `search_memory` calls match the automatic context the LLM already
+  sees every turn. Episodes aren't indexed in lancedb today, so they
+  always score via the keyword fallback path — `score_backend` on
+  each episode match reads `"keyword"`. The keyword scorer concatenates
+  the same fields the indexer would have hashed, so it works fine for
+  the typical "find that conversation about X" query.
+
+  ### Filtering by surface
+
+  - `tier: "episodes"` → search only episodes.
+  - `tier: "<tier_name>"` (e.g. `"preferences"`, `"insights"`,
+    `"task_progress"`) → search only that tier.
+  - `tier: "user.<tier>"` → search only that user-scope tier.
+  - No `tier` → search everything (default).
+
+  ## Inputs
+
+  - `query` (required) — free-form search string. Semantic ranking
+    runs against every tier listed above.
+  - `tier` (optional) — restrict search to a single tier name (e.g.
+    `preferences`, `insights`, `environment_knowledge`,
+    `personality_profile`, `task_progress`). Defaults to all tiers.
+    `user.<name>` selects a user-scope tier explicitly.
+  - `limit` (optional) — max results, clamped to [1, 50]. Defaults
+    to 10.
+
+  Output:
+  - `status: "ok"` plus `query`, `count`, `matches[]`, `backend`.
+  - `backend`: `"lancedb_hybrid"` when ranking came from the fused
+    BM25 + vector index; `"direct_keyword"` when the index was stale
+    or unavailable and keyword fallback ran. When `direct_keyword`, a
+    `fallback_reason` field on the response names the cause.
+  - Each match carries the originating tier, `semantic_memory_type`,
+    `temperature_tier`, the candidate's id / fields, a `score`
+    (float), and `score_backend` (`"lancedb_hybrid"` or `"keyword"`)
+    so the caller can tell which signal ranked this particular entry —
+    different entries in the same response may use different backends
+    when only some are indexed.
+
+  Notes:
+  - Ranking is hybrid by default (same backend the system prompt's
+    `memory_tiers_block` uses), so explicit searches match the
+    automatic context the LLM already sees on every turn.
+  - Keyword fallback fires per-candidate: a newly-saved entry that
+    hasn't been indexed yet still surfaces if it matches the query
+    tokens.
+  - If memory resolver isn't configured for the scope, returns
+    `status: "error"` instead of silently dropping the call.
+parameters:
+  - name: query
+    required: true
+    param_type: string
+    description: Free-form search string.
+  - name: tier
+    param_type: string
+    description: Optional tier name to restrict the search. Accepts `user.<name>` for explicit user-scope tier selection.
+    default: ""
+  - name: limit
+    param_type: integer
+    description: Maximum number of matches to return. Clamped to [1, 50]. Defaults to 10.
+    default: "10"
+implementation:
+  type: compiled
+  provider_name: search_memory
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - memory
+    - search
+    - retrieval
+    - introspection
+  composition_category: action
+  sandbox: none

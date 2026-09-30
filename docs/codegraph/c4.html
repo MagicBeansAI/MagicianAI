@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Magician — Architecture Canvas (C4)</title>
+  <link rel="stylesheet" href="c4.css" />
+  <script src="c4_core.js"></script>
+</head>
+<body data-theme="dark">
+  <div class="c4-search-backdrop"></div>
+  <header class="c4-topbar">
+    <div class="c4-topbar-left">
+      <span class="c4-title">Architecture Canvas</span>
+      <nav class="c4-breadcrumbs" id="c4-breadcrumbs" aria-label="Selection path"></nav>
+    </div>
+    <div class="c4-topbar-center">
+      <input id="c4-search" type="search" placeholder="Search runtime, areas, crates, modules…  ( / )" autocomplete="off" spellcheck="false" />
+      <div id="c4-search-results" class="c4-search-results" hidden></div>
+    </div>
+    <div class="c4-topbar-right">
+      <span id="c4-band" class="c4-band-chip" title="Current semantic zoom band">runtime</span>
+      <span id="c4-meta" class="c4-meta">Loading…</span>
+      <a href="explorer.html" class="c4-topbar-link" title="Open the 2D code explorer">Explorer</a>
+      <a href="graph3d.html" class="c4-topbar-link" title="Open the 3D spatial view">3D View</a>
+      <a href="plane.html" class="c4-topbar-link" title="Open the GPU-batched plane view">Plane</a>
+      <button id="c4-theme-toggle" type="button">Theme</button>
+    </div>
+  </header>
+
+  <main id="c4-viewport">
+    <div id="c4-world">
+      <svg id="c4-edge-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <!-- boxes are appended here by c4.js -->
+    </div>
+
+    <div id="c4-legend" class="c4-legend collapsed">
+      <header class="c4-legend-head" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="c4-legend-title">Legend</span>
+        <button id="c4-legend-toggle" type="button" aria-label="Toggle legend">▲</button>
+      </header>
+      <div class="c4-legend-body">
+        <div class="c4-legend-group">
+          <span class="c4-box-preview" data-kind="system"></span> System
+          <span class="c4-box-preview" data-kind="runtime"></span> Runtime
+          <span class="c4-box-preview" data-kind="area"></span> Area
+          <span class="c4-box-preview" data-kind="external"></span> External
+          <span class="c4-box-preview" data-kind="actor"></span> Actor
+        </div>
+        <div class="c4-legend-group">
+          <span class="c4-edge-preview ctrl"></span> Control / Lifecycle
+          <span class="c4-edge-preview data"></span> Data / API
+          <span class="c4-edge-preview ai"></span> AI / LLM
+          <span class="c4-edge-preview ext"></span> External integration
+        </div>
+      </div>
+    </div>
+    <div id="c4-hint" class="c4-hint">
+      <strong>drag</strong> pan · <strong>scroll</strong> zoom · <strong>click</strong> inspect ·
+      <strong>double-click</strong> expand/collapse · <strong>/</strong> search
+    </div>
+    <div class="c4-zoom-controls">
+      <button id="c4-zoom-in" class="c4-zoom-btn" title="Zoom In">+</button>
+      <button id="c4-zoom-out" class="c4-zoom-btn" title="Zoom Out">−</button>
+      <button id="c4-zoom-fit" class="c4-zoom-btn" title="Fit to Screen">⛶</button>
+    </div>
+    <canvas id="c4-minimap" width="220" height="150" aria-label="Minimap"></canvas>
+
+    <aside id="c4-inspector" class="c4-inspector" hidden>
+      <header class="c4-inspector-head">
+        <span id="c4-inspector-kind" class="c4-kind-badge"></span>
+        <button id="c4-inspector-close" type="button" aria-label="Close inspector">×</button>
+      </header>
+      <h2 id="c4-inspector-title"></h2>
+      <p id="c4-inspector-summary"></p>
+      <div id="c4-inspector-detail" class="c4-inspector-detail"></div>
+      <dl id="c4-inspector-facts" class="c4-inspector-facts"></dl>
+      <div id="c4-inspector-links" class="c4-inspector-links"></div>
+    </aside>
+  </main>
+
+  <script src="c4.js"></script>
+</body>
+</html>

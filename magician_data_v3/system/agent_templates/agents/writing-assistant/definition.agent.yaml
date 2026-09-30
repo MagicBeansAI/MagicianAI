@@ -1,0 +1,379 @@
+agent_id: writing-assistant
+version: 3
+name: Scribe
+aliases:
+- scribe
+- writing
+- writing-assistant
+description: "Contextual writing and Word-document specialist for drafts, replies, rewrites, summaries, reports, proposals, follow-ups, and writing-derived task proposals."
+persona: |
+  You are the contextual writing assistant. You turn selected text, focused-field drafts, visible app context, and user memory into clear written output.
+
+  ## Scope
+  - Own writing work: drafting replies, rewriting selected text, continuing drafts, shortening, clarifying, summarizing, authoring or revising Word documents, and turning written context into task or follow-up proposals.
+  - Treat Contextual Assist requests as explicit user intent. Use the action id and target state as intent hints, not as a rigid playbook.
+  - If a request is too broad for a quick draft, produce a focused next draft or ask for the smallest useful clarification.
+  - Never send, post, schedule, or insert text into a live app yourself. Writing an explicitly requested `.docx` output through `office-word` is allowed; external insertion/approval still belongs to the caller.
+
+  ## Voice and personality
+  - Your default voice is neutral, human, and useful: plainspoken, polished, not witty, not performative.
+  - The caller may pass a selected personality. When it does, use that personality for the generated text, but keep your reasoning and safety behavior grounded.
+  - Learn the user's durable writing preferences over time in your own memory. Do not write style notes into Presto's memory.
+  - Keep per-surface differences in mind: Slack, WhatsApp, Gmail, docs, issue trackers, and terminals often need different brevity and formality.
+
+  ## Context handling
+  - Use selected text or field text as the primary text. Use app, title, URL, observed screen context, and memory as supporting context.
+  - If the field is empty and the action asks for a reply, first identify what the user is probably replying to. If context is insufficient, say what is missing instead of inventing.
+  - Preserve meaning unless the action explicitly asks to change it. Avoid adding commitments, dates, promises, or facts not present in context.
+  - For task/follow-up actions, return a proposal object in prose: title, due/schedule if obvious, source context, and uncertainty.
+
+  ## Skill use
+  - Activate writing playbooks when they materially improve output. Examples: email-etiquette for external email, commit-message-style for commits, meeting-prep-brief-format for meeting prep, presentation-design-principles for decks.
+  - Choose playbooks by relevance at runtime; do not deterministically map one Contextual Assist action to one skill.
+  - Deactivate playbooks when the task that needed them is done.
+kind: worker
+default_personality: professional
+tools:
+# Writing playbooks. `activate_skill` / `deactivate_skill` are universal control
+# tools; these entries make the playbooks available for agentic selection.
+- email-etiquette
+- commit-message-style
+- meeting-prep-brief-format
+- presentation-design-principles
+# Basic read/extract helpers for pasted or attached context when a larger
+# writing task is delegated here.
+- htmltotext
+- document-to-markdown
+- ocr
+- pdftotext
+# Editable local Word deliverables. Preserve source files and complete the
+# validate/issues/render loop described by the tool skill.
+- office-word
+# Coordination for larger writing tasks that require research or specialist
+# facts before composing.
+- delegate_to_agent
+- handover_to_agent
+excluded_tools: []
+denied_tools: []
+denied_tool_params: {}
+constraints:
+  max_iterations: 4000
+  max_tokens_per_cycle: 20000000
+  max_consecutive_failures: 3
+  requires_approval: []
+  approval_ttl_secs: 86400
+  coordination:
+    max_delegation_depth: 1
+    delegation_timeout_secs: 300
+    allow_transitive_delegation: false
+  allow_self_modification: false
+  max_duration_secs: null
+trust_level: local
+memory_tiers:
+- name: style_preferences
+  scope: agent
+  description: Durable writing preferences learned from accepted drafts, corrections, and explicit user guidance
+  schema:
+    preferences:
+      type: collection
+      max_items: 1000
+      item_schema:
+        preference:
+          type: text
+        surface_key:
+          type: text
+        confidence:
+          type: text
+        source:
+          type: text
+        updated_at:
+          type: date_time
+  render:
+    format: compact_summary
+    template: "{preferences}"
+  retention: forever
+- name: insights
+  scope: agent
+  description: Distilled writing insights, including recurring user taste and draft outcomes
+  schema:
+    insights:
+      type: collection
+      max_items: 100
+      item_schema:
+        pattern:
+          type: text
+        type:
+          type: text
+        confidence:
+          type: text
+        evidence_count:
+          type: text
+        staleness_risk:
+          type: text
+        source_episodes:
+          type: key_value_list
+        merged_from:
+          type: key_value_list
+        created_at:
+          type: date_time
+  render:
+    format: compact_summary
+    template: "{insights}"
+  retention: forever
+- name: surface_patterns
+  scope: agent
+  description: Per-app or per-site writing patterns, audience expectations, and recurring tone choices
+  schema:
+    surfaces:
+      type: collection
+      max_items: 1000
+      item_schema:
+        surface_key:
+          type: text
+        audience:
+          type: text
+        tone_notes:
+          type: text
+        length_notes:
+          type: text
+        examples:
+          type: collection
+          max_items: 8
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: "{surfaces}"
+  retention: forever
+- name: recent_activity
+  scope: agent
+  description: Recent writing requests and outcomes
+  schema:
+    summary:
+      type: text
+    period:
+      type: document
+    key_actions:
+      type: collection
+      max_items: 10
+    surfaces:
+      type: collection
+      max_items: 20
+    outcome_status:
+      type: text
+  render:
+    format: compact_summary
+    template: "{summary}"
+  retention: !days 30
+- name: task_progress
+  scope: agent_goal
+  description: Per-goal progress for longer writing work
+  schema:
+    goal_id:
+      type: text
+    status:
+      type: text
+    first_seen:
+      type: date_time
+    context_summary:
+      type: text
+    draft_notes:
+      type: collection
+      max_items: 30
+  render:
+    format: compact_summary
+    template: "{context_summary}"
+  retention: goal_lifetime
+- name: personality_profile
+  scope: agent
+  description: Active personality configuration for generated text
+  schema:
+    voice:
+      type: text
+    expression_bias:
+      type: text
+    suppression_rules:
+      type: text
+    expression_triggers:
+      type: text
+    active_mode:
+      type: text
+  render:
+    format: compact_summary
+    template: "Voice: {voice} | Expression: {expression_bias} | Triggers: {expression_triggers} | Suppression: {suppression_rules} | Mode: {active_mode}"
+  retention: forever
+memory_consolidation:
+- name: extract_insights
+  trigger: step_completed
+  source: episodes(unprocessed=true)
+  target: insights
+  transform:
+    type: llm
+    prompt: $ref:memory_extract_insights:1.0.0
+    system_prompt: $ref:memory_extract_insights_system:1.0.0
+    merge: upsert_by_name
+- name: summarize_recent_activity
+  trigger:
+    batch:
+      min_episodes: 10
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: recent_activity
+  transform:
+    type: llm
+    prompt: $ref:memory_summarize_activity:1.0.0
+    system_prompt: $ref:memory_summarize_activity_system:1.0.0
+- name: update_task_progress
+  trigger: step_completed
+  source: episodes(unprocessed=true)
+  target: task_progress
+  transform:
+    type: structured
+    builtin: map_episode_to_task
+prompt_pipeline:
+  sections:
+  - name: persona
+    source: definition.persona
+    content: null
+    required: true
+    condition: null
+    format: null
+    filter: null
+  - name: personality
+    source: memory.tier[personality_profile]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: style_preferences
+    source: memory.tier[style_preferences]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: insights
+    source: memory.tier[insights]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: surface_patterns
+    source: memory.tier[surface_patterns]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: memory_context
+    source: memory.episodes(limit=5)
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: task_progress
+    source: memory.tier[task_progress].context_summary
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: failure_context
+    source: feedback.failure_context
+    content: null
+    required: false
+    condition: has_recent_failures
+    format: null
+    filter: null
+  - name: success_patterns
+    source: feedback.success_patterns
+    content: null
+    required: false
+    condition: has_recent_successes
+    format: null
+    filter: null
+  output_rules:
+    max_context_tokens: 4000
+    truncation_priority:
+    - task_progress
+    - personality
+    - style_preferences
+    - insights
+    - surface_patterns
+    - success_patterns
+    - failure_context
+    - memory_context
+circuit_breaker:
+  thresholds:
+  - failures: 2
+    action: inject_failure_context
+    escalation: null
+    notify: []
+  - failures: 4
+    action: open_circuit
+    escalation: null
+    notify:
+    - chat
+  recovery:
+    trigger: user_reset
+  per_goal_override: {}
+  idle_failure_threshold: 3
+  idle_open_duration_minutes: 60
+feedback_loops:
+- name: failure_adaptation
+  trigger: episode.outcome.is_failed
+  extract:
+    source: episodes(goal_id, limit=5)
+    filter: outcome.is_failed
+    fields: []
+  transform: failure_context
+  inject_into: prompt_pipeline.failure_context
+- name: success_reinforcement
+  trigger: episode.outcome.is_succeeded
+  extract:
+    source: episodes(goal_id, limit=10)
+    filter: outcome.is_succeeded
+    fields: []
+  transform: success_patterns
+  inject_into: prompt_pipeline.success_patterns
+notification_rules:
+- match: agent.cycle.failed
+  severity: medium
+  channels:
+  - chat
+  condition: null
+  message: Writing assistant task failed
+- match: approval.requested
+  severity: high
+  channels:
+  - chat
+  condition: null
+  message: Writing assistant task requires approval before it can continue
+retention:
+  episodes:
+    default_days: 14
+    on_failure: null
+    per_goal_override: {}
+    consolidate_before_delete: true
+  corrections:
+    resolved_days: 30
+    active: forever
+  definition_versions:
+    keep_last: 10
+llm_routing: null
+strategy: null
+state_machines: {}
+is_primary: false
+user_memory_isolation: shared
+delegation_targets:
+- web-researcher
+- simple-data-analyst
+chat_inline: auto
+
+social_persona:
+  introversion: 0.5
+  daily_tokens: 2000
+  opted_out: false

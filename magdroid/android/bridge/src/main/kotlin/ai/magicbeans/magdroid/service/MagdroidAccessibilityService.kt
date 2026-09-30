@@ -1,0 +1,722 @@
+package ai.magicbeans.magdroid.service
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.util.Log
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.app.NotificationCompat
+import ai.magicbeans.magdroid.bridge.R
+import ai.magicbeans.magdroid.gesture.GestureEngine
+import ai.magicbeans.magdroid.input.InputEngine
+import ai.magicbeans.magdroid.uitree.UiTreeWalker
+import ai.magicbeans.magdroid.screenshot.ScreenshotPipeline
+import ai.magicbeans.magdroid.access.MagicianAccess
+import ai.magicbeans.magdroid.bridge.BridgeWatchdogWorker
+import ai.magicbeans.magdroid.bridge.MagicianBridgeClient
+import ai.magicbeans.magdroid.mcp.McpToolHandler
+import kotlinx.coroutines.*
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Magdroid AccessibilityService
+ *
+ * Core automation service that provides:
+ * - UI tree observation across all apps
+ * - Gesture injection via dispatchGesture()
+ * - Screenshot capture
+ * - Event streaming to connected clients
+ *
+ * The service runs as a foreground service with persistent notification
+ * to prevent Android from killing it during automation sessions.
+ */
+class MagdroidAccessibilityService : AccessibilityService() {
+
+    companion object {
+        private const val TAG = "Magdroid"
+        private const val NOTIFICATION_CHANNEL_ID = "magdroid_service"
+        private const val NOTIFICATION_ID = 1
+
+        // Event streaming throttling: max 10 events/sec = 1 event per 100ms
+        private const val MIN_EVENT_INTERVAL_MS = 100L
+
+        /**
+         * Static reference to the running service instance.
+         * Used by command handlers to access service capabilities.
+         */
+        @Volatile
+        var instance: MagdroidAccessibilityService? = null
+            private set
+
+        /**
+         * Static toast buffer for McpToolHandler.handleGetRecentToasts().
+         * CopyOnWriteArrayList is thread-safe for concurrent reads from MCP tool calls.
+         * Each record carries its source package so the protection gate can
+         * drop toasts raised by protected apps — a banking app announcing an
+         * OTP in a toast leaks it exactly like a notification would.
+         */
+        data class ToastRecord(val text: String, val timestamp: Long, val packageName: String?)
+
+        val recentToasts = java.util.concurrent.CopyOnWriteArrayList<ToastRecord>()
+    }
+
+    // Coroutine scope for service lifecycle
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    // Core components
+    private lateinit var gestureEngine: GestureEngine
+    private lateinit var inputEngine: InputEngine
+    private lateinit var uiTreeWalker: UiTreeWalker
+    private lateinit var screenshotPipeline: ScreenshotPipeline
+
+    private var bridgeClient: MagicianBridgeClient? = null
+
+    // Event listener for UI changes (CopyOnWriteArrayList for thread-safe iteration from onAccessibilityEvent)
+    private val eventListeners = java.util.concurrent.CopyOnWriteArrayList<AccessibilityEventListener>()
+
+    // Event streaming state
+    private val eventsEnabled = AtomicBoolean(false)
+    private val lastEventTime = AtomicLong(0)
+
+    // Track service start time
+    private var startTime: Long = 0L
+
+    /**
+     * Service connected - called when AccessibilityService is bound
+     */
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        Log.i(TAG, "AccessibilityService connected")
+
+        startTime = System.currentTimeMillis()
+
+        // Configure accessibility service
+        configureAccessibilityService()
+
+        // Initialize components (sets gestureEngine, uiTreeWalker, screenshotPipeline)
+        initializeComponents()
+
+        // Publish instance before conditional startup so MainActivity can query it
+        instance = this
+
+        // Only start foreground service, outbound MCP, and screen recording if toggle is on.
+        if (isEnabled()) {
+            startForegroundService()
+            startMagicianBridge()
+            requestMediaProjectionPermission()
+        }
+
+        Log.i(TAG, "Magdroid service fully initialized")
+    }
+
+    /**
+     * Configure AccessibilityService flags
+     */
+    private fun configureAccessibilityService() {
+        // Note: Most configuration is in accessibility_service_config.xml
+        // Additional runtime configuration can be done here if needed
+
+        Log.d(TAG, "AccessibilityService configured")
+    }
+
+    /**
+     * Initialize core components
+     */
+    private fun initializeComponents() {
+        gestureEngine = GestureEngine(this)
+        inputEngine = InputEngine(this)
+        uiTreeWalker = UiTreeWalker(this)
+        screenshotPipeline = ScreenshotPipeline(this, serviceScope)
+
+        // Update notification when MediaProjection session is lost by the system
+        screenshotPipeline.onMediaProjectionLost = {
+            Log.w(TAG, "MediaProjection session lost - falling back to AccessibilityService screenshots")
+            updateNotificationForSlowScreenshots()
+        }
+
+        Log.d(TAG, "Core components initialized")
+    }
+
+    /**
+     * Dial Magician, if this device has been paired.
+     *
+     * The bridge is how the companion is meant to be reached: the device opens
+     * the connection and nothing listens on the handset. Absent configuration is
+     * not an error — a freshly installed companion has nowhere to dial yet, and
+     * should sit quietly rather than retry into the void.
+     */
+    private fun startMagicianBridge() {
+        val url = MagicianAccess.bridgeWebSocketUrl(this)
+        if (url == null) {
+            Log.i(TAG, "No Magician host configured; bridge idle. Set it in the app.")
+            return
+        }
+        if (!MagicianAccess.hasAutomationEnrollment(this)) {
+            Log.i(TAG, "No attested Apps enrollment is installed; automation bridge idle.")
+            return
+        }
+        val automationKeyAlias = MagicianAccess.automationKeyAlias(this)
+        val automationKeyId = MagicianAccess.automationKeyId(this)
+        val automationApkSha256 = MagicianAccess.automationApkSha256(this)
+        val automationPolicyDigest = MagicianAccess.automationAttestationPolicyDigest(this)
+        val automationPlayProject = MagicianAccess.automationPlayIntegrityCloudProjectNumber(this)
+        val automationTrustMode = requireNotNull(MagicianAccess.automationTrustMode(this))
+        // Bridge-specific headers: identity, plus the pairing token and the
+        // dialect this build speaks. Without the token the socket is refused,
+        // which is the correct answer for a handset nobody has enrolled.
+        val config = ai.magicbeans.magdroid.bridge.BridgeConfig(
+            websocketUrl = url,
+            headers = MagicianAccess.bridgeHeaders(this),
+            automationKeyAlias = automationKeyAlias,
+            automationKeyId = automationKeyId,
+            automationApkSha256 = automationApkSha256,
+            automationAttestationPolicyDigest = automationPolicyDigest,
+            automationPlayIntegrityCloudProjectNumber = automationPlayProject,
+            automationTrustMode = automationTrustMode,
+            automationIdentityContext = applicationContext,
+            automationIdentity = ai.magicbeans.magdroid.access.AndroidAutomationIdentityManager(applicationContext),
+        )
+        val toolHandler = McpToolHandler(
+            service = this,
+            gestureEngine = gestureEngine,
+            uiTreeWalker = uiTreeWalker,
+            inputEngine = inputEngine,
+            screenshotPipeline = screenshotPipeline,
+            protectedApps = ai.magicbeans.magdroid.protection.ProtectedApps.get(this)
+        )
+        val client = MagicianBridgeClient(
+            config = config,
+            toolHandler = toolHandler,
+            scope = serviceScope
+        )
+        bridgeClient = client
+        client.start()
+        // The client's own retry is a coroutine delay, which Doze suspends.
+        // WorkManager survives Doze, app death and reboot, so it is what
+        // recovers when the fast path has been frozen.
+        BridgeWatchdogWorker.schedule(this)
+        Log.i(TAG, "Magician bridge dialing ${config.websocketUrl}")
+    }
+
+    /**
+     * Tear down and redial. Called by the watchdog when it finds the bridge
+     * down after a quiet period.
+     *
+     * A fresh client rather than a poke at the old one: after Doze the previous
+     * socket may be half-open — alive to us, long since dropped by the other
+     * end — and reusing it means waiting out a timeout on something already
+     * dead.
+     */
+    fun restartMagicianBridge() {
+        bridgeClient?.stop()
+        bridgeClient = null
+        startMagicianBridge()
+    }
+
+    /** Whether the outbound bridge currently holds a connection. */
+    fun isBridgeConnected(): Boolean = bridgeClient?.isConnected == true
+
+    /** Publish a permission-driven MCP tool-roster change to the active client. */
+    fun notifyDeviceToolRosterChanged() {
+        bridgeClient?.notifyToolsChanged()
+    }
+
+    /**
+     * Start service as foreground service
+     */
+    private fun startForegroundService() {
+        createNotificationChannel()
+
+        val notification = buildNotification(
+            title = getString(R.string.foreground_service_title),
+            message = getString(R.string.foreground_service_message)
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // Android 14+: must specify foreground service type matching manifest declaration
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
+        Log.d(TAG, "Foreground service started")
+    }
+
+    /**
+     * Request MediaProjection permission for fast screenshot capture
+     *
+     * This is called on service startup to pre-request permission so that
+     * screenshots use the fast path (60ms) instead of AccessibilityService fallback (~200-400ms).
+     *
+     * On Android 14+, this permission is single-use and expires when the
+     * app process is killed or device restarts.
+     */
+    private fun requestMediaProjectionPermission() {
+        // Check if already granted
+        if (screenshotPipeline.hasMediaProjectionPermission()) {
+            Log.i(TAG, "MediaProjection permission already granted")
+            return
+        }
+
+        // Request permission asynchronously
+        serviceScope.launch {
+            delay(1000) // Wait 1 second after service startup before showing dialog
+
+            val granted = screenshotPipeline.requestMediaProjectionPermission()
+
+            if (granted) {
+                Log.i(TAG, "MediaProjection permission granted - fast screenshots enabled")
+                updateNotificationForFastScreenshots()
+            } else {
+                Log.w(TAG, "MediaProjection permission denied - will use AccessibilityService.takeScreenshot() fallback on API 30+")
+            }
+        }
+    }
+
+    /**
+     * Try to consume any pending MediaProjection consent result.
+     * Called from MainActivity.onResume() after the Status permission accordion grants consent.
+     *
+     * Deliberately calls tryConsumePendingConsent() rather than requestMediaProjectionPermission()
+     * to avoid re-launching ScreenshotConsentActivity. When onResume() fires after the user
+     * accepts the auto-prompted dialog, the service's polling loop may not have consumed the
+     * result yet — calling requestMediaProjectionPermission() would show the popup a second time.
+     */
+    fun tryConsumeMediaProjectionConsent() {
+        if (screenshotPipeline.hasMediaProjectionPermission()) return
+        if (!ai.magicbeans.magdroid.screenshot.ScreenshotConsentActivity.hasConsentResult()) return
+        serviceScope.launch {
+            // Android 14 requires a running foreground service already typed
+            // `mediaProjection` before `getMediaProjection()` will hand anything
+            // over — and refuses that type before consent exists. So the type is
+            // promoted here, in the window between the two. Without this the
+            // system dialog is accepted and the projection is then discarded,
+            // which is why the card could never reach "granted".
+            promoteToMediaProjectionForegroundType()
+            val granted = screenshotPipeline.tryConsumePendingConsent()
+            if (granted) {
+                Log.i(TAG, "MediaProjection permission granted from UI - fast screenshots enabled")
+                updateNotificationForFastScreenshots()
+            }
+        }
+    }
+
+    /**
+     * Re-declare the foreground service as also serving media projection.
+     *
+     * Called only once consent exists. Failure is logged rather than fatal: the
+     * companion still takes screenshots through
+     * `AccessibilityService.takeScreenshot()`, which needs none of this.
+     */
+    private fun promoteToMediaProjectionForegroundType() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        try {
+            val notification = buildNotification(
+                title = getString(R.string.foreground_service_title),
+                message = getString(R.string.foreground_service_message),
+            )
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+            )
+            Log.i(TAG, "Foreground service promoted to include mediaProjection")
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not promote foreground service type; " +
+                "falling back to AccessibilityService screenshots", error)
+        }
+    }
+
+    /**
+     * Update notification when MediaProjection is lost (user can tap to re-enable)
+     */
+    private fun updateNotificationForSlowScreenshots() {
+        val notification = buildNotification(
+            title = getString(R.string.foreground_service_title),
+            message = "Fast screenshots disabled \u2014 tap to re-enable"
+        )
+
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NOTIFICATION_ID, notification)
+    }
+
+    /**
+     * Update notification to indicate fast screenshots are enabled
+     */
+    private fun updateNotificationForFastScreenshots() {
+        val notification = buildNotification(
+            title = getString(R.string.foreground_service_title),
+            message = "Fast screenshots enabled (60ms)"
+        )
+
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NOTIFICATION_ID, notification)
+    }
+
+    /**
+     * Create notification channel (Android 8.0+)
+     */
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "Magdroid Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Keeps Magdroid service running"
+                setShowBadge(false)
+            }
+
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    /**
+     * Build notification for foreground service
+     */
+    private fun buildNotification(title: String, message: String): Notification {
+        // Resolved at runtime rather than named: this is a library module and
+        // must not depend on whichever app happens to host it. Falling back to
+        // an empty intent keeps the notification tappable-but-inert rather than
+        // crashing a host that declares no launcher.
+        val openAppIntent = (packageManager.getLaunchIntentForPackage(packageName) ?: Intent())
+            .apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pendingIntent)
+            .build()
+    }
+
+    /**
+     * Handle accessibility events
+     */
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+
+        // Always notify local listeners first (for wait_for_idle, etc.)
+        eventListeners.forEach { listener ->
+            try {
+                listener.onEvent(event)
+            } catch (e: Exception) {
+                Log.e(TAG, "Event listener error", e)
+            }
+        }
+
+        // Check if event streaming is enabled
+        if (!eventsEnabled.get()) {
+            return
+        }
+
+        // Throttle events to prevent flooding
+        if (shouldThrottleEvent()) {
+            return
+        }
+
+        // Stream relevant events to MCP server
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                sendUIChangeEvent(event)
+            }
+            AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> {
+                // Check if it's a Toast
+                if (event.className == "android.widget.Toast") {
+                    sendToastEvent(event)
+                }
+            }
+        }
+    }
+
+    /**
+     * Handle service interruption
+     */
+    override fun onInterrupt() {
+        Log.w(TAG, "AccessibilityService interrupted")
+    }
+
+    /**
+     * Service destroyed
+     */
+    override fun onDestroy() {
+        Log.i(TAG, "Service shutting down")
+
+        // Clean up screenshot pipeline synchronously (releases VirtualDisplay, ImageReader, MediaProjection)
+        if (::screenshotPipeline.isInitialized) {
+            screenshotPipeline.cleanup()
+        }
+
+        // Close the bridge before the scope dies, so the socket is released
+        // rather than left to time out on Magician's side.
+        bridgeClient?.stop()
+        bridgeClient = null
+        // Stop waking the device to reconnect something deliberately stopped.
+        BridgeWatchdogWorker.cancel(this)
+
+        // Cancel all coroutines
+        serviceScope.cancel()
+
+        // Clear static instance
+        instance = null
+
+        super.onDestroy()
+    }
+
+    // ========================================================================
+    // Public API for command handlers
+    // ========================================================================
+
+    /**
+     * Get root UI node
+     */
+    fun getRootNode(): AccessibilityNodeInfo? {
+        return rootInActiveWindow
+    }
+
+    /**
+     * Execute a gesture
+     */
+    fun executeGesture(
+        gesture: GestureDescription,
+        callback: GestureResultCallback? = null
+    ) {
+        val internalCallback = if (callback != null) {
+            object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    callback.onCompleted(gestureDescription ?: return)
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    callback.onCancelled(gestureDescription ?: return)
+                }
+            }
+        } else null
+
+        dispatchGesture(gesture, internalCallback, null)
+    }
+
+    /**
+     * Get UI tree
+     */
+    suspend fun getUiTree(
+        includeInvisible: Boolean = false,
+        maxDepth: Int = 0
+    ): UiTree {
+        return withContext(Dispatchers.Default) {
+            val root = getRootNode()
+            try {
+                uiTreeWalker.walkTree(root, includeInvisible, maxDepth)
+            } finally {
+                // Required by the supported Android 7–12 pool; a no-op from 13.
+                @Suppress("DEPRECATION")
+                root?.recycle()
+            }
+        }
+    }
+
+    /**
+     * Capture screenshot
+     */
+    suspend fun captureScreenshot(quality: ScreenshotQuality): ByteArray {
+        return screenshotPipeline.capture(quality)
+    }
+
+    /**
+     * Perform global action (wrapper)
+     */
+    fun executeGlobalAction(action: Int): Boolean {
+        return performGlobalAction(action)
+    }
+
+    /**
+     * Register event listener
+     */
+    fun registerEventListener(listener: AccessibilityEventListener) {
+        eventListeners.add(listener)
+    }
+
+    /**
+     * Unregister event listener
+     */
+    fun unregisterEventListener(listener: AccessibilityEventListener) {
+        eventListeners.remove(listener)
+    }
+
+    /**
+     * Check if the user has enabled Magdroid via the master toggle
+     */
+    private fun isEnabled(): Boolean {
+        return getSharedPreferences("magdroid_prefs", Context.MODE_PRIVATE)
+            .getBoolean("nb_enabled", false)
+    }
+
+    /**
+     * Start the outbound MCP connection and request MediaProjection.
+     */
+    fun enable() {
+        startForegroundService()
+        if (bridgeClient == null) startMagicianBridge()
+        requestMediaProjectionPermission()
+    }
+
+    /**
+     * Stop outbound MCP and remove the foreground notification.
+     */
+    fun disable() {
+        // Clean up screenshot pipeline synchronously (releases VirtualDisplay, ImageReader, MediaProjection)
+        if (::screenshotPipeline.isInitialized) {
+            screenshotPipeline.cleanup()
+        }
+
+        @Suppress("DEPRECATION")
+        stopForeground(true)
+        bridgeClient?.stop()
+        bridgeClient = null
+        BridgeWatchdogWorker.cancel(this)
+    }
+
+    /**
+     * Enable or disable event streaming
+     */
+    fun setEventsEnabled(enabled: Boolean) {
+        eventsEnabled.set(enabled)
+        Log.i(TAG, "Event streaming ${if (enabled) "enabled" else "disabled"}")
+    }
+
+    /**
+     * Get service uptime in milliseconds
+     */
+    fun getUptime(): Long {
+        return if (startTime > 0) System.currentTimeMillis() - startTime else 0
+    }
+
+    /**
+     * Check if MediaProjection permission is granted
+     */
+    fun hasMediaProjectionPermission(): Boolean {
+        return if (::screenshotPipeline.isInitialized) screenshotPipeline.hasMediaProjectionPermission() else false
+    }
+
+    /**
+     * Check if enough time has passed since last event (throttling)
+     */
+    private fun shouldThrottleEvent(): Boolean {
+        val now = System.currentTimeMillis()
+        val last = lastEventTime.get()
+        if (now - last < MIN_EVENT_INTERVAL_MS) {
+            return true // Too soon, throttle
+        }
+        lastEventTime.set(now)
+        return false
+    }
+
+    /**
+     * Handle UI change event (logged only; no broadcast since TCP was removed)
+     */
+    private fun sendUIChangeEvent(event: AccessibilityEvent) {
+        Log.d(TAG, "UI change event: ${event.source?.hashCode() ?: "unknown"}")
+    }
+
+    /**
+     * Cache toast events for MCP tool calls.
+     */
+    private fun sendToastEvent(event: AccessibilityEvent) {
+        try {
+            val text = event.text.joinToString(" ")
+
+            // Add to the static toast buffer for MCP tool calls (max 50 entries).
+            if (recentToasts.size >= 50) recentToasts.removeAt(0)
+            recentToasts.add(
+                ToastRecord(text, System.currentTimeMillis(), event.packageName?.toString())
+            )
+
+            Log.d(TAG, "Toast event cached: $text")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error caching toast event", e)
+        }
+    }
+}
+
+/**
+ * Interface for accessibility event listeners
+ */
+interface AccessibilityEventListener {
+    fun onEvent(event: AccessibilityEvent)
+}
+
+/**
+ * Gesture execution result callback
+ */
+interface GestureResultCallback {
+    fun onCompleted(gesture: GestureDescription)
+    fun onCancelled(gesture: GestureDescription)
+}
+
+/**
+ * Screenshot quality levels
+ */
+enum class ScreenshotQuality(val jpegQuality: Int) {
+    FULL(80),
+    THUMBNAIL(40)
+}
+
+/**
+ * UI tree representation
+ */
+data class UiTree(
+    val elements: List<UiElement>,
+    val foregroundApp: String,
+    val totalNodes: Int,
+    val captureTimestamp: Long,
+    val truncated: Boolean = false
+)
+
+/**
+ * UI element representation
+ */
+data class UiElement(
+    val elementId: String,
+    val resourceId: String?,
+    val className: String?,
+    val text: String?,
+    val contentDescription: String?,
+    val bounds: Bounds?,
+    val visible: Boolean,
+    val enabled: Boolean,
+    val clickable: Boolean,
+    val scrollable: Boolean,
+    val focusable: Boolean,
+    val longClickable: Boolean,
+    val checkable: Boolean,
+    val checked: Boolean,
+    val semanticType: String,
+    val aiDescription: String
+)
+
+/**
+ * Element bounds
+ */
+data class Bounds(
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int
+)

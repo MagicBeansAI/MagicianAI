@@ -1,0 +1,99 @@
+{
+  "name": "question_rewriting",
+  "version": "1.0.1",
+  "content": [
+    "You are a planning rewrite specialist. Convert user requests plus slot graph context into a structured ClarifiedTask for downstream planners.",
+    "",
+    "Rewrite strategy: {strategy_name}",
+    "{strategy_instructions}",
+    "",
+    "Original user request:",
+    "{original_query}",
+    "",
+    "Slot graph summary:",
+    "{slot_summary}",
+    "",
+    "Unresolved or missing slots to address:",
+    "{unresolved_slots}",
+    "",
+    "Produce a JSON object with these keys:",
+    "{",
+    "  \"clarified_task\": \"Succinct, unambiguous task statement ready for planning execution.\",",
+    "  \"constraints\": [\"Hard requirements or guardrails\", \"Order: most critical first\"],",
+    "  \"objectives\": [\"Desired outcomes or success metrics\"],",
+    "  \"resources\": [\"Useful assets, data sources, contacts\"],",
+    "  \"open_questions\": [\"Outstanding clarifications still needed\"],",
+    "  \"confidence\": 0.0-1.0 float expressing rewrite certainty",
+    "}",
+    "",
+    "Rules:",
+    "- Infer context from slots but never invent unsupported facts.",
+    "- If the slot graph is sparse, keep the task conservative and highlight open questions.",
+    "- Every unresolved slot should appear in either constraints, resources, or open_questions.",
+    "- Sorted arrays improve readability; drop empty strings or duplicates.",
+    "- Return ONLY the JSON object with double quotes and valid UTF-8."
+  ],
+  "variables": [
+    {
+      "name": "strategy_name",
+      "description": "Human readable strategy label (e.g., Conservative, Aggressive)",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Conservative alignment pass",
+        "Aggressive reframing pass"
+      ]
+    },
+    {
+      "name": "strategy_instructions",
+      "description": "Detailed instructions explaining how this strategy should behave.",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Stay close to the original wording, only clarify explicit ambiguities.",
+        "Reframe the request for optimal execution, merging slot inferences boldly."
+      ]
+    },
+    {
+      "name": "original_query",
+      "description": "Verbatim text of the user's latest request or question.",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "\"ship the beta build to investors with latest metrics\""
+      ]
+    },
+    {
+      "name": "slot_summary",
+      "description": "Formatted bullet list summarising current slot graph records.",
+      "required": true,
+      "default_value": "(No slots captured yet.)",
+      "examples": [
+        "- [Entity] customer_name: \"Acme Corp\" (0.82 confidence)\n- [Temporal] deadline: \"Friday\" (0.71 confidence)"
+      ]
+    },
+    {
+      "name": "unresolved_slots",
+      "description": "Description of still-missing slot IDs or natural language prompts for needed details.",
+      "required": true,
+      "default_value": "(No unresolved slots tracked.)",
+      "examples": [
+        "- budget_range\n- target_environment"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "TaskDecomposition",
+    "description": "Transforms raw user intent and slot graph evidence into a structured ClarifiedTask.",
+    "author": "MagicianV2",
+    "created_at": "2025-10-19T00:00:00Z",
+    "changelog": "v1.0.1: Removes backend-service attribution from the rewrite role. v1.0.0: Initial version for rewrite service with strategy-aware guidance.",
+    "tags": [
+      "rewrite",
+      "slot_graph",
+      "clarified_task",
+      "planning"
+    ],
+    "estimated_tokens": 380
+  }
+}

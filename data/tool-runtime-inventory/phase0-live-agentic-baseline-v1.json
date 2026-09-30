@@ -1,0 +1,3530 @@
+{
+  "schema_version": "tool-runtime.phase0-live-agentic-evidence.v1",
+  "generated_at": "2026-08-05T221407Z",
+  "decision_only": true,
+  "tool_execution_count": 0,
+  "credential_resolution_count": 0,
+  "external_side_effect_count": 0,
+  "manifest": "/Users/owner/Development/magicbeanbs100x/magician/data/tool-runtime-inventory/phase0-live-agentic-v1.yaml",
+  "offline_baseline": "/Users/owner/Development/magicbeanbs100x/magician/data/tool-runtime-inventory/phase0-offline-baseline-v1.json",
+  "catalog_digest": "498d723e8895f3ab4b8232607746b54d37752c69e640e1ed809c3c786cde8910",
+  "catalog_schema_bytes": 268761,
+  "profile": {
+    "name": "gptterra-responses-vision-toolsany-rhigh-out64k",
+    "provider": "openai",
+    "model": "gpt-5.6-terra",
+    "api_key_env": "OPENAI_API_KEY",
+    "timeout_secs": 900,
+    "configured_max_output_tokens": 65536,
+    "reasoning_effort": "high",
+    "reasoning_summary": "detailed",
+    "verbosity": "low",
+    "base_url": null
+  },
+  "runs": 5,
+  "workers": 2,
+  "summary": {
+    "calls": 60,
+    "tasks": 12,
+    "http_success_rate": 1.0,
+    "catalog_confinement_rate": 1.0,
+    "exact_first_action_rate": 1.0,
+    "exact_action_selection_rate": 1.0,
+    "argument_semantics_rate": 1.0,
+    "schema_validity_rate": 1.0,
+    "auth_profile_correctness_rate": 1.0,
+    "approval_correctness_rate": 1.0,
+    "decision_success_rate": 1.0,
+    "provider_usage_complete": true,
+    "priced_cost_complete": true,
+    "input_tokens": 329130,
+    "cached_tokens": 317506,
+    "output_tokens": 5929,
+    "reasoning_tokens": 1717,
+    "total_cost_usd": 0.15789720000000002,
+    "mean_total_ms": 2825.0666666666666,
+    "median_total_ms": 2566.5,
+    "p90_total_ms": 4092.0,
+    "mean_tool_decision_ms": 2397.8166666666666,
+    "median_tool_decision_ms": 2207.5,
+    "p90_tool_decision_ms": 3541.0,
+    "retries": 0,
+    "per_task": {
+      "browser-profile-session": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 2659.8,
+        "total_cost_usd": 0.010924
+      },
+      "commerce-oauth-and-checkout": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 3752.0,
+        "total_cost_usd": 0.019939
+      },
+      "conditional-cli-ocr": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 1979.6,
+        "total_cost_usd": 0.008504999999999999
+      },
+      "delegated-coding-session": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 2701.6,
+        "total_cost_usd": 0.011629
+      },
+      "fixed-profile-message-send": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 2396.0,
+        "total_cost_usd": 0.0182632
+      },
+      "google-profile-read-and-send": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 2941.2,
+        "total_cost_usd": 0.013878999999999999
+      },
+      "host-screen-drawing": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 3705.8,
+        "total_cost_usd": 0.016673
+      },
+      "local-document-authoring": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 2618.0,
+        "total_cost_usd": 0.012946
+      },
+      "native-ui-control": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 2558.6,
+        "total_cost_usd": 0.012375000000000002
+      },
+      "public-paper-research": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 3106.8,
+        "total_cost_usd": 0.008587
+      },
+      "secret-backed-image-generation": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 3473.6,
+        "total_cost_usd": 0.013431000000000002
+      },
+      "secret-backed-news-research": {
+        "calls": 5,
+        "successes": 5,
+        "exact_first_action_rate": 1.0,
+        "decision_success_rate": 1.0,
+        "mean_total_ms": 2007.8,
+        "total_cost_usd": 0.010746000000000002
+      }
+    }
+  },
+  "gate_failures": [],
+  "evidence_gate_passed": true,
+  "results": [
+    {
+      "task": "browser-profile-session",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0f2408abc0eedda5006a73b55a77608195a8c5d52ff2c69858",
+      "total_ms": 2246,
+      "first_output_ms": 1716,
+      "tool_decision_ms": 2005,
+      "retries": 0,
+      "input_tokens": 6982,
+      "cached_tokens": 6860,
+      "output_tokens": 45,
+      "reasoning_tokens": 17,
+      "cost_usd": 0.002156,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 24706,
+      "auth_strategies": [
+        "browser_profile",
+        "delegated_credential"
+      ],
+      "auth_requirement": "optional",
+      "profile_policy": "selectable",
+      "profile_binding_source": "runtime_bound",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "compiled_provider",
+      "selected_tools": [
+        "browser__open"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_DsYVE4cTutlgupCWgDrnbmuT",
+          "name": "browser__open",
+          "arguments": {
+            "args": [
+              "https://example.com/phase0"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "commerce-oauth-and-checkout",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0c73f651dacf6088006a73b55aaea08196819cf0d3dcfa300e",
+      "total_ms": 3823,
+      "first_output_ms": 1959,
+      "tool_decision_ms": 3532,
+      "retries": 0,
+      "input_tokens": 8389,
+      "cached_tokens": 8267,
+      "output_tokens": 153,
+      "reasoning_tokens": 41,
+      "cost_usd": 0.0037334,
+      "catalog_tools": 70,
+      "catalog_schema_bytes": 30711,
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "commerce_checkout",
+      "runtime_owner": "legacy_mcp_wrapper",
+      "selected_tools": [
+        "swiggy-mcp__call_tool"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_yv5jRVIaPGD4cnNsqX6rOPS0",
+          "name": "swiggy-mcp__call_tool",
+          "arguments": {
+            "arguments_json": "{}",
+            "auth_timeout_secs": 300,
+            "callback_host": "localhost",
+            "callback_port": 0,
+            "confirmed": false,
+            "debug": false,
+            "endpoint": "",
+            "intent_summary": "Propose placing the already-reviewed Swiggy food order for INR 714; runtime Attention approval remains mandatory.",
+            "order_amount_inr": 714,
+            "risk": "checkout_or_payment",
+            "service": "food",
+            "timeout_secs": 90,
+            "tool_name": "place_food_order",
+            "transport": "http-first"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "conditional-cli-ocr",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_076c4a43878f1dca006a73b55c95a481938ad98560c69e56fe",
+      "total_ms": 1667,
+      "first_output_ms": 847,
+      "tool_decision_ms": 1393,
+      "retries": 0,
+      "input_tokens": 4335,
+      "cached_tokens": 4213,
+      "output_tokens": 54,
+      "reasoning_tokens": 18,
+      "cost_usd": 0.0017346,
+      "catalog_tools": 9,
+      "catalog_schema_bytes": 7515,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "conditional",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "ocr__extract"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_zHbjxhmyyFweWMTZeZAo4Tyv",
+          "name": "ocr__extract",
+          "arguments": {
+            "args": [
+              "--input-file",
+              "/workspace/receipt.png",
+              "--engine",
+              "agy"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "delegated-coding-session",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_09e7e86db5118842006a73b5605ef08190977b51b3791d74bb",
+      "total_ms": 4563,
+      "first_output_ms": 3437,
+      "tool_decision_ms": 3923,
+      "retries": 0,
+      "input_tokens": 3595,
+      "cached_tokens": 3473,
+      "output_tokens": 114,
+      "reasoning_tokens": 20,
+      "cost_usd": 0.0023066,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4526,
+      "auth_strategies": [
+        "secrets",
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "delegated_workspace_write",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "claude__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_GIe6vyMruXDLaNR0W1CB0fi0",
+          "name": "claude__run",
+          "arguments": {
+            "billing_mode": "subscription",
+            "no_progress_timeout_secs": 120,
+            "prompt": "Perform a read-only review of the workspace for marker PHASE0-CLAUDE-7315. Do not create, modify, delete, or otherwise change any files. Report the marker's occurrences and relevant surrounding context.",
+            "session_id": "",
+            "timeout_secs": 3600,
+            "working_dir": "/workspace/project"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "fixed-profile-message-send",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0520c9d1d606790f006a73b55e44248194bba8a14a0092011c",
+      "total_ms": 2579,
+      "first_output_ms": 833,
+      "tool_decision_ms": 2311,
+      "retries": 0,
+      "input_tokens": 4426,
+      "cached_tokens": 4304,
+      "output_tokens": 81,
+      "reasoning_tokens": 39,
+      "cost_usd": 0.0020768,
+      "catalog_tools": 10,
+      "catalog_schema_bytes": 8537,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "fixed",
+      "profile_binding_source": "runtime_fixed",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "kapso-whatsapp-send__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_O2DU7nUy783C376bVkwgTTR2",
+          "name": "kapso-whatsapp-send__send",
+          "arguments": {
+            "extra_args": [],
+            "input": "",
+            "text": "Contract baseline 714",
+            "to": "+15550107145"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "google-profile-read-and-send",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_08bfc2af99250a3a006a73b560e8c08194b51c119b21d65781",
+      "total_ms": 2948,
+      "first_output_ms": 1174,
+      "tool_decision_ms": 2712,
+      "retries": 0,
+      "input_tokens": 7177,
+      "cached_tokens": 7055,
+      "output_tokens": 87,
+      "reasoning_tokens": 30,
+      "cost_usd": 0.002699,
+      "catalog_tools": 38,
+      "catalog_schema_bytes": 23978,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "selectable",
+      "profile_binding_source": "argument",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "gmail__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_JwVQLlSd9BNn1rmriTlaRig6",
+          "name": "gmail__send",
+          "arguments": {
+            "account": "personal",
+            "bcc": "",
+            "body": "Contract baseline 714",
+            "cc": "",
+            "extra_args": [],
+            "reply_to_message_id": "",
+            "subject": "Phase 0 hello",
+            "to": "phase0-recipient@example.invalid"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "host-screen-drawing",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_01482fce76a8ef95006a73b562b8fc8190837af7ed2f656d72",
+      "total_ms": 3367,
+      "first_output_ms": 855,
+      "tool_decision_ms": 3109,
+      "retries": 0,
+      "input_tokens": 3827,
+      "cached_tokens": 3705,
+      "output_tokens": 213,
+      "reasoning_tokens": 55,
+      "cost_usd": 0.003541,
+      "catalog_tools": 6,
+      "catalog_schema_bytes": 5664,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "host_gateway",
+      "selected_tools": [
+        "screen-draw__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_aR459M3XAtZQ3bB0I96KbK1C",
+          "name": "screen-draw__call",
+          "arguments": {
+            "canvas_mode": "blackboard",
+            "shape_json": "{\"type\":\"text\",\"text\":\"PHASE0-DRAW-714\",\"x\":0.5,\"y\":0.5,\"font_size\":32,\"color\":\"#FFFFFF\",\"text_align\":\"center\",\"tutor_step_label\":\"phase0_draw_marker\",\"narration\":\"Writing the required marker: PHASE0-DRAW-714.\"}",
+            "tutor_lesson_plan": [
+              {
+                "milestone_id": "phase0_draw_marker",
+                "objective": "Display the exact required marker PHASE0-DRAW-714 on the blackboard."
+              }
+            ],
+            "tutor_run_id": "",
+            "tutor_step_label": "phase0_draw_marker",
+            "tutor_target": "blackboard"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "local-document-authoring",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0a2fe742565c7eeb006a73b563e7fc8196a6c921aaa2401ef2",
+      "total_ms": 3277,
+      "first_output_ms": 1573,
+      "tool_decision_ms": 3045,
+      "retries": 0,
+      "input_tokens": 8608,
+      "cached_tokens": 8486,
+      "output_tokens": 72,
+      "reasoning_tokens": 39,
+      "cost_usd": 0.0028052,
+      "catalog_tools": 48,
+      "catalog_schema_bytes": 31343,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "office-word__create"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_yAllbxixrLQEbmHleO5m3S72",
+          "name": "office-word__create",
+          "arguments": {
+            "extra_args": [],
+            "file": "/workspace/phase0-report.docx"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "native-ui-control",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_02feda6333c627fd006a73b56697888197b104b7400bde5d99",
+      "total_ms": 2645,
+      "first_output_ms": 1874,
+      "tool_decision_ms": 2352,
+      "retries": 0,
+      "input_tokens": 7245,
+      "cached_tokens": 7123,
+      "output_tokens": 67,
+      "reasoning_tokens": 20,
+      "cost_usd": 0.0024726000000000006,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 26164,
+      "auth_strategies": [
+        "native_permission"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "native_ui_control",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "macos-ui-automation__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_xno4R42kUKwhYUXv9S6X7SA9",
+          "name": "macos-ui-automation__call",
+          "arguments": {
+            "action_name": "get_window_state",
+            "args_json": "{\"pid\":714}",
+            "screenshot_out_file": "",
+            "timeout_secs": 30
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "public-paper-research",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_01fe344b78481cdf006a73b5670d3c8196afbd7a0a8cd3060e",
+      "total_ms": 4589,
+      "first_output_ms": 2938,
+      "tool_decision_ms": 4437,
+      "retries": 0,
+      "input_tokens": 3445,
+      "cached_tokens": 3323,
+      "output_tokens": 72,
+      "reasoning_tokens": 34,
+      "cost_usd": 0.0017725999999999998,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 3978,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "arxiv-search__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_6QJMhPjRcHh7yvmJJpvgRtbZ",
+          "name": "arxiv-search__run",
+          "arguments": {
+            "category": "cs.LG",
+            "limit": 4,
+            "query": "graph neural networks molecular property prediction"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-image-generation",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_05b2d3ae9de05723006a73b568bd9c81958838e78b065cda71",
+      "total_ms": 4425,
+      "first_output_ms": 946,
+      "tool_decision_ms": 4146,
+      "retries": 0,
+      "input_tokens": 4281,
+      "cached_tokens": 4159,
+      "output_tokens": 138,
+      "reasoning_tokens": 26,
+      "cost_usd": 0.0027318000000000004,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 7209,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "image-generation__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_QMMjzxJBz6moreGx6qPW6Za8",
+          "name": "image-generation__run",
+          "arguments": {
+            "aspect_ratio": "1:1",
+            "input_images": "",
+            "model": "",
+            "output_path": "/workspace/phase0-orb.jpg",
+            "prompt": "A single luminous blue energy orb floating at the center of a nearly black dark background. Brilliant electric-blue core, soft cyan halo, subtle wisps and particles, high contrast, atmospheric glow, clean minimalist composition, no text, no watermark.",
+            "quality_tier": "balanced",
+            "resolution": "1K",
+            "thinking": "minimal",
+            "use_search": false
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-news-research",
+      "run_index": 1,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0473169db2283b31006a73b56bcb488194beede5ca34460369",
+      "total_ms": 1948,
+      "first_output_ms": 1222,
+      "tool_decision_ms": 1222,
+      "retries": 0,
+      "input_tokens": 3516,
+      "cached_tokens": 3394,
+      "output_tokens": 91,
+      "reasoning_tokens": 0,
+      "cost_usd": 0.0020148,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4303,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "news-search-via-tavily__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_CidfvppTLVhQw1J5Dk1lH6VI",
+          "name": "news-search-via-tavily__run",
+          "arguments": {
+            "auto_parameters": false,
+            "chunks_per_source": 1,
+            "end_date": "",
+            "exact_match": false,
+            "exclude_domains": "",
+            "include_answer": "false",
+            "include_domains": "",
+            "include_raw_content": "false",
+            "max_results": 5,
+            "query": "orbital manufacturing developments",
+            "search_depth": "basic",
+            "start_date": "",
+            "time_range": "week",
+            "timeout_secs": 30,
+            "topic": "news"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "browser-profile-session",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_00abca86ebdaa878006a73b56d6410819692228a5d4751535e",
+      "total_ms": 2483,
+      "first_output_ms": 1759,
+      "tool_decision_ms": 2164,
+      "retries": 0,
+      "input_tokens": 6982,
+      "cached_tokens": 6860,
+      "output_tokens": 54,
+      "reasoning_tokens": 26,
+      "cost_usd": 0.002264,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 24706,
+      "auth_strategies": [
+        "browser_profile",
+        "delegated_credential"
+      ],
+      "auth_requirement": "optional",
+      "profile_policy": "selectable",
+      "profile_binding_source": "runtime_bound",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "compiled_provider",
+      "selected_tools": [
+        "browser__open"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_sGSmR1afgXOG6DX58Iyr3c1J",
+          "name": "browser__open",
+          "arguments": {
+            "args": [
+              "https://example.com/phase0"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "commerce-oauth-and-checkout",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0d5d1ebc1528dcfb006a73b56dd59c81968342808a6b315b70",
+      "total_ms": 3734,
+      "first_output_ms": 1863,
+      "tool_decision_ms": 3243,
+      "retries": 0,
+      "input_tokens": 8389,
+      "cached_tokens": 8267,
+      "output_tokens": 210,
+      "reasoning_tokens": 94,
+      "cost_usd": 0.004417399999999999,
+      "catalog_tools": 70,
+      "catalog_schema_bytes": 30711,
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "commerce_checkout",
+      "runtime_owner": "legacy_mcp_wrapper",
+      "selected_tools": [
+        "swiggy-mcp__call_tool"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_c71o1ECan16WCiUalWJW20o5",
+          "name": "swiggy-mcp__call_tool",
+          "arguments": {
+            "arguments_json": "{}",
+            "auth_timeout_secs": 300,
+            "callback_host": "localhost",
+            "callback_port": 0,
+            "confirmed": false,
+            "debug": false,
+            "endpoint": "",
+            "intent_summary": "Propose placing the already-reviewed Swiggy food order for INR 714; runtime Attention approval is required before any order placement.",
+            "order_amount_inr": 714,
+            "risk": "checkout_or_payment",
+            "service": "food",
+            "timeout_secs": 90,
+            "tool_name": "place_food_order",
+            "transport": "http-first"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "conditional-cli-ocr",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_077b94d7204501df006a73b57137c08195a1cc461c8e8ede6d",
+      "total_ms": 3468,
+      "first_output_ms": 2763,
+      "tool_decision_ms": 3135,
+      "retries": 0,
+      "input_tokens": 4335,
+      "cached_tokens": 4213,
+      "output_tokens": 49,
+      "reasoning_tokens": 13,
+      "cost_usd": 0.0016745999999999998,
+      "catalog_tools": 9,
+      "catalog_schema_bytes": 7515,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "conditional",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "ocr__extract"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_0LLEihFIXBplwdjgb1aXznWq",
+          "name": "ocr__extract",
+          "arguments": {
+            "args": [
+              "--input-file",
+              "/workspace/receipt.png",
+              "--engine",
+              "agy"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "delegated-coding-session",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0fcf16a7874eacb4006a73b57168b88193adbb85eba4a845d3",
+      "total_ms": 2054,
+      "first_output_ms": 1079,
+      "tool_decision_ms": 1510,
+      "retries": 0,
+      "input_tokens": 3595,
+      "cached_tokens": 3473,
+      "output_tokens": 108,
+      "reasoning_tokens": 15,
+      "cost_usd": 0.0022345999999999998,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4526,
+      "auth_strategies": [
+        "secrets",
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "delegated_workspace_write",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "claude__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_LQK2vCqvKvhpqMuN2Mu57Ehi",
+          "name": "claude__run",
+          "arguments": {
+            "billing_mode": "subscription",
+            "no_progress_timeout_secs": 120,
+            "prompt": "Perform a read-only review of the workspace for marker PHASE0-CLAUDE-7315. Do not modify, create, delete, or rename any files. Report where the marker appears and relevant surrounding context.",
+            "session_id": "",
+            "timeout_secs": 3600,
+            "working_dir": "/workspace/project"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "fixed-profile-message-send",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0ea2d5ce6dfc8840006a73b5731f2c819391ffe895a6d5d1d4",
+      "total_ms": 2420,
+      "first_output_ms": 893,
+      "tool_decision_ms": 2153,
+      "retries": 0,
+      "input_tokens": 4426,
+      "cached_tokens": 4304,
+      "output_tokens": 101,
+      "reasoning_tokens": 59,
+      "cost_usd": 0.0023168000000000004,
+      "catalog_tools": 10,
+      "catalog_schema_bytes": 8537,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "fixed",
+      "profile_binding_source": "runtime_fixed",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "kapso-whatsapp-send__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_tyeqQUi65SnNPSULJGYhgInL",
+          "name": "kapso-whatsapp-send__send",
+          "arguments": {
+            "extra_args": [],
+            "input": "",
+            "text": "Contract baseline 714",
+            "to": "+15550107145"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "google-profile-read-and-send",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_051bf4913fe87f73006a73b573726c8194ac1fee687840ba78",
+      "total_ms": 3557,
+      "first_output_ms": 1824,
+      "tool_decision_ms": 3397,
+      "retries": 0,
+      "input_tokens": 7177,
+      "cached_tokens": 7055,
+      "output_tokens": 98,
+      "reasoning_tokens": 41,
+      "cost_usd": 0.002831,
+      "catalog_tools": 38,
+      "catalog_schema_bytes": 23978,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "selectable",
+      "profile_binding_source": "argument",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "gmail__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_QkMGuFSYxKoQWhV2nZrO2eiK",
+          "name": "gmail__send",
+          "arguments": {
+            "account": "personal",
+            "bcc": "",
+            "body": "Contract baseline 714",
+            "cc": "",
+            "extra_args": [],
+            "reply_to_message_id": "",
+            "subject": "Phase 0 hello",
+            "to": "phase0-recipient@example.invalid"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "host-screen-drawing",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_047e02c863169621006a73b5758938819494f5c1dcce1f04d0",
+      "total_ms": 3242,
+      "first_output_ms": 882,
+      "tool_decision_ms": 2979,
+      "retries": 0,
+      "input_tokens": 3827,
+      "cached_tokens": 3705,
+      "output_tokens": 185,
+      "reasoning_tokens": 42,
+      "cost_usd": 0.003205,
+      "catalog_tools": 6,
+      "catalog_schema_bytes": 5664,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "host_gateway",
+      "selected_tools": [
+        "screen-draw__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_119TBM89kyLzjBcDHmyUVSuB",
+          "name": "screen-draw__call",
+          "arguments": {
+            "canvas_mode": "blackboard",
+            "shape_json": "{\"type\":\"text\",\"text\":\"PHASE0-DRAW-714\",\"x\":0.5,\"y\":0.5,\"anchor\":\"center\",\"font_size\":32,\"color\":\"#FFFFFF\",\"tutor_step_label\":\"Draw marker\",\"narration\":\"PHASE0-DRAW-714\"}",
+            "tutor_lesson_plan": [
+              {
+                "milestone_id": "phase0-draw-714",
+                "objective": "Display the exact required marker on the blackboard."
+              }
+            ],
+            "tutor_run_id": "",
+            "tutor_step_label": "Draw marker",
+            "tutor_target": "blackboard"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "local-document-authoring",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_026ba2d0469ebf55006a73b576f9208190b59a51243dd7ceb8",
+      "total_ms": 3132,
+      "first_output_ms": 2018,
+      "tool_decision_ms": 2550,
+      "retries": 0,
+      "input_tokens": 8608,
+      "cached_tokens": 8486,
+      "output_tokens": 52,
+      "reasoning_tokens": 19,
+      "cost_usd": 0.0025651999999999997,
+      "catalog_tools": 48,
+      "catalog_schema_bytes": 31343,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "office-word__create"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_0yIPaKYmPxlqJ6oEuKG9lv8N",
+          "name": "office-word__create",
+          "arguments": {
+            "extra_args": [],
+            "file": "/workspace/phase0-report.docx"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "native-ui-control",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_00106d677b036d32006a73b578ebfc81939c6eb3583d713be6",
+      "total_ms": 2401,
+      "first_output_ms": 1472,
+      "tool_decision_ms": 2083,
+      "retries": 0,
+      "input_tokens": 7245,
+      "cached_tokens": 7123,
+      "output_tokens": 71,
+      "reasoning_tokens": 24,
+      "cost_usd": 0.0025206000000000004,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 26164,
+      "auth_strategies": [
+        "native_permission"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "native_ui_control",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "macos-ui-automation__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_S46Hl5Ya0fKoWEYRghQdLJlf",
+          "name": "macos-ui-automation__call",
+          "arguments": {
+            "action_name": "get_window_state",
+            "args_json": "{\"pid\":714}",
+            "screenshot_out_file": "",
+            "timeout_secs": 30
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "public-paper-research",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0dce94c8d5bd6e36006a73b57a14b081909a4b8d6dc126cb72",
+      "total_ms": 2996,
+      "first_output_ms": 1003,
+      "tool_decision_ms": 2705,
+      "retries": 0,
+      "input_tokens": 3445,
+      "cached_tokens": 3323,
+      "output_tokens": 73,
+      "reasoning_tokens": 30,
+      "cost_usd": 0.0017846,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 3978,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "arxiv-search__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_3p0AwpFFUpd2H2hZlm6Ntsnp",
+          "name": "arxiv-search__run",
+          "arguments": {
+            "category": "cs.LG",
+            "limit": 4,
+            "query": "\"graph neural networks\" \"molecular property prediction\""
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-image-generation",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_00a02fb163524ea9006a73b57b68c88195997ec5ff0fa84b32",
+      "total_ms": 4511,
+      "first_output_ms": 1130,
+      "tool_decision_ms": 2558,
+      "retries": 0,
+      "input_tokens": 4281,
+      "cached_tokens": 4159,
+      "output_tokens": 136,
+      "reasoning_tokens": 24,
+      "cost_usd": 0.0027078000000000002,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 7209,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "image-generation__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_3tYdBvb0CEHwrlGAeWa2H7ht",
+          "name": "image-generation__run",
+          "arguments": {
+            "aspect_ratio": "1:1",
+            "input_images": "",
+            "model": "",
+            "output_path": "/workspace/phase0-orb.jpg",
+            "prompt": "A luminous blue orb floating centered on a deep dark black-to-navy background. The orb emits a soft radiant cyan-blue glow with subtle atmospheric haze and delicate light falloff, minimalist composition, high contrast, no text, no other objects.",
+            "quality_tier": "balanced",
+            "resolution": "1K",
+            "thinking": "minimal",
+            "use_search": false
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-news-research",
+      "run_index": 2,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_035ea6b5055ca9ac006a73b57d19e481909141769dd313f31f",
+      "total_ms": 1962,
+      "first_output_ms": 943,
+      "tool_decision_ms": 1437,
+      "retries": 0,
+      "input_tokens": 3516,
+      "cached_tokens": 3394,
+      "output_tokens": 118,
+      "reasoning_tokens": 24,
+      "cost_usd": 0.0023388000000000003,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4303,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "news-search-via-tavily__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_Nk8iGcCY0GS7jNkkDTIGToDB",
+          "name": "news-search-via-tavily__run",
+          "arguments": {
+            "auto_parameters": false,
+            "chunks_per_source": 1,
+            "end_date": "",
+            "exact_match": false,
+            "exclude_domains": "",
+            "include_answer": "basic",
+            "include_domains": "",
+            "include_raw_content": "false",
+            "max_results": 5,
+            "query": "orbital manufacturing developments",
+            "search_depth": "basic",
+            "start_date": "",
+            "time_range": "week",
+            "timeout_secs": 30,
+            "topic": "news"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "browser-profile-session",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_08c874342c250f0b006a73b57f28b08197857480f6478e7bae",
+      "total_ms": 2819,
+      "first_output_ms": 1421,
+      "tool_decision_ms": 2448,
+      "retries": 0,
+      "input_tokens": 6982,
+      "cached_tokens": 6860,
+      "output_tokens": 48,
+      "reasoning_tokens": 20,
+      "cost_usd": 0.002192,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 24706,
+      "auth_strategies": [
+        "browser_profile",
+        "delegated_credential"
+      ],
+      "auth_requirement": "optional",
+      "profile_policy": "selectable",
+      "profile_binding_source": "runtime_bound",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "compiled_provider",
+      "selected_tools": [
+        "browser__open"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_ZOc5nRuRHiVhiAqs6yeXZV1v",
+          "name": "browser__open",
+          "arguments": {
+            "args": [
+              "https://example.com/phase0"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "commerce-oauth-and-checkout",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0b57b162573f7f48006a73b57fc51881959b256154e9e4663c",
+      "total_ms": 3372,
+      "first_output_ms": 1601,
+      "tool_decision_ms": 2691,
+      "retries": 0,
+      "input_tokens": 8389,
+      "cached_tokens": 8267,
+      "output_tokens": 195,
+      "reasoning_tokens": 81,
+      "cost_usd": 0.0042374,
+      "catalog_tools": 70,
+      "catalog_schema_bytes": 30711,
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "commerce_checkout",
+      "runtime_owner": "legacy_mcp_wrapper",
+      "selected_tools": [
+        "swiggy-mcp__call_tool"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_xuYxT3ivcGuW3AkOJHKqh1gu",
+          "name": "swiggy-mcp__call_tool",
+          "arguments": {
+            "arguments_json": "{}",
+            "auth_timeout_secs": 300,
+            "callback_host": "localhost",
+            "callback_port": 0,
+            "confirmed": false,
+            "debug": false,
+            "endpoint": "",
+            "intent_summary": "Propose placing the already-reviewed Swiggy food order for INR 714; submit for mandatory runtime Attention approval only.",
+            "order_amount_inr": 714,
+            "risk": "checkout_or_payment",
+            "service": "food",
+            "timeout_secs": 90,
+            "tool_name": "place_food_order",
+            "transport": "http-first"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "conditional-cli-ocr",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0027e6064a50ea8b006a73b581e5488195a8fc1dcf488b0e65",
+      "total_ms": 1718,
+      "first_output_ms": 983,
+      "tool_decision_ms": 1415,
+      "retries": 0,
+      "input_tokens": 4335,
+      "cached_tokens": 4213,
+      "output_tokens": 50,
+      "reasoning_tokens": 14,
+      "cost_usd": 0.0016866,
+      "catalog_tools": 9,
+      "catalog_schema_bytes": 7515,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "conditional",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "ocr__extract"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_0npSB9te4Mtzq92Ltcs7YE6P",
+          "name": "ocr__extract",
+          "arguments": {
+            "args": [
+              "--input-file",
+              "/workspace/receipt.png",
+              "--engine",
+              "agy"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "delegated-coding-session",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_01a54fa454bba03f006a73b583105881948c466584afe76fd8",
+      "total_ms": 2279,
+      "first_output_ms": 967,
+      "tool_decision_ms": 1512,
+      "retries": 0,
+      "input_tokens": 3595,
+      "cached_tokens": 3473,
+      "output_tokens": 125,
+      "reasoning_tokens": 23,
+      "cost_usd": 0.0024386,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4526,
+      "auth_strategies": [
+        "secrets",
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "delegated_workspace_write",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "claude__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_pMTg6Js29c60TnP1jaAUKEjQ",
+          "name": "claude__run",
+          "arguments": {
+            "billing_mode": "subscription",
+            "no_progress_timeout_secs": 120,
+            "prompt": "Perform a read-only review of the workspace for the marker `PHASE0-CLAUDE-7315`. Do not modify, create, delete, rename, or write any files. Report where the marker appears and relevant surrounding context; if absent, say so.",
+            "session_id": "",
+            "timeout_secs": 600,
+            "working_dir": "/workspace/project"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "fixed-profile-message-send",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_045cfa1609b12b21006a73b58394048194a2c1763d60ab2ae5",
+      "total_ms": 3155,
+      "first_output_ms": 1000,
+      "tool_decision_ms": 2933,
+      "retries": 0,
+      "input_tokens": 4426,
+      "cached_tokens": 4304,
+      "output_tokens": 85,
+      "reasoning_tokens": 43,
+      "cost_usd": 0.0021248,
+      "catalog_tools": 10,
+      "catalog_schema_bytes": 8537,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "fixed",
+      "profile_binding_source": "runtime_fixed",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "kapso-whatsapp-send__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_mkFUsvPRiLgmeKp0NcoW44LR",
+          "name": "kapso-whatsapp-send__send",
+          "arguments": {
+            "extra_args": [],
+            "input": "",
+            "text": "Contract baseline 714",
+            "to": "+15550107145"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "google-profile-read-and-send",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_03b91cd2f955bdfb006a73b5857ff8819080e7d5d63b6a9694",
+      "total_ms": 2243,
+      "first_output_ms": 1428,
+      "tool_decision_ms": 1944,
+      "retries": 0,
+      "input_tokens": 7177,
+      "cached_tokens": 7055,
+      "output_tokens": 99,
+      "reasoning_tokens": 42,
+      "cost_usd": 0.002843,
+      "catalog_tools": 38,
+      "catalog_schema_bytes": 23978,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "selectable",
+      "profile_binding_source": "argument",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "gmail__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_RP4g11zI6XApm5Kxt7jQN2Vq",
+          "name": "gmail__send",
+          "arguments": {
+            "account": "personal",
+            "bcc": "",
+            "body": "Contract baseline 714",
+            "cc": "",
+            "extra_args": [],
+            "reply_to_message_id": "",
+            "subject": "Phase 0 hello",
+            "to": "phase0-recipient@example.invalid"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "host-screen-drawing",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0bdb25eb97983378006a73b586bd948194b0d1ad23ddb599cd",
+      "total_ms": 2732,
+      "first_output_ms": 831,
+      "tool_decision_ms": 2481,
+      "retries": 0,
+      "input_tokens": 3827,
+      "cached_tokens": 3705,
+      "output_tokens": 189,
+      "reasoning_tokens": 36,
+      "cost_usd": 0.003253,
+      "catalog_tools": 6,
+      "catalog_schema_bytes": 5664,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "host_gateway",
+      "selected_tools": [
+        "screen-draw__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_oitL4g7TJLp3qSRZy9jfix1N",
+          "name": "screen-draw__call",
+          "arguments": {
+            "canvas_mode": "blackboard",
+            "shape_json": "{\"type\":\"text\",\"text\":\"PHASE0-DRAW-714\",\"x\":0.5,\"y\":0.5,\"color\":\"white\",\"font_size\":32,\"tutor_step_label\":\"phase0-draw-marker\",\"narration\":\"Writing the exact requested marker: PHASE0-DRAW-714.\"}",
+            "tutor_lesson_plan": [
+              {
+                "milestone_id": "phase0-draw-marker",
+                "objective": "Display the exact blackboard marker PHASE0-DRAW-714."
+              }
+            ],
+            "tutor_run_id": "",
+            "tutor_step_label": "phase0-draw-marker",
+            "tutor_target": "blackboard"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "local-document-authoring",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_01cfcd754091b5a2006a73b587a4b081968e43cd45022b2ad6",
+      "total_ms": 2062,
+      "first_output_ms": 1548,
+      "tool_decision_ms": 1765,
+      "retries": 0,
+      "input_tokens": 8608,
+      "cached_tokens": 8486,
+      "output_tokens": 46,
+      "reasoning_tokens": 13,
+      "cost_usd": 0.0024931999999999997,
+      "catalog_tools": 48,
+      "catalog_schema_bytes": 31343,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "office-word__create"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_IRKGYAIzyEWVKQA33t3DrPMs",
+          "name": "office-word__create",
+          "arguments": {
+            "extra_args": [],
+            "file": "/workspace/phase0-report.docx"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "native-ui-control",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0d6f43655b421438006a73b589814081959b9214e81f3804ab",
+      "total_ms": 2118,
+      "first_output_ms": 1365,
+      "tool_decision_ms": 1764,
+      "retries": 0,
+      "input_tokens": 7245,
+      "cached_tokens": 7123,
+      "output_tokens": 62,
+      "reasoning_tokens": 15,
+      "cost_usd": 0.0024126000000000004,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 26164,
+      "auth_strategies": [
+        "native_permission"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "native_ui_control",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "macos-ui-automation__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_sNvZUI88C7XrvxQ41GRNirZ2",
+          "name": "macos-ui-automation__call",
+          "arguments": {
+            "action_name": "get_window_state",
+            "args_json": "{\"pid\":714}",
+            "screenshot_out_file": "",
+            "timeout_secs": 30
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "public-paper-research",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_02218f0c0cd2a944006a73b589aa648195838dfd688d21e124",
+      "total_ms": 1456,
+      "first_output_ms": 1048,
+      "tool_decision_ms": 1048,
+      "retries": 0,
+      "input_tokens": 3445,
+      "cached_tokens": 3323,
+      "output_tokens": 36,
+      "reasoning_tokens": 0,
+      "cost_usd": 0.0013406,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 3978,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "arxiv-search__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_2ZjzAafHfRKmmLIOFVIpafRK",
+          "name": "arxiv-search__run",
+          "arguments": {
+            "category": "cs.LG",
+            "limit": 4,
+            "query": "graph neural networks molecular property prediction"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-image-generation",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_050eb3aa4420237a006a73b58b48f48195a5350d29e1d7e8e8",
+      "total_ms": 3528,
+      "first_output_ms": 993,
+      "tool_decision_ms": 3063,
+      "retries": 0,
+      "input_tokens": 4281,
+      "cached_tokens": 4159,
+      "output_tokens": 127,
+      "reasoning_tokens": 17,
+      "cost_usd": 0.0025998,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 7209,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "image-generation__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_pNXng5CRMebX2syipazW44qU",
+          "name": "image-generation__run",
+          "arguments": {
+            "aspect_ratio": "1:1",
+            "input_images": "",
+            "model": "",
+            "output_path": "/workspace/phase0-orb.jpg",
+            "prompt": "A luminous blue orb glowing intensely at the center of a nearly black dark background, electric cyan and deep sapphire light bloom, subtle atmospheric haze and soft radial rays, high contrast, elegant minimalist composition, no text, no other objects.",
+            "quality_tier": "balanced",
+            "resolution": "1K",
+            "thinking": "minimal",
+            "use_search": false
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-news-research",
+      "run_index": 3,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0ead422a76bc8053006a73b58b964881909545df034d718d1a",
+      "total_ms": 1929,
+      "first_output_ms": 1226,
+      "tool_decision_ms": 1226,
+      "retries": 0,
+      "input_tokens": 3516,
+      "cached_tokens": 3394,
+      "output_tokens": 91,
+      "reasoning_tokens": 0,
+      "cost_usd": 0.0020148,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4303,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "news-search-via-tavily__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_L6X2LN3JodLbG31IjYF5zsyn",
+          "name": "news-search-via-tavily__run",
+          "arguments": {
+            "auto_parameters": false,
+            "chunks_per_source": 2,
+            "end_date": "",
+            "exact_match": false,
+            "exclude_domains": "",
+            "include_answer": "false",
+            "include_domains": "",
+            "include_raw_content": "false",
+            "max_results": 5,
+            "query": "orbital manufacturing developments",
+            "search_depth": "basic",
+            "start_date": "",
+            "time_range": "week",
+            "timeout_secs": 30,
+            "topic": "news"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "browser-profile-session",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_096bca03900d2da6006a73b58d89008196bc661a8bdc9bbc8c",
+      "total_ms": 3612,
+      "first_output_ms": 1154,
+      "tool_decision_ms": 1644,
+      "retries": 0,
+      "input_tokens": 6982,
+      "cached_tokens": 6860,
+      "output_tokens": 42,
+      "reasoning_tokens": 14,
+      "cost_usd": 0.00212,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 24706,
+      "auth_strategies": [
+        "browser_profile",
+        "delegated_credential"
+      ],
+      "auth_requirement": "optional",
+      "profile_policy": "selectable",
+      "profile_binding_source": "runtime_bound",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "compiled_provider",
+      "selected_tools": [
+        "browser__open"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_KUVHTqC4KSdEcE344QHERwKI",
+          "name": "browser__open",
+          "arguments": {
+            "args": [
+              "https://example.com/phase0"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "commerce-oauth-and-checkout",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_061ecd1d695d3c0d006a73b58eaf008196819d6c253fd20966",
+      "total_ms": 3739,
+      "first_output_ms": 1580,
+      "tool_decision_ms": 3467,
+      "retries": 0,
+      "input_tokens": 8389,
+      "cached_tokens": 8267,
+      "output_tokens": 155,
+      "reasoning_tokens": 42,
+      "cost_usd": 0.0037574,
+      "catalog_tools": 70,
+      "catalog_schema_bytes": 30711,
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "commerce_checkout",
+      "runtime_owner": "legacy_mcp_wrapper",
+      "selected_tools": [
+        "swiggy-mcp__call_tool"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_kPFNP6wxZ8zlCfA7ifGhdOe5",
+          "name": "swiggy-mcp__call_tool",
+          "arguments": {
+            "arguments_json": "{}",
+            "auth_timeout_secs": 300,
+            "callback_host": "localhost",
+            "callback_port": 0,
+            "confirmed": false,
+            "debug": false,
+            "endpoint": "",
+            "intent_summary": "Propose placing the already-reviewed Swiggy food order for INR 714; runtime Attention approval must remain mandatory.",
+            "order_amount_inr": 714,
+            "risk": "checkout_or_payment",
+            "service": "food",
+            "timeout_secs": 90,
+            "tool_name": "place_food_order",
+            "transport": "http-first"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "conditional-cli-ocr",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0c7b4f7db57dded8006a73b59123dc8197ad31de830af82cf4",
+      "total_ms": 1447,
+      "first_output_ms": 783,
+      "tool_decision_ms": 1193,
+      "retries": 0,
+      "input_tokens": 4335,
+      "cached_tokens": 4213,
+      "output_tokens": 49,
+      "reasoning_tokens": 13,
+      "cost_usd": 0.0016745999999999998,
+      "catalog_tools": 9,
+      "catalog_schema_bytes": 7515,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "conditional",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "ocr__extract"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_3YDWcWQs9X3DlUduN5rf3oKE",
+          "name": "ocr__extract",
+          "arguments": {
+            "args": [
+              "--input-file",
+              "/workspace/receipt.png",
+              "--engine",
+              "agy"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "delegated-coding-session",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_096609d7729c256d006a73b59262ec81938590e8b2d21f14e0",
+      "total_ms": 2412,
+      "first_output_ms": 1030,
+      "tool_decision_ms": 1597,
+      "retries": 0,
+      "input_tokens": 3595,
+      "cached_tokens": 3473,
+      "output_tokens": 119,
+      "reasoning_tokens": 21,
+      "cost_usd": 0.0023666,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4526,
+      "auth_strategies": [
+        "secrets",
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "delegated_workspace_write",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "claude__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_5mfe82pA5jtiZxKQ5aHuQS0c",
+          "name": "claude__run",
+          "arguments": {
+            "billing_mode": "subscription",
+            "no_progress_timeout_secs": 120,
+            "prompt": "Perform a read-only review of the workspace for the marker `PHASE0-CLAUDE-7315`. Do not change, create, delete, or format any files. Report where the marker appears and any relevant surrounding context or findings.",
+            "session_id": "",
+            "timeout_secs": 3600,
+            "working_dir": "/workspace/project"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "fixed-profile-message-send",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_02ca6e722f0ee9a5006a73b5929468819583fb0e6b82ca896c",
+      "total_ms": 1622,
+      "first_output_ms": 867,
+      "tool_decision_ms": 1398,
+      "retries": 0,
+      "input_tokens": 4426,
+      "cached_tokens": 0,
+      "output_tokens": 71,
+      "reasoning_tokens": 29,
+      "cost_usd": 0.009704,
+      "catalog_tools": 10,
+      "catalog_schema_bytes": 8537,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "fixed",
+      "profile_binding_source": "runtime_fixed",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "kapso-whatsapp-send__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_mZIp5GWXMl9yO6Vx8hVz6qJh",
+          "name": "kapso-whatsapp-send__send",
+          "arguments": {
+            "extra_args": [],
+            "input": "",
+            "text": "Contract baseline 714",
+            "to": "+15550107145"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "google-profile-read-and-send",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0961c95ac29249cd006a73b5943ac881909e63edeb9875d644",
+      "total_ms": 2145,
+      "first_output_ms": 1390,
+      "tool_decision_ms": 1840,
+      "retries": 0,
+      "input_tokens": 7177,
+      "cached_tokens": 7055,
+      "output_tokens": 79,
+      "reasoning_tokens": 22,
+      "cost_usd": 0.002603,
+      "catalog_tools": 38,
+      "catalog_schema_bytes": 23978,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "selectable",
+      "profile_binding_source": "argument",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "gmail__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_BsIbvJFuMEDH8iauKT6VgCaQ",
+          "name": "gmail__send",
+          "arguments": {
+            "account": "personal",
+            "bcc": "",
+            "body": "Contract baseline 714",
+            "cc": "",
+            "extra_args": [],
+            "reply_to_message_id": "",
+            "subject": "Phase 0 hello",
+            "to": "phase0-recipient@example.invalid"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "host-screen-drawing",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0f694b47c087569a006a73b594cea481938e895a7931ef254b",
+      "total_ms": 5690,
+      "first_output_ms": 3618,
+      "tool_decision_ms": 5439,
+      "retries": 0,
+      "input_tokens": 3827,
+      "cached_tokens": 3705,
+      "output_tokens": 178,
+      "reasoning_tokens": 37,
+      "cost_usd": 0.003121,
+      "catalog_tools": 6,
+      "catalog_schema_bytes": 5664,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "host_gateway",
+      "selected_tools": [
+        "screen-draw__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_JdX7BPgoczdLfsIOYG1Ocb0W",
+          "name": "screen-draw__call",
+          "arguments": {
+            "canvas_mode": "blackboard",
+            "shape_json": "{\"type\":\"text\",\"text\":\"PHASE0-DRAW-714\",\"x\":0.5,\"y\":0.5,\"anchor\":\"center\",\"tutor_step_label\":\"phase0_draw\",\"storyboard_step_id\":\"phase0_draw\",\"narration\":\"PHASE0-DRAW-714\"}",
+            "tutor_lesson_plan": [
+              {
+                "milestone_id": "phase0_draw",
+                "objective": "Display the exact required marker on the blackboard."
+              }
+            ],
+            "tutor_run_id": "",
+            "tutor_step_label": "phase0_draw",
+            "tutor_target": "blackboard"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "local-document-authoring",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0b442e8e071e39db006a73b596851c81909051952f4552b3a1",
+      "total_ms": 2554,
+      "first_output_ms": 1758,
+      "tool_decision_ms": 2198,
+      "retries": 0,
+      "input_tokens": 8608,
+      "cached_tokens": 8486,
+      "output_tokens": 53,
+      "reasoning_tokens": 20,
+      "cost_usd": 0.0025772,
+      "catalog_tools": 48,
+      "catalog_schema_bytes": 31343,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "office-word__create"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_5rj9HbQd8bfkEDzx32IwFKPL",
+          "name": "office-word__create",
+          "arguments": {
+            "extra_args": [],
+            "file": "/workspace/phase0-report.docx"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "native-ui-control",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0b788d08f18d673b006a73b598f36c8195a32ad0b6aa934ab3",
+      "total_ms": 3407,
+      "first_output_ms": 1530,
+      "tool_decision_ms": 3112,
+      "retries": 0,
+      "input_tokens": 7245,
+      "cached_tokens": 7123,
+      "output_tokens": 71,
+      "reasoning_tokens": 24,
+      "cost_usd": 0.0025206000000000004,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 26164,
+      "auth_strategies": [
+        "native_permission"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "native_ui_control",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "macos-ui-automation__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_SdXFXa20dhL7X5j28BfDHqdk",
+          "name": "macos-ui-automation__call",
+          "arguments": {
+            "action_name": "get_window_state",
+            "args_json": "{\"pid\":714}",
+            "screenshot_out_file": "",
+            "timeout_secs": 30
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "public-paper-research",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_06bf09923fa21734006a73b59a88ac8190a7610ac7c98522b1",
+      "total_ms": 2802,
+      "first_output_ms": 1138,
+      "tool_decision_ms": 2566,
+      "retries": 0,
+      "input_tokens": 3445,
+      "cached_tokens": 3323,
+      "output_tokens": 80,
+      "reasoning_tokens": 37,
+      "cost_usd": 0.0018686,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 3978,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "arxiv-search__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_PCcVa0eNTy80R0qa5egCjrc2",
+          "name": "arxiv-search__run",
+          "arguments": {
+            "category": "cs.LG",
+            "limit": 4,
+            "query": "\"graph neural networks\" \"molecular property prediction\""
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-image-generation",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0bf9b2d5a8c1fdb9006a73b59c51d08197acd410c4cf55c5e0",
+      "total_ms": 2410,
+      "first_output_ms": 898,
+      "tool_decision_ms": 2217,
+      "retries": 0,
+      "input_tokens": 4281,
+      "cached_tokens": 4159,
+      "output_tokens": 136,
+      "reasoning_tokens": 34,
+      "cost_usd": 0.0027078000000000002,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 7209,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "image-generation__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_JQDaayLxrQCvaLqonkqbrqCF",
+          "name": "image-generation__run",
+          "arguments": {
+            "aspect_ratio": "1:1",
+            "input_images": "",
+            "model": "",
+            "output_path": "/workspace/phase0-orb.jpg",
+            "prompt": "A luminous blue orb floating at the center of a deep dark background, electric cyan-blue glow, subtle atmospheric haze and radiant energy, minimalist composition, high contrast, no text, square image.",
+            "quality_tier": "balanced",
+            "resolution": "1K",
+            "thinking": "minimal",
+            "use_search": false
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-news-research",
+      "run_index": 4,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_087740d4ae611133006a73b59d4fc48194becf814e080b1e16",
+      "total_ms": 2068,
+      "first_output_ms": 1085,
+      "tool_decision_ms": 1571,
+      "retries": 0,
+      "input_tokens": 3516,
+      "cached_tokens": 3394,
+      "output_tokens": 119,
+      "reasoning_tokens": 26,
+      "cost_usd": 0.0023508,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4303,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "news-search-via-tavily__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_XaWNk8Fqk3jdvbK7MG4q5pl0",
+          "name": "news-search-via-tavily__run",
+          "arguments": {
+            "auto_parameters": false,
+            "chunks_per_source": 2,
+            "end_date": "",
+            "exact_match": false,
+            "exclude_domains": "",
+            "include_answer": "basic",
+            "include_domains": "",
+            "include_raw_content": "false",
+            "max_results": 5,
+            "query": "orbital manufacturing developments",
+            "search_depth": "basic",
+            "start_date": "",
+            "time_range": "week",
+            "timeout_secs": 30,
+            "topic": "news"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "browser-profile-session",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0db19e466effe110006a73b59ec81881908f699488f97b2609",
+      "total_ms": 2139,
+      "first_output_ms": 1480,
+      "tool_decision_ms": 1812,
+      "retries": 0,
+      "input_tokens": 6982,
+      "cached_tokens": 6860,
+      "output_tokens": 48,
+      "reasoning_tokens": 20,
+      "cost_usd": 0.002192,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 24706,
+      "auth_strategies": [
+        "browser_profile",
+        "delegated_credential"
+      ],
+      "auth_requirement": "optional",
+      "profile_policy": "selectable",
+      "profile_binding_source": "runtime_bound",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "compiled_provider",
+      "selected_tools": [
+        "browser__open"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_rYIvkcTJusfJgH52mTwiY06J",
+          "name": "browser__open",
+          "arguments": {
+            "args": [
+              "https://example.com/phase0"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "commerce-oauth-and-checkout",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0b2d9a05025c03a4006a73b59f669481969414e2bd33f3ce86",
+      "total_ms": 4092,
+      "first_output_ms": 1553,
+      "tool_decision_ms": 3821,
+      "retries": 0,
+      "input_tokens": 8389,
+      "cached_tokens": 8267,
+      "output_tokens": 158,
+      "reasoning_tokens": 47,
+      "cost_usd": 0.0037934,
+      "catalog_tools": 70,
+      "catalog_schema_bytes": 30711,
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "commerce_checkout",
+      "runtime_owner": "legacy_mcp_wrapper",
+      "selected_tools": [
+        "swiggy-mcp__call_tool"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_TK73Rz11S3BkLHxmO9tDP4a3",
+          "name": "swiggy-mcp__call_tool",
+          "arguments": {
+            "arguments_json": "{}",
+            "auth_timeout_secs": 300,
+            "callback_host": "localhost",
+            "callback_port": 0,
+            "confirmed": false,
+            "debug": false,
+            "endpoint": "",
+            "intent_summary": "Propose placing the already-reviewed Swiggy food order for INR 714; runtime approval remains required.",
+            "order_amount_inr": 714,
+            "risk": "checkout_or_payment",
+            "service": "food",
+            "timeout_secs": 90,
+            "tool_name": "place_food_order",
+            "transport": "http-first"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "conditional-cli-ocr",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_04873d14f9df6e53006a73b5a0e14c81939d1c9cee89e1ee62",
+      "total_ms": 1598,
+      "first_output_ms": 911,
+      "tool_decision_ms": 1324,
+      "retries": 0,
+      "input_tokens": 4335,
+      "cached_tokens": 4213,
+      "output_tokens": 54,
+      "reasoning_tokens": 18,
+      "cost_usd": 0.0017346,
+      "catalog_tools": 9,
+      "catalog_schema_bytes": 7515,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "conditional",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "ocr__extract"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_LF4sAzpFdH9mJQoag2u1uxPx",
+          "name": "ocr__extract",
+          "arguments": {
+            "args": [
+              "--input-file",
+              "/workspace/receipt.png",
+              "--engine",
+              "agy"
+            ]
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "delegated-coding-session",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_09fc55e5f07c6a8e006a73b5a2792c8193bfabbc44c75165b6",
+      "total_ms": 2200,
+      "first_output_ms": 992,
+      "tool_decision_ms": 1493,
+      "retries": 0,
+      "input_tokens": 3595,
+      "cached_tokens": 3473,
+      "output_tokens": 112,
+      "reasoning_tokens": 17,
+      "cost_usd": 0.0022826,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4526,
+      "auth_strategies": [
+        "secrets",
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "profile_binding_source": "runtime_implicit",
+      "approval_class": "delegated_workspace_write",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "claude__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_lzbAyTJI8zACHp3aPHt8WE9w",
+          "name": "claude__run",
+          "arguments": {
+            "billing_mode": "subscription",
+            "no_progress_timeout_secs": 120,
+            "prompt": "Perform a read-only review of the workspace for the marker `PHASE0-CLAUDE-7315`. Do not create, edit, delete, rename, or otherwise modify any files. Report any occurrences and relevant context.",
+            "session_id": "",
+            "timeout_secs": 3600,
+            "working_dir": "/workspace/project"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "fixed-profile-message-send",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0dd9ec019c298828006a73b5a37dd481908146ffd2926518dc",
+      "total_ms": 2204,
+      "first_output_ms": 943,
+      "tool_decision_ms": 1880,
+      "retries": 0,
+      "input_tokens": 4426,
+      "cached_tokens": 4304,
+      "output_tokens": 78,
+      "reasoning_tokens": 36,
+      "cost_usd": 0.0020408,
+      "catalog_tools": 10,
+      "catalog_schema_bytes": 8537,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "fixed",
+      "profile_binding_source": "runtime_fixed",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "kapso-whatsapp-send__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_rXZ4lUmm0DiXj2hZlQLpsbZK",
+          "name": "kapso-whatsapp-send__send",
+          "arguments": {
+            "extra_args": [],
+            "input": "",
+            "text": "Contract baseline 714",
+            "to": "+15550107145"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "google-profile-read-and-send",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0519d79c2a790a16006a73b5a4b4948196844c938beeb34d6c",
+      "total_ms": 3813,
+      "first_output_ms": 1370,
+      "tool_decision_ms": 3524,
+      "retries": 0,
+      "input_tokens": 7177,
+      "cached_tokens": 7055,
+      "output_tokens": 104,
+      "reasoning_tokens": 47,
+      "cost_usd": 0.002903,
+      "catalog_tools": 38,
+      "catalog_schema_bytes": 23978,
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "selectable",
+      "profile_binding_source": "argument",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "gmail__send"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_vO5gf6OF95PPYh1yswB5uVYZ",
+          "name": "gmail__send",
+          "arguments": {
+            "account": "personal",
+            "bcc": "",
+            "body": "Contract baseline 714",
+            "cc": "",
+            "extra_args": [],
+            "reply_to_message_id": "",
+            "subject": "Phase 0 hello",
+            "to": "phase0-recipient@example.invalid"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "host-screen-drawing",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0b3e1bea9cdde7d1006a73b5a5a9e881909472f2cb9971bd6b",
+      "total_ms": 3498,
+      "first_output_ms": 830,
+      "tool_decision_ms": 3173,
+      "retries": 0,
+      "input_tokens": 3827,
+      "cached_tokens": 3705,
+      "output_tokens": 214,
+      "reasoning_tokens": 72,
+      "cost_usd": 0.003553,
+      "catalog_tools": 6,
+      "catalog_schema_bytes": 5664,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "host_gateway",
+      "selected_tools": [
+        "screen-draw__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_mobXPMNER8NzGgHIWroc1Hvx",
+          "name": "screen-draw__call",
+          "arguments": {
+            "canvas_mode": "blackboard",
+            "shape_json": "{\"type\":\"text\",\"text\":\"PHASE0-DRAW-714\",\"x\":0.5,\"y\":0.5,\"color\":\"#FFFFFF\",\"font_size\":32,\"step_label\":\"phase0_draw_714\",\"narration\":\"PHASE0-DRAW-714\"}",
+            "tutor_lesson_plan": [
+              {
+                "milestone_id": "phase0_draw_714",
+                "objective": "Display the exact required marker on the blackboard."
+              }
+            ],
+            "tutor_run_id": "",
+            "tutor_step_label": "phase0_draw_714",
+            "tutor_target": "blackboard"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "local-document-authoring",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0d0729849553bfd6006a73b5a899348190a28dc237a8e1e2ee",
+      "total_ms": 2065,
+      "first_output_ms": 1418,
+      "tool_decision_ms": 1786,
+      "retries": 0,
+      "input_tokens": 8608,
+      "cached_tokens": 8486,
+      "output_tokens": 47,
+      "reasoning_tokens": 14,
+      "cost_usd": 0.0025052,
+      "catalog_tools": 48,
+      "catalog_schema_bytes": 31343,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli",
+      "selected_tools": [
+        "office-word__create"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_suGdt1bA5yIccl4LkXJf40I8",
+          "name": "office-word__create",
+          "arguments": {
+            "extra_args": [],
+            "file": "/workspace/phase0-report.docx"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "native-ui-control",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0bc532d688815719006a73b5a93b8c819685ece284cccc60c0",
+      "total_ms": 2222,
+      "first_output_ms": 1401,
+      "tool_decision_ms": 1958,
+      "retries": 0,
+      "input_tokens": 7245,
+      "cached_tokens": 7123,
+      "output_tokens": 65,
+      "reasoning_tokens": 18,
+      "cost_usd": 0.0024486000000000004,
+      "catalog_tools": 62,
+      "catalog_schema_bytes": 26164,
+      "auth_strategies": [
+        "native_permission"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "native_ui_control",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "macos-ui-automation__call"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_dFhka3ZvWneSQDaHqeGDDjc1",
+          "name": "macos-ui-automation__call",
+          "arguments": {
+            "action_name": "get_window_state",
+            "args_json": "{\"pid\":714}",
+            "screenshot_out_file": "",
+            "timeout_secs": 30
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "public-paper-research",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0b5eeeefe1387810006a73b5aaa1508197905d5572fb08d084",
+      "total_ms": 3691,
+      "first_output_ms": 1028,
+      "tool_decision_ms": 3541,
+      "retries": 0,
+      "input_tokens": 3445,
+      "cached_tokens": 3323,
+      "output_tokens": 76,
+      "reasoning_tokens": 38,
+      "cost_usd": 0.0018206,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 3978,
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "arxiv-search__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_pR4J2YU7eAmo1zV2xks3yd2O",
+          "name": "arxiv-search__run",
+          "arguments": {
+            "category": "cs.LG",
+            "limit": 4,
+            "query": "graph neural networks molecular property prediction"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-image-generation",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_0177fb48394eb822006a73b5ab6948819686f2b48c36f2ad3a",
+      "total_ms": 2494,
+      "first_output_ms": 1165,
+      "tool_decision_ms": 1541,
+      "retries": 0,
+      "input_tokens": 4281,
+      "cached_tokens": 4159,
+      "output_tokens": 134,
+      "reasoning_tokens": 17,
+      "cost_usd": 0.0026838,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 7209,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "image-generation__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_DQk43Tw0H0jIvHPcyVBzc20F",
+          "name": "image-generation__run",
+          "arguments": {
+            "aspect_ratio": "1:1",
+            "input_images": "",
+            "model": "",
+            "output_path": "/workspace/phase0-orb.jpg",
+            "prompt": "A luminous electric-blue orb floating at the center of a nearly black, subtly textured dark background. The orb emits a soft cyan halo and faint wisps of energy, high contrast, clean minimalist composition, photorealistic light bloom, no text, no watermark.",
+            "quality_tier": "balanced",
+            "resolution": "1K",
+            "thinking": "minimal",
+            "use_search": false
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    },
+    {
+      "task": "secret-backed-news-research",
+      "run_index": 5,
+      "profile": "gptterra-responses-vision-toolsany-rhigh-out64k",
+      "model": "gpt-5.6-terra",
+      "status_code": 200,
+      "response_status": "completed",
+      "response_id": "resp_04af99e69bcca860006a73b5ade4808194b8d995a3488a2f80",
+      "total_ms": 2132,
+      "first_output_ms": 1383,
+      "tool_decision_ms": 1383,
+      "retries": 0,
+      "input_tokens": 3516,
+      "cached_tokens": 3394,
+      "output_tokens": 92,
+      "reasoning_tokens": 0,
+      "cost_usd": 0.0020268,
+      "catalog_tools": 7,
+      "catalog_schema_bytes": 4303,
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "profile_binding_source": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter",
+      "selected_tools": [
+        "news-search-via-tavily__run"
+      ],
+      "tool_calls": [
+        {
+          "call_id": "call_vVOH7uuDQLvAzAHu2s5BRMRv",
+          "name": "news-search-via-tavily__run",
+          "arguments": {
+            "auto_parameters": false,
+            "chunks_per_source": 2,
+            "end_date": "",
+            "exact_match": false,
+            "exclude_domains": "",
+            "include_answer": "basic",
+            "include_domains": "",
+            "include_raw_content": "false",
+            "max_results": 5,
+            "query": "orbital manufacturing developments",
+            "search_depth": "basic",
+            "start_date": "",
+            "time_range": "week",
+            "timeout_secs": 30,
+            "topic": "news"
+          }
+        }
+      ],
+      "http_success": true,
+      "catalog_confined": true,
+      "exact_first_action_pass": true,
+      "exact_action_selection_pass": true,
+      "argument_semantics_pass": true,
+      "schema_validity_pass": true,
+      "auth_profile_correctness_pass": true,
+      "approval_correctness_pass": true,
+      "decision_success": true,
+      "error": null
+    }
+  ]
+}

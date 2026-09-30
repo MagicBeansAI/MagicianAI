@@ -1,0 +1,66 @@
+# The HTML shell must always be revalidated. Pages otherwise serves index.html
+# as the SPA fallback for an absent hashed module; caching that HTML under the
+# module URL poisons Chrome's module cache with the wrong MIME type across
+# subsequent deployments. That hazard is permanent — `no-store` on the shell
+# stays.
+#
+# Clear-Site-Data is GONE, and the reason is worth keeping. It was a
+# one-release migration for the 0.0.774 recovery deploy (2026-08-05) and was
+# never removed, so for thirteen days every visitor paid for it twice:
+#
+#   · ~1.5s of blocked navigation while Chrome purged the origin's cache,
+#     measured as responseStart→responseEnd on a 3.9KB document that curl
+#     fetches end-to-end in under 300ms. /404.html, same origin and same
+#     no-store but without the header, measures 0ms.
+#   · every repeat visit re-downloaded the whole site — 0 of 44 same-origin
+#     requests served from cache, 1.6MB, every time.
+#
+# If a future recovery needs it again: add it, ship one release, take it out
+# the same week. It is not a header a site can wear.
+/
+  Cache-Control: no-store
+
+/index.html
+  Cache-Control: no-store
+
+# These routes are prerendered because the real top-level 404 deliberately
+# disables Pages' implicit SPA fallback. Match the extensionless request URL,
+# not the .html file Pages resolves internally.
+/privacy
+  Cache-Control: no-store
+
+/manifesto
+  Cache-Control: no-store
+
+/terms
+  Cache-Control: no-store
+
+/404.html
+  Cache-Control: no-store
+
+# The worker tombstones stay. The retirement script that used to run in the
+# HTML shell is gone — it cost every visitor a getRegistrations() call and
+# could force a whole second navigation — but these files cost nothing to
+# anyone who does not already have a stale registration pointing at them, and
+# they are the only remaining path that retires one. A visitor who has not
+# been here since before 2026-08-05 still needs it.
+/service_worker.js
+  Cache-Control: no-store
+  Content-Type: application/javascript; charset=utf-8
+
+/service-worker.js
+  Cache-Control: no-store
+  Content-Type: application/javascript; charset=utf-8
+
+/sw.js
+  Cache-Control: no-store
+  Content-Type: application/javascript; charset=utf-8
+
+# Content-hashed filenames. A given URL's bytes can never change, so there is
+# nothing to revalidate — the previous `max-age=0, must-revalidate` bought a
+# round-trip per chunk for no possible benefit, across ~38 chunks per load.
+# (Note the deployed site was answering `max-age=14400` here regardless, which
+# is Cloudflare Pages' own default; confirm this rule actually lands after the
+# next publish rather than assuming it did.)
+/_app/immutable/*
+  Cache-Control: public, max-age=31536000, immutable

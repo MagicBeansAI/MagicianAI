@@ -1,0 +1,33 @@
+name: android_screenshot
+description: Capture what the Android phone's screen looks like. Use when the structural snapshot is not enough — an unlabelled canvas, a chart, something you must actually see.
+version: "1.0.0"
+guide: |
+  Tool name: `android_screenshot`
+
+  Returns the screen as an image.
+
+  Prefer `android_snapshot`. Structure tells you what a control is and where it
+  is, which is what you need to act; an image tells you neither without you
+  inferring it. Most native apps name their controls, so the snapshot answers
+  the question on its own.
+
+  Reach for this when the snapshot genuinely cannot help: a drawing canvas, a
+  chart, a map, an app that renders its own UI and exposes no labelled elements.
+
+  One caution — a screen whose snapshot rows are all unnamed containers may be an
+  app that is still loading rather than one that is opaque. Snapshot again after
+  a moment before deciding you need pixels.
+parameters:
+  - name: device
+    param_type: string
+    description: Which phone, when more than one is connected.
+implementation:
+  type: compiled
+  provider_name: android_screenshot
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 45
+  categories:
+    - android
+  composition_category: read
+  sandbox: none

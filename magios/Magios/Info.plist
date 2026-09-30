@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Magican</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.magicbeans100x.magican</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>magican</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Magican uses the camera to attach photos and scan a one-time connection QR you choose.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Magican connects directly to your Magician computer when you choose the Same Wi-Fi connection.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Magican uses the microphone to dictate your messages and, when you start a Listen session, to record and transcribe the meeting or conversation around you.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Magican attaches images from your photo library to your chat.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Magican creates Apple Reminders only when you choose Create reminder on a card.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Magican transcribes your dictation on-device (kept private, no server) unless you choose cloud.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Caveat.ttf</string>
+		<string>FiraCode.ttf</string>
+		<string>Fredoka.ttf</string>
+		<string>IBMPlexMono-Regular.ttf</string>
+		<string>Inter.ttf</string>
+		<string>JetBrainsMono.ttf</string>
+		<string>Newsreader.ttf</string>
+		<string>PressStart2P-Regular.ttf</string>
+		<string>Quicksand.ttf</string>
+		<string>Rajdhani-Regular.ttf</string>
+		<string>SpaceGrotesk.ttf</string>
+		<string>SpecialElite-Regular.ttf</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>remote-notification</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>

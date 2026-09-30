@@ -1,0 +1,27 @@
+{
+  "id": "memory_connection_gate",
+  "version": "1.0.0",
+  "description": "Bounded memory decisions; qualified heads never bypass existing source and mutation validation.",
+  "questions": [
+    {
+      "id": "worth_surfacing",
+      "kind": "noul",
+      "instructions": "Would connecting the activity with these eligible memories provide useful specific context, an unmet condition, an opportunity, or an unresolved important question now? Respect all exceptions. No routine reassurance, moralizing, or invented concern.",
+      "criteria": {
+        "is_true": "Concrete grounded useful connection now",
+        "is_false": "Only topical similarity, satisfied condition, unsupported inference, or interruption without benefit"
+      }
+    },
+    {
+      "id": "surface",
+      "kind": "choice",
+      "instructions": "Choose the appropriate informational surface. HITL may clarify information but never authorize an action. No useful connection means none.",
+      "criteria": {
+        "none": "Do not surface",
+        "worth_a_look": "Optional useful context",
+        "for_you": "Useful personal insight",
+        "hitl": "Material unresolved ambiguity needs an answerable neutral question now"
+      }
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+name: preview_monitor
+description: Interpret a "watch/monitor X on a cadence" request into a typed monitor contract draft for user review. Never creates anything.
+version: "1.0.0"
+guide: |
+  Tool name: `preview_monitor`
+
+  Use this when the user EXPLICITLY asks to monitor, watch, track changes on,
+  or be told when something changes on a source, on a recurring cadence —
+  signals like "watch this pricing page weekly", "monitor the status page",
+  "tell me when the changelog mentions X". A monitor is a recurring watch
+  with change detection — NOT a generic task. For monitoring asks call this
+  tool, NOT `create_task` and NOT `delegate_to_agent`.
+
+  This tool NEVER creates anything. It validates and normalizes your
+  interpretation of the ask into a typed monitor contract and returns:
+  - `contract` — the normalized objective, sources, rules, match mode,
+    notification policy, schedule, and a human `cadence_summary`
+  - `preview_fingerprint` — REQUIRED by `create_monitor` later
+
+  Flow (always review-before-activate):
+  1. Translate the user's words into the structured arguments below. Keep
+     `objective` in the user's own words. Put explicit page links in `urls`,
+     whole sites in `domains`, and search phrases in `query_seeds`.
+  2. If the CADENCE or the TARGET is genuinely missing, ask the user only
+     for that missing value — do not invent a schedule or a source.
+  3. Call `preview_monitor`, then render the returned contract to the user
+     as a compact review card: objective · sources · schedule + timezone ·
+     match mode (strictness) · notification policy.
+  4. Only after the user explicitly confirms, call `create_monitor` with the
+     SAME arguments plus the returned `preview_fingerprint`. If the user
+     edits anything, call `preview_monitor` again first — the fingerprint is
+     bound to the exact contract.
+
+  Defaults (mention them on the review card, don't ask about them):
+  - `match_mode`: balanced
+  - `notification_policy`: material_changes (only real changes surface;
+    unchanged runs stay quiet in history)
+  - `notify_initial_baseline`: false (the first baseline scan is quiet)
+
+  Schedule shape is the stored `TaskSchedule` object:
+    { "kind": { "Cron": { "expression": "0 9 * * 1", "timezone": "America/New_York" } } }
+  (Interval form: { "kind": { "Interval": { "seconds": 3600 } } }.)
+  Use the user's timezone when they name a local time. A monitor may be
+  previewed without a schedule, but activation without one means it only
+  runs on demand — say so on the review card.
+parameters:
+  - name: objective
+    required: true
+    param_type: string
+    description: What the user wants watched, in their words. Bounded at 2000 chars.
+  - name: urls
+    param_type: array
+    description: Explicit http(s) page URLs to scan. Parsed with a real URL parser; non-http(s) schemes are rejected.
+  - name: domains
+    param_type: array
+    description: Whole sites/domains to cover (e.g. "acme.example").
+  - name: authenticated_sources
+    param_type: array
+    description: Named signed-in sources/connectors the runtime already holds access to (never credentials). Not sufficient alone — at least one of urls/domains/query_seeds is required.
+  - name: query_seeds
+    param_type: array
+    description: Search phrases used to discover coverage beyond the explicit sources.
+  - name: include_rules
+    param_type: array
+    description: Positive filters — what counts as in-contract.
+  - name: exclude_rules
+    param_type: array
+    description: Negative filters — what must be ignored.
+  - name: match_mode
+    param_type: string
+    description: How strictly findings must match the objective.
+    enum_values: [strict, balanced, broad]
+    default: "balanced"
+  - name: notification_policy
+    param_type: string
+    description: When the monitor may notify the user.
+    enum_values: [material_changes, every_run, never]
+    default: "material_changes"
+  - name: notify_initial_baseline
+    param_type: boolean
+    description: Whether the first baseline run may notify. Default false (quiet baseline).
+    default: false
+  - name: schedule
+    param_type: object
+    description: 'Optional TaskSchedule object, e.g. {"kind":{"Cron":{"expression":"0 9 * * 1","timezone":"UTC"}}}. Ask the user rather than inventing a cadence.'
+  - name: title
+    param_type: string
+    description: Optional short title; derived from the objective when absent.
+implementation:
+  type: compiled
+  provider_name: preview_monitor
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - tasks
+    - monitors
+  composition_category: action
+  sandbox: none

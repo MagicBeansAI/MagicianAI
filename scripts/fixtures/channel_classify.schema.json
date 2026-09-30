@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "label": {
+      "type": "string",
+      "enum": ["needs_reply", "follow_up", "fyi", "no_action"]
+    },
+    "confidence": { "type": "number" },
+    "reason": { "type": "string" }
+  },
+  "required": ["label", "confidence", "reason"],
+  "additionalProperties": false
+}

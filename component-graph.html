@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<!-- SOURCE_HASH: a7f20d0af5910c7be399e97400a81afcb01b8599a237bb8ed1749b27ac507f18 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>What Breaks Without It</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root{
+  --ground:#F4F6F4; --surface:#FFFFFF; --sunk:#ECEFEC;
+  --ink:#16201C; --ink-2:#46534D; --ink-3:#77837C;
+  --line:#D9DFDA; --line-2:#C3CBC5;
+  --accent:#3A4B7A; --accent-soft:#E6EAF3;
+  --ok:#2F6B3C; --ok-soft:#E3EFE5;
+  --fault:#9C3B31; --fault-soft:#F6E5E3;
+  --unknown:#8A6414; --unknown-soft:#F5EBD6;
+  --off:#8A948E; --off-soft:#EAEDEB;
+  --shadow:0 1px 2px rgba(22,32,28,.06),0 8px 24px -12px rgba(22,32,28,.18);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+  --ground:#101512; --surface:#171E1A; --sunk:#131A16;
+  --ink:#E7EDE8; --ink-2:#A7B3AC; --ink-3:#78857E;
+  --line:#26302B; --line-2:#33403A;
+  --accent:#93A8D6; --accent-soft:#1D2536;
+  --ok:#7FC08C; --ok-soft:#17251A;
+  --fault:#E08279; --fault-soft:#2A1917;
+  --unknown:#D9B463; --unknown-soft:#261D0F;
+  --off:#6C7872; --off-soft:#1A211D;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6);
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --ground:#101512; --surface:#171E1A; --sunk:#131A16;
+  --ink:#E7EDE8; --ink-2:#A7B3AC; --ink-3:#78857E;
+  --line:#26302B; --line-2:#33403A;
+  --accent:#93A8D6; --accent-soft:#1D2536;
+  --ok:#7FC08C; --ok-soft:#17251A;
+  --fault:#E08279; --fault-soft:#2A1917;
+  --unknown:#D9B463; --unknown-soft:#261D0F;
+  --off:#6C7872; --off-soft:#1A211D;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,sans-serif;
+  font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+.wrap{max-width:1240px;margin:0 auto;padding:28px 22px 56px}
+
+header{display:flex;flex-wrap:wrap;gap:20px 32px;align-items:flex-end;justify-content:space-between;
+  padding-bottom:18px;border-bottom:1px solid var(--line)}
+h1{font-size:26px;line-height:1.15;margin:0 0 6px;font-weight:600;letter-spacing:-.02em;text-wrap:balance}
+.sub{margin:0;color:var(--ink-2);max-width:60ch;font-size:14px}
+.tally{display:flex;gap:22px;font-variant-numeric:tabular-nums}
+.tally div{display:flex;flex-direction:column;gap:1px}
+.tally b{font-size:22px;font-weight:600;line-height:1}
+.tally span{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
+
+.presets{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 22px}
+.presets button{
+  font:inherit;font-size:13px;padding:6px 12px;border-radius:999px;cursor:pointer;
+  background:var(--surface);color:var(--ink-2);border:1px solid var(--line-2);transition:.14s}
+.presets button:hover{border-color:var(--accent);color:var(--accent)}
+.presets button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.flow{display:grid;grid-template-columns:1.05fr .82fr 1.13fr;gap:18px;align-items:start}
+@media(max-width:1000px){.flow{grid-template-columns:1fr}}
+.col > h2{font-size:11px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3);
+  margin:0 0 4px;font-weight:600}
+.col > .hint{font-size:12.5px;color:var(--ink-3);margin:0 0 12px}
+
+.group{margin-bottom:14px}
+.group h3{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);
+  margin:0 0 6px;font-weight:500}
+.stack{display:flex;flex-direction:column;gap:6px}
+
+.node{background:var(--surface);border:1px solid var(--line);border-radius:7px;
+  padding:9px 11px;display:flex;gap:10px;align-items:flex-start;transition:.14s}
+.node.lit{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.node .body{flex:1;min-width:0}
+.node .nm{font-size:13.5px;font-weight:500;line-height:1.25;
+  display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.node .meta{font-size:11.5px;color:var(--ink-3);margin-top:2px;overflow-wrap:anywhere}
+.node .cost{font-size:11.5px;color:var(--ink-2);margin-top:4px;line-height:1.4}
+.node .host{font-size:11.5px;color:var(--unknown);margin-top:2px;line-height:1.35}
+
+button.node{width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer}
+button.node:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sw{width:30px;height:18px;border-radius:999px;background:var(--off-soft);border:1px solid var(--line-2);
+  position:relative;flex:none;margin-top:2px;transition:.16s}
+.sw::after{content:"";position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;
+  background:var(--off);transition:.16s}
+.on .sw{background:var(--ok-soft);border-color:var(--ok)}
+.on .sw::after{transform:translateX(12px);background:var(--ok)}
+.blocked .sw{background:var(--fault-soft);border-color:var(--fault)}
+.blocked .sw::after{background:var(--fault)}
+.node.locked{background:var(--sunk)}
+.pin{flex:none;margin-top:3px;width:38px;text-align:center;font-size:9px;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--ink-3);overflow:hidden}
+/* Same slot as the pin, so the body starts at one place on every row. */
+.sw{margin-right:8px}
+
+.req{background:var(--surface);border:1px solid var(--line);border-radius:7px;padding:9px 11px;transition:.14s}
+.req.lit{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.req .nm{font-size:13.5px;font-weight:500;display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.req .by{font-size:11.5px;color:var(--ink-3);margin-top:3px}
+.chip{font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:2px 7px;border-radius:999px;
+  font-weight:600;white-space:nowrap}
+.c-ok{background:var(--ok-soft);color:var(--ok)}
+.c-no{background:var(--fault-soft);color:var(--fault)}
+.c-un{background:var(--unknown-soft);color:var(--unknown)}
+.c-off{background:var(--off-soft);color:var(--off)}
+.c-plan{background:var(--accent-soft);color:var(--accent)}
+.c-money{background:var(--unknown-soft);color:var(--unknown)}
+.chips{display:flex;gap:5px;flex:none}
+
+.surface{margin-bottom:16px}
+.surface h3{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);
+  margin:0 0 6px;font-weight:600;display:flex;justify-content:space-between;align-items:baseline}
+.surface h3 em{font-style:normal;font-variant-numeric:tabular-nums;color:var(--ink-3);letter-spacing:0;
+  text-transform:none;font-size:11.5px}
+.feat{border-left:3px solid var(--off);background:var(--surface);border-radius:0 7px 7px 0;
+  padding:9px 11px;margin-bottom:5px;cursor:default;transition:.14s;
+  display:flex;gap:10px;align-items:flex-start;
+  border-top:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+.feat .body{flex:1;min-width:0}
+.feat.up{border-left-color:var(--ok)}
+.feat.down{border-left-color:var(--fault)}
+.feat .nm{font-size:13.5px;font-weight:500}
+.feat .why{font-size:12px;color:var(--ink-3);margin-top:2px;line-height:1.35}
+/* Red reads as a fault, so it belongs only on the one row that is one: chosen
+   and not available. */
+.feat.down .why{color:var(--fault)}
+/* Only the three thin borders, never the left rail: `border-color` here would
+   repaint the one edge that carries whether the capability works. */
+.feat:hover{background:var(--accent-soft);border-top-color:var(--accent-soft);
+  border-right-color:var(--accent-soft);border-bottom-color:var(--accent-soft)}
+
+/* With no checkbox, an unchosen row has to read as unchosen on its own: a
+   recessed ground and a quieter name, against the bare rail. */
+.feat:not(.want){background:var(--sunk)}
+.feat:not(.want) .nm{color:var(--ink-2);font-weight:400}
+
+footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--ink-3);max-width:78ch}
+footer code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
+  background:var(--sunk);padding:1px 5px;border-radius:4px;color:var(--ink-2)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+<style>
+.modes{display:inline-flex;border:1px solid var(--line-2);border-radius:999px;overflow:hidden}
+.modes button{font:inherit;font-size:12.5px;padding:5px 14px;border:0;cursor:pointer;
+  background:var(--surface);color:var(--ink-3);transition:.14s}
+.modes button[aria-pressed="true"]{background:var(--accent);color:#fff}
+.modes button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.bar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:18px 0 20px}
+.node.spare{opacity:.5}
+.node.spare .nm{font-weight:400}
+.node.needed{border-left:3px solid var(--accent)}
+/* Starting from what you want, the switch is a readout: on means something you
+   picked needs this. Accent, not green, because it describes the plan rather
+   than the machine. */
+.node.needed .sw{background:var(--accent-soft);border-color:var(--accent)}
+.node.needed .sw::after{transform:translateX(12px);background:var(--accent)}
+.req.idle{opacity:.5}
+button.feat{width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer}
+button.feat:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+
+</head>
+<body>
+
+<div class="wrap">
+<header>
+  <div>
+    <h1 id="ttl">What breaks without it</h1>
+    <p class="sub" id="sub"></p>
+  </div>
+  <div class="tally">
+    <div><b id="t-up">—</b><span>capabilities</span></div>
+    <div><b id="t-install">—</b><span>to install</span></div>
+    <div><b id="t-on">—</b><span>components on</span></div>
+  </div>
+</header>
+
+<div class="bar">
+  <div class="modes" id="modes">
+    <button data-m="feature" aria-pressed="true">Start from what you want</button>
+    <button data-m="component" aria-pressed="false">Start from what you have</button>
+  </div>
+  <div class="presets" id="presets" style="margin:0"></div>
+</div>
+
+<div class="flow" id="flow"></div>
+
+<footer id="foot"></footer>
+</div>
+
+<script>
+const G = {"requirements":[{"id":"model","name":"a model"},{"id":"embeddings","name":"an embedding model"},{"id":"local-processing","name":"an on-device generation model"},{"id":"browser-driver","name":"a browser driver"},{"id":"notes-store","name":"a notes store"},{"id":"reachable-origin","name":"an origin the phone can reach"},{"id":"public-ingress","name":"a public URL"},{"id":"workspace-mail","name":"a Google Workspace mail connection"},{"id":"web-search","name":"a search provider"},{"id":"agent-whatsapp-number","name":"a WhatsApp number of the agent's own"},{"id":"agent-inbox","name":"an email address of the agent's own"}],"components":[{"id":"magician-runtime","name":"Magician runtime","core":true,"required":false,"provides":["notes-store"],"requires":[],"cost":"","probe":"http ok"},{"id":"magicutor","name":"Browser and tool executor","core":true,"required":false,"provides":[],"requires":[],"cost":"","probe":"http ok"},{"id":"desktop-host-gateway","name":"Desktop tray and host gateway","core":true,"required":false,"provides":[],"requires":[],"cost":"","probe":"http ok"},{"id":"remote-models","name":"Remote models (API key)","core":false,"required":false,"provides":["model"],"requires":[],"cost":"Billed per use by whichever provider you use. Content leaves the machine, so this cannot serve private processing.","pricing":"paid","probe":"any env key present"},{"id":"ollama-embedding","name":"Required PPLX memory model","core":false,"required":true,"provides":["embeddings"],"requires":[],"cost":"Downloads PPLX Embed 4B and keeps roughly 4 GB resident while Magician runs. It is required in both processing modes because memory embeddings never leave this machine.","probe":"http body contains"},{"id":"ollama-generation","name":"Local generation model","core":false,"required":false,"provides":["model","local-processing"],"requires":["ollama-embedding"],"cost":"Another several GB resident on top of the embedder. Chat does not need it — a remote provider does that. What it buys is that classification, distillation and monitors never send content anywhere.","probe":"configured Ollama model present","host":"needs 16 GB of memory, arm64, macos"},{"id":"search-api","name":"Web search API","core":false,"required":false,"provides":["web-search"],"requires":[],"cost":"Reading a page needs a browser; finding the page needs a search index. TinyFish has a free tier. Exa and Tavily are the fallbacks and both are paid.","pricing":"free tier","probe":"any env key present"},{"id":"media-generation","name":"Image and video generation","core":false,"required":false,"provides":[],"requires":[],"cost":"Billed per generation, and generation is the expensive kind of call. Nothing generates without you asking for it.","pricing":"paid","probe":"any env key present"},{"id":"whatsapp-session","name":"Your WhatsApp (paired)","core":false,"required":false,"provides":[],"requires":[],"cost":"The agent acts as you on your own number. Nothing new to buy; the session is the one on your phone, and it expires the way WhatsApp Web does.","probe":"manual"},{"id":"kapso-whatsapp","name":"WhatsApp number for the agent (Kapso)","core":false,"required":false,"provides":["agent-whatsapp-number"],"requires":[],"cost":"A Kapso account and a Meta Cloud number belonging to the agent — not the one on your phone. Inbound messages fail closed until the webhook signing secret is set, because an unsigned message is one anybody could have sent.","pricing":"paid","probe":"all env keys present"},{"id":"telegram-bot","name":"Telegram bot for the agent","core":false,"required":false,"provides":[],"requires":[],"cost":"A bot of the agent's own that people message. Free from BotFather, and a bot cannot read a chat it was not added to.","probe":"any env key present"},{"id":"telegram-credentials","name":"Telegram application credentials","core":false,"required":false,"provides":[],"requires":[],"cost":"The API id and hash identify your Telegram application. Telegram issues them without charge.","probe":"all env keys present"},{"id":"telegram-session","name":"Your Telegram (paired)","core":false,"required":false,"provides":[],"requires":["telegram-credentials"],"cost":"The agent reads and replies as you, on your own account. Free, and like any paired device the session expires and has to be re-paired.","probe":"manual"},{"id":"agentmail-inbox","name":"Email address for the agent (AgentMail)","core":false,"required":false,"provides":["agent-inbox"],"requires":[],"cost":"An address of the agent's own, separate from yours, so it can be written to directly. Free to start and metered after.","pricing":"free tier","probe":"all env keys present"},{"id":"chrome-extension","name":"Chrome extension pairing","core":false,"required":false,"provides":["browser-driver"],"requires":["magicutor"],"cost":"The only driver that can see the tabs you already have open, because it drives your real Chrome. Chrome has to be running.","probe":"http body contains"},{"id":"bundled-browser","name":"Bundled browser","core":false,"required":false,"provides":["browser-driver"],"requires":[],"cost":"Isolated and unattended. No signed-in sites, and none of your open tabs.","probe":"file exists"},{"id":"cloudflare-tunnel","name":"Public Cloudflare tunnel","core":false,"required":false,"provides":["public-ingress","reachable-origin"],"requires":[],"cost":"A Cloudflare account and a zone you own. Reachable from anywhere.","pricing":"free tier","probe":"file exists"},{"id":"lan-origin","name":"Local network address","core":false,"required":false,"provides":["reachable-origin"],"requires":[],"cost":"Works only while the phone is on the same Wi-Fi.","probe":"any env key present"},{"id":"operator-identity","name":"Operator identity","core":false,"required":false,"provides":[],"requires":[],"cost":"","probe":"any env key present"},{"id":"workspace-oauth","name":"Google Workspace OAuth client","core":false,"required":false,"provides":[],"requires":[],"cost":"A Google Cloud project with an OAuth client and a Pub/Sub topic.","pricing":"free tier","probe":"file exists"},{"id":"workspace-account","name":"Your Google Workspace account","core":false,"required":false,"provides":["workspace-mail"],"requires":["workspace-oauth"],"cost":"The OAuth token stays inside this workspace's scoped auth directory.","probe":"manual"},{"id":"cua-driver","name":"Desktop computer use (CuaDriver)","core":false,"required":false,"provides":[],"requires":[],"cost":"Controls apps in the signed-in desktop session. Requires local accessibility access; Linux needs a graphical session.","probe":"manual"},{"id":"tcc-automation","name":"Automation permission","core":false,"required":false,"provides":[],"requires":["desktop-host-gateway"],"cost":"","probe":"http body contains"},{"id":"tcc-full-disk","name":"Full Disk Access","core":false,"required":false,"provides":[],"requires":[],"cost":"Whatever runs Magician gets read access to the Messages database, and to everything else Full Disk Access covers. It is the broadest grant here.","probe":"file readable"},{"id":"tcc-automation-messages","name":"Automation for Messages","core":false,"required":false,"provides":[],"requires":[],"cost":"Lets Magician tell Messages to send. Separate from the general Automation grant, because macOS asks per controlled app.","probe":"manual"},{"id":"tcc-microphone","name":"Microphone permission","core":false,"required":false,"provides":[],"requires":[],"cost":"","probe":"manual"},{"id":"tcc-screen-recording","name":"Screen Recording permission","core":false,"required":false,"provides":[],"requires":[],"cost":"","probe":"manual"}],"features":[{"id":"chat","name":"Chat with your agent","description":"Ask questions, launch work, and continue from previous tasks. Runs on a remote provider or a local model — either satisfies it.","needs":[{"requirement":"model"}],"surfaces":["web","ios","android","desktop"]},{"id":"browser-research","name":"Research on the web","description":"Search, read and cross-reference sources, then answer with citations. Either driver will do.","needs":[{"requirement":"browser-driver"},{"requirement":"model"}],"surfaces":["web","ios","android","desktop"]},{"id":"api-mining","name":"Learn repeated browser tasks","description":"Observe the agent's own browser traffic, learn task-shaped API recipes, and replay repeated work without reopening the browser. It can be turned off per workspace at any time.","needs":[{"requirement":"browser-driver"},{"requirement":"model"}],"surfaces":["web","desktop"]},{"id":"read-open-tabs","name":"Work with your open tabs","description":"Read and act on the pages you already have open, signed in as you.","needs":[{"component":"chrome-extension"},{"requirement":"model"}],"surfaces":["web","desktop"]},{"id":"memory","name":"Remember across conversations","description":"Index and retrieve what the agent has seen before. Embeddings stay on this machine in both processing modes, so this always needs the local embedding daemon.","needs":[{"requirement":"embeddings"}],"surfaces":["web","ios","android","desktop"]},{"id":"private-processing","name":"Keep processing on this machine","description":"Run classification, distillation and monitors on the on-device model instead of sending content to a provider. They work either way — this is what keeps the content local.","needs":[{"requirement":"local-processing"}],"surfaces":["web","desktop","ios","android"]},{"id":"notes","name":"Notes","description":"Read and write notes the agent shares with you.","needs":[{"requirement":"notes-store"}],"surfaces":["web","ios","android","desktop"]},{"id":"search-the-web","name":"Search the web","description":"Find pages rather than only reading ones you name. A browser can open a page; a search index is how the agent decides which page.","needs":[{"requirement":"web-search"},{"requirement":"model"}],"surfaces":["web","ios","android","desktop"]},{"id":"make-media","name":"Make images and video","description":"Generate images, video, music and speech from a description.","needs":[{"component":"media-generation"},{"requirement":"model"}],"surfaces":["web","ios","android","desktop"]},{"id":"telegram","name":"Talk to the agent on Telegram","description":"A bot of the agent's own that you and anyone you share it with can message.","needs":[{"component":"telegram-bot"},{"requirement":"model"}],"surfaces":["web"]},{"id":"own-telegram","name":"Use your own Telegram","description":"Read and reply on your own Telegram account, as you. Paired by QR, like a second device.","needs":[{"component":"telegram-session"},{"requirement":"model"}],"surfaces":["web","desktop"]},{"id":"agent-email","name":"Give the agent its own email","description":"An address people can write to that is the agent's, not yours.","needs":[{"requirement":"agent-inbox"},{"requirement":"model"}],"surfaces":["web"]},{"id":"own-whatsapp","name":"Use your own WhatsApp","description":"Read and reply on the number already on your phone, as you. Paired by QR like WhatsApp Web — no second number, nothing to pay.","needs":[{"component":"whatsapp-session"},{"requirement":"model"}],"surfaces":["web","desktop"]},{"id":"whatsapp","name":"Give the agent its own WhatsApp","description":"A number of the agent's own that other people can message, separate from yours.","needs":[{"requirement":"public-ingress"},{"requirement":"agent-whatsapp-number"},{"requirement":"model"}],"surfaces":["web"]},{"id":"mobile-apps","name":"The phone apps","description":"Reach the agent from the iOS and Android companions.","needs":[{"requirement":"reachable-origin"}],"surfaces":["ios","android"]},{"id":"mail-assist","name":"Mail assist","description":"Triage and draft in your Google Workspace mailbox.","needs":[{"requirement":"workspace-mail"},{"requirement":"model"}],"surfaces":["web"]},{"id":"imessage","name":"iMessage","description":"Read and reply to iMessage from the agent.","needs":[{"component":"tcc-full-disk"},{"component":"tcc-automation-messages"}],"surfaces":["desktop"]},{"id":"mac-skills","name":"Control Mac apps","description":"Drive Finder, Mail, Calendar and other apps on your behalf.","needs":[{"component":"tcc-automation"}],"surfaces":["desktop"]},{"id":"computer-use","name":"Control desktop apps","description":"Drive native apps through CuaDriver on a Windows, Linux or macOS desktop, locally or through the desktop relay.","needs":[{"component":"cua-driver"}],"surfaces":["desktop"]},{"id":"voice","name":"Talk to your agent","description":"Wake word, dictation and spoken replies.","needs":[{"component":"tcc-microphone"},{"requirement":"model"}],"surfaces":["desktop","ios","android"]},{"id":"screen-ask","name":"Ask about what is on screen","description":"Capture the screen and ask about what it shows.","needs":[{"component":"tcc-screen-recording"},{"requirement":"model"}],"surfaces":["desktop"]},{"id":"screen-clips","name":"Record a screen clip and ask","description":"Record the screen for a few seconds and ask about what happened in it.","needs":[{"component":"tcc-screen-recording"},{"component":"cua-driver"},{"requirement":"model"}],"surfaces":["desktop"]}]};
+
+const byId = Object.fromEntries(G.components.map(c => [c.id, c]));
+const reqById = Object.fromEntries(G.requirements.map(r => [r.id, r]));
+const providersOf = r => G.components.filter(c => c.provides.includes(r));
+
+let mode = "feature";
+let want = Object.fromEntries(G.features.map(f => [f.id, false]));
+// One state for the components and one meaning for a switch: this component is
+// in your setup. Your picks seed it; a switch you flip by hand overrules that
+// until a preset clears it. Both directions read and write the same thing,
+// which is why the mode changes the order of the columns and nothing else — an
+// earlier split, where a switch meant "needed" in one direction and "installed"
+// in the other, was the source of every reading of this page that went wrong.
+let override = {};
+let lit = null;
+
+/* Mirrors resolve() in the crate: propagate blocked to a fixed point, then
+   satisfy requirements from any usable provider, then features from all needs. */
+function resolve(state){
+  const usable = {}, blockedBy = {};
+  for (const c of G.components) usable[c.id] = !!state[c.id];
+  for (let pass = 0; pass < G.components.length; pass++){
+    let changed = false;
+    for (const c of G.components){
+      if (!usable[c.id]) continue;
+      const blocker = c.requires.find(d => !usable[d]);
+      if (blocker){ usable[c.id] = false; blockedBy[c.id] = blocker; changed = true; }
+    }
+    if (!changed) break;
+  }
+  const reqOk = {}, reqBy = {};
+  for (const r of G.requirements){
+    const hit = providersOf(r.id).find(p => usable[p.id]);
+    reqOk[r.id] = !!hit; reqBy[r.id] = hit ? hit.name : null;
+  }
+  const feat = {};
+  for (const f of G.features){
+    const missing = [];
+    for (const n of f.needs){
+      if (n.component && !usable[n.component]) missing.push("needs " + byId[n.component].name);
+      else if (n.requirement && !reqOk[n.requirement]){
+        const opts = providersOf(n.requirement).map(p => p.name).join(" or ");
+        missing.push("needs " + reqById[n.requirement].name + " — install " + opts);
+      }
+    }
+    feat[f.id] = { up: missing.length === 0, why: missing.join("; ") };
+  }
+  return { usable, blockedBy, reqOk, reqBy, feat };
+}
+
+/* Mirrors Selection::plan() in magician-setup: the closure of what the chosen
+   capabilities need, dependencies included, one provider per requirement — the
+   first declared, since declaration order is the graph author's preference. */
+function implied(){
+  const comps = new Set(), reqs = new Set();
+  const add = id => {
+    if (comps.has(id)) return;
+    comps.add(id);
+    (byId[id]?.requires || []).forEach(add);
+  };
+  // Core is required by everything, so it belongs in a picture of what is
+  // needed. The wizard's plan() deliberately omits it: those arrive with the
+  // runtime and listing them as "to install" would be an instruction nobody can
+  // follow. Same rule, different question.
+  G.components.filter(c => c.core).forEach(c => add(c.id));
+  for (const f of G.features.filter(f => want[f.id])){
+    for (const n of f.needs){
+      if (n.component) add(n.component);
+      else {
+        reqs.add(n.requirement);
+        const provs = providersOf(n.requirement);
+        // A provider you switched on by hand wins; otherwise the first declared,
+        // since declaration order is the graph author's preference.
+        const picked = provs.find(p => override[p.id] === true) || provs[0];
+        if (picked) add(picked.id);
+      }
+    }
+  }
+  return { comps, reqs };
+}
+
+/* The components actually in your setup: what your picks imply, with any switch
+   you flipped by hand winning. Core is never off — it arrives with the runtime,
+   so there is nothing to decline. */
+function setup(imp){
+  const out = {};
+  for (const c of G.components){
+    // Core and required are both "not a choice"; they differ only in whether
+    // anything has to be installed, which the tag says.
+    out[c.id] = (c.core || c.required) ? true
+              : (c.id in override ? override[c.id] : imp.comps.has(c.id));
+  }
+  return out;
+}
+
+function litSet(featureId){
+  if (!featureId) return null;
+  const f = G.features.find(x => x.id === featureId);
+  const s = new Set();
+  for (const n of f.needs){
+    if (n.component){ s.add(n.component); byId[n.component].requires.forEach(d => s.add(d)); }
+    if (n.requirement){ s.add(n.requirement); providersOf(n.requirement).forEach(p => {
+      s.add(p.id); p.requires.forEach(d => s.add(d)); }); }
+  }
+  return s;
+}
+
+const GROUPS = [
+  ["Core", c => c.core],
+  ["Models", c => ["remote-models","ollama-generation","ollama-embedding"].includes(c.id)],
+  ["Browser", c => ["chrome-extension","bundled-browser"].includes(c.id)],
+  ["Notes and mail", c => ["silverbullet","workspace-oauth"].includes(c.id)],
+  ["Skills and channels", c => ["search-api","media-generation","whatsapp-session","kapso-whatsapp"].includes(c.id)],
+  ["Reaching this machine", c => ["cloudflare-tunnel","lan-origin","operator-identity"].includes(c.id)],
+  ["macOS permissions", c => c.id.startsWith("tcc-")],
+];
+const SURFACES = [["web","Web"],["desktop","Desktop"],["ios","iOS"],["android","Android"]];
+
+const PRESETS = {
+  feature: [
+    ["Everything", () => setWant(() => true)],
+    ["Nothing", () => setWant(() => false)],
+    ["Just chat", () => setWant(f => f.id === "chat")],
+    ["Keep it all local", () => setWant(f => f.id !== "whatsapp" && f.id !== "mail-assist")],
+    ["No phone, no WhatsApp", () => setWant(f => !["mobile-apps","whatsapp"].includes(f.id))],
+    ["Follow my picks again", () => { override = {}; }],
+  ],
+  component: [
+    ["Everything on", () => setOn(() => true)],
+    ["Only core", () => setOn(() => false)],
+    ["Remote models only", () => setOn(c => !c.id.startsWith("ollama"))],
+    ["No tunnel", () => setOn(c => c.id !== "cloudflare-tunnel")],
+    ["Follow my picks again", () => { override = {}; }],
+  ],
+};
+// A preset is a fresh start, so it drops any switch flipped by hand.
+function setWant(fn){
+  want = Object.fromEntries(G.features.map(f => [f.id, !!fn(f)]));
+  override = {};
+}
+// Component presets write the same override map a hand-flipped switch does.
+// Core is never included: it arrives with the runtime, so there is nothing to
+// decline.
+function setOn(fn){
+  override = Object.fromEntries(G.components.filter(c => !c.core).map(c => [c.id, !!fn(c)]));
+}
+
+function featureColumn(R){
+  const rows = SURFACES.map(([sid, label]) => {
+    const fs = G.features.filter(f => f.surfaces.includes(sid));
+    if (!fs.length) return "";
+    const up = fs.filter(f => R.feat[f.id].up).length;
+    const items = fs.map(f => {
+      const s = R.feat[f.id];
+      const chosen = !!want[f.id];
+      // The rail is the only state this row carries, so it answers the question
+      // the person actually asked: did I choose this, and will I get it? Green
+      // is chosen and working, red is chosen and broken, bare is not chosen.
+      const cls = ["feat", chosen ? (s.up ? "up" : "down") : "", chosen ? "want" : ""]
+        .filter(Boolean).join(" ");
+      const why = chosen && !s.up ? s.why : f.description;
+      const inner = `<div class="body"><div class="nm">${f.name}</div>
+        <div class="why">${why}</div></div>`;
+      return `<button class="${cls}" data-node="${f.id}" data-f="${f.id}" aria-pressed="${chosen}">${inner}</button>`;
+    }).join("");
+    return `<div class="surface"><h3>${label}<em>${up} of ${fs.length} would work</em></h3>${items}</div>`;
+  }).join("");
+  const hint = "Click what you want this to do, in either direction — the components it needs switch on to match.";
+  return `<section class="col"><h2>Capabilities</h2><p class="hint">${hint}</p>${rows}</section>`;
+}
+
+function requirementColumn(R, need){
+  const rows = G.requirements.map(r => {
+    const ok = R.reqOk[r.id], opts = providersOf(r.id);
+    const idle = !need.reqs.has(r.id);
+    // Always says whether the setup covers it. Whether anything you picked
+    // needs it is a second, quieter fact, so the row dims instead.
+    const chip = `<span class="chip ${ok ? "c-ok" : "c-no"}">${ok ? "covered" : "unmet"}</span>`;
+    const by = (ok ? "satisfied by " + R.reqBy[r.id]
+             : (opts.length > 1 ? "either " + opts.map(o => o.name).join(" or ") : "only " + opts[0].name))
+             + (idle ? " — nothing you picked needs it" : "");
+    return `<div class="req ${idle ? "idle" : ""}" data-node="${r.id}">
+      <div class="nm"><span>${r.name}</span>${chip}</div>
+      <div class="by">${by}</div></div>`;
+  }).join("");
+  return `<section class="col"><h2>Requirements</h2>
+    <p class="hint">Named needs that more than one component can satisfy. This is where a choice lives.</p>
+    <div class="stack">${rows}</div></section>`;
+}
+
+function componentColumn(R, need){
+  // A component matching no group used to vanish silently — the list is an
+  // allowlist of ids, so adding one to the graph and forgetting this line made
+  // it invisible rather than ungrouped. The catch-all makes that impossible.
+  const claimed = new Set();
+  for (const [, test] of GROUPS) {
+    for (const c of G.components) if (test(c)) claimed.add(c.id);
+  }
+  const leftovers = G.components.filter(c => !claimed.has(c.id));
+  const allGroups = leftovers.length
+    ? [...GROUPS, ["Everything else", c => !claimed.has(c.id)]]
+    : GROUPS;
+
+  const groups = allGroups.map(([label, test]) => {
+    const rows = G.components.filter(test).map(c => {
+      const blocked = R.blockedBy[c.id];
+      const on = need.comps.has(c.id);
+      const fixed = c.core || c.required;
+      const cls = ["node", blocked ? "blocked" : (on ? "needed" : "spare"),
+                   fixed ? "locked" : ""].filter(Boolean).join(" ");
+      let chip = "";
+      if (blocked) chip = `<span class="chip c-no">blocked</span>`;
+      else if (on && !c.core) chip = `<span class="chip c-plan">to install</span>`;
+      // Money is a separate fact from install state, so it gets its own chip
+      // rather than competing for the one slot. Only the ones that cost.
+      const money = c.pricing ? `<span class="chip c-money">${c.pricing}</span>` : "";
+      const meta = blocked ? "blocked by " + byId[blocked].name
+                 : c.provides.length ? "provides " + c.provides.join(", ") : c.probe;
+      // The machine a component needs is stated even when this one meets it —
+      // the page is read by people deciding what to install it on.
+      const host = c.host ? `<div class="host mono">${c.host}</div>` : "";
+      const inner = `<div class="body"><div class="nm"><span>${c.name}</span><span class="chips">${money}${chip}</span></div>
+        <div class="meta mono">${meta}</div>${host}
+        ${c.cost && !c.core && on ? `<div class="cost">${c.cost}</div>` : ""}</div>`;
+      // Core arrives with the runtime; required has to be installed but cannot
+      // be declined. Neither is a switch, and the pin says which it is.
+      const knob = c.core ? `<span class="pin">core</span>`
+                 : c.required ? `<span class="pin">always</span>`
+                 : `<span class="sw"></span>`;
+      return fixed
+        ? `<div class="${cls}" data-node="${c.id}">${knob}${inner}</div>`
+        : `<button class="${cls}" data-node="${c.id}" data-c="${c.id}" aria-pressed="${on}">${knob}${inner}</button>`;
+    }).join("");
+    return `<div class="group"><h3>${label}</h3><div class="stack">${rows}</div></div>`;
+  }).join("");
+  const hint = "Switch on what is in your setup. Your picks switch these for you; flip one by hand to overrule that, and the capabilities that need it follow. Rows marked core or always are not choices.";
+  return `<section class="col"><h2>Components</h2><p class="hint">${hint}</p>${groups}</section>`;
+}
+
+function render(){
+  // One resolve for both directions: every column reads the same setup, so the
+  // mode only decides the order they are read in.
+  const imp = implied();
+  const on = setup(imp);
+  const R = resolve(on);
+  const need = {
+    comps: new Set(G.components.filter(c => on[c.id]).map(c => c.id)),
+    reqs: imp.reqs,
+    install: G.components.filter(c => on[c.id] && !c.core).map(c => c.id),
+  };
+
+  document.getElementById("ttl").textContent = mode === "feature"
+    ? "What it takes to get what you want" : "What breaks without it";
+  document.getElementById("sub").textContent = mode === "feature"
+    ? "Choose what you want this to do, and watch which needs it creates and which components have to be switched on."
+    : "Switch on the pieces of the stack you have, and watch which capabilities light up and which go dark.";
+
+  document.getElementById("flow").innerHTML = mode === "feature"
+    ? featureColumn(R) + requirementColumn(R, need) + componentColumn(R, need)
+    : componentColumn(R, need) + requirementColumn(R, need) + featureColumn(R);
+  applyLit();
+
+  const presets = PRESETS[mode];
+  document.getElementById("presets").innerHTML =
+    presets.map((p, i) => `<button data-p="${i}">${p[0]}</button>`).join("");
+
+  document.getElementById("t-up").textContent =
+    `${G.features.filter(f => R.feat[f.id].up).length} / ${G.features.length}`;
+  document.querySelector("#t-up + span").textContent = "would work";
+  document.getElementById("t-install").textContent = need.install.length;
+  document.getElementById("t-on").textContent = need.comps.size + " / " + G.components.length;
+  document.querySelector("#t-on + span").textContent = "in your setup";
+
+  document.getElementById("foot").innerHTML =
+    `Generated from <code>magician-components/src/graph.yaml</code>, the same declaration the
+     runtime resolves at startup — so this page cannot drift from the graph without the build
+     saying so. Regenerate it with <code>make component-graph</code>. The gate that keeps it
+     honest is <code>make component-graph-check</code>, which fails when the graph changes and
+     this page does not, and it runs inside <code>make check-all</code>.
+     <br><br>
+     Both directions are the same model read from either end: ticking a capability switches on
+     what it needs, and switching a component off darkens the capabilities that needed it. The
+     closure follows the rule <code>magician-setup</code> uses before it installs anything —
+     dependencies included, and one provider per requirement, the first declared unless you
+     switched another on by hand. A component whose own dependency is off is blocked however
+     healthy it looks. Core components arrive with the runtime, so there is nothing to decline.`;
+}
+
+document.getElementById("modes").addEventListener("click", e => {
+  const b = e.target.closest("[data-m]"); if (!b) return;
+  mode = b.dataset.m;
+  document.querySelectorAll("#modes button").forEach(x =>
+    x.setAttribute("aria-pressed", String(x.dataset.m === mode)));
+  render();
+});
+document.getElementById("presets").addEventListener("click", e => {
+  const b = e.target.closest("[data-p]"); if (!b) return;
+  PRESETS[mode][+b.dataset.p][1](); render();
+});
+document.addEventListener("click", e => {
+  const c = e.target.closest("[data-c]");
+  if (c){
+    const id = c.dataset.c;
+    const now = id in override ? override[id] : implied().comps.has(id);
+    override[id] = !now;
+    render(); return;
+  }
+  const f = e.target.closest("button[data-f]");
+  if (f){ want[f.dataset.f] = !want[f.dataset.f]; render(); }
+});
+// Highlighting must not call render(). Rebuilding the tree on hover replaces
+// the button the mouse is pressing, and the click then lands on a detached
+// node — which looked exactly like "toggling does nothing".
+document.addEventListener("mouseover", e => {
+  const f = e.target.closest("[data-f]"); const id = f ? f.dataset.f : null;
+  if (id !== lit){ lit = id; applyLit(); }
+});
+
+function applyLit(){
+  const s = litSet(lit);
+  for (const el of document.querySelectorAll("[data-node]")){
+    el.classList.toggle("lit", !!s && s.has(el.dataset.node));
+  }
+}
+
+// Opens on something worth reading rather than an empty selection: everything
+// the machine could do, so the first frame shows the shape of the whole thing.
+setWant(() => true);
+render();
+</script>
+
+</body>
+</html>

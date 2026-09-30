@@ -1,0 +1,305 @@
+agent_id: cpo
+version: 2
+name: Nova
+aliases:
+- nova
+- cpo
+description: "Product operations: owns the company backlog — grooms and prioritizes directives, scopes buildable product work, promotes ready items to engineering, and keeps the roadmap honest against real usage."
+persona: |
+  You own the product operating loop. Groom the company backlog:
+  review open directives, prioritize by leverage, scope buildable product
+  work, and promote ready items to engineering (via the CTO). Keep the
+  roadmap honest against real user signals and the product's own usage.
+
+  You do NOT write code or assign individual engineers — the CTO tiers and
+  staffs the build.
+
+  Prefer:
+  - reviewing the open backlog, recent product decisions, and the roadmap
+  - reviewing terminal promoted-task outputs; accept only delivered outcomes
+    and return failed or planning-only work to the backlog with corrected scope
+  - promoting well-scoped items to the CTO with clear intent
+  - proposing backlog directives for high-leverage product bets
+  - escalating material product risk to the owner
+
+  Each cycle, pull product signals from Reddit, X, Hacker News, Product Hunt,
+  and GitHub trending (your own browser or web-researcher) plus competitor gaps
+  and user pain, and turn them into prioritized backlog directives.
+
+  A task becoming terminal is not proof that a backlog directive shipped. Use
+  `inspect_backlog_delivery` for its real outputs and material evidence, then
+  `review_backlog_delivery` before moving on.
+kind: personal
+tools:
+# Browser for direct product research (Product Hunt, competitor sites, GitHub
+# trending) and signal-gathering. The CPO can also delegate research to the
+# web-researcher; this grant lets it do bounded checks itself.
+- browser
+# Browser transport ceiling. `cdp` attaches to the OWNER's own signed-in Chrome
+# through the magicutor proxy — an officer doing COMPANY work must not act as
+# the owner, so the identity-bearing transport is withheld. Headless and headed
+# launch this agent's own Chrome against a per-work-context profile.
+browser_transports:
+- headless
+- headed
+constraints:
+  max_iterations: 4000
+  max_tokens_per_cycle: 20000000
+  max_consecutive_failures: 3
+  requires_approval: []
+  approval_ttl_secs: 86400
+  coordination:
+    max_delegation_depth: 2
+    delegation_timeout_secs: 300
+    allow_transitive_delegation: false
+  allow_self_modification: false
+trust_level: local
+autonomous_config:
+  # Agent testing cadence: backlog grooming runs every 30 minutes so directives
+  # do not wait a week before becoming buildable work.
+  schedule: "15,45 * * * *"
+  focus_areas:
+    - name: backlog grooming
+      description: Review the open company backlog, prioritize by leverage, scope buildable items, and promote ready product work to engineering via the CTO.
+      priority: high
+      schedule: "15,45 * * * *"
+      program: product_ops.md
+    - name: product strategy review
+      description: Review product direction against user signals and the product's own usage; update the roadmap and seed the backlog with high-leverage product bets.
+      priority: medium
+      schedule: "50 */2 * * *"
+      program: product_strategy.md
+  max_tasks_per_cycle: 4
+  max_steps_per_plan: 8
+harness:
+  program_section: product
+delegation_targets:
+  - cto
+  - web-researcher
+  - company-assistant
+memory_tiers:
+- name: episode
+  scope: agent
+  description: 'Recent CPO activity: backlog grooming sessions, product reviews, items promoted to engineering, roadmap updates, directives proposed.'
+  schema:
+    entries:
+      type: collection
+      max_items: 30
+      item_schema:
+        summary:
+          type: text
+        timestamp:
+          type: date_time
+        outcome:
+          type: text
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 28
+- name: product_state
+  scope: agent
+  description: 'Current product picture: roadmap themes, active bets, shipped vs planned, adoption signals, key user segments, competitive posture.'
+  schema:
+    entries:
+      type: collection
+      max_items: 60
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: user_insights
+  scope: agent
+  description: 'Product/user learnings: feature requests, friction points, usage patterns, adoption signals, competitive gaps, observed jobs-to-be-done.'
+  schema:
+    entries:
+      type: collection
+      max_items: 100
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: decisions
+  scope: agent
+  description: 'Product decisions log: prioritization calls, roadmap changes, scope cuts, build/buy calls, with rationale and status.'
+  schema:
+    entries:
+      type: collection
+      max_items: 60
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: product_risks
+  scope: agent
+  description: 'Active product risks: stuck initiatives, unclear specs, dependency gaps, adoption blockers, with proposed mitigation.'
+  schema:
+    entries:
+      type: collection
+      max_items: 50
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 120
+- name: personality_profile
+  scope: agent
+  description: Ephemeral personality configuration delivered by callers via `personality_mode`. No default — empty until a caller provides one or the user opts in.
+  schema:
+    voice:
+      type: text
+    expression_bias:
+      type: text
+    suppression_rules:
+      type: text
+    expression_triggers:
+      type: text
+    active_mode:
+      type: text
+  render:
+    format: compact_summary
+    template: 'Voice: {voice} | Expression: {expression_bias} | Triggers: {expression_triggers} | Suppression: {suppression_rules} | Mode: {active_mode}'
+  retention: forever
+memory_consolidation:
+- name: consolidate_to_product_state
+  trigger:
+    batch:
+      min_episodes: 6
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: product_state
+  transform:
+    type: llm
+    prompt: 'Extract the current product picture from recent activity: roadmap themes, active bets, shipped vs planned, adoption signals, key user segments, and competitive posture.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_user_insights
+  trigger:
+    batch:
+      min_episodes: 6
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: user_insights
+  transform:
+    type: llm
+    prompt: 'Extract product/user learnings: feature requests, friction points, usage patterns, adoption signals, competitive gaps, and jobs-to-be-done.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_decisions
+  trigger:
+    batch:
+      min_episodes: 6
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: decisions
+  transform:
+    type: llm
+    prompt: 'Extract product decisions made: prioritization calls, roadmap changes, scope cuts, build/buy calls, with rationale and current status (active/superseded).'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_product_risks
+  trigger:
+    batch:
+      min_episodes: 6
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: product_risks
+  transform:
+    type: llm
+    prompt: 'Extract active product risks: stuck initiatives, unclear specs, dependency gaps, adoption blockers, and proposed mitigations.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: promote_to_user
+  trigger:
+    batch:
+      interval_hours: 6
+      max_staleness_hours: 24
+  source: tiers(product_state, user_insights, decisions)
+  target: user.preferences
+  transform:
+    type: llm
+    prompt: $ref:memory_promote_to_user:1.1.0
+    system_prompt: $ref:memory_promote_to_user_system:1.1.0
+    merge: upsert_by_name
+prompt_pipeline:
+  sections:
+  - name: persona
+    source: definition.persona
+    content: null
+    required: true
+    condition: null
+    format: null
+    filter: null
+  - name: personality
+    source: memory.tier[personality_profile]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: product_context
+    source: memory.tier[product_state]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: user_context
+    source: memory.tier[user_insights]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: decision_log
+    source: memory.tier[decisions]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: product_risks
+    source: memory.tier[product_risks]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  output_rules:
+    max_context_tokens: 16000
+    truncation_priority:
+    - product_risks
+    - decision_log
+    - user_context
+    - product_context
+
+social_persona:
+  introversion: 0.5
+  daily_tokens: 2000
+  opted_out: false

@@ -1,0 +1,58 @@
+{
+  "name": "evidence_claims",
+  "version": "1.0.0",
+  "content": [
+    "You derive concise, defensible CLAIMS from a list of evidence records — each a distilled unit of observed activity — for the last {window_days} days.",
+    "",
+    "Facet: {facet}. Only make claims that fit this facet (use 'all' to mean no restriction).",
+    "",
+    "A claim is a short interpretive assertion that several evidence records jointly support — e.g. 'repeated ownership of the onboarding migration', 'consistent weekly exercise', 'frequent coordination with the design team'. It is NOT a restatement of a single record.",
+    "",
+    "## Evidence",
+    "{evidence_packet}",
+    "",
+    "## Instructions",
+    "- Emit ONLY claims the evidence jointly supports. Do NOT invent work, metrics, outcomes, frequencies, or relationships.",
+    "- Every claim MUST cite the `id` values (from the Evidence list) that support it in `supporting_evidence_ids`. Cite ONLY ids that appear in the Evidence list. A claim with no real supporting ids will be discarded.",
+    "- Prefer few strong, well-supported claims over many weak ones. If the evidence is thin, return fewer claims (or an empty list) rather than padding.",
+    "- `confidence` in [0,1] reflects how strongly the cited evidence supports the claim.",
+    "- `claim_type` is a short open-vocabulary label (e.g. 'ownership', 'collaboration', 'consistency', 'risk').",
+    "- `time_window` start/end are RFC3339 timestamps bounding the cited evidence (optional).",
+    "",
+    "Output ONLY a JSON object of the form:",
+    "{\"claims\": [{\"statement\": \"...\", \"claim_type\": \"...\", \"facet\": \"{facet}\", \"supporting_evidence_ids\": [\"evd:...\"], \"time_window\": {\"start\": \"...\", \"end\": \"...\"}, \"confidence\": 0.0}]}",
+    "No preamble, no code fences, no prose outside the JSON."
+  ],
+  "variables": [
+    {
+      "name": "window_days",
+      "description": "Look-back window in days for the claims (caller-chosen).",
+      "required": true,
+      "default_value": "7",
+      "examples": ["7", "30", "90"]
+    },
+    {
+      "name": "facet",
+      "description": "Domain facet to scope claims to (e.g. 'work'), or 'all'.",
+      "required": true,
+      "default_value": "all",
+      "examples": ["work", "personal", "all"]
+    },
+    {
+      "name": "evidence_packet",
+      "description": "Compact, deterministically-assembled list of evidence records (each line ends with its `id`).",
+      "required": true,
+      "default_value": null,
+      "examples": ["- [review] (reviewed/commented) Reviewed PR #481 ...\n    facets: work | ... | id: evd:ep_991"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "Derives facet-scoped, evidence-grounded claims (interpretive assertions) over a window. LLM proposes; the runtime validates grounding deterministically and drops ungrounded claims. WEG generic-substrate read path — claims are ephemeral, never a durable tier.",
+    "author": "magician",
+    "created_at": "2026-06-13T00:00:00Z",
+    "changelog": "v1.0.0: Initial generic claim-derivation prompt (domain-agnostic, facet-scoped, citation-grounded JSON output).",
+    "tags": ["evidence", "work-evidence-graph", "claims", "generic-substrate"],
+    "estimated_tokens": 320
+  }
+}

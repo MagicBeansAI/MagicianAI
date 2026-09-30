@@ -1,0 +1,193 @@
+{
+  "version": "v1",
+  "schemas": {
+    "output": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "local_only"
+      },
+      "nodes": [
+        {
+          "kind": "array",
+          "items": 1,
+          "min_items": 2,
+          "max_items": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "value": {
+              "value_type": 2,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    },
+    "value": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "local_only"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "value": {
+              "value_type": 1,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:e957ba06dbe3f31567b72aadea5dec3a294d465a55a89a8fec9f901bd3e4c949",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "left": {
+        "input_schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "validate"
+        },
+        "effect": {
+          "class": "none",
+          "idempotency": {
+            "kind": "not_applicable"
+          },
+          "uncertainty": "impossible"
+        },
+        "authority": {},
+        "resources": {
+          "max_active_millis": 1000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 4096,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 100
+        },
+        "provenance_join": "preserve"
+      },
+      "right": {
+        "input_schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "emit_value"
+        },
+        "effect": {
+          "class": "none",
+          "idempotency": {
+            "kind": "not_applicable"
+          },
+          "uncertainty": "impossible"
+        },
+        "authority": {},
+        "resources": {
+          "max_active_millis": 1000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 4096,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 100
+        },
+        "provenance_join": "preserve"
+      },
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:e957ba06dbe3f31567b72aadea5dec3a294d465a55a89a8fec9f901bd3e4c949",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "parallel",
+          "branches": {
+            "alpha": "left",
+            "omega": "right"
+          }
+        },
+        "effect": {
+          "class": "none",
+          "idempotency": {
+            "kind": "not_applicable"
+          },
+          "uncertainty": "impossible"
+        },
+        "authority": {},
+        "resources": {
+          "max_active_millis": 1000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 4096,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 2
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 100
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 3,
+      "max_edges": 3,
+      "max_depth": 3,
+      "max_fan_out": 3,
+      "max_parallelism": 2,
+      "max_payload_bytes": 32768,
+      "max_active_millis": 3000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

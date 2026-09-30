@@ -1,0 +1,669 @@
+name: internal_data
+description: Read-only backend diagnostics over scoped logs, task/execution JSONL, Audio Notes metadata/transcripts, analytics events, LLM-call telemetry, memory observability events, memory regression status, learning candidates, reusable procedures, learning feed insights, learning evaluation backlog items, evaluation run reports, Skill Evolution backlog items, proposals, validations, implementation bundles, application records, and promotion audit records.
+version: "1.13.0"
+guide: |-
+  Tool name: `internal_data`
+
+  Use this for backend debugging and operational analysis: service
+  logs, task/execution history, prompt projections, runtime context files,
+  workspace events, analytics events, LLM-call telemetry, memory retrieval and
+  index observability, Audio Notes metadata/transcripts, memory regression status, and the scoped learning
+  substrate. It is read-only and scoped to a principal/workspace.
+
+  Start with `catalog` when you are unsure which internal sources exist. Use
+  `schema` before writing SQL. Prefer narrow reads around a known task_id or
+  execution_id before broad SQL scans.
+
+  For LLM economics and reliability, start with
+  `llm_observability_overview`, then use `list_llm_traces` to find a bounded
+  workflow and `read_llm_trace` for its fact-only call/tool timeline. Use `list_llm_calls` or
+  `list_llm_provider_attempts` and their single-record readers. Use
+  `query_llm_facts` only for aggregate questions the typed actions cannot
+  answer. These actions share the same governed reader as the product REST
+  API and return scope, range, freshness, coverage and pagination envelopes.
+
+  # Source map
+
+  - Analytics event DB:
+    `scopes/<principal>/<workspace>/analytics/analytics.duckdb`
+    Actions: `query_events`, `tail_logs`, `find_errors`.
+  - LLM-call lakehouse:
+    `scopes/<principal>/<workspace>/analytics/llm_calls/dt=*/*.parquet`
+    Prefer the typed governed LLM actions. `query_llm_calls` remains a legacy
+    compatibility action with the in-memory view name `llm_calls`.
+  - Memory observability lakehouse:
+    `scopes/<principal>/<workspace>/analytics/memory_events/dt=*/*.parquet`
+    Actions: `memory_observability_summary`, `query_memory_events` with the
+    in-memory view name `memory_events`.
+    This includes prompt retrieval rows, selected/dropped memory counts,
+    per-candidate relevance `score`, retrieval backend, LanceDB/direct fallback
+    events, stale/missing index direct-fallback rows, and index rebuild
+    start/complete/failure events.
+  - Derived memory index snapshot:
+    `memory/index/manifest.json`, `memory/index/documents.jsonl`, and
+    `memory/index/lancedb/`.
+    Action: `memory_index_snapshot`.
+    This is the current file-level footprint and manifest, including provider,
+    model, dimensions, document count, and stale/failure diagnostics.
+  - Task execution JSONL:
+    `tasks/<task_id>/executions/<execution_id>/events.jsonl`
+    Action: `read_execution_events`.
+  - Chat/pack execution JSONL:
+    `executions/<execution_id>/events.jsonl`
+    Action: `read_execution_events` without `task_id`.
+  - Execution prompt projections, runtime context, traces, artifacts:
+    Actions: `list_execution_files`, then `read_execution_file`.
+  - Memory regression status:
+    `memory/eval_status/regression_status.json`.
+    Action: `memory_regression_status`.
+    This is the latest internal memory-evaluation health gate written by the
+    periodic/manual memory eval runner. `healthy` means all latest cases
+    passed, `degraded` means cases passed only after indexed retrieval fallback,
+    `failing` means at least one latest case failed, and `unknown` means no
+    status snapshot exists yet.
+  - Workspace transport event stream:
+    `events.jsonl`
+    Actions: `list_workspace_events`, `read_workspace_events`.
+  - Task state:
+    `tasks/<task_id>/state/task_state.json`
+    Action: `read_task_state`.
+  - Task outputs:
+    `tasks/<task_id>/outputs/`
+    Actions: `list_task_outputs`, then `read_task_output`.
+  - Audio Notes discovery index:
+    `notes/audio-index/<note_id>.json`
+    Actions: `list_audio_notes`, then `read_audio_note`.
+    Lists return bounded transcript previews; `read_audio_note` returns the full
+    user-owned transcript. Recording bytes remain behind the authenticated Notes
+    API and are not projected into model context.
+  - Agent-growth learning substrate:
+    `learning/events/YYYY-MM-DD.jsonl`,
+    `learning/candidates/<candidate_id>.json`, and
+    `learning/decisions/<candidate_id>.jsonl`.
+  - User-facing learning feed projections:
+    `ui/feed/feed.duckdb` rows with `item_type` `learning_insight` and
+    `learning_candidate`.
+    Action: `list_learning_feed_insights`.
+    Use this to inspect what the user currently sees in `/feed` and Today Activity:
+    insight cards, memory-review cards, their source metadata, evidence refs,
+    action state, and summary counts by type/status/source/kind.
+  - Agent-growth procedure memory:
+    `learning/procedures/{draft,active,deprecated,archived}/<procedure_id>.yaml`
+    and `learning/procedures/decisions/<procedure_id>.jsonl`.
+    Retrieval and feedback audit events live in
+    `learning/events/YYYY-MM-DD.jsonl` as
+    `learning_procedure_retrieval_rendered`,
+    `learning_procedure_feedback_recorded`, and
+    `learning_procedure_deprecated`.
+    Procedures are reusable ways of working learned from experience. They are
+    separate from semantic memory and from executable skills/tool packs.
+  - Agent-growth evaluation backlog:
+    `learning/evaluations/backlog/<candidate_id>.json`.
+  - Agent-growth evaluation run reports:
+    `learning/evaluations/runs/<candidate_id>/<run_id>.json`.
+    Reports are recorded by the learning API eval-worker endpoint and capture
+    the commands, status, metrics, and payload for a backlog case.
+  - Agent-growth Skill Evolution backlog:
+    `skill_evolution/backlog/<candidate_id>.json`.
+    Legacy `capability_evolution/backlog/<candidate_id>.json` rows are still
+    read for compatibility.
+  - Agent-growth Skill Evolution proposals:
+    `skill_evolution/proposals/<candidate_id>.json`.
+    Review decisions are recorded through the learning API decision endpoint,
+    while this tool only inspects the resulting proposal/backlog/candidate
+    state.
+  - Agent-growth Skill Evolution validations:
+    `skill_evolution/validations/<candidate_id>/<validation_id>.json`.
+    Validation reports are recorded through the learning API validation
+    endpoint; this tool inspects the durable evidence.
+  - Agent-growth Skill Evolution implementation bundles:
+    `skill_evolution/implementations/<candidate_id>/<implementation_id>.json`.
+    Implementation bundles record the exact files/patch payload and evidence
+    after approved proposals pass validation. They are inspection records only;
+    this tool does not mutate capability files.
+  - Agent-growth Skill Evolution applications:
+    `skill_evolution/applications/<candidate_id>/<application_id>.json`.
+    Application records show dry-run or applied scoped file changes derived
+    from implementation bundles. This tool inspects those records; mutation is
+    done only by the learning API apply endpoint.
+  - Agent-growth Skill Evolution promotion audit:
+    `skill_evolution/promotion_audit.jsonl`.
+    Manual implementation/promotion records are recorded through the learning
+    API promotion endpoint after approved proposals pass validation, optionally
+    referencing an implementation bundle.
+  - Agent-growth Phase 9 growth evaluation rollups:
+    `learning/evaluations/growth_runs/<run_id>.json`.
+    Growth rollups measure memory recall/precision, stale correction, skill
+    reuse, capability improvement, OPC program progress, teaching feedback,
+    false-learning prevention, prompt-token growth, and tool-failure reduction
+    from existing evidence surfaces.
+    Actions: `learning_audit`, `list_learning_candidates`,
+    `read_learning_candidate`, `list_learning_evaluations`,
+    `read_learning_evaluation`, `list_learning_evaluation_runs`,
+    `read_learning_evaluation_run`, `list_learning_growth_evaluations`,
+    `read_learning_growth_evaluation`, `list_learning_procedures`,
+    `read_learning_procedure`,
+    `list_learning_capability_evolution`, `read_learning_capability_evolution`,
+    `list_learning_capability_proposals`,
+    `read_learning_capability_proposal`,
+    `list_learning_capability_validations`,
+    `read_learning_capability_validation`,
+    `list_learning_capability_implementations`,
+    `read_learning_capability_implementation`,
+    `list_learning_capability_applications`,
+    `read_learning_capability_application`,
+    `list_learning_capability_promotions`,
+    `read_learning_capability_promotion`, `list_learning_events`,
+    `list_learning_feed_insights`.
+
+  # Common diagnostic recipes
+
+  Recent runtime problem:
+    1. `find_errors {limit: 50}`
+    2. `tail_logs {level: "error", limit: 50}`
+    3. If an execution_id appears, call
+       `timeline {execution_id, task_id?}` for the merged cross-source view.
+       Fall back to `read_execution_events` only when you need raw events
+       beyond what timeline returns.
+    4. Use `list_execution_files` and `read_execution_file` for prompt
+       projections or runtime context around that execution.
+
+  Latest task failed or behaved oddly:
+    1. `latest_task {}`
+    2. `list_executions {task_id, limit: 10}`
+    3. `timeline {task_id, execution_id}` — chronological merge of
+       execution events + workspace events + LLM calls + service logs
+       in one call. Start here instead of chaining reads.
+    4. `list_execution_files {task_id, execution_id}` for prompt
+       projections, runtime context, or traces that aren't in the
+       timeline.
+    5. `list_task_outputs {task_id}` if the user needs the final
+       answer/artifact.
+    6. Read only the relevant prompt projection/runtime context/trace/output files.
+
+  Memory-effect rollout (shadow / canary / hide):
+    1. `review_memory_effects {}` to count recorded judgements and get
+       a recommendation. It never flips the compiled const.
+    2. Advance advice is also a HITL prompt and `/memory/effect-review`.
+       Follow `next_step`. Shadow must not jump to Enforced.
+
+  Memory regression changed:
+    1. `memory_regression_status {}` to inspect the latest scoped memory eval
+       health snapshot.
+    2. If status is `failing`, use `query_events` or `/memory` to inspect
+       recent `eval_case` rows and failure payloads.
+    3. Use the failed suite/case ids to decide whether this is memory drift,
+       stale indexing, weak consolidation, or an invalid eval expectation.
+
+  Memory retrieval or indexing looks wrong:
+    1. `memory_observability_summary {hours: 24}` to inspect recent retrieval
+       backends, selected-vs-dropped relevance scores, index rebuild outcomes,
+       fallback rows, and problem events.
+    2. `memory_index_snapshot {}` to inspect the current manifest, document
+       sidecar count, LanceDB footprint, and provider/model/dimensions.
+    3. `query_memory_events` with SQL against `memory_events`, for example:
+       `SELECT event_kind, status, retrieval_backend, COUNT(*) AS rows FROM memory_events GROUP BY event_kind, status, retrieval_backend ORDER BY rows DESC`
+    4. For query-time issues, inspect `memory_retrieval_fallback` rows and
+       `memory_prompt_block_rendered` payloads for fallback errors and
+       selected/dropped counts.
+    5. For embedding/index issues, inspect `memory_index_reconcile_failed`,
+       legacy/manual `memory_index_rebuild_failed`,
+       `memory_index_lancedb_rows_updated`, `memory_index_lancedb_replaced`,
+       and `memory_index_lancedb_optimize_*` rows; runtime reconciliation should
+       fail visibly instead of replacing an incompatible index or writing fake
+       vectors. Replacement and optimize rows indicate explicit maintenance.
+
+  Cost/latency/model analysis:
+    1. `llm_observability_overview {from_ms?, to_ms?}` for canonical totals,
+       timing decomposition, pricing metadata, freshness, and capture coverage.
+    2. `list_llm_traces` then `read_llm_trace` when causality or tool outcomes
+       matter; use `list_llm_calls` or `list_llm_provider_attempts` for narrower
+       reproducible details.
+    3. Only for a new aggregate question, use `query_llm_facts` against a
+       fact-registry relation, for example:
+       `SELECT model, COUNT(*) AS calls, SUM(cost_usd) AS cost FROM llm_calls GROUP BY model ORDER BY cost DESC`
+
+  Analytics event analysis:
+    Use `query_events` with SQL against `events` or typed views such as
+    `logs`, `bot_logs`, `chat_messages`, `chat_sessions`,
+    `task_executions`, `task_steps`, and `artifacts`.
+
+  Agent-growth learning analysis:
+    1. `learning_audit {}` to inspect available evidence sources and current
+       learning-substrate counts.
+    2. `list_learning_candidates {state: "observed"}` to review proposed
+       learnings that have not been promoted.
+    3. `read_learning_candidate {candidate_id}` to inspect provenance,
+       evidence refs, and decision history.
+    4. `list_learning_evaluations {status: "queued"}` to inspect eval cases
+       waiting for meta-harness review.
+    5. `list_learning_evaluation_runs {}` to inspect durable eval-worker
+       reports that consumed eval backlog cases.
+    6. `list_learning_growth_evaluations {}` to inspect Phase 9 growth
+       rollups and see whether the learning flywheel has measurable evidence.
+    7. `list_learning_capability_evolution {status: "queued"}` to inspect
+       generic capability/tool improvement work waiting for review.
+    8. `list_learning_capability_proposals {status: "draft"}` or
+       `{status: "ready_for_review"}` to inspect fix/eval plans waiting for an
+       external review decision; approved/rejected/superseded/archived
+       decisions still do not mutate capability files.
+    9. `list_learning_capability_validations {status: "failed"}` to inspect
+       validation evidence that prevented a proposal from becoming validated.
+    9. `list_learning_capability_implementations {}` to inspect reviewed file
+       and patch bundles created after approval and passed validation.
+    10. `list_learning_capability_applications {}` to inspect dry-run or
+       applied scoped file changes derived from implementation bundles.
+    11. `list_learning_capability_promotions {}` to inspect implementation
+       evidence for proposals that reached the manual promotion gate.
+    12. `list_learning_events {max_lines: 100}` to inspect source observations
+       that have been recorded for future candidate generation.
+    13. `list_learning_feed_insights {item_type: "learning_insight"}` to
+       inspect the user-facing cards currently projected into `/feed` and Today Activity.
+
+  # Query safety
+
+  `query_events`, legacy `query_llm_calls`, and `query_memory_events` accept
+  only SELECT/WITH statements. `query_llm_facts` additionally parses the AST,
+  permits only fact-registry relations and scoped CTEs, and blocks external
+  access. Keep a LIMIT in exploratory legacy queries. The provider also
+  enforces bounded rows, time, and serialized output.
+
+parameters:
+  - name: action
+    param_type: string
+    description: Optional direct action name for non-inner-loop callers. Inner-loop calls set this automatically.
+  - name: principal
+    param_type: string
+    description: Optional assertion that must match the runtime-injected principal; it can never switch scope.
+  - name: workspace
+    param_type: string
+    description: Optional assertion that must match the runtime-injected workspace; it can never switch scope.
+  - name: sql
+    param_type: string
+    description: SELECT/WITH SQL for query_events, query_llm_calls, query_memory_events, or the AST-governed query_llm_facts action.
+  - name: limit
+    param_type: integer
+    description: Row/list limit. Defaults vary by action; hard-capped by the provider.
+  - name: task_id
+    param_type: string
+    description: Task id for task-scoped state, execution lists, or execution events.
+  - name: execution_id
+    param_type: string
+    description: Execution id. Omit task_id for scoped chat/pack executions under scopes/<principal>/<workspace>/executions.
+  - name: max_lines
+    param_type: integer
+    description: Maximum JSONL lines to return from event files. Defaults to 200 and returns the tail.
+  - name: max_chars
+    param_type: integer
+    description: Maximum characters to return from read_execution_file.
+  - name: event_type
+    param_type: string
+    description: Optional event type filter for JSONL event reads.
+  - name: contains
+    param_type: string
+    description: Optional case-insensitive substring filter for JSONL/log reads and Audio Note transcript discovery.
+  - name: level
+    param_type: string
+    description: Log level filter for tail_logs, such as error, warn, info, debug.
+  - name: target_contains
+    param_type: string
+    description: Optional case-insensitive target filter for tail_logs.
+  - name: path
+    param_type: string
+    description: Relative file path under an execution directory for read_execution_file.
+  - name: max_depth
+    param_type: integer
+    description: Directory recursion depth for list_execution_files.
+  - name: candidate_id
+    param_type: string
+    description: Learning candidate id for read_learning_candidate.
+  - name: state
+    param_type: string
+    description: Optional learning candidate state filter such as observed, proposed, approved, promoted, rejected.
+  - name: candidate_type
+    param_type: string
+    description: Optional learning candidate type filter such as memory_fact, skill_update, tool_wrapper_fix, evaluation_case.
+  - name: source_agent_id
+    param_type: string
+    description: Optional learning candidate source agent filter.
+  - name: status
+    param_type: string
+    description: Optional status filter. Valid values depend on action, for example queued/in_review/evaluated/rejected/archived for eval backlog, draft/active/deprecated/archived for procedures, draft/ready_for_review/approved for proposals, passed/failed/blocked for validations, and info/needs_action/failed/done for feed items.
+  - name: item_type
+    param_type: string
+    description: Optional feed item type filter for list_learning_feed_insights. Use learning_insight or learning_candidate.
+  - name: target_agent_id
+    param_type: string
+    description: Optional learning evaluation backlog target agent filter.
+  - name: capability_id
+    param_type: string
+    description: Optional capability/tool id filter for Skill Evolution backlog, proposal, validation, implementation, and promotion records.
+  - name: validation_id
+    param_type: string
+    description: Skill Evolution validation report id for read_learning_capability_validation.
+  - name: run_id
+    param_type: string
+    description: Learning evaluation run report id for read_learning_evaluation_run.
+  - name: procedure_id
+    param_type: string
+    description: Procedure id for read_learning_procedure.
+  - name: owner_agent
+    param_type: string
+    description: Optional owner-agent filter for procedure records.
+  - name: implementation_id
+    param_type: string
+    description: Skill Evolution implementation bundle id for read_learning_capability_implementation.
+  - name: application_id
+    param_type: string
+    description: Skill Evolution implementation application id for read_learning_capability_application.
+  - name: promotion_id
+    param_type: string
+    description: Skill Evolution promotion audit id for read_learning_capability_promotion.
+  - name: max_lines_per_source
+    param_type: integer
+    description: Per-source row cap for the `timeline` action. Defaults to 100; hard-capped at 500.
+  - name: hours
+    param_type: integer
+    description: Lookback window in hours for summary actions such as memory_observability_summary. Defaults to 24.
+  - name: from_ms
+    param_type: integer
+    description: Optional inclusive Unix-millisecond range start for governed LLM fact reads. Defaults to 24 hours before to_ms.
+  - name: to_ms
+    param_type: integer
+    description: Optional exclusive Unix-millisecond range end for governed LLM fact reads. Defaults to now; maximum window is 31 days.
+  - name: offset
+    param_type: integer
+    description: Zero-based row offset for typed governed LLM fact lists and Audio Note pagination; hard-capped by the reader.
+  - name: operation
+    param_type: string
+    description: Exact operation filter for typed LLM fact lists.
+  - name: provider
+    param_type: string
+    description: Exact provider filter for typed LLM fact lists.
+  - name: model
+    param_type: string
+    description: Exact model filter for typed LLM fact lists.
+  - name: profile
+    param_type: string
+    description: Exact effective-profile filter for typed LLM fact lists.
+  - name: success
+    param_type: boolean
+    description: Exact transport-success filter for typed LLM fact lists.
+  - name: order_by
+    param_type: string
+    description: Stable fact-registry column used for typed LLM list ordering.
+  - name: descending
+    param_type: boolean
+    description: Whether typed LLM list ordering is descending; defaults to true.
+  - name: llm_call_id
+    param_type: string
+    description: One scoped logical LLM call id for read_llm_call.
+  - name: trace_id
+    param_type: string
+    description: One scoped end-to-end trace id for read_llm_trace.
+  - name: provider_attempt_id
+    param_type: string
+    description: One scoped physical provider-attempt id for read_llm_provider_attempt.
+  - name: note_id
+    param_type: string
+    description: Scoped Audio Note UUID for read_audio_note.
+
+native_action_schemas:
+  catalog:
+    description: Discover which scoped internal diagnostic sources exist and their paths/counts.
+    parameters: [principal, workspace]
+  schema:
+    description: Return the expected analytics views, LLM-call columns, and raw file layout.
+    parameters: [principal, workspace]
+  llm_observability_overview:
+    description: Return governed logical-call versus physical-attempt counts, token/cost totals, timing decomposition, validation counts, known LLM capture gaps, separately classified transport-bus loss, exclusions, freshness, and coverage for a bounded range.
+    parameters: [from_ms, to_ms, principal, workspace]
+  list_llm_traces:
+    description: List bounded fact-only trace summaries with logical-call, tool-execution, terminal-call, and explicit-linkage-gap counts.
+    parameters: [from_ms, to_ms, limit, principal, workspace]
+  read_llm_trace:
+    description: Read one scoped fact-only trace timeline containing logical calls, provider attempts, and correlated tool lifecycle stages. Returns null data when absent from the active scope or retention window.
+    parameters: [trace_id, from_ms, to_ms, principal, workspace]
+    required: [trace_id]
+  list_llm_calls:
+    description: List content-free logical LLM call facts using typed exact filters, stable ordering, server pagination, freshness, and coverage.
+    parameters: [from_ms, to_ms, operation, provider, model, profile, success, order_by, descending, limit, offset, principal, workspace]
+  read_llm_call:
+    description: Read one content-free scoped logical call plus its physical provider attempts. Returns null data when the id is absent from the active scope or retention window.
+    parameters: [llm_call_id, principal, workspace]
+    required: [llm_call_id]
+  list_llm_provider_attempts:
+    description: List content-free physical provider-attempt facts using typed exact filters, stable ordering, server pagination, freshness, and coverage.
+    parameters: [from_ms, to_ms, operation, provider, model, profile, success, order_by, descending, limit, offset, principal, workspace]
+  read_llm_provider_attempt:
+    description: Read one content-free physical provider attempt in the runtime-authorized scope.
+    parameters: [provider_attempt_id, principal, workspace]
+    required: [provider_attempt_id]
+  query_llm_facts:
+    description: Run one AST-validated bounded SELECT/WITH statement over the content-free stable LLM fact registry. External scans, table functions, qualified relations, DDL/DML, settings, extensions, and restricted content are denied.
+    parameters: [sql, from_ms, to_ms, limit, principal, workspace]
+    required: [sql]
+    parameter_overrides:
+      sql:
+        type: string
+        description: One SELECT/WITH query over allowlisted llm_calls, llm_provider_attempts, llm_tool_calls, llm_capture_gaps, llm_call_revisions, llm_provider_attempt_revisions, or llm_tool_call_revisions.
+      limit:
+        type: integer
+        default: 200
+        description: Maximum rows returned; hard-capped at 1000 by the governed reader.
+  query_events:
+    description: Run a bounded SELECT/WITH query against the scoped analytics DuckDB database. Use tables/views events, logs, bot_logs, chat_messages, chat_sessions, task_executions, task_steps, artifacts, episodes, memory_tiers.
+    parameters: [sql, principal, workspace, limit]
+    required: [sql]
+    parameter_overrides:
+      sql:
+        type: string
+        description: SELECT/WITH SQL. DDL/DML is rejected.
+      limit:
+        type: integer
+        default: 200
+        description: Maximum rows returned; hard-capped at 10000.
+  query_llm_calls:
+    description: Run a bounded SELECT/WITH query against LLM-call Parquet partitions via the view name llm_calls.
+    parameters: [sql, principal, workspace, limit]
+    required: [sql]
+    parameter_overrides:
+      sql:
+        type: string
+        description: SELECT/WITH SQL against llm_calls.
+      limit:
+        type: integer
+        default: 200
+        description: Maximum rows returned; hard-capped at 10000.
+  query_memory_events:
+    description: Run a bounded SELECT/WITH query against memory-event Parquet partitions via the view name memory_events. Use this for prompt memory injection, retrieval backend, selected/dropped memory, index rebuild failures, direct fallback, and memory eval telemetry.
+    parameters: [sql, principal, workspace, limit]
+    required: [sql]
+    parameter_overrides:
+      sql:
+        type: string
+        description: SELECT/WITH SQL against memory_events. DDL/DML is rejected.
+      limit:
+        type: integer
+        default: 200
+        description: Maximum rows returned; hard-capped at 10000.
+  memory_observability_summary:
+    description: Summarize recent memory-event telemetry, including event/status counts, retrieval backend counts, selected-vs-dropped relevance score aggregates, low-score selected memory, and recent fallback/failure rows.
+    parameters: [principal, workspace, hours, limit]
+  memory_index_snapshot:
+    description: Read the current derived memory index manifest and file footprint, including documents sidecar count, LanceDB file count, embedding provider/model/dimensions, and stale/failure diagnostics.
+    parameters: [principal, workspace]
+  tail_logs:
+    description: Read recent service log rows from the analytics logs view, optionally filtering by level, target, or message substring.
+    parameters: [principal, workspace, level, target_contains, contains, limit]
+  find_errors:
+    description: Find recent warnings/errors from analytics logs, or filter a known execution's events for errors when execution_id is supplied.
+    parameters: [principal, workspace, task_id, execution_id, limit]
+  list_tasks:
+    description: List recent task directories with manifest/state/execution availability.
+    parameters: [principal, workspace, limit]
+  latest_task:
+    description: Return the most recently modified task directory and its manifest summary.
+    parameters: [principal, workspace]
+  read_task_state:
+    description: Read a task's manifest, persisted task_state.json, and tail of indexes/executions.jsonl.
+    parameters: [task_id, principal, workspace, max_lines]
+    required: [task_id]
+  list_task_outputs:
+    description: List files under a task's outputs directory, including final user-facing answers and generated artifacts.
+    parameters: [task_id, principal, workspace, max_depth, limit]
+    required: [task_id]
+  read_task_output:
+    description: Read a relative file path under a task's outputs directory. Use after list_task_outputs.
+    parameters: [task_id, path, principal, workspace, max_chars]
+    required: [task_id, path]
+  list_audio_notes:
+    description: List scoped Audio Notes metadata and bounded transcript previews with stable newest-first server pagination and an optional text filter.
+    parameters: [principal, workspace, contains, limit, offset]
+  read_audio_note:
+    description: Read one scoped Audio Note metadata/transcript index record. Recording bytes are not returned to the model.
+    parameters: [note_id, principal, workspace]
+    required: [note_id]
+  list_executions:
+    description: List task executions when task_id is supplied, otherwise scoped chat/pack executions under scopes/<principal>/<workspace>/executions.
+    parameters: [principal, workspace, task_id, limit]
+  read_execution_events:
+    description: Read the tail of an execution events.jsonl file. Supply task_id for task executions; omit it for scoped chat/pack executions.
+    parameters: [execution_id, task_id, principal, workspace, max_lines, event_type, contains]
+    required: [execution_id]
+  list_workspace_events:
+    description: Return the tail of the scoped workspace events.jsonl stream.
+    parameters: [principal, workspace, max_lines]
+  read_workspace_events:
+    description: Read workspace events.jsonl with optional event_type or substring filters.
+    parameters: [principal, workspace, max_lines, event_type, contains]
+  timeline:
+    description: |
+      Cross-source chronological timeline for one execution. Composes
+      execution events.jsonl, workspace events filtered by execution_id,
+      LLM call rows for the execution, and analytics service-log entries
+      within the resulting time window into one ascending-time array of
+      `{ ts_ms, source, entry }` rows. Use this as the entry point for
+      root-cause investigations instead of manually chaining four reads.
+      Soft-fails per source: missing/partial data is recorded under
+      `errors.<source>` rather than aborting the whole call.
+    parameters: [execution_id, task_id, principal, workspace, max_lines_per_source]
+    required: [execution_id]
+  list_execution_files:
+    description: List files under an execution directory, including prompt projections, runtime_context, traces, and artifacts.
+    parameters: [execution_id, task_id, principal, workspace, max_depth, limit]
+    required: [execution_id]
+  read_execution_file:
+    description: Read a relative file path under an execution directory. Use after list_execution_files.
+    parameters: [execution_id, task_id, path, principal, workspace, max_chars]
+    required: [execution_id, path]
+  memory_regression_status:
+    description: Read the latest scoped memory regression status snapshot written by the periodic/manual memory eval runner.
+    parameters: [principal, workspace]
+  review_memory_effects:
+    description: Observe recorded shadow/canary memory-effect judgements and recommend whether to stay in Shadow, advance to Canary (apply salience, no hide), or consider Enforced. Read-only inspect — Accept happens via HITL or POST /memory/effect-review.
+    parameters: [principal, workspace, limit]
+  learning_audit:
+    description: Build a read-only gap audit over existing scoped run, chat, memory, telemetry, and learning-substrate evidence.
+    parameters: [principal, workspace]
+  list_learning_candidates:
+    description: List typed learning candidates with optional state/type/source filters.
+    parameters: [principal, workspace, state, candidate_type, source_agent_id, limit]
+  read_learning_candidate:
+    description: Read a learning candidate plus its decision log.
+    parameters: [candidate_id, principal, workspace]
+    required: [candidate_id]
+  list_learning_evaluations:
+    description: List evaluation backlog items routed from evaluation_case learning candidates for later meta-harness review.
+    parameters: [principal, workspace, status, target_agent_id, limit]
+  read_learning_evaluation:
+    description: Read one evaluation backlog item by source learning candidate id.
+    parameters: [candidate_id, principal, workspace]
+    required: [candidate_id]
+  list_learning_evaluation_runs:
+    description: List durable eval-worker run reports created from learning evaluation backlog items.
+    parameters: [principal, workspace, status, candidate_id, limit]
+  read_learning_evaluation_run:
+    description: Read one eval-worker run report by source learning candidate id and run id.
+    parameters: [candidate_id, run_id, principal, workspace]
+    required: [candidate_id, run_id]
+  list_learning_growth_evaluations:
+    description: List Phase 9 growth evaluation rollups across learning dimensions and scenarios.
+    parameters: [principal, workspace, status, suite_id, limit]
+  read_learning_growth_evaluation:
+    description: Read one Phase 9 growth evaluation rollup by run id.
+    parameters: [run_id, principal, workspace]
+    required: [run_id]
+  list_learning_procedures:
+    description: List reusable procedure records stored separately from semantic memory and executable skills. Filter by status draft, active, deprecated, or archived. Counters and last_used_at reflect Phase 13 feedback bookkeeping.
+    parameters: [principal, workspace, status, owner_agent, limit]
+  read_learning_procedure:
+    description: Read one reusable procedure plus its decision log; use list_learning_events to inspect retrieval, feedback, and deprecation audit events.
+    parameters: [procedure_id, principal, workspace]
+    required: [procedure_id]
+  list_learning_capability_evolution:
+    description: List generic Skill Evolution backlog items routed from capability_update, tool_schema_update, and tool_wrapper_fix learning candidates.
+    parameters: [principal, workspace, status, candidate_type, capability_id, limit]
+  read_learning_capability_evolution:
+    description: Read one Skill Evolution backlog item by source learning candidate id.
+    parameters: [candidate_id, principal, workspace]
+    required: [candidate_id]
+  list_learning_capability_proposals:
+    description: List Skill Evolution fix/eval proposals generated from backlog items, including draft and reviewed decision status.
+    parameters: [principal, workspace, status, capability_id, limit]
+  read_learning_capability_proposal:
+    description: Read one Skill Evolution proposal by source learning candidate id, including its current review decision status.
+    parameters: [candidate_id, principal, workspace]
+    required: [candidate_id]
+  list_learning_capability_validations:
+    description: List validation reports attached to approved Skill Evolution proposals.
+    parameters: [principal, workspace, status, candidate_id, capability_id, limit]
+  read_learning_capability_validation:
+    description: Read one validation report by source learning candidate id and validation id.
+    parameters: [candidate_id, validation_id, principal, workspace]
+    required: [candidate_id, validation_id]
+  list_learning_capability_implementations:
+    description: List implementation bundles that bind an approved proposal and passed validation to concrete files, patches, evidence, and payload.
+    parameters: [principal, workspace, candidate_id, capability_id, limit]
+  read_learning_capability_implementation:
+    description: Read one implementation bundle by source learning candidate id and implementation id.
+    parameters: [candidate_id, implementation_id, principal, workspace]
+    required: [candidate_id, implementation_id]
+  list_learning_capability_applications:
+    description: List dry-run or applied scoped file-change records created from Skill Evolution implementation bundles.
+    parameters: [principal, workspace, candidate_id, capability_id, limit]
+  read_learning_capability_application:
+    description: Read one scoped implementation application record by source learning candidate id and application id.
+    parameters: [candidate_id, application_id, principal, workspace]
+    required: [candidate_id, application_id]
+  list_learning_capability_promotions:
+    description: List manual promotion audit records for Skill Evolution proposals, optionally referencing implementation bundles and application records.
+    parameters: [principal, workspace, candidate_id, capability_id, limit]
+  read_learning_capability_promotion:
+    description: Read one manual implementation/promotion audit record by promotion id.
+    parameters: [promotion_id, principal, workspace]
+    required: [promotion_id]
+  list_learning_events:
+    description: Read recent source learning events from learning/events/YYYY-MM-DD.jsonl.
+    parameters: [principal, workspace, max_lines]
+  list_learning_feed_insights:
+    description: List user-facing learning feed projection rows from the scoped feed store. Use this to see current /feed and Today Activity learning_insight cards, memory-review learning_candidate cards, source metadata, evidence refs, action state, and projection summary counts.
+    parameters: [principal, workspace, item_type, status, limit]
+
+implementation:
+  type: primitive
+  provider_name: internal_data
+  timeout_secs: 30
+
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - internal
+    - diagnostics
+    - logs
+    - analytics
+    - trace
+    - learning
+  composition_category: observation
+  sandbox: none

@@ -1,0 +1,1748 @@
+{
+  "schema_version": "tool-runtime.source-classification.v1",
+  "source_inventory_schema_version": "tool-runtime.source-inventory.v1",
+  "summary": {
+    "classified_skills": 62,
+    "classified_adapters": 40,
+    "authenticated_skills": 38,
+    "unauthenticated_skills": 24,
+    "dispositioned_findings": 0,
+    "exceptions": 3,
+    "unknowns": 0
+  },
+  "skills": [
+    {
+      "id": "agentmail-read",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "agentmail",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "agentmail-send",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "agentmail",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "analyze-image-via-minimax",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "minimax",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "arxiv-search",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "awk",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "browser",
+      "auth_strategies": [
+        "browser_profile",
+        "delegated_credential"
+      ],
+      "auth_requirement": "optional",
+      "auth_provider": "browser",
+      "profile": {
+        "policy": "selectable",
+        "source": "runtime_named",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "browser_controller",
+        "store": "browser_profile"
+      },
+      "setup_path": "browser_login",
+      "identity_verification": "browser_session_evidence",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "compiled_provider"
+    },
+    {
+      "id": "calendar",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "google-workspace",
+      "profile": {
+        "policy": "selectable",
+        "source": "schema_selector",
+        "selector": "account",
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "cli",
+        "store": "scoped_cli_directory"
+      },
+      "setup_path": "schema_auth_hook",
+      "identity_verification": "schema_check_hook",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "csvkit",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "deep-research-with-claude",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "anthropic",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "deep-research-with-openai",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "openai",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "document-to-markdown",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "dugite",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "find-details-by-username",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "gif-search-via-klipy",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "klipy",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "github-search",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "optional",
+      "auth_provider": "github",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "gmail",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "google-workspace",
+      "profile": {
+        "policy": "selectable",
+        "source": "schema_selector",
+        "selector": "account",
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "cli",
+        "store": "scoped_cli_directory"
+      },
+      "setup_path": "schema_auth_hook",
+      "identity_verification": "schema_check_hook",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "hackernews-search",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "higgsfield",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "higgsfield",
+      "profile": {
+        "policy": "implicit",
+        "source": "cli_active_identity",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "cli",
+        "store": "cli_owned_store"
+      },
+      "setup_path": "external_cli_login",
+      "identity_verification": "cli_status",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "htmltotext",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "image-generation",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "nanobanana",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "image-generation-via-minimax",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "minimax",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "jq",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "kapso-whatsapp-read",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "kapso",
+      "profile": {
+        "policy": "fixed",
+        "source": "fixed_binding",
+        "selector": null,
+        "fixed_alias": "presto-kapso"
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "kapso-whatsapp-send",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "kapso",
+      "profile": {
+        "policy": "fixed",
+        "source": "fixed_binding",
+        "selector": null,
+        "fixed_alias": "presto-kapso"
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "macos-ui-automation",
+      "auth_strategies": [
+        "native_permission"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "macos",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "operating_system",
+        "store": "os_permission_store"
+      },
+      "setup_path": "os_settings",
+      "identity_verification": "os_permission_check",
+      "approval_class": "native_ui_control",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "marimo",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "meme-generation-via-imgflip",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "imgflip",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "metabase",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "metabase",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "music-generation-via-minimax",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "minimax",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "news-search-via-tavily",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "tavily",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "ocr",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "conditional",
+      "auth_provider": "coding-cli",
+      "profile": {
+        "policy": "implicit",
+        "source": "cli_active_identity",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "cli",
+        "store": "cli_owned_store"
+      },
+      "setup_path": "external_cli_login",
+      "identity_verification": "cli_status",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "office-excel",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "office-powerpoint",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "office-word",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "pdftotext",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "polymarket-search",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "presto-calendar",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "google-workspace",
+      "profile": {
+        "policy": "fixed",
+        "source": "fixed_binding",
+        "selector": null,
+        "fixed_alias": "presto"
+      },
+      "session": {
+        "owner": "cli",
+        "store": "scoped_cli_directory"
+      },
+      "setup_path": "schema_auth_hook",
+      "identity_verification": "schema_check_hook",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "presto-gmail",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "google-workspace",
+      "profile": {
+        "policy": "fixed",
+        "source": "fixed_binding",
+        "selector": null,
+        "fixed_alias": "presto"
+      },
+      "session": {
+        "owner": "cli",
+        "store": "scoped_cli_directory"
+      },
+      "setup_path": "schema_auth_hook",
+      "identity_verification": "schema_check_hook",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "presto-sheets",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "google-workspace",
+      "profile": {
+        "policy": "fixed",
+        "source": "fixed_binding",
+        "selector": null,
+        "fixed_alias": "presto"
+      },
+      "session": {
+        "owner": "cli",
+        "store": "scoped_cli_directory"
+      },
+      "setup_path": "schema_auth_hook",
+      "identity_verification": "schema_check_hook",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "producthunt-search",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "reddit-search",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "optional",
+      "auth_provider": "reddit",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "rg",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "screen-draw",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "host_gateway"
+    },
+    {
+      "id": "sed",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "semantic-websearch-via-exa",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "exa",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "sheets",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "google-workspace",
+      "profile": {
+        "policy": "selectable",
+        "source": "schema_selector",
+        "selector": "account",
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "cli",
+        "store": "scoped_cli_directory"
+      },
+      "setup_path": "schema_auth_hook",
+      "identity_verification": "schema_check_hook",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "structured-web-data",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "swiggy-mcp",
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "swiggy-mcp",
+      "profile": {
+        "policy": "selectable",
+        "source": "schema_selector",
+        "selector": "profile",
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "official_sdk",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "auth_broker_browser_oauth",
+      "identity_verification": "sdk_credential_status",
+      "approval_class": "commerce_checkout",
+      "runtime_owner": "official_mcp_sdk"
+    },
+    {
+      "id": "telegram",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "telegram",
+      "profile": {
+        "policy": "fixed",
+        "source": "fixed_binding",
+        "selector": null,
+        "fixed_alias": "deepact-bot"
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "telegram-self",
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "telegram",
+      "profile": {
+        "policy": "implicit",
+        "source": "session_identity",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "cli",
+        "store": "cli_owned_store"
+      },
+      "setup_path": "schema_auth_hook",
+      "identity_verification": "schema_check_hook",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "video-generation-via-minimax",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "minimax",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "video-generation-via-veo",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "at_least_one",
+      "auth_provider": "google-veo",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "web-search-via-minimax",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "minimax",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "web-via-tinyfish",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "tinyfish",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "websearch",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "websearch-via-claude",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "anthropic",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "websearch-via-openai",
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "openai",
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "runtime",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "operator_secret_binding",
+      "identity_verification": "provider_request",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "whatsapp",
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "whatsapp",
+      "profile": {
+        "policy": "implicit",
+        "source": "cli_active_identity",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "cli",
+        "store": "cli_owned_store"
+      },
+      "setup_path": "external_cli_qr_login",
+      "identity_verification": "cli_session",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "whatsgoingon2",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "work-modules",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "youtube-search",
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "auth_provider": null,
+      "profile": {
+        "policy": "none",
+        "source": "none",
+        "selector": null,
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "none",
+        "store": "none"
+      },
+      "setup_path": "none",
+      "identity_verification": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "zepto-mcp",
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "auth_provider": "zepto-mcp",
+      "profile": {
+        "policy": "selectable",
+        "source": "schema_selector",
+        "selector": "profile",
+        "fixed_alias": null
+      },
+      "session": {
+        "owner": "official_sdk",
+        "store": "scoped_secret_store"
+      },
+      "setup_path": "auth_broker_browser_oauth",
+      "identity_verification": "sdk_credential_status",
+      "approval_class": "commerce_checkout",
+      "runtime_owner": "official_mcp_sdk"
+    }
+  ],
+  "adapters": [
+    {
+      "skill": "analyze-image-via-minimax",
+      "path": "bin/minimax-vision",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "arxiv-search",
+      "path": "bin/arxiv-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "browser",
+      "path": "bin/agent-browser",
+      "role": "policy_implementation",
+      "ownership": [
+        "protocol_adapter",
+        "policy_adapter"
+      ]
+    },
+    {
+      "skill": "browser",
+      "path": "scripts/verify-skill-discovery.sh",
+      "role": "verifier",
+      "ownership": [
+        "not_wrapper"
+      ]
+    },
+    {
+      "skill": "deep-research-with-claude",
+      "path": "bin/claude-deep-research",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "deep-research-with-openai",
+      "path": "bin/openai-deep-research",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "find-details-by-username",
+      "path": "bin/find-details-by-username",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "gif-search-via-klipy",
+      "path": "bin/klipy-gif-search",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "github-search",
+      "path": "bin/github-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "hackernews-search",
+      "path": "bin/hackernews-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "htmltotext",
+      "path": "bin/htmltotext",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "image-generation",
+      "path": "bin/nanobanana2",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "image-generation-via-minimax",
+      "path": "bin/minimax-image",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "kapso-whatsapp-read",
+      "path": "bin/kapso-governed",
+      "role": "policy_implementation",
+      "ownership": [
+        "protocol_adapter",
+        "policy_adapter"
+      ]
+    },
+    {
+      "skill": "kapso-whatsapp-send",
+      "path": "bin/kapso-governed",
+      "role": "policy_implementation",
+      "ownership": [
+        "protocol_adapter",
+        "policy_adapter"
+      ]
+    },
+    {
+      "skill": "macos-ui-automation",
+      "path": "bin/macos-ui-controller",
+      "role": "policy_implementation",
+      "ownership": [
+        "protocol_adapter",
+        "policy_adapter"
+      ]
+    },
+    {
+      "skill": "meme-generation-via-imgflip",
+      "path": "bin/imgflip-meme",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "metabase",
+      "path": "bin/metabase-pp-cli",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "metabase",
+      "path": "scripts/apply-postgen-patches.py",
+      "role": "support",
+      "ownership": [
+        "not_wrapper"
+      ]
+    },
+    {
+      "skill": "metabase",
+      "path": "scripts/postprocess-spec.py",
+      "role": "support",
+      "ownership": [
+        "not_wrapper"
+      ]
+    },
+    {
+      "skill": "metabase",
+      "path": "scripts/refresh-spec.sh",
+      "role": "support",
+      "ownership": [
+        "not_wrapper"
+      ]
+    },
+    {
+      "skill": "music-generation-via-minimax",
+      "path": "bin/minimax-music",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "news-search-via-tavily",
+      "path": "bin/tavily-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "ocr",
+      "path": "bin/ocr",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "polymarket-search",
+      "path": "bin/polymarket-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "producthunt-search",
+      "path": "bin/producthunt-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "reddit-search",
+      "path": "bin/reddit-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "semantic-websearch-via-exa",
+      "path": "bin/exa-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "structured-web-data",
+      "path": "bin/structured-web-data",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "telegram",
+      "path": "bin/telegram-bot-adapter",
+      "role": "policy_implementation",
+      "ownership": [
+        "protocol_adapter",
+        "policy_adapter"
+      ]
+    },
+    {
+      "skill": "video-generation-via-minimax",
+      "path": "bin/minimax-video",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "video-generation-via-veo",
+      "path": "bin/veo31",
+      "role": "artifact_bridge",
+      "ownership": [
+        "protocol_adapter",
+        "artifact_adapter"
+      ]
+    },
+    {
+      "skill": "web-search-via-minimax",
+      "path": "bin/minimax-websearch",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "websearch",
+      "path": "bin/websearch",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "websearch-via-claude",
+      "path": "bin/claude-websearch",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "websearch-via-openai",
+      "path": "bin/openai-websearch",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "whatsapp",
+      "path": "bin/whatsapp-reaction-adapter",
+      "role": "policy_implementation",
+      "ownership": [
+        "protocol_adapter",
+        "policy_adapter"
+      ]
+    },
+    {
+      "skill": "whatsgoingon2",
+      "path": "bin/whatsgoingon2",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "work-modules",
+      "path": "bin/work-modules",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    },
+    {
+      "skill": "youtube-search",
+      "path": "bin/youtube-search",
+      "role": "protocol_implementation",
+      "ownership": [
+        "protocol_adapter"
+      ]
+    }
+  ],
+  "finding_dispositions": [],
+  "exceptions": [
+    {
+      "id": "commerce-mcp-policy-coupling",
+      "skills": [
+        "swiggy-mcp",
+        "zepto-mcp"
+      ],
+      "kind": "legacy_mcp_and_policy_coupled",
+      "resolution": "official_sdk_transport_with_local_commerce_policy"
+    },
+    {
+      "id": "conditional-browser-and-ocr-auth",
+      "skills": [
+        "browser",
+        "ocr"
+      ],
+      "kind": "conditional_auth_path",
+      "resolution": "declared_conditional_auth_contract"
+    },
+    {
+      "id": "undeclared-secret-requirements",
+      "skills": [
+        "telegram"
+      ],
+      "kind": "undeclared_secret_requirement",
+      "resolution": "declared_in_runtime_contract"
+    }
+  ],
+  "unknowns": []
+}

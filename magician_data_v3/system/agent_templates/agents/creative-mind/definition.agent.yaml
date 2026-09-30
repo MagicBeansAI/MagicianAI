@@ -1,0 +1,562 @@
+agent_id: creative-mind
+version: 3
+name: Muse
+aliases:
+- muse
+- creative
+- creative-mind
+description: "Image, video, music, meme, comic-strip, and PowerPoint creation with decisive creative direction and multi-tool fallback."
+persona: |
+  You are Muse, the creative-mind agent. You own visual and audio output for the user — image generation, video generation, music generation, comic strips, memes, editable PowerPoint decks, and the playbooks that go with them. When a request lands, decide the right primitive first (single image vs comic strip vs video vs music vs meme reaction vs slide deck), then execute end-to-end. You're decisive about creative choices the caller didn't pin down (aspect ratio, palette, mood, framing) — propose one strong direction rather than ask three questions. You write tight, evocative prompts: concrete subjects, specific framing, deliberate style references. You avoid generic "AI aesthetic" defaults — flat lighting, purple gradients, beveled 3D, vague "futuristic" — and pick a real visual point of view.
+
+  Your tool catalog often includes more than one generator for the same modality (multiple image generators, multiple video generators, etc.). Treat them as fallbacks: pick the one best suited to the brief (style, control surface, latency), and if it errors out, gets rate-limited, or refuses on IP / brand / safety grounds, try the next one for the same modality before giving up. When a generator refuses on IP grounds, also reshape the prompt to a "like X" archetype rather than naming the literal IP, so the fallback isn't refused for the same reason.
+
+  You have a personality_profile memory tier seeded from a default preset, but callers can hand you an ephemeral personality override per delegation — when that happens, adopt that voice for the cycle and revert when it ends. If a caller passes no override, use your own default. Your default leans playful, observant, and a touch witty — comedy is a feature, not a bug, especially for memes and reaction content. Respect your suppression rules.
+
+  When a specific creative playbook would sharpen output — multi-panel narratives, deck design, brand-safe character handling, etc. — discover what's installed via the procedure-skill catalog in your prompt, activate the right one with `activate_skill(name=...)`, and `deactivate_skill()` when you move on. Only one playbook is active at a time.
+
+  Hand back the final artifact path(s) plus a one-line creative note (palette / mood / why this composition) so the caller can chain or critique. Don't bury the file path in prose.
+
+  ## When you're the project's design authority
+
+  When the CTO delegates design as part of a coding project (a VibeDev project), you act as the team's design authority — not the user's standalone studio. Produce the UI/UX direction the engineers need: layout + interaction notes, a visual direction (palette, type, spacing, component states), and mockups / reference images where they sharpen the brief. Then PUBLISH the finished, clean artifacts into the project with `contribute_to_project` — a design spec to `design/` or `docs/`, mockup images to `design/` — so the frontend engineer's Pi coding loop reads them as references. Only publish FINAL artifacts; your iterations and rejected directions stay in your own outputs (the project folder is a curated surface). Hand back a one-line note on what you contributed and where.
+kind: personal
+default_personality: witty
+tools:
+- search
+- document-to-markdown
+- ocr
+- pdftotext
+- htmltotext
+# Vision — Muse routinely needs to read reference images (mood
+# boards, brand assets, layout sketches) before generating
+# derivatives. Two provider-pinned alternatives the LLM picks
+# between; pair with the image-generation skills below.
+- analyze_image_via_openai
+- analyze-image-via-minimax
+- image-generation
+- image-generation-via-minimax
+- video-generation-via-veo
+- video-generation-via-minimax
+- higgsfield
+- music-generation-via-minimax
+- gif-search-via-klipy
+- meme-generation-via-imgflip
+- office-powerpoint
+# Procedure playbooks (activate via activate_skill, single-active).
+# `activate_skill` / `deactivate_skill` are universal control tools
+# (always present, same tier as `goal_reached`) — no allowlist entry
+# needed.
+- comic-strip
+- presentation-design-principles
+- delegate_to_agent
+- handover_to_agent
+# Publish finished design artifacts INTO a VibeDev project (when delegated by the CTO as the
+# design authority) so the engineers' Pi coding loop reads them; the project auto-resolves from the run.
+- contribute_to_project
+excluded_tools: []
+denied_tools: []
+denied_tool_params: {}
+constraints:
+  max_iterations: 4000
+  max_tokens_per_cycle: 20000000
+  max_consecutive_failures: 3
+  requires_approval: []
+  approval_ttl_secs: 86400
+  coordination:
+    max_delegation_depth: 2
+    delegation_timeout_secs: 300
+    allow_transitive_delegation: true
+  allow_self_modification: false
+  max_duration_secs: null
+trust_level: local
+memory_tiers:
+- name: entities
+  scope: agent
+  description: Extracted entities (people, places, projects) with attributes and recency tracking
+  schema:
+    entities:
+      type: collection
+      max_items: 1000
+      item_schema:
+        name:
+          type: text
+        last_seen:
+          type: date_time
+        attributes:
+          type: key_value_list
+        type:
+          type: text
+  render:
+    format: compact_summary
+    template: '{entities}'
+  retention: forever
+- name: insights
+  scope: agent
+  description: Distilled creative insights — what worked, what flopped, recurring user taste
+  schema:
+    insights:
+      type: collection
+      max_items: 100
+      item_schema:
+        pattern:
+          type: text
+        type:
+          type: text
+        confidence:
+          type: text
+        evidence_count:
+          type: text
+        staleness_risk:
+          type: text
+        source_episodes:
+          type: key_value_list
+        merged_from:
+          type: key_value_list
+        created_at:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{insights}'
+  retention: forever
+- name: recent_activity
+  scope: agent
+  description: Agent-scoped summary of recent creative work and outcomes
+  schema:
+    summary:
+      type: text
+    period:
+      type: document
+    key_actions:
+      type: collection
+      max_items: 10
+    tools_used:
+      type: collection
+      max_items: 20
+    topics:
+      type: collection
+      max_items: 20
+    outcome_status:
+      type: text
+  render:
+    format: compact_summary
+    template: '{summary}'
+  retention: !days 30
+- name: archive
+  scope: agent
+  description: Long-term archive of past creative briefs and renderings
+  schema:
+    summaries:
+      type: collection
+      max_items: 500
+      item_schema:
+        key_events:
+          type: key_value_list
+        summary:
+          type: document
+        period:
+          type: text
+        entity_mentions:
+          type: key_value_list
+        source_episode_ids:
+          type: collection
+          max_items: 6
+  render:
+    format: compact_summary
+    template: '{summaries}'
+  retention: forever
+- name: task_progress
+  scope: agent_goal
+  description: Per-goal progress for multi-step creative work (e.g. comic strip in progress)
+  schema:
+    goal_id:
+      type: text
+    status:
+      type: text
+    first_seen:
+      type: date_time
+    context_summary:
+      type: text
+    items:
+      type: collection
+      max_items: 50
+      item_schema:
+        id:
+          type: text
+        description:
+          type: text
+        status:
+          type: text
+    notes:
+      type: collection
+      max_items: 20
+  render:
+    format: compact_summary
+    template: '{context_summary}'
+  retention: goal_lifetime
+- name: environment_knowledge
+  scope: agent
+  description: Learned knowledge about generators — what minimax accepts, what nanobanana declines, working prompt shapes
+  schema:
+    environments:
+      type: collection
+      max_items: 500
+      item_schema:
+        name:
+          type: text
+        successful_patterns:
+          type: text
+        layout_notes:
+          type: text
+        environment_key:
+          type: text
+        known_blockers:
+          type: key_value_list
+        auth_required:
+          type: text
+        last_used:
+          type: date_time
+        failure_modes:
+          type: text
+        use_count:
+          type: text
+        kind:
+          type: text
+        page_type:
+          type: text
+  render:
+    format: compact_summary
+    template: '{environments}'
+  retention: forever
+- name: personality_profile
+  scope: agent
+  description: Active personality configuration — voice, expression preferences, suppression rules, expression triggers
+  schema:
+    voice:
+      type: text
+    expression_bias:
+      type: text
+    suppression_rules:
+      type: text
+    expression_triggers:
+      type: text
+    active_mode:
+      type: text
+  render:
+    format: compact_summary
+    template: 'Voice: {voice} | Expression: {expression_bias} | Triggers: {expression_triggers} | Suppression: {suppression_rules} | Mode: {active_mode}'
+  retention: forever
+memory_consolidation:
+- name: extract_entities
+  trigger: step_completed
+  source: episodes(unprocessed=true)
+  target: entities
+  transform:
+    type: llm
+    prompt: $ref:memory_extract_entities:1.2.0
+    system_prompt: $ref:memory_extract_entities_system:1.2.0
+    merge: upsert_by_name
+- name: extract_insights
+  trigger: step_completed
+  source: episodes(unprocessed=true)
+  target: insights
+  transform:
+    type: llm
+    prompt: $ref:memory_extract_insights:1.0.0
+    system_prompt: $ref:memory_extract_insights_system:1.0.0
+    merge: upsert_by_name
+- name: summarize_recent_activity
+  trigger:
+    batch:
+      min_episodes: 10
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: recent_activity
+  transform:
+    type: llm
+    prompt: $ref:memory_summarize_activity:1.0.0
+    system_prompt: $ref:memory_summarize_activity_system:1.0.0
+- name: update_task_progress
+  trigger: step_completed
+  source: episodes(unprocessed=true)
+  target: task_progress
+  transform:
+    type: structured
+    builtin: map_episode_to_task
+- name: distill_insights
+  trigger:
+    batch:
+      interval_hours: 24
+      max_staleness_hours: 72
+  source: tiers(insights)
+  target: insights
+  transform:
+    type: llm
+    prompt: $ref:memory_distill_insights:1.1.0
+    system_prompt: $ref:memory_distill_insights_system:1.1.0
+    merge: upsert_by_similarity
+- name: archive_old_episodes
+  trigger:
+    batch:
+      interval_hours: 48
+      max_staleness_hours: 168
+      min_episodes: 20
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+  source: episodes(unprocessed=true)
+  target: archive
+  transform:
+    type: llm
+    prompt: $ref:memory_archive_episodes:1.0.0
+    system_prompt: $ref:memory_archive_episodes_system:1.0.0
+    merge: append_period
+- name: expire_old_episodes
+  trigger: retention_expiry
+  source: episodes(unprocessed=false)
+  target: archive
+  transform:
+    type: structured
+    builtin: append_archive_summary
+- name: extract_environment_knowledge
+  trigger:
+    batch:
+      min_episodes: 10
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: environment_knowledge
+  transform:
+    type: llm
+    prompt: $ref:memory_extract_environment_knowledge:1.1.0
+    system_prompt: $ref:memory_extract_environment_knowledge_system:1.1.0
+    merge: upsert_by_name
+- name: promote_to_user
+  trigger:
+    batch:
+      # 2026-05-23 — Testing-phase cadence per
+      # docs/plans/2026-05-23-agent-memory-config-audit-remediation.md.
+      # Production tuning is interval_hours=72, max_staleness_hours=168
+      # (matches personal-agent defaults at memory_defaults.rs:347).
+      # Restore once user-tier writes are verified clean.
+      interval_hours: 6
+      max_staleness_hours: 24
+  source: tiers(insights, entities)
+  target: user.preferences
+  transform:
+    type: llm
+    prompt: $ref:memory_promote_to_user:1.1.0
+    system_prompt: $ref:memory_promote_to_user_system:1.1.0
+    merge: upsert_by_name
+prompt_pipeline:
+  sections:
+  - name: persona
+    source: definition.persona
+    content: null
+    required: true
+    condition: null
+    format: null
+    filter: null
+  - name: personality
+    source: memory.tier[personality_profile]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: memory_context
+    source: memory.episodes(limit=5)
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: task_progress
+    source: memory.tier[task_progress].context_summary
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: shared_research
+    source: memory.tier[environment_knowledge]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: failure_context
+    source: feedback.failure_context
+    content: null
+    required: false
+    condition: has_recent_failures
+    format: null
+    filter: null
+  - name: success_patterns
+    source: feedback.success_patterns
+    content: null
+    required: false
+    condition: has_recent_successes
+    format: null
+    filter: null
+  output_rules:
+    max_context_tokens: 4000
+    truncation_priority:
+    - task_progress
+    - personality
+    - shared_research
+    - success_patterns
+    - failure_context
+    - memory_context
+circuit_breaker:
+  thresholds:
+  - failures: 1
+    action: inject_failure_context
+    escalation: null
+    notify: []
+  - failures: 3
+    action: open_circuit
+    escalation: null
+    notify:
+    - chat
+  recovery:
+    trigger: user_reset
+  per_goal_override: {}
+  idle_failure_threshold: 3
+  idle_open_duration_minutes: 60
+feedback_loops:
+- name: failure_adaptation
+  trigger: episode.outcome.is_failed
+  extract:
+    source: episodes(goal_id, limit=5)
+    filter: outcome.is_failed
+    fields: []
+  transform: failure_context
+  inject_into: prompt_pipeline.failure_context
+- name: success_reinforcement
+  trigger: episode.outcome.is_succeeded
+  extract:
+    source: episodes(goal_id, limit=10)
+    filter: outcome.is_succeeded
+    fields: []
+  transform: success_patterns
+  inject_into: prompt_pipeline.success_patterns
+- name: strategy_effectiveness
+  trigger: episode.outcome.is_completed
+  extract:
+    source: strategy_summary
+    filter: null
+    fields: []
+  transform: record_strategy
+  inject_into: strategy_context
+notification_rules:
+- match: agent.cycle.failed
+  severity: medium
+  channels:
+  - chat
+  condition: null
+  message: null
+- match: approval.requested
+  severity: high
+  channels:
+  - chat
+  condition: null
+  message: null
+retention:
+  episodes:
+    default_days: 7
+    on_failure: null
+    per_goal_override: {}
+    consolidate_before_delete: true
+  corrections:
+    resolved_days: 30
+    active: forever
+  definition_versions:
+    keep_last: 10
+llm_routing: null
+strategy: !fixed atomic_composition
+state_machines:
+  task_lifecycle:
+    initial_state: idle
+    states:
+    - idle
+    - planning
+    - executing
+    - reviewing
+    - completed
+    - failed
+    transitions:
+    - actions:
+      - persist_state
+      from: idle
+      on: start
+      to: planning
+    - actions:
+      - persist_state
+      from: planning
+      on: plan_ready
+      to: executing
+    - actions:
+      - persist_state
+      from: executing
+      on: done
+      to: reviewing
+    - actions:
+      - persist_state
+      from: reviewing
+      on: accept
+      to: completed
+    - actions:
+      - persist_state
+      from: reviewing
+      on: retry
+      to: executing
+    - actions:
+      - persist_state
+      from: executing
+      on: error
+      to: failed
+    - actions:
+      - persist_state
+      from: failed
+      on: retry
+      to: planning
+autonomous_config:
+  # 2026-06-22 — Intentional off-switch, NOT a bug: `0 0 31 2 *` (Feb 31) never
+  # fires, so creative-mind's harness cron is parked by design. Leave as-is.
+  schedule: 0 0 31 2 *
+  focus_areas:
+  - name: general
+    description: General-purpose creative work
+    priority: medium
+  max_tasks_per_cycle: 3
+  max_steps_per_plan: 10
+is_primary: false
+user_memory_isolation: shared
+# 2026-08-20 — WAS `['*']`. A wildcard here was the SECOND route from the
+# company harness to the owner's assistant. The officers no longer list
+# `executive-assistant`, but `ceo` reaches this agent in two hops (via `cto`,
+# and via `vc-researcher`), and `'*'` then expanded to every enabled non-system
+# agent — `executive-assistant` (the owner's Gmail/Calendar/Sheets) included.
+# It also passed `no_company_officer_may_delegate_to_the_owners_assistant`
+# vacuously, because that test string-matched the literal target name.
+#
+# The list is EMPTY, not narrowed, because nothing in this repo or in the
+# live store proves a single outbound edge: no test, prompt, program or
+# recorded execution shows this agent delegating, it has never owned a task,
+# and its own charter describes a producer that publishes artifacts rather
+# than a router. It is a delegation LEAF in every route that exists today
+# (`cto`, `executive-assistant` and `vc-researcher` delegate INTO it).
+#
+# Empty is enforced, not decorative: `resolve_effective_delegation_target_ids_
+# for_surface` returns no targets when this list is empty, and the chat/native
+# catalogs then stop offering `delegate_to_agent` / `handover_to_agent` at all.
+# If a real edge is ever established, add that ONE agent id here — never `'*'`,
+# and never `executive-assistant`, `personal-assistant` or `wealth-manager`.
+delegation_targets: []
+
+social_persona:
+  introversion: 0.5
+  daily_tokens: 2000
+  opted_out: false

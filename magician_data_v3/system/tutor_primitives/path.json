@@ -1,0 +1,11 @@
+{
+  "type": "path",
+  "aliases": ["polyline", "handwriting", "freehand"],
+  "version": 1,
+  "draw": [
+    {
+      "op": "polyline",
+      "points": "points|d"
+    }
+  ]
+}

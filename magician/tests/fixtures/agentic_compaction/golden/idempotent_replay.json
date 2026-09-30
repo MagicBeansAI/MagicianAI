@@ -1,0 +1,62 @@
+{
+  "name": "idempotent_replay",
+  "description": "A normal summarize pass, then the same (iteration, window_hash) key replayed: the second application is a strict no-op.",
+  "iteration": 21,
+  "char_budget": 500,
+  "keep_newest_pairs": 1,
+  "goal_line": "Rotate the staging database credentials and update the two consumers.",
+  "open_requirements": [],
+  "open_requirement_ids": [],
+  "terminal_evidence_ids": [],
+  "replay": true,
+  "items": [
+    {
+      "id": "tp_001",
+      "kind": "turn_pair",
+      "ordinal": 0,
+      "age_iterations": 1,
+      "content": "[assistant] Iteration 1: rotated the staging credential. [user tool_result call_1] {\"status\":\"ok\"}...................................................."
+    },
+    {
+      "id": "tp_002",
+      "kind": "turn_pair",
+      "ordinal": 1,
+      "age_iterations": 0,
+      "content": "[assistant] Iteration 2: updated consumer one. [user tool_result call_2] {\"status\":\"ok\"}............"
+    }
+  ],
+  "patch": {
+    "patches": [
+      {
+        "id": "tp_001",
+        "action": "summarize",
+        "summary": "The staging credential was rotated successfully..."
+      }
+    ],
+    "rationale": "The rotation turn compresses to its outcome."
+  },
+  "expect": {
+    "validation_rejected": null,
+    "protected_ids": [
+      "tp_002"
+    ],
+    "counts": {
+      "kept": 1,
+      "summarized": 1,
+      "discarded": 0,
+      "downgraded": 0
+    },
+    "downgraded_ids": [],
+    "surviving_ids": [
+      "tp_001",
+      "tp_002"
+    ],
+    "compacted_ids": [
+      "tp_001"
+    ],
+    "residue_evicted_ids": [],
+    "chars_after_patch": 150,
+    "chars_after": 150,
+    "patch_rejected": null
+  }
+}

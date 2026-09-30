@@ -1,0 +1,106 @@
+{
+  "sequence": 1,
+  "envelope": {
+    "schema_version": 1,
+    "envelope_id": "envelope-1",
+    "map_id": "map-1",
+    "base_revision": 4,
+    "utterance_id": "utterance-3",
+    "actor": {
+      "actor": "owner",
+      "principal": "anonymous"
+    },
+    "idempotency_key": "idem-1",
+    "operations": [
+      {
+        "op": "add_node",
+        "node": {
+          "node_id": "node-2",
+          "kind": "risk",
+          "label": "Wire contract drift between Rust and Swift",
+          "epistemic_state": "provisional",
+          "assertion_origin": "model_inferred",
+          "confidence": 0.4,
+          "source_refs": [
+            {
+              "utterance_id": "utterance-2",
+              "quote": "the field names could diverge",
+              "timestamp": "2026-07-20T00:00:00Z"
+            }
+          ],
+          "parent_id": "node-1",
+          "position_locked": false,
+          "promoted_refs": [],
+          "tombstoned": false,
+          "created_at": "2026-07-20T00:00:00Z",
+          "updated_at": "2026-07-20T00:00:00Z"
+        }
+      },
+      {
+        "op": "update_node",
+        "node_id": "node-1",
+        "label": "Ship the iOS thinking map (v1)",
+        "detail_markdown": "Updated detail body.",
+        "confidence": 0.95
+      },
+      {
+        "op": "set_node_kind",
+        "node_id": "node-2",
+        "kind": "assumption"
+      },
+      {
+        "op": "set_epistemic_state",
+        "node_id": "node-2",
+        "state": "confirmed"
+      },
+      {
+        "op": "connect",
+        "edge": {
+          "edge_id": "edge-1",
+          "from_node": "node-1",
+          "to_node": "node-2",
+          "kind": "related_to",
+          "assertion_origin": "model_inferred",
+          "tombstoned": false,
+          "created_at": "2026-07-20T00:00:00Z",
+          "updated_at": "2026-07-20T00:00:00Z"
+        }
+      },
+      {
+        "op": "move_to_parent",
+        "node_id": "node-2",
+        "parent_id": "node-1"
+      },
+      {
+        "op": "tombstone_node",
+        "node_id": "node-2"
+      },
+      {
+        "op": "create_clarification",
+        "clarification": {
+          "clarification_id": "clar-1",
+          "node_id": "node-2",
+          "question": "Which fields are most likely to drift?",
+          "state": "open",
+          "created_at": "2026-07-20T00:00:00Z"
+        }
+      },
+      {
+        "op": "set_title",
+        "title": "iOS thinking map migration (renamed)"
+      },
+      {
+        "op": "set_lifecycle",
+        "lifecycle": "archived"
+      }
+    ],
+    "model_trace": {
+      "trace_id": "trace-1",
+      "model_profile": "thinking_map_interpret"
+    },
+    "created_at": "2026-07-20T00:00:00Z"
+  },
+  "resulting_revision": 4,
+  "semantic_hash": "sha256:deadbeefcafef00d",
+  "applied_at": "2026-07-20T01:00:00Z"
+}

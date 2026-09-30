@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|write|search_replace",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$(git rev-parse --show-toplevel)/scripts/grok_docs_hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$(git rev-parse --show-toplevel)/scripts/grok_docs_hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$(git rev-parse --show-toplevel)/scripts/grok_docs_hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+// Tracked signing overlay for every Magios target (wired via project.yml
+// configFiles). The actual DEVELOPMENT_TEAM lives in the UNTRACKED
+// Signing.local.xcconfig — copy Signing.local.xcconfig.example and fill in
+// your Apple Team ID. Without it, Xcode signs with no team (simulator builds
+// still work; device builds prompt you to pick a team).
+#include? "Signing.local.xcconfig"

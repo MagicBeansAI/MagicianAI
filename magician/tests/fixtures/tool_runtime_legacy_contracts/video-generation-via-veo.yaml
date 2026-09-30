@@ -1,0 +1,192 @@
+name: video-generation-via-veo
+version: 0.1.0
+parameters:
+- name: prompt
+  required: true
+  param_type: string
+  description: Text prompt describing the video to generate or the motion to apply to the input image
+- name: input_image
+  param_type: string
+  description: Optional local file path or gs:// URI for image-to-video generation
+- name: last_frame_image
+  param_type: string
+  description: Optional local file path or gs:// URI for the desired last frame
+- name: output_path
+  param_type: string
+  description: Local output file path for the generated video (prefer .mp4). Defaults to a temp file.
+- name: duration_seconds
+  param_type: integer
+  description: 'Video duration in seconds. Supported values: 4, 6, or 8.'
+  default: '8'
+  enum_values:
+  - '4'
+  - '6'
+  - '8'
+- name: aspect_ratio
+  param_type: string
+  description: 'Video aspect ratio: 16:9 (landscape) or 9:16 (vertical)'
+  default: '16:9'
+  enum_values:
+  - '16:9'
+  - '9:16'
+- name: resolution
+  param_type: string
+  description: 'Video resolution: 720p (faster) or 1080p (higher fidelity)'
+  default: 720p
+  enum_values:
+  - 720p
+  - 1080p
+- name: quality_tier
+  param_type: string
+  description: 'Routing tier: auto (neutral fallback to balanced), fast (quick drafts and motion previews), or balanced (recommended default for final-quality clips)'
+  default: auto
+  enum_values:
+  - auto
+  - fast
+  - balanced
+- name: number_of_videos
+  param_type: integer
+  description: How many candidate videos to request. Usually keep this at 1 to control cost and latency.
+  default: '1'
+- name: negative_prompt
+  param_type: string
+  description: Optional negative prompt describing things to avoid in the output
+  default: ''
+- name: seed
+  param_type: integer
+  description: Optional random seed for reproducibility
+  default: ''
+- name: enhance_prompt
+  param_type: boolean
+  description: Allow Veo to enhance the prompt before generation
+  default: 'true'
+- name: generate_audio
+  param_type: boolean
+  description: Generate audio along with the video. Use only when the user explicitly wants sound.
+  default: 'false'
+- name: model
+  param_type: string
+  description: 'Optional explicit model override. When set, this wins over quality_tier. Examples: veo-3.1-generate-preview, veo-3.1-fast-generate-preview'
+  default: ''
+native_action_schemas:
+  run:
+    description: Run the direct video_generator_veo31 capability with the arguments selected from this guide. Use output_path when the user requested a save location. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after the requested video artifact is present.
+    parameters:
+    - prompt
+    - input_image
+    - last_frame_image
+    - output_path
+    - duration_seconds
+    - aspect_ratio
+    - resolution
+    - quality_tier
+    - number_of_videos
+    - negative_prompt
+    - seed
+    - enhance_prompt
+    - generate_audio
+    - model
+    required:
+    - prompt
+    parameter_overrides:
+      prompt:
+        type: string
+        description: Text prompt describing the video to generate or the motion to apply to the input image
+      input_image:
+        type: string
+        description: Optional local file path or gs:// URI for image-to-video generation
+      last_frame_image:
+        type: string
+        description: Optional local file path or gs:// URI for the desired last frame
+      output_path:
+        type: string
+        description: Local output file path for the generated video (prefer .mp4). Defaults to a temp file.
+      duration_seconds:
+        type: integer
+        description: 'Video duration in seconds. Supported values: 4, 6, or 8.'
+        enum:
+        - '4'
+        - '6'
+        - '8'
+        default: '8'
+      aspect_ratio:
+        type: string
+        description: 'Video aspect ratio: 16:9 (landscape) or 9:16 (vertical)'
+        enum:
+        - '16:9'
+        - '9:16'
+        default: '16:9'
+      resolution:
+        type: string
+        description: 'Video resolution: 720p (faster) or 1080p (higher fidelity)'
+        enum:
+        - 720p
+        - 1080p
+        default: 720p
+      quality_tier:
+        type: string
+        description: 'Routing tier: auto (neutral fallback to balanced), fast (quick drafts and motion previews), or balanced (recommended default for final-quality clips)'
+        enum:
+        - auto
+        - fast
+        - balanced
+        default: auto
+      number_of_videos:
+        type: integer
+        description: How many candidate videos to request. Usually keep this at 1 to control cost and latency.
+        default: '1'
+      negative_prompt:
+        type: string
+        description: Optional negative prompt describing things to avoid in the output
+        default: ''
+      seed:
+        type: integer
+        description: Optional random seed for reproducibility
+        default: ''
+      enhance_prompt:
+        type: boolean
+        description: Allow Veo to enhance the prompt before generation
+        default: 'true'
+      generate_audio:
+        type: boolean
+        description: Generate audio along with the video. Use only when the user explicitly wants sound.
+        default: 'false'
+      model:
+        type: string
+        description: 'Optional explicit model override. When set, this wins over quality_tier. Examples: veo-3.1-generate-preview, veo-3.1-fast-generate-preview'
+        default: ''
+    skip_tool_name: true
+    timeout_secs: 1200
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_PROMPT: '{prompt}'
+    _TOOL_INPUT_IMAGE: '{input_image}'
+    _TOOL_LAST_FRAME_IMAGE: '{last_frame_image}'
+    _TOOL_OUTPUT_PATH: '{output_path}'
+    _TOOL_DURATION_SECONDS: '{duration_seconds}'
+    _TOOL_ASPECT_RATIO: '{aspect_ratio}'
+    _TOOL_RESOLUTION: '{resolution}'
+    _TOOL_QUALITY_TIER: '{quality_tier}'
+    _TOOL_NUMBER_OF_VIDEOS: '{number_of_videos}'
+    _TOOL_NEGATIVE_PROMPT: '{negative_prompt}'
+    _TOOL_SEED: '{seed}'
+    _TOOL_ENHANCE_PROMPT: '{enhance_prompt}'
+    _TOOL_GENERATE_AUDIO: '{generate_audio}'
+    _TOOL_MODEL: '{model}'
+    _TOOL_API_TIMEOUT_SECS: '1170'
+  timeout_secs: 1200
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 1200
+  categories:
+  - video
+  - generation
+  - creative
+  - media
+  - marketing
+  composition_category: media_operations
+  sandbox: shell

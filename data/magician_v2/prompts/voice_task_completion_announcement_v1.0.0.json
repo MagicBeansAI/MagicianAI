@@ -1,0 +1,37 @@
+{
+  "name": "voice_task_completion_announcement",
+  "version": "1.0.0",
+  "content": [
+    "Background task \"{title}\" {verb}.{summary_suffix}"
+  ],
+  "variables": [
+    {
+      "name": "title",
+      "description": "Task title or task id when title is unset. Substituted verbatim into the announcement.",
+      "required": true,
+      "examples": ["Send the Q3 brief", "task-7a2"]
+    },
+    {
+      "name": "verb",
+      "description": "Past-tense verb phrase matching the task's terminal state — 'finished' for completed, 'failed' for failed, 'was cancelled' for cancelled. The orchestrator picks this per status so the voice model speaks naturally.",
+      "required": true,
+      "examples": ["finished", "failed", "was cancelled"]
+    },
+    {
+      "name": "summary_suffix",
+      "description": "Optional trailing summary, pre-formatted with a leading space (e.g. ' Sent to the team.'). Empty string when no summary is available — the announcement gracefully degrades to just the title + verb.",
+      "required": false,
+      "default_value": "",
+      "examples": [" Sent to the team.", ""]
+    }
+  ],
+  "metadata": {
+    "category": "Conversational",
+    "description": "Short system message injected into the realtime voice session whenever a backend task this call dispatched reaches a terminal state. The voice model reads the rendered text aloud as a notification.",
+    "author": "magician",
+    "created_at": "2026-05-19T00:00:00Z",
+    "changelog": "v1.0.0: Initial release. Three variables; provider-neutral.",
+    "tags": ["voice", "realtime-voice", "task-completion", "announcement"],
+    "estimated_tokens": 30
+  }
+}

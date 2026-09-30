@@ -1,0 +1,25 @@
+[package]
+name = "magician-setup"
+version = "0.1.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Guided installer for the Magician stack"
+
+# A workspace member on purpose, despite the plan's first instinct to keep it
+# out. Its dependency tree is small and touches none of the runtime — cargo
+# builds only what it needs either way — and membership buys the thing that
+# matters more than build time: `make check-all` compiles it, so a setup wizard
+# that no longer builds cannot sit unnoticed. A wizard that does not compile is
+# worse than no wizard.
+[dependencies]
+magician-components = { path = "../magician-components", features = ["probe"] }
+ratatui = "0.30"
+# Only so `--simulate <file>` can read machines somebody else described. The
+# wizard's own state is never serialised through these.
+serde = { workspace = true, features = ["derive"] }
+serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[[bin]]
+name = "magician-setup"
+path = "src/main.rs"

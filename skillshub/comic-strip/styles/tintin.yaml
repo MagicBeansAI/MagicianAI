@@ -1,0 +1,17 @@
+name: Tintin-ish (ligne claire)
+prompt_fragment: |
+  European bande dessinée in the ligne claire tradition. Crisp uniform
+  black inks (2px), no hatching or cross-hatching, completely flat color
+  fills (no gradients, no shading). Refined cartoon character design
+  with simple round faces and small eyes. Backgrounds are meticulously
+  detailed in equal line weight as the foreground — every brick, every
+  street sign, every shop window rendered with the same precision as
+  the characters. Color palette is restrained and historical: muted
+  earth tones, dusty blues, parchment whites, brick reds. Composition
+  is cinematic and architectural. Speech bubbles white with thin
+  black borders, French-comic font feel.
+ip_safe_note: |
+  Inspired by Hergé's ligne claire technique, NOT Tintin/Snowy/Haddock/
+  Calculus/Thomson&Thompson trademark characters. Create original
+  characters in similar visual language — earnest young protagonist,
+  comedic supporting cast, exotic locations.

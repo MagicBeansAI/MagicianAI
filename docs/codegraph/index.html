@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Magician — Code Graph</title>
+  <script>
+    // The plane view is the landing surface for the code graph. The
+    // Cytoscape explorer remains available at explorer.html (advanced
+    // analysis: impact, blast lens, flows). Deep-link query params are
+    // preserved so links like index.html?sel=...&q=... land correctly.
+    var query = window.location.search || "";
+    window.location.replace("plane.html" + query);
+  </script>
+</head>
+<body>
+  <p style="font-family: system-ui, sans-serif; padding: 2rem">
+    Redirecting to the plane view… If nothing happens:
+    <a href="plane.html">plane view</a> ·
+    <a href="explorer.html">explorer</a> ·
+    <a href="c4.html">architecture canvas</a> ·
+    <a href="graph3d.html">3D view</a>
+  </p>
+</body>
+</html>

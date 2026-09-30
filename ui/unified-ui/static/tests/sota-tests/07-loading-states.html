@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Temporal Context / Loading States (Phase 5)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #17a2b8, #138496);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #17a2b8;
+            background: #f0fafc;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+        .status-btn.reset:hover { background: #545b62; }
+
+        /* Interactive elements */
+        .btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px 0;
+        }
+        .btn-primary { background: #17a2b8; color: white; }
+        .btn-warning { background: #ffc107; color: #333; }
+        .btn:hover { opacity: 0.9; }
+
+        .content-area {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            min-height: 120px;
+            margin: 15px 0;
+        }
+
+        /* Spinner styles */
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #17a2b8;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Skeleton loader */
+        .skeleton {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 4px;
+        }
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        .skeleton-text { height: 16px; margin: 10px 0; width: 80%; }
+        .skeleton-title { height: 24px; margin: 10px 0; width: 60%; }
+        .skeleton-image { height: 100px; margin: 10px 0; width: 100%; }
+
+        /* Progress bar */
+        .progress-container {
+            width: 100%;
+            height: 20px;
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 15px 0;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #17a2b8, #28a745);
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        /* Fade animation */
+        .fade-in { animation: fadeIn 0.5s ease-in; }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status-loading { background: #fff3cd; color: #856404; }
+        .status-stable { background: #d4edda; color: #155724; }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #17a2b8; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "07-loading-states",
+        "phase": "Phase 5",
+        "title": "Temporal Context / Loading States",
+        "description": "Tests detection of loading spinners, animations, and page stability",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 5: Temporal Context / Loading States</h1>
+        <p>Test the agent's ability to detect loading states and wait appropriately before interacting with content.</p>
+    </div>
+
+    <!-- Test Case 1: Spinner Loading -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="07-spinner-wait"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Wait for Spinner to Complete</h3>
+            <span class="test-case-id">07-spinner-wait</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Load Content" button below, then wait for the loading spinner to disappear and read the content that appears. Report the important data value shown in the loaded content.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="clicked-button">The "Load Content" button was clicked</li>
+                <li data-check="waited-for-spinner">Agent waited for the spinner to disappear (5 seconds)</li>
+                <li data-check="read-content">Agent correctly reports the important data value: "42"</li>
+            </ul>
+        </div>
+
+        <button class="btn btn-primary" onclick="startSpinnerLoad()" data-testid="trigger-spinner">
+            Load Content (5 second delay)
+        </button>
+
+        <div class="content-area" id="spinner-content">
+            <p>Click button to start loading...</p>
+        </div>
+
+        <div class="report-section" style="margin-top:10px;">
+            <input type="text" class="report-input" data-testid="report-spinner" placeholder="Enter the data value you read" />
+            <button class="btn" type="button"
+                    data-report-for="07-spinner-wait" data-report-check="read-content"
+                    data-report-expected="42" data-report-content="spinner-content">Submit value</button>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Skeleton Loader -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="07-skeleton-wait"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Wait for Skeleton Loader to Resolve</h3>
+            <span class="test-case-id">07-skeleton-wait</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Load with Skeleton" button, wait for the skeleton placeholder animation to be replaced with actual content, then report the secret code mentioned in the content.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="clicked-skeleton-btn">The skeleton load button was clicked</li>
+                <li data-check="detected-skeleton">Agent detected the skeleton animation pattern</li>
+                <li data-check="read-secret-code">Agent correctly reports the secret code: "ALPHA-7"</li>
+            </ul>
+        </div>
+
+        <button class="btn btn-primary" onclick="startSkeletonLoad()" data-testid="trigger-skeleton">
+            Load with Skeleton (3 second delay)
+        </button>
+
+        <div class="content-area" id="skeleton-content">
+            <p>Click button to start loading...</p>
+        </div>
+
+        <div class="report-section" style="margin-top:10px;">
+            <input type="text" class="report-input" data-testid="report-skeleton" placeholder="Enter the secret code you read" />
+            <button class="btn" type="button"
+                    data-report-for="07-skeleton-wait" data-report-check="read-secret-code"
+                    data-report-expected="ALPHA-7" data-report-content="skeleton-content">Submit code</button>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Progress Bar -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="07-progress-wait"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Wait for Multi-Step Progress to Complete</h3>
+            <span class="test-case-id">07-progress-wait</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Start Multi-Step Process" button, wait for the progress bar to reach 100% and all steps to complete, then report the Operation ID shown in the final result.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="started-process">The process was started by clicking the button</li>
+                <li data-check="waited-for-completion">Agent waited for progress bar to reach 100%</li>
+                <li data-check="read-operation-id">Agent correctly reports the Operation ID: "XYZ-789"</li>
+            </ul>
+        </div>
+
+        <button class="btn btn-primary" onclick="startProgressLoad()" data-testid="trigger-progress">
+            Start Multi-Step Process
+        </button>
+
+        <div class="progress-container">
+            <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div id="progress-status">Ready to start</div>
+
+        <div class="content-area" id="progress-content">
+            <p>Process result will appear here...</p>
+        </div>
+
+        <div class="report-section" style="margin-top:10px;">
+            <input type="text" class="report-input" data-testid="report-progress" placeholder="Enter the Operation ID you read" />
+            <button class="btn" type="button"
+                    data-report-for="07-progress-wait" data-report-check="read-operation-id"
+                    data-report-expected="XYZ-789" data-report-content="progress-content">Submit ID</button>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Loading States Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Loading simulations
+        function startSpinnerLoad() {
+            const content = document.getElementById('spinner-content');
+            // Genuine sub-condition: the Load Content button was clicked, so the
+            // loading sequence has begun.
+            window.setCheckState?.('07-spinner-wait', 'clicked-button', 'pass');
+            content.innerHTML = `
+                <div style="text-align: center;">
+                    <div class="spinner"></div>
+                    <p><span class="status-badge status-loading">Loading...</span></p>
+                </div>
+            `;
+
+            setTimeout(() => {
+                content.innerHTML = `
+                    <div class="fade-in">
+                        <span class="status-badge status-stable">Loaded</span>
+                        <h3 data-testid="loaded-title">Welcome to the Dashboard</h3>
+                        <p data-testid="loaded-content">This content was loaded after the spinner completed. The important data is: <strong>42</strong></p>
+                    </div>
+                `;
+                // Genuine completion of the temporal wait: the spinner has
+                // disappeared (5s elapsed) and the final content — the ONLY place
+                // the value "42" exists in the DOM — has rendered.
+                const spinnerGone = !content.querySelector('.spinner');
+                const valuePresent = /\b42\b/.test(content.textContent || '');
+                if (spinnerGone) {
+                    window.setCheckState?.('07-spinner-wait', 'waited-for-spinner', 'pass');
+                }
+                // read-content is NOT auto-marked on the timer. It requires the
+                // agent to enter the value they read (report-input handler), so a
+                // bare click+wait cannot pass the "reports the value" check.
+                void valuePresent;
+            }, 5000);
+        }
+
+        function startSkeletonLoad() {
+            const content = document.getElementById('skeleton-content');
+            // Genuine sub-condition: the skeleton load button was clicked.
+            window.setCheckState?.('07-skeleton-wait', 'clicked-skeleton-btn', 'pass');
+            content.innerHTML = `
+                <div class="skeleton skeleton-title"></div>
+                <div class="skeleton skeleton-image"></div>
+                <div class="skeleton skeleton-text"></div>
+                <div class="skeleton skeleton-text" style="width: 60%;"></div>
+            `;
+            // Genuine sub-condition: the skeleton placeholder animation is now
+            // actually present in the DOM (.skeleton nodes rendered before the
+            // real content resolves).
+            if (content.querySelector('.skeleton')) {
+                window.setCheckState?.('07-skeleton-wait', 'detected-skeleton', 'pass');
+            }
+
+            setTimeout(() => {
+                content.innerHTML = `
+                    <div class="fade-in">
+                        <h3 data-testid="skeleton-title">Article Title</h3>
+                        <div style="background:#e0e0e0; height:100px; border-radius:4px; display:flex; align-items:center; justify-content:center;">
+                            Image Placeholder
+                        </div>
+                        <p data-testid="skeleton-content">This is the actual loaded content that replaced the skeleton loader. The secret code is: <strong>ALPHA-7</strong></p>
+                    </div>
+                `;
+                // Genuine completion: the skeleton has been replaced (no more
+                // .skeleton nodes) and the real content — the ONLY place the
+                // secret code "ALPHA-7" exists in the DOM — has rendered.
+                const skeletonResolved = !content.querySelector('.skeleton');
+                const codePresent = /ALPHA-7/.test(content.textContent || '');
+                // read-secret-code is NOT auto-marked on the timer — the agent
+                // must enter the code they read (report-input handler).
+                void (skeletonResolved && codePresent);
+            }, 3000);
+        }
+
+        function startProgressLoad() {
+            const bar = document.getElementById('progress-bar');
+            const status = document.getElementById('progress-status');
+            const content = document.getElementById('progress-content');
+
+            const steps = [
+                { progress: 20, text: 'Step 1: Initializing...' },
+                { progress: 40, text: 'Step 2: Processing data...' },
+                { progress: 60, text: 'Step 3: Validating...' },
+                { progress: 80, text: 'Step 4: Finalizing...' },
+                { progress: 100, text: 'Complete!' }
+            ];
+
+            let step = 0;
+            // Genuine sub-condition: the multi-step process was started by
+            // clicking the button.
+            window.setCheckState?.('07-progress-wait', 'started-process', 'pass');
+            content.innerHTML = '<p><span class="status-badge status-loading">Processing...</span></p>';
+
+            const interval = setInterval(() => {
+                if (step < steps.length) {
+                    bar.style.width = steps[step].progress + '%';
+                    status.textContent = steps[step].text;
+                    step++;
+                } else {
+                    clearInterval(interval);
+                    content.innerHTML = `
+                        <div class="fade-in">
+                            <span class="status-badge status-stable">Complete</span>
+                            <h3>Process Complete!</h3>
+                            <p data-testid="progress-result">All steps finished successfully. Final result: <strong>Operation ID: XYZ-789</strong></p>
+                        </div>
+                    `;
+                    // Genuine completion: every step ran, the progress bar reached
+                    // 100%, and the final result — the ONLY place the Operation ID
+                    // "XYZ-789" exists in the DOM — has rendered.
+                    const reached100 = parseInt(bar.style.width, 10) >= 100;
+                    const idPresent = /XYZ-789/.test(content.textContent || '');
+                    if (reached100) {
+                        window.setCheckState?.('07-progress-wait', 'waited-for-completion', 'pass');
+                    }
+                    // read-operation-id is NOT auto-marked on the timer — the
+                    // agent must enter the Operation ID they read (report handler).
+                    void (reached100 && idPresent);
+                }
+            }, 1000);
+        }
+
+        // Report-value verification: the "read-*" checks pass only when the agent
+        // ENTERS the value they read AND that value is actually present in the
+        // loaded content (which only renders after a genuine click + wait). This
+        // closes the gap where a bare click+wait passed the "reports the value"
+        // check on the timer without the agent ever reading/reporting it.
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-report-for]');
+            if (!btn) return;
+            const testId = btn.getAttribute('data-report-for');
+            const checkName = btn.getAttribute('data-report-check');
+            const expected = (btn.getAttribute('data-report-expected') || '').trim();
+            const content = document.getElementById(btn.getAttribute('data-report-content'));
+            const input = btn.parentElement.querySelector('.report-input');
+            const entered = ((input && input.value) || '').trim();
+            const loaded = !!content && content.textContent.indexOf(expected) !== -1;
+            if (loaded && entered.toLowerCase() === expected.toLowerCase()) {
+                window.setCheckState?.(testId, checkName, 'pass');
+            }
+        });
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+name: imessage_send
+description: Send an iMessage (or SMS) from the user's Mac via the Messages app. Relays a FIXED, escaped AppleScript template through the desktop app's host gateway (Tauri) — works natively AND from a container, one code path. This sends from the USER's own Messages account on the host (not an agent-owned number), so confirm intent before sending on their behalf. Requires the macOS desktop app running (Automation TCC grant for Messages); returns status=error if the host gateway is unreachable. For arbitrary AppleScript use `macos_automation`; for reading message history use the `imessage` tool.
+version: "1.0.0"
+guide: |
+  Tool name: `imessage_send`
+
+  Sends a message through the macOS Messages app on the host. `to` is a phone
+  number (E.164, e.g. +14155551234), an Apple ID email, or an existing buddy
+  handle. `text` is the message body. `service` is `iMessage` (default) or `SMS`
+  (SMS requires an iPhone paired for Text Message Forwarding).
+
+  This uses a FIXED AppleScript template with both fields escaped — it does NOT
+  run arbitrary script (use `macos_automation` for that). It sends from the
+  USER's own Messages account, so confirm intent before sending on their behalf.
+
+  Result: `{status: "ok"|"error", to, service, stdout, stderr, exit_code}`. A
+  non-zero `exit_code` usually means Messages needs an Automation TCC grant, or
+  the recipient could not be resolved on the chosen service.
+parameters:
+  - name: to
+    required: true
+    param_type: string
+    description: Recipient — a phone number (E.164, e.g. +14155551234), Apple ID email, or existing buddy handle.
+  - name: text
+    required: true
+    param_type: string
+    description: The message body to send.
+  - name: service
+    required: false
+    param_type: string
+    description: Delivery service — `iMessage` (default) or `SMS` (requires an iPhone paired for Text Message Forwarding).
+    enum_values:
+    - iMessage
+    - SMS
+implementation:
+  type: compiled
+  provider_name: imessage_send
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 35
+  categories:
+    - macos
+    - messaging
+  composition_category: action
+  sandbox: none

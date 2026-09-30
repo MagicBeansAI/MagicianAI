@@ -1,0 +1,64 @@
+{
+  "name": "memory_extract_entities",
+  "version": "1.1.0",
+  "content": [
+    "Extract structured entities from the following episodic memory data.",
+    "",
+    "## Source Episodes ({episode_count} episodes)",
+    "{source_json}",
+    "",
+    "## Target Tier Schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Read each episode carefully, prioritizing `memory_candidates`, `memory_updates`, final output excerpts, and the final outcome. Extract only durable entities that are likely to help future work: people, organizations, stable projects, reusable tools, stable preferences, workflows, and recurring patterns.",
+    "2. For each entity, extract its attributes and note which episodes mention it",
+    "3. Normalize entity names to their canonical form",
+    "4. Merge entities that refer to the same real-world thing across different episodes",
+    "5. Assign confidence scores based on evidence strength and consistency",
+    "6. Conform extracted entities to the target tier schema provided above",
+    "7. Do NOT extract transient trace debris: task IDs, execution IDs, one-off local test page URLs, temporary output filenames, internal helper names, or single-run implementation details unless the user explicitly asked to remember them or they describe a reusable environment/tool pattern.",
+    "8. Prefer fewer high-quality entities over exhaustive extraction. Skip low-value entities even if mentioned many times.",
+    "9. Respect each episode's `memory_quality.extraction_priority`: low-priority/progress-only episodes should contribute only when a durable fact is explicit in `memory_candidates`, `memory_updates`, or final output excerpts.",
+    "",
+    "Return either a JSON object with an `entities` array matching the target schema, or a bare JSON array of entity objects if the model cannot safely wrap it. The runtime will normalize either shape.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized array of episodic memory entries to extract entities from",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"id\": \"ep_001\", \"content\": \"User asked to schedule meeting with Alice\", \"timestamp\": \"2026-03-01T10:00:00Z\"}]"
+      ]
+    },
+    {
+      "name": "tier_schema",
+      "description": "JSON schema describing the target memory tier structure for extracted entities",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "{\"entity\": {\"name\": \"string\", \"type\": \"string\", \"confidence\": \"number\", \"attributes\": \"object\"}}"
+      ]
+    },
+    {
+      "name": "episode_count",
+      "description": "Number of episodes in the source data",
+      "required": true,
+      "default_value": "0",
+      "examples": ["5", "20", "100"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to extract structured entities from episodic memory data. Provides source episodes and target schema for entity conformance.",
+    "author": "magician",
+    "created_at": "2026-03-04T00:00:00Z",
+    "changelog": "v1.1.0: Prioritizes memory_candidates, memory_updates, final output excerpts, and memory_quality extraction priority; rejects transient trace debris and prefers fewer high-quality durable entities. v1.0.0: Initial entity extraction user prompt for memory consolidation pipeline.",
+    "tags": ["memory", "consolidation", "entity-extraction"],
+    "estimated_tokens": 200
+  }
+}

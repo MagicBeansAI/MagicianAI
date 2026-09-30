@@ -1,0 +1,38 @@
+name: request_owner_action
+description: Request the owner's approval for an action an external contact is asking for; the owner approves or rejects before anything happens.
+version: "1.0.0"
+guide: |
+  Tool name: `request_owner_action`
+
+  Use this when an external contact asks for something that requires the owner's
+  authority to act (a commitment, a purchase, sharing something private). The
+  request is surfaced to the owner as an approve/reject decision. On approval, the
+  owner's assistant performs it and the outcome is relayed back to the contact. You
+  never perform the privileged action yourself.
+
+  - `action`: the action the owner is being asked to approve, in your own words.
+  - `details`: any specifics the owner needs to decide (optional).
+  - `context_summary`: a short note on who is asking and why (optional).
+parameters:
+  - name: action
+    required: true
+    param_type: string
+    description: The action the owner is being asked to approve.
+  - name: details
+    param_type: string
+    description: Optional specifics the owner needs to decide.
+  - name: context_summary
+    param_type: string
+    description: Optional short context about the contact and their request.
+implementation:
+  type: compiled
+  provider_name: request_owner_action
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - harness
+    - communication
+    - owner
+  composition_category: communication
+  sandbox: none

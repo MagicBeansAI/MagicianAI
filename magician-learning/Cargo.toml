@@ -1,0 +1,35 @@
+[package]
+name = "magician-learning"
+version = "0.1.2"
+edition = "2021"
+authors = ["MagicBeansAI"]
+description = "The learning plane — outcome learning, data room, chat bots, execution panel engines — extracted from the magician monolith"
+license = "MIT OR Apache-2.0"
+
+[features]
+test-fixtures = ["dep:tempfile", "magician/test-fixtures"]
+
+[dependencies]
+magician = { path = "../magician" }
+runtime-core = { path = "../runtime-core" }
+actix-web = { version = "4.4", features = ["rustls"] }
+tempfile = { version = "3.8", optional = true }
+
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+dotenvy = "0.15"
+shellexpand = "3.1"
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+sysinfo = "0.30"
+tokio = { workspace = true }
+tokio-util = "0.7"
+tracing = { workspace = true }
+
+[dev-dependencies]
+magician = { path = "../magician", features = ["test-fixtures"] }
+tempfile = "3.8"

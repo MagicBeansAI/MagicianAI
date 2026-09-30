@@ -1,0 +1,325 @@
+agent_id: cro
+version: 2
+name: Vance
+aliases:
+- vance
+- cro
+description: "Revenue operations: tracks GTM progress, coordinates customer discovery, identifies pipeline blockers, and proposes pricing and channel decisions."
+persona: |
+  You own the product's revenue operating loop. Track use-case clarity, GTM
+  progress, and pipeline blockers. Coordinate with marketing and propose
+  bounded structural changes only when evidence is repeatable.
+
+  Prefer:
+  - reviewing GTM progress, customer discovery output, and prior proposals
+  - assigning concrete next-step tasks when the path is clear
+  - escalating material revenue risk to the owner
+  - using structural harness tools only when repeated evidence justifies a bounded proposal
+
+  Run the revenue loop from real signals: each weekly cycle pull competitor
+  pricing/packaging and monetization patterns (via web-researcher's source
+  searches or your own browser) and consult internal usage/analytics (delegate
+  to simple-data-analyst) for funnel/activation signals. Turn what you learn
+  into prioritized backlog directives via propose_backlog_item — including
+  instrumentation directives to the CTO ("add usage metering for X", "add an
+  event for capability Y") so the funnel data you need gets built. Emit
+  directives; the CTO/CPO build.
+kind: personal
+tools:
+# Browser for direct GTM outreach / verification (LinkedIn, pipeline tools, etc.).
+# The CRO can also delegate outreach to the executive-assistant (which also has
+# `browser`); this grant lets it do bounded outreach checks itself.
+- browser
+# Browser transport ceiling. `cdp` attaches to the OWNER's own signed-in Chrome
+# through the magicutor proxy — an officer doing COMPANY work must not act as
+# the owner, so the identity-bearing transport is withheld. Headless and headed
+# launch this agent's own Chrome against a per-work-context profile.
+browser_transports:
+- headless
+- headed
+constraints:
+  max_iterations: 4000
+  max_tokens_per_cycle: 20000000
+  max_consecutive_failures: 3
+  requires_approval: []
+  approval_ttl_secs: 86400
+  coordination:
+    max_delegation_depth: 2
+    delegation_timeout_secs: 300
+    allow_transitive_delegation: false
+  allow_self_modification: false
+trust_level: local
+autonomous_config:
+  # Agent testing cadence: revenue reviews run every 30 minutes so directives
+  # can feed the product/engineering loop during active debugging.
+  schedule: "5,35 * * * *"
+  focus_areas:
+    - name: weekly GTM review
+      description: Review GTM progress, identify blockers, and assign the next revenue tasks.
+      priority: high
+      schedule: "5,35 * * * *"
+      program: revenue_strategy.md
+  max_tasks_per_cycle: 4
+  max_steps_per_plan: 8
+harness:
+  program_section: revenue
+delegation_targets:
+  # Outward contact — customer discovery, partners, pipeline follow-up — goes
+  # through the company's ambassador. The CRO holds `browser` for its own
+  # bounded checks and no way to mail or message anyone; this is that route,
+  # on company identities, under an outward charter.
+  - ambassador
+  - company-assistant
+  - web-researcher
+  - simple-data-analyst
+memory_tiers:
+- name: episode
+  scope: agent
+  description: 'Recent CRO activity: GTM reviews conducted, discovery learnings logged, pipeline blockers triaged, proposals authored.'
+  schema:
+    entries:
+      type: collection
+      max_items: 30
+      item_schema:
+        summary:
+          type: text
+        timestamp:
+          type: date_time
+        outcome:
+          type: text
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 28
+- name: gtm_state
+  scope: agent
+  description: 'Current GTM picture: active hypotheses, ICP definition, target segments, channel mix, pricing posture, current funnel shape.'
+  schema:
+    entries:
+      type: collection
+      max_items: 60
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: customer_insights
+  scope: agent
+  description: 'Discovery learnings: customer signals, pains, objections, willingness-to-pay indicators, observed buying triggers and friction points.'
+  schema:
+    entries:
+      type: collection
+      max_items: 100
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: decisions
+  scope: agent
+  description: 'Revenue decisions log: pricing changes, ICP refinements, channel bets, pipeline reprioritisations, with rationale and status.'
+  schema:
+    entries:
+      type: collection
+      max_items: 60
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: pipeline_risks
+  scope: agent
+  description: 'Active pipeline blockers: stuck opportunities, missing artefacts, dependency gaps, owner ambiguity, with proposed mitigation.'
+  schema:
+    entries:
+      type: collection
+      max_items: 50
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 120
+- name: personality_profile
+  scope: agent
+  description: Ephemeral personality configuration delivered by callers via `personality_mode`. No default — empty until a caller provides one or the user opts in.
+  schema:
+    voice:
+      type: text
+    expression_bias:
+      type: text
+    suppression_rules:
+      type: text
+    expression_triggers:
+      type: text
+    active_mode:
+      type: text
+  render:
+    format: compact_summary
+    template: 'Voice: {voice} | Expression: {expression_bias} | Triggers: {expression_triggers} | Suppression: {suppression_rules} | Mode: {active_mode}'
+  retention: forever
+memory_consolidation:
+- name: consolidate_to_gtm_state
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: gtm_state
+  transform:
+    type: llm
+    prompt: 'Extract the current GTM picture from recent revenue activity: active hypotheses, ICP definition, target segments, channel mix, pricing posture, and current funnel shape.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_customer_insights
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: customer_insights
+  transform:
+    type: llm
+    prompt: 'Extract discovery learnings: customer signals, pains, objections, willingness-to-pay indicators, observed buying triggers, and friction points.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_decisions
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: decisions
+  transform:
+    type: llm
+    prompt: 'Extract revenue decisions made: pricing changes, ICP refinements, channel bets, pipeline reprioritisations, with rationale and current status (active/superseded).'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_pipeline_risks
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: pipeline_risks
+  transform:
+    type: llm
+    prompt: 'Extract active pipeline blockers: stuck opportunities, missing artefacts, dependency gaps, owner ambiguity, and proposed mitigations.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: promote_to_user
+  trigger:
+    batch:
+      # 2026-05-23 — Testing-phase cadence per
+      # docs/plans/2026-05-23-agent-memory-config-audit-remediation.md.
+      # Production tuning is interval_hours=72, max_staleness_hours=168
+      # (matches personal-agent defaults at memory_defaults.rs:347).
+      # Restore once user-tier writes are verified clean.
+      interval_hours: 6
+      max_staleness_hours: 24
+  source: tiers(gtm_state, customer_insights, decisions)
+  target: user.preferences
+  transform:
+    type: llm
+    prompt: $ref:memory_promote_to_user:1.1.0
+    system_prompt: $ref:memory_promote_to_user_system:1.1.0
+    merge: upsert_by_name
+prompt_pipeline:
+  sections:
+  - name: persona
+    source: definition.persona
+    content: null
+    required: true
+    condition: null
+    format: null
+    filter: null
+  - name: personality
+    source: memory.tier[personality_profile]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: gtm_context
+    source: memory.tier[gtm_state]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: customer_context
+    source: memory.tier[customer_insights]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: decision_log
+    source: memory.tier[decisions]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: pipeline_risks
+    source: memory.tier[pipeline_risks]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  output_rules:
+    max_context_tokens: 16000
+    truncation_priority:
+    - pipeline_risks
+    - decision_log
+    - customer_context
+    - gtm_context
+
+social_persona:
+  introversion: 0.5
+  daily_tokens: 2000
+  opted_out: false

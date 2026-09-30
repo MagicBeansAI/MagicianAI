@@ -1,0 +1,14 @@
+{
+  "status": "failed",
+  "semantic_checks_passed": 7,
+  "semantic_checks_total": 7,
+  "accounting_error": "governed LLM source llm_call_revisions_normalized contains 1 row(s) with invalid usage, pricing, timing, or validation facts",
+  "root_cause": "Canonical read-side cost_source vocabulary omitted local, which the Decision Model telemetry and recorder emit for Kev/Laya. A single valid zero-cost Kev row invalidated the whole scoped cost query.",
+  "diagnostic": {
+    "original_reader_rejected_rows": 1,
+    "corrected_reader_rejected_rows": 0
+  },
+  "retained_evidence": "/Volumes/build/magician/tmp/memory-human-review-20260927/queue-owner-workflows",
+  "log": "/Volumes/build/magician/tmp/memory-human-review-20260927/queue-owner-workflows-failed.log",
+  "rollout": "Automatic fallback remains disabled pending the corrected owner replay."
+}

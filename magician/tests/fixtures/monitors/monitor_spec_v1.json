@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "objective": "Watch the Acme Robotics pricing page and report material price or plan changes",
+  "query_seeds": ["acme robotics pricing", "acme robotics plan tiers"],
+  "sources": {
+    "urls": ["https://acme-robotics.example/pricing"],
+    "domains": ["acme-robotics.example"],
+    "authenticated_sources": []
+  },
+  "include_rules": ["pricing tables", "plan tiers", "usage limits"],
+  "exclude_rules": ["blog posts", "career pages"],
+  "match_mode": "balanced",
+  "notification_policy": "material_changes",
+  "notify_initial_baseline": false
+}

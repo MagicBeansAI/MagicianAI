@@ -1,0 +1,6 @@
+# The masters. Generated plates and their start-images are large, are
+# regenerable from the brief in docs/archive/plans/2026-08-06-life-montage-plates.md,
+# and are never served — the site only ever loads the encoded frame sequence
+# and its manifest. The plan claimed these were already ignored; they were not.
+src/
+work/

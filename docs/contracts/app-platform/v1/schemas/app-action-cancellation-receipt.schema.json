@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "AppProtocolVersion": {
+      "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    },
+    "AppReference": {
+      "type": "string"
+    },
+    "AppRunStatus": {
+      "description": "Stable public lifecycle for one logical app run.\n\nArtifact V2 owns a richer internal execution state machine. This smaller\nenum is the app protocol projection: clients never infer terminality from\nan HTTP status code or from an open-ended internal status string.",
+      "enum": [
+        "queued",
+        "planning",
+        "running",
+        "paused",
+        "deferred",
+        "waiting",
+        "blocked",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+        "archived",
+        "uncertain"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-action-cancellation-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Stable response-loss replay receipt. `Cancelling` proves the intent is\ndurable; `Cancelled` is minted only from the protected pre-I/O proof and is\nreturned only after Artifact has committed the canonical terminal state.",
+  "properties": {
+    "generation": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/AppReference"
+    },
+    "protocol_version": {
+      "$ref": "#/$defs/AppProtocolVersion"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "run_ref": {
+      "$ref": "#/$defs/AppReference"
+    },
+    "status": {
+      "$ref": "#/$defs/AppRunStatus"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "run_ref",
+    "generation",
+    "idempotency_key",
+    "status",
+    "requested_at"
+  ],
+  "title": "AppActionCancellationReceipt",
+  "type": "object"
+}

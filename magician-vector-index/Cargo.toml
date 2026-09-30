@@ -1,0 +1,62 @@
+[package]
+name = "magician-vector-index"
+version = "0.1.14"
+edition = "2021"
+authors = ["MagicBeansAI"]
+description = "LanceDB / Arrow-backed memory index and candidate extraction"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+# Test-only deterministic vector provider. This is intentionally non-default so
+# runtime builds can only use real embeddings or direct retrieval fallback.
+test-hash-embeddings = []
+
+[dependencies]
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Async runtime — only the surface memory_index/memory_candidates need.
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "rt-multi-thread", "macros", "sync", "time"] }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Hashing for content/source-hash digests.
+blake3 = { workspace = true }
+fs2 = "0.4"
+
+# LanceDB + Arrow — the whole point of this crate extraction.
+lancedb = "0.27.2"
+arrow-array = "57.2"
+arrow-schema = "57.2"
+
+# Local semantic embeddings for the derived memory index. Runtime rebuilds use
+# Ollama; if Ollama is unavailable the index rebuild fails and prompt rendering
+# uses direct retrieval fallback instead of writing fake vectors.
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "system-proxy"] }
+
+# Used by vector_toolkit::normalize_url for cross-source URL canonicalization.
+url = "2"
+
+# Embedding seam: the routed embed path (install_embedding_router) resolves the
+# provider through magicllm's ConfiguredRouter so embedding identity is a router
+# profile rather than a Rust constructor call. No cycle: magicllm depends on no
+# workspace member crate.
+magicllm = { path = "../magicllm" }
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "io-util"] }
+serde_yaml = { workspace = true }
+wiremock = "0.5"

@@ -1,0 +1,30 @@
+{
+  "name": "right_angle_marker — L polyline at the vertex",
+  "recipe": {
+    "type": "right_angle_marker",
+    "defaults": { "size": 28 },
+    "draw": [
+      {
+        "op": "polyline",
+        "points": [
+          ["(x|cx)+size", "y|cy"],
+          ["(x|cx)+size", "(y|cy)+size"],
+          ["x|cx", "(y|cy)+size"]
+        ]
+      }
+    ]
+  },
+  "shape": { "type": "right_angle_marker", "x": 100, "y": 200 },
+  "space": { "width": 2048, "height": 1152 },
+  "expected": [
+    {
+      "op": "polyline",
+      "closed": false,
+      "points": [
+        [128, 200],
+        [128, 228],
+        [100, 228]
+      ]
+    }
+  ]
+}

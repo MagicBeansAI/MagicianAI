@@ -1,0 +1,24 @@
+[package]
+name = "magician-storage-gate1"
+version = "0.1.0"
+edition = "2021"
+publish = false
+authors = ["MagicBeansAI"]
+description = "Disposable Decision Gate 1 spike. Not a production adapter and not used by magician-bin."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+magician-storage = { path = "../magician-storage" }
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+tokio-postgres = "0.7"
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "process"] }

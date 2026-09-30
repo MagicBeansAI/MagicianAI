@@ -1,0 +1,98 @@
+name: notes_data
+description: Read-only, bounded, executor-scoped search and reading of the owner's notes, with no host paths.
+version: "1.0.0"
+guide: |-
+  Tool name: `notes_data`
+
+  This is the read-only host binder that lets an app search the owner's notes
+  space and read a note it found. It cannot create, append to, publish or
+  delete a note, and it never accepts or returns a host filesystem path.
+
+  Actions (exactly two):
+
+  - `search_notes {query, limit?, provider?}` searches the notes space (the
+    local markdown folder and, when active, the SilverBullet space). Each hit
+    has a `source_ref`, title, provider-relative path, modified time and up to
+    eight matched lines. `scan_truncated` and `more_available` say when
+    "nothing found" might only mean "not scanned".
+  - `read_note {source_ref}` reads one note a search returned: its title and
+    markdown (capped at 256 KiB by the store). A note that has since moved or
+    been deleted is `note: null` with `present: false`.
+
+  `source_ref` is `notes:<provider>:<relative markdown path>`, exactly as a
+  search emits it. Queries need at least two characters, results are capped at
+  50, serialized results fail closed above 768 KiB, and every call has a
+  30-second timeout.
+
+  Runtime scope is executor-owned: `__principal` and `__workspace` are injected
+  by the runtime. Public principal/workspace values are assertions only and can
+  never switch scope.
+parameters:
+  - name: action
+    param_type: string
+    description: Optional direct action name. Inner-loop calls set this automatically.
+    enum_values:
+      - search_notes
+      - read_note
+  - name: principal
+    param_type: string
+    description: Optional assertion that must match the runtime-injected principal.
+  - name: workspace
+    param_type: string
+    description: Optional assertion that must match the runtime-injected workspace.
+  - name: query
+    param_type: string
+    description: Words to search the notes for (at least two characters).
+  - name: limit
+    param_type: integer
+    description: Maximum hits, default 10 and capped at 50.
+  - name: provider
+    param_type: string
+    description: Optional provider to search (local_markdown or silverbullet).
+    enum_values:
+      - local_markdown
+      - silverbullet
+  - name: source_ref
+    param_type: string
+    description: A source_ref returned by search_notes, for read_note.
+native_action_schemas:
+  search_notes:
+    description: Search the owner's notes and return bounded hits.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - query
+      - limit
+      - provider
+    required:
+      - query
+    parameter_overrides:
+      query: {type: string, minLength: 2, maxLength: 256}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 10}
+      provider: {type: string, enum: [local_markdown, silverbullet]}
+    timeout_secs: 30
+  read_note:
+    description: Read one note a search returned, or learn that it is gone.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - source_ref
+    required:
+      - source_ref
+    parameter_overrides:
+      source_ref: {type: string, minLength: 8, maxLength: 1024, pattern: '^notes:(local_markdown|silverbullet):[^\x00-\x1f\x7f]+$'}
+    timeout_secs: 30
+implementation:
+  type: primitive
+  provider_name: notes_data
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - notes
+    - host_read
+  composition_category: observation
+  sandbox: none

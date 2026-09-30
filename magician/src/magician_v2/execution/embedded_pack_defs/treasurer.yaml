@@ -1,0 +1,49 @@
+name: treasurer
+description: Request short-lived credential grants from the shared secret broker
+version: "1.0.0"
+guide: |
+  Tool name: `treasurer`
+  Use this only when a provisioned credential must be handed to another tool action as a short-lived `credential_token`.
+  The local runtime can resolve `credential_id` directly, but external and cross-process callers should use this adapter so they share the same broker contract and policy checks.
+
+  Operations:
+  - `list_available`: returns safe metadata only (`id`, `label`), never secret values.
+  - `request_credential`: requests a short-lived credential token bound to the intended runtime action.
+
+  Request flow:
+  1. Call `treasurer` with `operation: request_credential`, `credential_id`, `target_tool`, `target_action`, and `target_domain` when the action is domain-scoped.
+  2. If the response status is `issued`, pass the returned `credential_token` unchanged to the target tool action.
+  3. If the response status is `needs_approval`, surface that requirement to the user and wait for approval through the existing localhost approval UI/API.
+  4. If the response status is `denied` or `not_found`, do not invent credentials or fallback values.
+parameters:
+  - name: operation
+    required: true
+    param_type: string
+    description: Treasurer operation to run
+    enum_values: [list_available, request_credential]
+  - name: credential_id
+    param_type: string
+    description: Stable provisioned secret identifier to broker
+  - name: target_tool
+    param_type: string
+    description: Canonical runtime tool name the grant will be used with, such as http or browser
+  - name: target_action
+    param_type: string
+    description: Canonical runtime action name the grant will be used with, such as post or submit
+  - name: target_domain
+    param_type: string
+    description: Optional target host/domain when the secret policy is domain-scoped
+  - name: ttl_secs
+    param_type: integer
+    description: Optional short-lived grant TTL override in seconds
+implementation:
+  type: compiled
+  provider_name: treasurer
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - security
+    - credentials
+  composition_category: credential_management
+  sandbox: none

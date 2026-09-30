@@ -1,0 +1,9 @@
+# ConwayResearch/Underdog-Woof-4B-1.1 — Qwen3.5 4B, 4-bit MLX safetensors.
+# FROM is filled in by scripts/setup-local-generation-model.sh.
+# Rebuild: make setup-local-generation MODEL=woof-4b
+# Docs: docs/components/magician/local-channel-llm.md
+FROM __WOOF_WEIGHTS_DIR__
+RENDERER qwen3.5
+PARSER qwen3.5
+PARAMETER temperature 0.1
+PARAMETER num_ctx 32768

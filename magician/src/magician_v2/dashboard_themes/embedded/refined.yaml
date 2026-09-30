@@ -1,0 +1,56 @@
+id: refined
+name: Refined
+description: Restrained sans, soft shadows, generous negative space, pastel accents, smooth motion-first. Apple-style polish.
+best_for: Executive dashboards, public-facing surfaces, quarterly summaries, anywhere the goal is "looks expensive and quiet".
+
+fonts:
+  display:
+    family: "'Söhne', 'Inter Display', system-ui, sans-serif"
+    url: "https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700&display=swap"
+    weights: [500, 600, 700]
+  body:
+    family: "'Söhne', 'Inter', system-ui, sans-serif"
+    url: "https://fonts.googleapis.com/css2?family=Manrope:wght@400;500&display=swap"
+    weights: [400, 500]
+  mono:
+    family: "'Söhne Mono', ui-monospace, monospace"
+    url: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400&display=swap"
+    weights: [400]
+
+palette:
+  background: "#FAFAFA"
+  surface: "#FFFFFF"
+  foreground: "#0F0F12"
+  foreground_muted: "#6B7280"
+  accent: "#5B7FFF"
+  accent_alt: "#FF8A65"
+  chart_colors:
+    - "#5B7FFF"
+    - "#FF8A65"
+    - "#A78BFA"
+    - "#34D399"
+    - "#FBBF24"
+    - "#F472B6"
+    - "#60A5FA"
+    - "#FB923C"
+  border: "rgba(15, 15, 18, 0.06)"
+  shadow: "rgba(15, 15, 18, 0.08)"
+
+spacing:
+  container_max_width_px: 1080
+  container_padding_x_px: 40
+  container_padding_y_px: 56
+  block_gap_px: 40
+  prose_line_height: 1.7
+  heading_scale: 1.30
+
+atmosphere:
+  kind: gradient_mesh
+  intensity: 0.06
+
+motion:
+  load_stagger_ms: 80
+  load_duration_ms: 600
+  load_easing: cubic-bezier(0.16, 1, 0.3, 1)
+  hover_lift_px: 2
+  scroll_reveal: true

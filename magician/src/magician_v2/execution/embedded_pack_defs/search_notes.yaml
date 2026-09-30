@@ -1,0 +1,59 @@
+name: search_notes
+description: Search the owner's notes by the words written in them. Returns matching notes with the lines that matched.
+version: "1.0.0"
+guide: |
+  Tool name: `search_notes`
+
+  Finds notes containing EVERY term in the query, across the owner's configured
+  notes providers. Returns each matching note with its title, path, and the
+  lines that matched, so you can usually answer without opening anything.
+
+  Use it before telling the owner something is not written down, and before
+  creating a note that may already exist. Use it to recover context they saved
+  earlier — a captured passage, a published task page, a note they wrote.
+
+  Terms are ANDed. `budget meeting` finds notes containing both words, not
+  either, so adding a word narrows the result. Matching is case-insensitive and
+  substring-based, so `invoice` matches `invoices`. It is NOT semantic: a search
+  for `hiring` will not find a note that only says `recruitment`. When a query
+  returns nothing, try the words the owner would have typed, not synonyms.
+
+  A note whose TITLE or path matches every term is returned even when the body
+  does not mention them, and ranks above body-only hits. `matched_in_title`
+  tells you which kind of hit you are looking at.
+
+  Read the response rather than assuming it:
+
+  - `hits` is ordered best-first; `matches` holds the strongest lines, and
+    `match_count` may be larger than the lines returned.
+  - `more_available` true means the cap trimmed real results — say so, or raise
+    `limit`, rather than presenting the list as everything there is.
+  - `scan_truncated` true means the scan stopped before the space ended, so a
+    missing note may still exist. Never report "you have no note about X" on a
+    truncated scan.
+  - `open_url` is where the owner can open it; `path` is what to show them.
+
+  `provider` normally stays omitted so every configured root is searched — a
+  note written while a provider was down lives in the fallback, and restricting
+  the search would hide it.
+parameters:
+  - name: query
+    required: true
+    param_type: string
+    description: Words the note must contain. All terms must match. Use the owner's own words rather than synonyms.
+  - name: limit
+    param_type: integer
+    description: Most notes to return. Defaults to a screenful; the maximum is 50.
+  - name: provider
+    param_type: string
+    description: Optional notes provider override. Normally omit — searching every configured root is what finds a note written during a fallback.
+implementation:
+  type: compiled
+  provider_name: search_notes
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - notes
+  composition_category: read
+  sandbox: none

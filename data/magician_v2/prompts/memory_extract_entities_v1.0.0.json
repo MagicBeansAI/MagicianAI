@@ -1,0 +1,61 @@
+{
+  "name": "memory_extract_entities",
+  "version": "1.0.0",
+  "content": [
+    "Extract structured entities from the following episodic memory data.",
+    "",
+    "## Source Episodes ({episode_count} episodes)",
+    "{source_json}",
+    "",
+    "## Target Tier Schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Read each episode carefully, including its `artifact_output` field when present, and identify all entities (people, tools, projects, preferences, workflows, patterns). The `artifact_output` often contains tool names, service identifiers, and file paths that should be captured as entities.",
+    "2. For each entity, extract its attributes and note which episodes mention it",
+    "3. Normalize entity names to their canonical form",
+    "4. Merge entities that refer to the same real-world thing across different episodes",
+    "5. Assign confidence scores based on evidence strength and consistency",
+    "6. Conform extracted entities to the target tier schema provided above",
+    "",
+    "Return the JSON array of entity objects as specified by your system prompt.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized array of episodic memory entries to extract entities from",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"id\": \"ep_001\", \"content\": \"User asked to schedule meeting with Alice\", \"timestamp\": \"2026-03-01T10:00:00Z\"}]"
+      ]
+    },
+    {
+      "name": "tier_schema",
+      "description": "JSON schema describing the target memory tier structure for extracted entities",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "{\"entity\": {\"name\": \"string\", \"type\": \"string\", \"confidence\": \"number\", \"attributes\": \"object\"}}"
+      ]
+    },
+    {
+      "name": "episode_count",
+      "description": "Number of episodes in the source data",
+      "required": true,
+      "default_value": "0",
+      "examples": ["5", "20", "100"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to extract structured entities from episodic memory data. Provides source episodes and target schema for entity conformance.",
+    "author": "magician",
+    "created_at": "2026-03-04T00:00:00Z",
+    "changelog": "v1.0.0: Initial entity extraction user prompt for memory consolidation pipeline.",
+    "tags": ["memory", "consolidation", "entity-extraction"],
+    "estimated_tokens": 200
+  }
+}

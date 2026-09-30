@@ -1,0 +1,980 @@
+#!/usr/bin/env python3
+"""media_fetch — turn a media URL into metadata, a transcript, audio, or video.
+
+Acquisition only. yt-dlp pulls native streams; the compiled `media_edit`
+provider owns every transcode. This pack never re-encodes anything.
+
+The yt-dlp resolver helpers below are duplicated from `youtube-search` on
+purpose. skillshub has no cross-pack import convention — the governed runtime
+clears the environment and rebuilds PATH per pack — so a shared module would
+fight the isolation model. Twenty duplicated lines is the cheaper mistake.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+
+class ProviderUnavailable(RuntimeError):
+    """yt-dlp ran but did not deliver a result to parse."""
+
+
+class CapExceeded(RuntimeError):
+    """The item is larger or longer than this pack is allowed to fetch."""
+
+
+PACK_BIN = pathlib.Path(__file__).resolve().parent
+
+
+def _yt_dlp_command() -> list[str] | None:
+    """Return a command prefix for yt-dlp from env override, PATH, or module."""
+    env_bin = os.environ.get("YTDLP_BIN", "").strip()
+    if env_bin:
+        return [env_bin]
+
+    bin_path = shutil.which("yt-dlp")
+    if bin_path:
+        return [bin_path]
+
+    if importlib.util.find_spec("yt_dlp") is not None:
+        return [sys.executable, "-m", "yt_dlp"]
+
+    return None
+
+
+def _js_runtime_args() -> list[str]:
+    """Use Node for yt-dlp JS challenges when it is present in the runtime."""
+    if shutil.which("node"):
+        return ["--js-runtimes", "node"]
+    return []
+
+
+def _ffmpeg_location() -> pathlib.Path | None:
+    """Directory holding the ffmpeg this pack should use, if any.
+
+    Prefers the pack-local symlink installed by `make -C skillshub
+    setup-media-fetch`, so the governed PATH never has to carry all of
+    Homebrew just to resolve one binary.
+    """
+    local = PACK_BIN / "ffmpeg"
+    if local.exists():
+        return PACK_BIN
+    found = shutil.which("ffmpeg")
+    if found:
+        return pathlib.Path(found).parent
+    return None
+
+
+def probe(url: str, timeout: int | float = 90) -> dict:
+    """Run one `--simulate` extraction and return the info object.
+
+    This is the positive signal every action depends on: receiving a parsed
+    object proves the extractor ran. yt-dlp exits 0 with empty stdout *and*
+    empty stderr both when an item legitimately has nothing and when its
+    extractor is broken, so an absent object is an error, never an empty
+    success.
+
+    `--flat-playlist` is load-bearing, not an optimization. Measured live: a
+    real 100-item playlist, probed without it, did not finish within 95s
+    (killed) — so `reject_playlists()` below never even ran, and this
+    pack's own documented guard ("playlists refused, naming the entry
+    count") was dead for any playlist beyond a handful of items, silently
+    falling through to `probe()`'s own `timeout` instead. With
+    `--flat-playlist`, the same URL resolved in ~1.4s with all 100 entries
+    present — exactly what `reject_playlists` needs, and nothing more.
+    Measured the other direction too, field by field, before trusting this:
+    for a single-video URL (this pack's own canary,
+    https://www.youtube.com/watch?v=jNQXAC9IVRw), `--flat-playlist` is a
+    no-op — every field `project_metadata` reads (title, id, extractor,
+    duration, upload_date, uploader, channel, description, view_count, ext,
+    subtitles, automatic_captions) came back identical with and without it.
+    yt-dlp only takes the flat, cheap path for an actual playlist/channel
+    object; a single item still gets full extraction.
+    """
+    yt_dlp = _yt_dlp_command()
+    if not yt_dlp:
+        raise RuntimeError(
+            "media-fetch backend unavailable. Run "
+            "`make -C skillshub setup-python` to install the skillshub Python "
+            "environment, or install `yt-dlp` on PATH."
+        )
+    cmd = [*yt_dlp, *_js_runtime_args(), "--simulate", "-J", "--flat-playlist", "--quiet", url]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    diagnostic = (proc.stderr or "").strip()[:300] or "yt-dlp reported nothing on stderr"
+    if proc.returncode != 0:
+        raise ProviderUnavailable(f"yt-dlp exited {proc.returncode}: {diagnostic}")
+    if not (proc.stdout or "").strip():
+        raise ProviderUnavailable(f"yt-dlp produced no metadata: {diagnostic}")
+    try:
+        info = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise ProviderUnavailable(f"yt-dlp output was not JSON: {error}") from error
+    if not isinstance(info, dict):
+        raise ProviderUnavailable("yt-dlp output was not an info object")
+    return info
+
+
+def _iso_date(compact: str | None) -> str | None:
+    """Turn yt-dlp's YYYYMMDD upload_date into an ISO date."""
+    if not isinstance(compact, str) or len(compact) != 8:
+        return None
+    return f"{compact[0:4]}-{compact[4:6]}-{compact[6:8]}"
+
+
+def project_metadata(info: dict) -> dict:
+    """Project a raw extraction down to the fields an agent can use.
+
+    A raw info object carries hundreds of format dicts and a caption track per
+    language; returning them would bury the answer.
+
+    `container` means the media container format (e.g. `webm`, `mp4`), not a
+    second spelling of who made it. This pack acquires files — its `video`
+    action even builds a `--merge-output-format mp4` argument — so "container"
+    already has a precise, standard meaning in exactly this domain, unlike in
+    a pure search-results pack such as `youtube-search`, which has no file to
+    describe and uses `container` for the hosting channel instead. Sourced
+    from yt-dlp's own `ext` field (the fixture reports `"ext": "webm"` for
+    this pack's canary video) rather than `channel`/`uploader`, which just
+    duplicated `author` under a different key.
+    """
+    return {
+        "title": info.get("title") or "",
+        "url": info.get("webpage_url") or info.get("original_url") or "",
+        "source_native_id": info.get("id") or "",
+        "extractor": info.get("extractor") or "",
+        "duration_s": int(info["duration"]) if isinstance(info.get("duration"), (int, float)) else None,
+        "upload_date": _iso_date(info.get("upload_date")),
+        "author": info.get("uploader") or info.get("channel") or None,
+        "container": info.get("ext") or None,
+        "description": (info.get("description") or "")[:1500].strip(),
+        "view_count": info.get("view_count") if isinstance(info.get("view_count"), int) else None,
+        "like_count": info.get("like_count") if isinstance(info.get("like_count"), int) else None,
+        "is_live": bool(info.get("is_live")),
+        "filesize_approx_bytes": info.get("filesize_approx") if isinstance(info.get("filesize_approx"), int) else None,
+        "subtitle_languages": sorted((info.get("subtitles") or {}).keys()),
+        "auto_caption_languages": sorted((info.get("automatic_captions") or {}).keys())[:50],
+    }
+
+
+def reject_playlists(info: dict) -> None:
+    """Refuse a playlist or channel URL rather than silently taking item one.
+
+    A playlist resolves to N items and would blow every cap. Saying so, with
+    the count, lets the caller fan out deliberately.
+    """
+    if info.get("_type") == "playlist" or "entries" in info:
+        count = len(info.get("entries") or [])
+        raise CapExceeded(
+            f"URL is a playlist of {count} items; media-fetch handles one item "
+            "at a time. Fetch each entry individually."
+        )
+
+
+MAX_DURATION_S = 7200
+MAX_FILESIZE_MB = 500
+
+
+def resolve_numeric_param(request: dict, key: str, default: int) -> int:
+    """Validate one caller-supplied numeric cap, defaulting on absence or null.
+
+    Measured: `max_filesize_mb: -1` reaches yt-dlp as `--max-filesize -1M`,
+    which it rejects outright (exit 2, no file) — `classify_download_failure`
+    then calls that `ProviderUnavailable` ("retry later") when it is really a
+    bad request that will never succeed no matter how many times it's
+    retried. Separately, an explicit JSON `null` — which a caller that always
+    emits every optional field will send for anything left at its default —
+    makes a bare `int(None)` raise `TypeError`, reported as `kind:
+    "TypeError"` instead of a bad-request kind. Both cases belong in
+    `ValueError`, which `dispatch`'s existing exception handling already maps
+    to a bad-request kind; `null` is treated as "use the default" rather than
+    rejected, since it is how a thorough caller spells "I have no opinion".
+
+    Measured a second, related bug: `max_filesize_mb: 0.5` passed the `<= 0`
+    check (0.5 is positive) and was then handed to a bare `int(0.5)`, which
+    truncates to `0`. `runtime_size_guard(0)` then emits `--max-filesize 0M`
+    — aborting every download, since any real file exceeds 0 bytes — and
+    `enforce_caps` trips on every measured size too, reporting "exceeds
+    max_filesize_mb 0" without ever mentioning the caller's actual 0.5.
+    Rounding a fractional cap up would paper over that without saying
+    anything: a fractional megabyte or second is not a value this pack's
+    contract (`integer` in SKILL.md) or yt-dlp's own `--max-filesize`
+    argument can represent, so it is rejected outright, before truncation,
+    with the caller's original value echoed rather than the silently
+    rounded one.
+    """
+    value = request.get(key, default)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a positive whole number, got {value!r}")
+    if value <= 0:
+        raise ValueError(f"{key} must be a positive whole number, got {value!r}")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(
+            f"{key} must be a whole number, got {value!r}; a fractional "
+            f"{key} truncates to a smaller cap than requested and is not a "
+            "meaningful request"
+        )
+    return int(value)
+
+
+def enforce_caps(info: dict, max_duration_s: int, max_filesize_mb: int) -> None:
+    """Refuse anything past the declared caps, before a byte is fetched.
+
+    Both the cap and the observed value go into the message: an agent told
+    only "too long" has to guess, while one told 50350s against a 7200s cap
+    can retry as `audio` or narrow its request.
+
+    An absent duration or filesize is not treated as zero. Live streams and
+    generic-extractor URLs legitimately report neither, and inventing a
+    number would be a measurement nobody made.
+    """
+    duration = info.get("duration")
+    if isinstance(duration, (int, float)) and duration > max_duration_s:
+        raise CapExceeded(
+            f"duration {int(duration)}s exceeds max_duration_s {max_duration_s}"
+        )
+
+    size = info.get("filesize_approx") or info.get("filesize")
+    if isinstance(size, (int, float)):
+        size_mb = size / (1024 * 1024)
+        if size_mb > max_filesize_mb:
+            raise CapExceeded(
+                f"filesize ~{int(size_mb)}MB exceeds max_filesize_mb {max_filesize_mb}"
+            )
+
+
+def runtime_size_guard(max_filesize_mb: int) -> list[str]:
+    """A second, runtime size limit that does not depend on the probe.
+
+    `enforce_caps` can only refuse what the probe measured, and the probe is
+    often blind: measured across three extractors, YouTube reports
+    `filesize_approx`, archive.org reports `filesize`, and a generic-extractor
+    URL reports NEITHER, along with no duration. For that third shape both
+    declared caps are inert and an arbitrarily large file would sail through.
+
+    `--max-filesize` is enforced by yt-dlp against the server's actual
+    Content-Length as the transfer runs, so it still fires when the probe
+    learned nothing.
+    """
+    return ["--max-filesize", f"{max_filesize_mb}M"]
+
+
+def reject_live(info: dict) -> None:
+    """Refuse an in-progress live stream.
+
+    It has no duration, so neither declared cap applies, and the download
+    would run until the action timeout and leave a partial file. A finished
+    broadcast (`was_live` true, `is_live` false) is an ordinary recording
+    with a real duration and is fine.
+    """
+    if info.get("is_live"):
+        raise CapExceeded(
+            "URL is a live stream with no fixed duration; media-fetch handles "
+            "finished items. Retry once the broadcast has ended."
+        )
+
+
+CHUNK_SECONDS = 30
+
+
+def _hhmmss(ms: int) -> str:
+    total = int(ms // 1000)
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
+def flatten_captions(doc: dict, chunk_seconds: int = CHUNK_SECONDS) -> str:
+    """Turn a json3 caption document into timestamped paragraphs.
+
+    Measured on a 14-hour video: 10,275,361 bytes of json3 carry 470,326
+    characters of text. The other 95% is word-level timing metadata, which no
+    agent reads. Grouping into ~30s paragraphs keeps enough timing to cite a
+    moment without reproducing the firehose. Each paragraph is labeled with
+    the actual timestamp of its first event, not the chunk's floor-aligned
+    boundary — a paragraph opening at 31s is labeled [00:00:31], not the
+    rounded-down [00:00:30], so the label always points at real content.
+    """
+    chunk_ms = chunk_seconds * 1000
+    buckets: dict[int, list[str]] = {}
+    starts: dict[int, int] = {}
+    for event in doc.get("events") or []:
+        segs = event.get("segs") or []
+        text = "".join(s.get("utf8", "") for s in segs)
+        if not text.strip():
+            continue
+        start = int(event.get("tStartMs") or 0)
+        key = start // chunk_ms
+        buckets.setdefault(key, []).append(text)
+        starts.setdefault(key, start)
+
+    lines = []
+    for index in sorted(buckets):
+        body = " ".join("".join(buckets[index]).split())
+        if body:
+            lines.append(f"[{_hhmmss(starts[index])}] {body}")
+    return "\n\n".join(lines)
+
+
+class NoCaptionsAvailable(RuntimeError):
+    """The item has no caption track. An answer, not an outage.
+
+    yt-dlp reports this as exit 0 with no file written and an [info] line, so
+    it is indistinguishable from success unless the file is checked for.
+    Kept separate from ProviderUnavailable on purpose: the caller's next move
+    is `audio` plus transcription, not a retry.
+    """
+
+
+def require_caption_file(out_dir: pathlib.Path, language: str) -> pathlib.Path:
+    matches = sorted(pathlib.Path(out_dir).glob(f"*.{language}.json3"))
+    if not matches:
+        raise NoCaptionsAvailable(
+            f"no {language} caption track for this item; fetch `audio` and "
+            "transcribe locally instead"
+        )
+    return matches[0]
+
+
+YTDLP_ERROR_MARKER = "ERROR:"
+
+
+def _leading_diagnostic_line(output: str, marker: str) -> str:
+    """The one line carrying `marker`, out of yt-dlp's full output.
+
+    yt-dlp's own output routinely leads with an uninformative line — e.g.
+    `[generic] Extracting URL: <url>` — before the line that actually
+    explains what happened. A long URL alone can push the real explanation
+    past `build_envelope`'s 200-char `reason` truncation, so every failure
+    classifier in this pack (`classify_transcript_failure` and both branches
+    of `classify_download_failure`) must lead its message with the
+    decision-relevant line rather than the raw, unordered output. Written
+    once here instead of at each call site, after FIX 6 fixed this ordering
+    for only one of the three siblings and the other two kept the bug.
+    Falls back to the whole (stripped) output when no line carries `marker`
+    — this always returns something usable, never an empty string.
+    """
+    for line in (output or "").splitlines():
+        if marker in line:
+            return line.strip()
+    return (output or "").strip()
+
+
+def classify_transcript_failure(returncode: int, output: str, language: str) -> None:
+    """Turn a caption fetch that produced no file into the right error.
+
+    Mirrors `classify_download_failure`'s reasoning for a different subprocess:
+    a missing caption file is ambiguous by itself — yt-dlp exits 0 with no
+    file both when an item genuinely has no captions and, sometimes, when the
+    caption-specific request itself failed. The exit code and an explicit
+    `ERROR:` marker in its output are the two positive signals of an outage;
+    absent both, the missing file is the honest "no captions" case.
+    """
+    if returncode != 0 or YTDLP_ERROR_MARKER in (output or ""):
+        diagnostic = (
+            _leading_diagnostic_line(output, YTDLP_ERROR_MARKER)
+            or f"yt-dlp exited {returncode}"
+        )
+        raise ProviderUnavailable(f"yt-dlp failed to fetch captions: {diagnostic}")
+    raise NoCaptionsAvailable(
+        f"no {language} caption track for this item; fetch `audio` and "
+        "transcribe locally instead"
+    )
+
+
+PREVIEW_WORDS = 500
+
+
+def _caption_words(doc: dict) -> list[str]:
+    """The spoken words in a caption document, with no timestamp labels.
+
+    `flatten_captions` interleaves `[HH:MM:SS]` markers into its output for
+    human readability; counting or previewing from that text would count the
+    markers as words too and inflate both numbers. This walks the same
+    events, with the same whitespace-only filter, but never introduces a
+    label — so `len(_caption_words(doc))` is the real word count.
+    """
+    parts = []
+    for event in doc.get("events") or []:
+        segs = event.get("segs") or []
+        text = "".join(s.get("utf8", "") for s in segs)
+        if text.strip():
+            parts.append(text)
+    return "".join(parts).split()
+
+
+def require_transcript_has_words(doc: dict, language: str) -> None:
+    """An empty caption track is not a successful transcript.
+
+    `require_caption_file` only proves a *file* appeared — it never parses
+    it, so a track whose `events` are empty (or carry no real text) sails
+    through as a 0-byte `.txt` and `words: 0`, reported as `status: ok`.
+    That is the same "zero-byte file counted as a valid artifact" bug
+    `require_single_artifact` already guards against for video, recurring
+    here in a form filesystem-only checks cannot see. Decision: treat a
+    zero-word flatten as the item having no captions, not as an empty
+    success — the caller's next move (fetch `audio`, transcribe locally) is
+    identical to the ordinary `NoCaptionsAvailable` case, so it gets the
+    same error kind rather than a new one.
+    """
+    if not _caption_words(doc):
+        raise NoCaptionsAvailable(
+            f"the {language} caption track for this item is empty; fetch "
+            "`audio` and transcribe locally instead"
+        )
+
+
+def write_transcript(info, doc, out_dir, language, kind) -> dict:
+    """Write the full transcript to disk and return a manifest with a preview.
+
+    Always a file, never inline: one long video flattens to ~118k tokens,
+    which does not belong in an agent's context. Nothing is ever truncated —
+    the file is complete, so a caller that needs more can read or grep it. A
+    preview is a pointer, not a lossy summary.
+    """
+    text = flatten_captions(doc)
+    slug = info.get("id") or "transcript"
+    path = pathlib.Path(out_dir) / f"{slug}.{language}.txt"
+    path.write_text(text, encoding="utf-8")
+    words = _caption_words(doc)
+    return {
+        "path": str(path),
+        "bytes": path.stat().st_size,
+        "words": len(words),
+        "duration_s": int(info["duration"]) if isinstance(info.get("duration"), (int, float)) else None,
+        "language": language,
+        "kind": kind,
+        "preview": " ".join(words[:PREVIEW_WORDS]),
+    }
+
+
+FFMPEG_REQUIRED_ACTIONS = frozenset({"video"})
+
+
+def action_requires_ffmpeg(action: str) -> bool:
+    """Only `video` needs a merger.
+
+    Measured with ffmpeg hidden from PATH: metadata, transcript and audio all
+    complete. `audio` works because yt-dlp can pull a standalone native audio
+    stream without re-encoding — and it must not re-encode, because
+    `media_edit convert` already owns that.
+    """
+    return action in FFMPEG_REQUIRED_ACTIONS
+
+
+def audio_args(out_template: str, max_filesize_mb: int = MAX_FILESIZE_MB) -> list[str]:
+    """Download a native audio stream. Never transcodes.
+
+    Measured: `-f bestaudio` with ffmpeg off PATH downloaded a 246KB native
+    `.webm` (opus) untouched. `--extract-audio`/`--audio-format` would ask
+    yt-dlp to re-encode through ffmpeg — a job `media_edit convert` already
+    owns — so neither is ever passed here.
+    """
+    return ["-f", "bestaudio", "-o", out_template, *runtime_size_guard(max_filesize_mb)]
+
+
+SIZE_ABORT_MARKER = "larger than max-filesize"
+
+
+def was_size_aborted(output: str) -> bool:
+    return SIZE_ABORT_MARKER in (output or "")
+
+
+def classify_download_failure(output: str, artifacts: list) -> None:
+    """Turn a download that produced no artifact into the right error.
+
+    yt-dlp exits 0 when it aborts on --max-filesize, so the exit code cannot
+    be trusted here any more than anywhere else in this pack. The distinction
+    matters to the caller: a cap failure means ask for less, an outage means
+    try again.
+
+    The decision-relevant line leads each message via `_leading_diagnostic_line`
+    — the byte counts for a size abort, an `ERROR:` line for anything else —
+    ahead of the full yt-dlp output, which still follows in full for
+    `error.message` (only `reason` is truncated, and only `reason` an agent
+    is expected to read without also checking `error`). This ProviderUnavailable
+    branch used to embed raw, unordered output; a long URL preamble could push
+    the actual `ERROR:` text past `reason`'s 200-char truncation exactly like
+    the CapExceeded branch below already had fixed for byte counts.
+    """
+    if was_size_aborted(output):
+        raise CapExceeded(
+            f"download aborted by the runtime size guard: "
+            f"{_leading_diagnostic_line(output, SIZE_ABORT_MARKER)} "
+            f"(full output: {(output or '').strip()})"
+        )
+    raise ProviderUnavailable(
+        f"yt-dlp produced no artifact: "
+        f"{_leading_diagnostic_line(output, YTDLP_ERROR_MARKER)} "
+        f"(full output: {(output or '').strip()})"
+    )
+
+
+def preflight_ffmpeg(action: str, location) -> None:
+    """Fail a video request loudly when no merger is available.
+
+    Never downgrade to audio instead. The caller asked for a specific
+    artifact, and quietly handing back a different one is the substitution
+    this pack refuses to make.
+    """
+    if not action_requires_ffmpeg(action):
+        return
+    if location is None:
+        raise RuntimeError(
+            "the `video` action needs ffmpeg to merge separate video and audio "
+            "streams, and none was found. Run `make -C skillshub "
+            "setup-media-fetch`. The `audio`, `transcript` and `metadata` "
+            "actions do not need it and still work."
+        )
+
+
+def video_args(out_template: str, location, max_filesize_mb: int = MAX_FILESIZE_MB) -> list[str]:
+    """Download and merge separate video+audio streams into one mp4.
+
+    Measured: `-f "bv*+ba"` without ffmpeg leaves both streams on disk,
+    unmerged, and exits 0 — so this always requests a merge, and the caller
+    is expected to have already run `preflight_ffmpeg` and to check the
+    result with `require_single_artifact`.
+    """
+    args = [
+        "-f", "bv*+ba/b",
+        "--merge-output-format", "mp4",
+        "-o", out_template,
+        *runtime_size_guard(max_filesize_mb),
+    ]
+    if location is not None:
+        args += ["--ffmpeg-location", str(location)]
+    return args
+
+
+def require_single_artifact(paths: list) -> pathlib.Path:
+    """Insist on exactly one non-empty output file.
+
+    Without a merger yt-dlp downloads both streams, leaves them side by side,
+    and exits 0 — bytes on disk and no usable artifact. Measured, not
+    hypothetical. Two files means the merge did not happen. A zero-byte file
+    is not a positive signal either: existence alone is not proof of content.
+    """
+    present = [pathlib.Path(p) for p in paths if pathlib.Path(p).is_file() and pathlib.Path(p).stat().st_size > 0]
+    if not present:
+        raise ProviderUnavailable("yt-dlp produced no non-empty output file")
+    if len(present) > 1:
+        names = ", ".join(p.name for p in present)
+        raise ProviderUnavailable(
+            f"expected 1 merged artifact but found {len(present)}: {names} "
+            "— the video+audio merge did not happen"
+        )
+    return present[0]
+
+
+def _resolve_allowed_output_dirs() -> list[pathlib.Path]:
+    """Build the allowed-output-dir allowlist with macOS-friendly aliases.
+
+    Ported from `image-generation/bin/nanobanana2`'s
+    `_resolve_allowed_output_dirs`. On macOS, `/tmp` is a symlink to
+    `/private/tmp` and `tempfile.gettempdir()` returns the per-user temp dir
+    under `/var/folders/.../T/` — neither of which matches a caller-supplied
+    `/tmp/...` path after `Path.resolve()`. So `/tmp` and `/private/tmp` are
+    added explicitly alongside the per-user temp dir and cwd. Path resolution
+    still happens later in `validate_output_dir`; this list is the set of
+    roots a resolved path must fall under.
+    """
+    candidates = [
+        pathlib.Path(tempfile.gettempdir()),
+        pathlib.Path("/tmp"),
+        pathlib.Path("/private/tmp"),
+        pathlib.Path.cwd(),
+    ]
+    seen = set()
+    resolved = []
+    for c in candidates:
+        try:
+            r = c.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if r in seen:
+            continue
+        seen.add(r)
+        resolved.append(r)
+    return resolved
+
+
+ALLOWED_OUTPUT_DIRS = _resolve_allowed_output_dirs()
+
+
+def validate_output_dir(path_str: str) -> pathlib.Path:
+    """Validate an output directory against a traversal allowlist.
+
+    Same defense as nanobanana2's `validate_output_path`, with one
+    deliberate difference: this raises `ValueError` instead of calling
+    `sys.exit(1)`. `dispatch()` runs inside a process that must always print
+    a structured envelope, so a rejection here has to be something the
+    caller can catch and report, not something that kills the process with
+    no envelope at all.
+    """
+    resolved = pathlib.Path(path_str).resolve()
+    for allowed in ALLOWED_OUTPUT_DIRS:
+        try:
+            resolved.relative_to(allowed)
+            return resolved
+        except ValueError:
+            continue
+    raise ValueError(
+        f"output_dir must be within {ALLOWED_OUTPUT_DIRS[0]} or the current "
+        "working directory"
+    )
+
+
+def build_envelope(action: str, url, result, error: dict | None, started: float) -> dict:
+    """Assemble the one result shape every action returns.
+
+    Mirrors `youtube-search`'s envelope (`status`/`reason`/`error`/
+    `duration_ms`), plus the fields specific to this pack: `action`, `url`
+    and `result`. `error` carries a structured `{"kind", "message"}` so a
+    caller can branch on the kind of failure rather than parsing prose.
+    """
+    duration_ms = int((time.monotonic() - started) * 1000)
+    status = "failed" if error else "ok"
+    reason = error["message"][:200] if error else None
+    return {
+        "action": action,
+        "url": url,
+        "result": result,
+        "status": status,
+        "reason": reason,
+        "error": error,
+        "duration_ms": duration_ms,
+    }
+
+
+DEFAULT_CAPTION_LANGUAGE = "en"
+
+
+# The governed runtime force-kills the whole process group at the action's
+# declared `timeout_secs` (see SKILL.md's `runtime_actions`) and reports a
+# bare `GovernedExecutionTerminal::TimedOut` — a shape outside this pack's
+# own `error.kind` taxonomy. Each action used to give `probe()` and its own
+# runner independent, unbudgeted timeouts (e.g. video: 90s probe + 1200s
+# runner = 1290s against a 900s governed budget), so a slow fetch got a bare
+# kill instead of a typed envelope. These numbers must equal SKILL.md's
+# per-action `timeout_secs` — tested directly against the file so the two
+# cannot silently drift apart — and every subprocess draws its timeout from
+# one shared deadline computed once in `dispatch`, instead of guessing its
+# own.
+ACTION_BUDGET_S = {"metadata": 90, "transcript": 120, "audio": 300, "video": 900}
+
+# Held back from the action budget so there is always time left to build and
+# print the JSON envelope after the last subprocess returns, rather than
+# spending every last second on I/O and risking the governed kill firing
+# while this process is still serialising its own result.
+ENVELOPE_MARGIN_S = 10
+
+# A subprocess timeout must be a positive number. When the budget is already
+# spent by the time a step is about to run (a slow probe, a slow first
+# attempt), `remaining_budget` still returns this small positive floor
+# rather than zero or a negative number, so the step gets one last real
+# attempt and can fail on its own terms instead of raising ValueError before
+# it even starts.
+MIN_SUBPROCESS_TIMEOUT_S = 5
+
+
+def remaining_budget(deadline: float, floor: float = MIN_SUBPROCESS_TIMEOUT_S) -> float:
+    """Seconds left until `deadline`, never less than `floor`.
+
+    One deadline is computed once per `dispatch()` call and threaded through
+    every subprocess this action runs; each call to this helper draws down
+    what is left of it, so probe() and the action's own runner share a
+    single budget instead of each getting the full per-action timeout.
+    """
+    return max(floor, deadline - time.monotonic())
+
+
+def _caption_kind(info: dict, language: str) -> str:
+    """Manual captions exist in `subtitles`; everything else is auto-generated."""
+    return "manual" if language in (info.get("subtitles") or {}) else "auto"
+
+
+def _run_metadata(
+    info: dict, request: dict, url: str, *, max_filesize_mb: int, deadline: float | None = None
+) -> dict:
+    return project_metadata(info)
+
+
+def _isolated_download_dir(request: dict) -> pathlib.Path:
+    """A fresh, empty subdirectory under the validated output directory.
+
+    Bug found by the live smoke test: metadata/transcript/audio/video all
+    default `output_dir` to `tempfile.gettempdir()` and name files after the
+    same `info["id"]` slug, so two actions run back-to-back against the same
+    URL land in the same directory under the same stem. Measured: running
+    `transcript` then `audio` on one video with neither specifying
+    `output_dir` returned the *leftover `.en.json3` caption file* as the
+    audio result, because glob("{slug}.*") matched both files and sorted
+    ".en.json3" before ".webm". A dedicated `mkdtemp` per call makes cross-
+    action and cross-invocation contamination structurally impossible
+    instead of relying on filename discipline.
+    """
+    base_dir = validate_output_dir(request.get("output_dir") or tempfile.gettempdir())
+    return pathlib.Path(tempfile.mkdtemp(dir=str(base_dir), prefix="media-fetch-"))
+
+
+def _run_transcript(
+    info: dict, request: dict, url: str, *, max_filesize_mb: int, deadline: float | None = None
+) -> dict:
+    # max_filesize_mb is accepted (not read from `request`) only to keep this
+    # runner's signature uniform with its ACTION_RUNNERS siblings — see
+    # `_run_audio`/`_run_video` below for why every runner takes its
+    # validated caps as explicit arguments rather than re-deriving them.
+    # A caption fetch has no byte-size download to cap, so it goes unused
+    # here.
+    del max_filesize_mb
+    out_dir = _isolated_download_dir(request)
+    language = request.get("language") or DEFAULT_CAPTION_LANGUAGE
+    yt_dlp = _yt_dlp_command()
+    if not yt_dlp:
+        raise RuntimeError(
+            "media-fetch backend unavailable. Run "
+            "`make -C skillshub setup-python` to install the skillshub Python "
+            "environment, or install `yt-dlp` on PATH."
+        )
+    out_template = str(out_dir / "%(id)s.%(ext)s")
+    cmd = [
+        *yt_dlp, *_js_runtime_args(),
+        "--skip-download",
+        "--write-subs", "--write-auto-subs",
+        "--sub-langs", language, "--sub-format", "json3",
+        "-o", out_template, "--no-progress",
+        url,
+    ]
+    timeout = remaining_budget(deadline) if deadline is not None else 180
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    try:
+        caption_path = require_caption_file(out_dir, language)
+    except NoCaptionsAvailable:
+        classify_transcript_failure(
+            proc.returncode, (proc.stdout or "") + (proc.stderr or ""), language
+        )
+        raise  # classify_transcript_failure always raises; unreachable
+    # The raw .json3 is an intermediate, not the deliverable, from the moment
+    # it is read below — so its deletion is unconditional (`finally`) from
+    # that point on, not gated on a successful transcript. Measured: the
+    # empty-track guard (`require_transcript_has_words`) used to raise
+    # *before* the file was ever removed, orphaning it — reviewer confirmed
+    # by monkeypatching an empty-events .json3: `NoCaptionsAvailable` raised,
+    # file still on disk. Measured separately on a 14-hour video: ~10MB of
+    # json3 left behind per successful call too, with no owner to ever
+    # remove it. (The enclosing `mkdtemp` directory's own lifecycle — who
+    # ever removes `out_dir` itself — is a separate, still-open design
+    # question this does not attempt to close.)
+    try:
+        doc = json.loads(caption_path.read_text(encoding="utf-8"))
+        require_transcript_has_words(doc, language)
+        result = write_transcript(info, doc, out_dir, language, _caption_kind(info, language))
+    finally:
+        caption_path.unlink(missing_ok=True)
+    return result
+
+
+def _run_audio(
+    info: dict, request: dict, url: str, *, max_filesize_mb: int, deadline: float | None = None
+) -> dict:
+    """Download native audio. `max_filesize_mb` is a required keyword-only
+    argument, not read from `request`, on purpose: `dispatch` validates the
+    caller's raw value through `resolve_numeric_param` once, up front, and
+    this runner must not be able to reconstruct a different, unvalidated
+    value from `request["max_filesize_mb"]` even if some future call site
+    forgets to pass the sanitized copy of `request`. Structural, not
+    convention: a call that omits this argument fails immediately with a
+    `TypeError`, rather than silently building `--max-filesize -1M` from
+    whatever the caller happened to send.
+    """
+    out_dir = _isolated_download_dir(request)
+    yt_dlp = _yt_dlp_command()
+    if not yt_dlp:
+        raise RuntimeError(
+            "media-fetch backend unavailable. Run "
+            "`make -C skillshub setup-python` to install the skillshub Python "
+            "environment, or install `yt-dlp` on PATH."
+        )
+    slug = info.get("id") or "audio"
+    out_template = str(out_dir / f"{slug}.%(ext)s")
+    cmd = [*yt_dlp, *_js_runtime_args(), *audio_args(out_template, max_filesize_mb), "--no-progress", url]
+    timeout = remaining_budget(deadline) if deadline is not None else 600
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    matches = sorted(p for p in out_dir.glob("*") if p.is_file() and p.stat().st_size > 0)
+    if not matches:
+        classify_download_failure((proc.stdout or "") + (proc.stderr or ""), artifacts=[])
+    path = matches[0]
+    return {"path": str(path), "bytes": path.stat().st_size}
+
+
+def _run_video(
+    info: dict, request: dict, url: str, *, max_filesize_mb: int, deadline: float | None = None
+) -> dict:
+    """Download and merge video+audio. See `_run_audio` for why
+    `max_filesize_mb` is a required keyword-only argument rather than
+    something re-derived from `request`.
+    """
+    out_dir = _isolated_download_dir(request)
+    location = _ffmpeg_location()
+    yt_dlp = _yt_dlp_command()
+    if not yt_dlp:
+        raise RuntimeError(
+            "media-fetch backend unavailable. Run "
+            "`make -C skillshub setup-python` to install the skillshub Python "
+            "environment, or install `yt-dlp` on PATH."
+        )
+    slug = info.get("id") or "video"
+    out_template = str(out_dir / f"{slug}.%(ext)s")
+    cmd = [*yt_dlp, *_js_runtime_args(), *video_args(out_template, location, max_filesize_mb), "--no-progress", url]
+    timeout = remaining_budget(deadline) if deadline is not None else 1200
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    matches = sorted(p for p in out_dir.glob("*") if p.is_file() and p.stat().st_size > 0)
+    if not matches:
+        classify_download_failure((proc.stdout or "") + (proc.stderr or ""), artifacts=[])
+    artifact = require_single_artifact(matches)
+    return {"path": str(artifact), "bytes": artifact.stat().st_size}
+
+
+ACTION_RUNNERS = {
+    "metadata": _run_metadata,
+    "transcript": _run_transcript,
+    "audio": _run_audio,
+    "video": _run_video,
+}
+
+ACTIONS = tuple(ACTION_RUNNERS)
+
+
+def dispatch(action: str, request: dict) -> dict:
+    """Route one action end to end and always return a `build_envelope()`.
+
+    Never defaults an empty/unknown action to one of the four — that would
+    silently run something the caller did not ask for. `metadata` is the one
+    action allowed to answer for a live stream (describing one is cheap and
+    useful); the other three refuse it via `reject_live`.
+    """
+    started = time.monotonic()
+    url = request.get("url") if isinstance(request, dict) else None
+
+    if action not in ACTION_RUNNERS:
+        error = {
+            "kind": "ValueError",
+            "message": (
+                f"unknown action {action!r}; must be one of: {', '.join(ACTIONS)}"
+            ),
+        }
+        return build_envelope(action=action, url=url, result=None, error=error, started=started)
+
+    if not url:
+        error = {"kind": "ValueError", "message": "request is missing a `url`"}
+        return build_envelope(action=action, url=url, result=None, error=error, started=started)
+
+    # One budget for the whole invocation, drawn down by every subprocess it
+    # runs (see ACTION_BUDGET_S). Computed from `started`, not from a fresh
+    # `time.monotonic()` call, so the margin held back for the envelope is
+    # measured against the same clock reading `build_envelope` uses later.
+    deadline = started + ACTION_BUDGET_S[action] - ENVELOPE_MARGIN_S
+
+    try:
+        # Validated once, up front, before the URL is even probed: a bad cap
+        # is a bad request regardless of what the URL turns out to be. The
+        # validated `max_filesize_mb` is then handed to the action runner as
+        # an explicit keyword argument (see `_run_audio`) rather than left
+        # for the runner to re-derive from `request` — a sanitized copy of
+        # `request` is still passed too, for `output_dir`/`language`/etc.,
+        # but the cap itself is structurally guaranteed validated because
+        # the runner has no other way to obtain it.
+        max_duration_s = resolve_numeric_param(request, "max_duration_s", MAX_DURATION_S)
+        max_filesize_mb = resolve_numeric_param(request, "max_filesize_mb", MAX_FILESIZE_MB)
+        info = probe(url, timeout=remaining_budget(deadline))
+        reject_playlists(info)
+        if action != "metadata":
+            reject_live(info)
+        enforce_caps(info, max_duration_s, max_filesize_mb)
+        preflight_ffmpeg(action, _ffmpeg_location())
+        validated_request = {
+            **request,
+            "max_duration_s": max_duration_s,
+            "max_filesize_mb": max_filesize_mb,
+        }
+        result = ACTION_RUNNERS[action](
+            info, validated_request, url, max_filesize_mb=max_filesize_mb, deadline=deadline
+        )
+    except CapExceeded as exc:
+        error = {"kind": "CapExceeded", "message": str(exc)}
+        return build_envelope(action=action, url=url, result=None, error=error, started=started)
+    except NoCaptionsAvailable as exc:
+        error = {"kind": "NoCaptionsAvailable", "message": str(exc)}
+        return build_envelope(action=action, url=url, result=None, error=error, started=started)
+    except ProviderUnavailable as exc:
+        error = {"kind": "ProviderUnavailable", "message": str(exc)}
+        return build_envelope(action=action, url=url, result=None, error=error, started=started)
+    except ValueError as exc:
+        error = {"kind": "ValueError", "message": str(exc)}
+        return build_envelope(action=action, url=url, result=None, error=error, started=started)
+    except Exception as exc:  # noqa: BLE001
+        error = {"kind": type(exc).__name__, "message": f"{type(exc).__name__}: {exc}"[:500]}
+        return build_envelope(action=action, url=url, result=None, error=error, started=started)
+
+    return build_envelope(action=action, url=url, result=result, error=None, started=started)
+
+
+def main() -> int:
+    """Read the action from argv[1] and its parameters from stdin JSON.
+
+    The action name arrives on argv, never inside the JSON body — a
+    dispatcher that read `request["action"]` would pass every unit test and
+    then dispatch nothing in the real runtime, because the governed runtime
+    invokes this script as `media-fetch <action>` with parameters-only JSON
+    on stdin. Confirmed against the repo's only other multi-action Python
+    adapter, `work-modules`, which reads argv the same way.
+    """
+    action = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    raw_stdin = sys.stdin.read().strip()
+    try:
+        request = json.loads(raw_stdin) if raw_stdin else {}
+    except json.JSONDecodeError as exc:
+        envelope = build_envelope(
+            action=action, url=None, result=None,
+            error={"kind": "JSONDecodeError", "message": f"bad request json: {exc}"},
+            started=time.monotonic(),
+        )
+        print(json.dumps(envelope, sort_keys=True))
+        return 0
+    if not isinstance(request, dict):
+        envelope = build_envelope(
+            action=action, url=None, result=None,
+            error={"kind": "ValueError", "message": "request must be a JSON object"},
+            started=time.monotonic(),
+        )
+        print(json.dumps(envelope, sort_keys=True))
+        return 0
+
+    envelope = dispatch(action, request)
+
+    parts = [
+        "[media-fetch]",
+        f"action={envelope['action']}",
+        f"status={envelope['status']}",
+        f"duration_ms={envelope['duration_ms']}",
+    ]
+    if envelope.get("reason"):
+        parts.append(f'reason="{envelope["reason"]}"')
+    sys.stderr.write(" ".join(parts) + "\n")
+    sys.stderr.flush()
+
+    print(json.dumps(envelope, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

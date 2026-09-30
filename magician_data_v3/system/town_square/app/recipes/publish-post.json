@@ -1,0 +1,841 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "author_id": {
+              "value_type": 1,
+              "required": true
+            },
+            "body": {
+              "value_type": 2,
+              "required": true
+            },
+            "group_id": {
+              "value_type": 3,
+              "required": false
+            },
+            "mentioned_member_ids": {
+              "value_type": 4,
+              "required": false
+            },
+            "parent_id": {
+              "value_type": 5,
+              "required": false
+            },
+            "post_id": {
+              "value_type": 6,
+              "required": true
+            },
+            "post_type": {
+              "value_type": 7,
+              "required": true
+            },
+            "surface": {
+              "value_type": 8,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "markdown",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "enum",
+          "values": [
+            "link",
+            "question",
+            "reply",
+            "thought"
+          ]
+        },
+        {
+          "kind": "enum",
+          "values": [
+            "feed",
+            "group"
+          ]
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:51bddc3ee7ffc4261b6c354da6e213451ee5167286a9090e90d080ccede945e1",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:51bddc3ee7ffc4261b6c354da6e213451ee5167286a9090e90d080ccede945e1",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {},
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/post_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/author_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/surface"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/group_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 6
+                },
+                {
+                  "kind": "if",
+                  "condition": 7,
+                  "then_value": 6,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/post_type"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/body"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/parent_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 11
+                },
+                {
+                  "kind": "if",
+                  "condition": 12,
+                  "then_value": 11,
+                  "else_value": 0
+                },
+                {
+                  "kind": "present",
+                  "value": 13
+                },
+                {
+                  "kind": "literal",
+                  "value": "singleton"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/author/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 16
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "trim",
+                  "value": 10
+                },
+                {
+                  "kind": "length",
+                  "value": 19
+                },
+                {
+                  "kind": "less_than",
+                  "left": 18,
+                  "right": 20
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/policy/0/fields/max_post_chars"
+                },
+                {
+                  "kind": "literal",
+                  "value": 600
+                },
+                {
+                  "kind": "coalesce",
+                  "values": [
+                    22,
+                    23
+                  ]
+                },
+                {
+                  "kind": "length",
+                  "value": 10
+                },
+                {
+                  "kind": "less_than",
+                  "left": 24,
+                  "right": 25
+                },
+                {
+                  "kind": "not",
+                  "value": 26
+                },
+                {
+                  "kind": "present",
+                  "value": 13
+                },
+                {
+                  "kind": "not",
+                  "value": 28
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/parent/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 30
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    29,
+                    31
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": "group"
+                },
+                {
+                  "kind": "equal",
+                  "left": 5,
+                  "right": 33
+                },
+                {
+                  "kind": "present",
+                  "value": 8
+                },
+                {
+                  "kind": "equal",
+                  "left": 34,
+                  "right": 35
+                },
+                {
+                  "kind": "literal",
+                  "value": "reply"
+                },
+                {
+                  "kind": "equal",
+                  "left": 9,
+                  "right": 37
+                },
+                {
+                  "kind": "present",
+                  "value": 13
+                },
+                {
+                  "kind": "equal",
+                  "left": 38,
+                  "right": 39
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 41
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/post_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 43,
+                  "right": 3
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/author_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 45,
+                  "right": 4
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/surface"
+                },
+                {
+                  "kind": "equal",
+                  "left": 47,
+                  "right": 5
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/group_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 49,
+                  "right": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/post_type"
+                },
+                {
+                  "kind": "equal",
+                  "left": 51,
+                  "right": 9
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/body"
+                },
+                {
+                  "kind": "equal",
+                  "left": 53,
+                  "right": 10
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/parent_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 55,
+                  "right": 13
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    44,
+                    46,
+                    48,
+                    50,
+                    52,
+                    54,
+                    56
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 42
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    58,
+                    57
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 42
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "post",
+                  "parts": [
+                    3
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/mentioned_member_ids"
+                },
+                {
+                  "kind": "present",
+                  "value": 62
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/mentioned_member_ids"
+                },
+                {
+                  "kind": "literal",
+                  "value": ""
+                },
+                {
+                  "kind": "if",
+                  "condition": 63,
+                  "then_value": 64,
+                  "else_value": 65
+                },
+                {
+                  "kind": "split",
+                  "value": 66,
+                  "separator": ","
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/member_id"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "mention",
+                  "parts": [
+                    3,
+                    68
+                  ]
+                },
+                {
+                  "kind": "contains",
+                  "value": 67,
+                  "member": 68
+                },
+                {
+                  "kind": "equal",
+                  "left": 68,
+                  "right": 4
+                },
+                {
+                  "kind": "not",
+                  "value": 71
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    60,
+                    70,
+                    72
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": "explicit_mention"
+                },
+                {
+                  "kind": "literal",
+                  "value": "pending"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/members"
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "author",
+                "entity": "member",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "member_id"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "member_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 4
+                }
+              },
+              {
+                "name": "parent",
+                "entity": "post",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "post_id"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "post_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 13
+                }
+              },
+              {
+                "name": "policy",
+                "entity": "policy",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "policy_id",
+                    "max_post_chars"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "policy_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 15
+                }
+              },
+              {
+                "name": "members",
+                "entity": "member",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "member_id"
+                  ],
+                  "limit": 100
+                },
+                "bindings": {}
+              },
+              {
+                "name": "existing",
+                "entity": "post",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "post_id",
+                    "author_id",
+                    "surface",
+                    "group_id",
+                    "post_type",
+                    "body",
+                    "parent_id",
+                    "created_at",
+                    "synced_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "post_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 3
+                }
+              }
+            ],
+            "query_when": {
+              "parent": 14
+            },
+            "guards": [
+              {
+                "require": 17,
+                "reason": "author_not_enrolled"
+              },
+              {
+                "require": 21,
+                "reason": "post_body_required"
+              },
+              {
+                "require": 27,
+                "reason": "post_too_long"
+              },
+              {
+                "require": 32,
+                "reason": "parent_post_missing"
+              },
+              {
+                "require": 36,
+                "reason": "post_surface_group_mismatch"
+              },
+              {
+                "require": 40,
+                "reason": "reply_parent_required"
+              },
+              {
+                "require": 59,
+                "reason": "post_identity_conflict"
+              }
+            ],
+            "mutations": [
+              {
+                "entity": "post",
+                "for_each": null,
+                "when": 60,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 61,
+                  "fields": {
+                    "post_id": 3,
+                    "author_id": 4,
+                    "surface": 5,
+                    "group_id": 8,
+                    "post_type": 9,
+                    "body": 10,
+                    "parent_id": 13,
+                    "created_at": 1,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "mention",
+                "for_each": 76,
+                "when": 73,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 69,
+                  "fields": {
+                    "mention_id": 69,
+                    "post_id": 3,
+                    "mentioned_member_id": 68,
+                    "delivery_kind": 74,
+                    "status": 75,
+                    "created_at": 1,
+                    "handled_at": 0,
+                    "response_post_id": 0
+                  }
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64,
+            "scan_queries": [
+              "members"
+            ]
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "version": "1.0.135",
+  "repository": "iOfficeAI/OfficeCLI",
+  "assets": {
+    "darwin-arm64": {
+      "name": "officecli-mac-arm64",
+      "sha256": "0d2a32c7dd460e275ddd8c442be33a8221a32021d4d5f7957cd44a70b2d927dd"
+    },
+    "darwin-x86_64": {
+      "name": "officecli-mac-x64",
+      "sha256": "77178c638ba5b12d21896f9b0091081079645089bc1d909e3b3097e1649bda5c"
+    },
+    "linux-arm64": {
+      "name": "officecli-linux-arm64",
+      "sha256": "2ec0d5a455646647f798f723e62fd9c18e2e801f8460d4401d2554a6a1c6d5b0"
+    },
+    "linux-x86_64": {
+      "name": "officecli-linux-x64",
+      "sha256": "00028af3db48678fc9ff6c8f9e70fa4c150dcee2b43ed85254afc8f4a48e13eb"
+    },
+    "linux-musl-arm64": {
+      "name": "officecli-linux-alpine-arm64",
+      "sha256": "aec1e921e35bc23a2088af53dd73a92cd636b3792a0b35728470a8d047442006"
+    },
+    "linux-musl-x86_64": {
+      "name": "officecli-linux-alpine-x64",
+      "sha256": "9bb4c79543a6dcd8570fc99052ed6b1fb1dcae808a35622977ebf0b53b616694"
+    }
+  }
+}

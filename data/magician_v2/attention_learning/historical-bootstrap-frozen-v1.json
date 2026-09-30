@@ -1,0 +1,52 @@
+{
+  "fixture_id": "historical-attention-bootstrap-frozen-v2",
+  "cutoff_at": 1000,
+  "mail_events": [
+    {"event_id": "old-completed", "occurred_at": 10, "verdict": "helpful", "paired_to_state": "approved", "expected": "action_completed"},
+    {"event_id": "old-useful", "occurred_at": 20, "verdict": "helpful", "paired_to_state": "acknowledged", "expected": "useful"},
+    {"event_id": "old-spam", "occurred_at": 30, "verdict": "not_helpful", "reason": "spam", "expected": "irrelevant"},
+    {"event_id": "old-done", "occurred_at": 40, "verdict": "not_helpful", "reason": "already_handled", "expected": "obsolete"},
+    {"event_id": "old-duplicate", "occurred_at": 50, "verdict": "not_helpful", "reason": "duplicate", "expected": "duplicate_of"},
+    {"event_id": "old-owner", "occurred_at": 60, "verdict": "not_helpful", "reason": "wrong_owner", "expected": "not_owner"},
+    {"event_id": "old-wrong-label", "occurred_at": 70, "verdict": "wrong_label", "expected": "not_actionable"},
+    {"event_id": "old-other", "occurred_at": 80, "verdict": "other", "expected": null},
+    {"event_id": "newer-than-cutoff", "occurred_at": 1001, "verdict": "not_helpful", "reason": "spam", "expected": "irrelevant"}
+  ],
+  "live_repair_events": [
+    {"event_id": "live-direct", "occurred_at": 1100, "verdict": "helpful", "canonical_initially_present": true},
+    {"event_id": "live-needs-repair", "occurred_at": 1200, "verdict": "not_helpful", "reason": "spam", "canonical_initially_present": false}
+  ],
+  "neighbor_contract": {
+    "k": 1,
+    "candidate": [1.0, 0.0],
+    "labels": [
+      {"outcome": "neutral_seen", "embedding": [1.0, 0.0]},
+      {"outcome": "useful", "embedding": [0.999, 0.001]},
+      {"outcome": "action_completed", "embedding": [0.99, 0.01]}
+    ],
+    "expected": {"usefulness": ["useful"], "actionability": ["action_completed"]}
+  },
+  "ordering_contract": {
+    "items": [
+      {"id": "f1", "lane": "follow_up", "baseline_rank": 1, "score": 0.2},
+      {"id": "f2", "lane": "follow_up", "baseline_rank": 2, "score": 0.9},
+      {"id": "w1", "lane": "worth_a_look", "baseline_rank": 1, "score": 0.8},
+      {"id": "w2", "lane": "worth_a_look", "baseline_rank": 2, "score": 0.1}
+    ],
+    "expected_order": {"follow_up": ["f2", "f1"], "worth_a_look": ["w1", "w2"]}
+  },
+  "expected_report": {
+    "schema_version": 2,
+    "fixture_id": "historical-attention-bootstrap-frozen-v2",
+    "mail_mapping_accuracy": 1.0,
+    "immutable_cutoff": true,
+    "pre_cutoff_only": true,
+    "replay_idempotent": true,
+    "cursor_monotonic": true,
+    "live_outbox_repaired": true,
+    "live_repair_idempotent": true,
+    "task_specific_neighbors": true,
+    "within_lane_only": true,
+    "gate_passed": true
+  }
+}

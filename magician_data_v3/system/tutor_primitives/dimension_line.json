@@ -1,0 +1,42 @@
+{
+  "type": "dimension_line",
+  "aliases": ["dimension"],
+  "version": 1,
+  "defaults": { "size": 10 },
+  "draw": [
+    {
+      "op": "line",
+      "from": ["sx", "sy"],
+      "to": ["ex", "ey"]
+    },
+    {
+      "op": "line",
+      "from": [
+        "sx-(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+        "sy-((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+      ],
+      "to": [
+        "sx+(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+        "sy+((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+      ]
+    },
+    {
+      "op": "line",
+      "from": [
+        "ex-(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+        "ey-((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+      ],
+      "to": [
+        "ex+(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+        "ey+((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+      ]
+    },
+    {
+      "op": "label",
+      "at": ["mx", "my-14"],
+      "text": "text",
+      "anchor": "center",
+      "threshold": 0.75
+    }
+  ]
+}

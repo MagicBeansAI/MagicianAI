@@ -1,0 +1,418 @@
+{
+  "$defs": {
+    "AppContractCapabilityLimits": {
+      "properties": {
+        "max_collection_items": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_document_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_entity_change_page_rows": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_json_depth": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_json_nodes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_page_rows": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_predicate_depth": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_predicate_nodes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_value_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_value_nodes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_document_bytes",
+        "max_json_depth",
+        "max_json_nodes",
+        "max_value_bytes",
+        "max_value_nodes",
+        "max_collection_items",
+        "max_predicate_nodes",
+        "max_predicate_depth",
+        "max_page_rows",
+        "max_entity_change_page_rows"
+      ],
+      "type": "object"
+    },
+    "AppContractDeprecation": {
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "removal_contract_major": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "replacement": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "replacement"
+      ],
+      "type": "object"
+    },
+    "AppHttpMethod": {
+      "enum": [
+        "GET",
+        "POST"
+      ],
+      "type": "string"
+    },
+    "AppManifestFeature": {
+      "oneOf": [
+        {
+          "enum": [
+            "typed_entities_v1",
+            "declarative_views_v1",
+            "governed_actions_v1",
+            "immutable_dependencies_v1",
+            "owner_data_plane_v1",
+            "durable_action_runs_v1",
+            "contribution_ports_v1",
+            "attention_lanes_v1",
+            "llm_operations_v1"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "custom_surfaces_v1",
+          "description": "Scripted custom interactive surfaces (plan 1.6,\n`CustomInteractiveSurfacesV1`): static web assets from the\npackage's own immutable `surfaces/` tree hosted in a sandboxed\nframe whose only authority is the eight supported-public bridge\noperations. Absent the feature, executable `surfaces/` members\nstay refused exactly as before — the feature is a review gate,\nnever implicit.",
+          "type": "string"
+        },
+        {
+          "const": "app_widgets_v1",
+          "description": "Declarative, host-rendered app widgets and ambient indicators plus\ninternal-app navigation metadata. The sibling distribution vocabulary\nis independent because a system ops package need not be surfaced. The\nfeature adds review material only; render, evaluator, slot, and route\nconsumers must still reconstruct live installation authority server-side.",
+          "type": "string"
+        },
+        {
+          "const": "app_behaviors_v1",
+          "description": "Durable host-executed scheduled behaviors. The manifest declaration is\nreview material only: an enabled installation still needs an exact\nowner-narrowed behavior grant and every fire must reopen live authority.",
+          "type": "string"
+        },
+        {
+          "const": "app_event_behaviors_v1",
+          "description": "Durable, host-projected first-party events may request an exact\nevent-triggered behavior. The declaration is inert until an owner\ngrants the complete source/projection/action/resource binding.",
+          "type": "string"
+        },
+        {
+          "const": "app_owner_notifications_v1",
+          "description": "Workflow-local, one-way briefing/escalation ports into the owner's\nnotification funnel. Questions and response authority are deliberately\noutside V1.",
+          "type": "string"
+        },
+        {
+          "const": "app_memory_read_v1",
+          "description": "Owner-controlled reads of the owner's memory (named user tiers and\nnamed agents' learned memory). The manifest block is only a request:\nthe owner grants a subset, split between interactive and background\nruns, and can narrow or revoke it at any time.",
+          "type": "string"
+        }
+      ]
+    },
+    "AppOperationAuthPosture": {
+      "oneOf": [
+        {
+          "const": "verified_session",
+          "description": "A middleware-verified browser, paired-device, or loopback identity.",
+          "type": "string"
+        },
+        {
+          "const": "verified_owner_scope",
+          "description": "A verified identity plus a server-bound principal/workspace scope.",
+          "type": "string"
+        }
+      ]
+    },
+    "AppOperationIdempotency": {
+      "enum": [
+        "read_only",
+        "client_keyed"
+      ],
+      "type": "string"
+    },
+    "AppOperationParameterLocation": {
+      "enum": [
+        "path",
+        "query"
+      ],
+      "type": "string"
+    },
+    "AppProtocolVersion": {
+      "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    },
+    "AppPublicOperation": {
+      "properties": {
+        "auth": {
+          "$ref": "#/$defs/AppOperationAuthPosture"
+        },
+        "errors": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "idempotency": {
+          "$ref": "#/$defs/AppOperationIdempotency"
+        },
+        "method": {
+          "$ref": "#/$defs/AppHttpMethod"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "parameters": {
+          "items": {
+            "$ref": "#/$defs/AppPublicParameter"
+          },
+          "type": "array"
+        },
+        "path": {
+          "type": "string"
+        },
+        "request_example": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "response_example": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "response_schema": {
+          "type": "string"
+        },
+        "success_statuses": {
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "method",
+        "path",
+        "summary",
+        "auth",
+        "idempotency",
+        "parameters",
+        "success_statuses",
+        "response_schema",
+        "errors"
+      ],
+      "type": "object"
+    },
+    "AppPublicParameter": {
+      "properties": {
+        "default": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/AppOperationParameterLocation"
+        },
+        "maximum": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minimum": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema_format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "location",
+        "required",
+        "schema_type",
+        "description"
+      ],
+      "type": "object"
+    },
+    "AppSdkCompatibilityPolicy": {
+      "oneOf": [
+        {
+          "const": "current_contract_only",
+          "description": "Until the first stable SDK ships, only the current contract is a\nsupported generation target. This must be widened deliberately.",
+          "type": "string"
+        }
+      ]
+    },
+    "AppSdkCompatibilityWindow": {
+      "properties": {
+        "generated_by_is_authority": {
+          "type": "boolean"
+        },
+        "policy": {
+          "$ref": "#/$defs/AppSdkCompatibilityPolicy"
+        },
+        "supported_contract_versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "policy",
+        "supported_contract_versions",
+        "generated_by_is_authority"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-contract-capabilities.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "contract_version": {
+      "type": "string"
+    },
+    "deprecations": {
+      "items": {
+        "$ref": "#/$defs/AppContractDeprecation"
+      },
+      "type": "array"
+    },
+    "json_schema_dialect": {
+      "type": "string"
+    },
+    "limits": {
+      "$ref": "#/$defs/AppContractCapabilityLimits"
+    },
+    "operation_inventory_digest": {
+      "type": "string"
+    },
+    "operations": {
+      "items": {
+        "$ref": "#/$defs/AppPublicOperation"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "sdk_compatibility": {
+      "$ref": "#/$defs/AppSdkCompatibilityWindow"
+    },
+    "supported_manifest_features": {
+      "items": {
+        "$ref": "#/$defs/AppManifestFeature"
+      },
+      "type": "array"
+    },
+    "supported_manifest_schema_versions": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "supported_protocol_versions": {
+      "items": {
+        "$ref": "#/$defs/AppProtocolVersion"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "contract_version",
+    "supported_protocol_versions",
+    "supported_manifest_schema_versions",
+    "supported_manifest_features",
+    "json_schema_dialect",
+    "limits",
+    "sdk_compatibility",
+    "deprecations",
+    "operation_inventory_digest",
+    "operations"
+  ],
+  "title": "AppContractCapabilities",
+  "type": "object"
+}

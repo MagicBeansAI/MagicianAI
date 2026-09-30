@@ -1,0 +1,24 @@
+name: working_set_read
+description: Read one cited chunk from a durable scoped research working set. Use this after working_set_search when the exact supporting text is needed for synthesis.
+parameters:
+  - name: working_set_id
+    required: true
+    param_type: string
+    description: Opaque working-set id returned by content_read.
+  - name: source_id
+    required: true
+    param_type: string
+    description: Source id returned by working_set_search.
+  - name: chunk_index
+    required: true
+    param_type: integer
+    description: Zero-based chunk index returned by working_set_search.
+implementation:
+  type: compiled
+  provider_name: working_set_read
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories: [research, evidence, read]
+  composition_category: action
+  sandbox: none

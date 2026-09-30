@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "static-equivalent",
+      "static_outcome": "sufficient",
+      "api_replay_outcome": "unavailable",
+      "expected_action": "static_http.read",
+      "expected_authority": "public_read",
+      "expected_mode": "none",
+      "expected_session_outcome": "not_started"
+    },
+    {
+      "id": "delayed-spa",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "unavailable",
+      "expected_action": "browser.headless.read",
+      "expected_authority": "public_browser_read",
+      "expected_mode": "public_headless_read",
+      "expected_session_outcome": "closed"
+    },
+    {
+      "id": "iframe-shadow-content",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "failed",
+      "expected_action": "browser.headless.read",
+      "expected_authority": "public_browser_read",
+      "expected_mode": "public_headless_read",
+      "expected_session_outcome": "closed"
+    },
+    {
+      "id": "javascript-shell",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "unavailable",
+      "expected_action": "browser.headless.read",
+      "expected_authority": "public_browser_read",
+      "expected_mode": "public_headless_read",
+      "expected_session_outcome": "closed"
+    },
+    {
+      "id": "login-redirect-known-url",
+      "static_outcome": "authentication_required",
+      "api_replay_outcome": "authentication_required",
+      "requires_identity": true,
+      "expected_action": "browser.cdp.read",
+      "expected_authority": "authenticated_read",
+      "expected_mode": "authenticated_read",
+      "expected_session_outcome": "closed"
+    },
+    {
+      "id": "authenticated-interaction",
+      "static_outcome": "authentication_required",
+      "api_replay_outcome": "authentication_required",
+      "requires_identity": true,
+      "needs_interaction": true,
+      "expected_action": "browser.cdp.interact_handoff",
+      "expected_authority": "authenticated_interact",
+      "expected_mode": "authenticated_interact",
+      "expected_session_outcome": "transferred"
+    },
+    {
+      "id": "public-popup-navigation",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "unavailable",
+      "needs_interaction": true,
+      "expected_action": "browser.headless.discover_handoff",
+      "expected_authority": "public_browser_interact",
+      "expected_mode": "public_headless_interact",
+      "expected_session_outcome": "transferred"
+    },
+    {
+      "id": "captcha-owner-assist",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "unavailable",
+      "needs_interaction": true,
+      "owner_assist": true,
+      "expected_action": "browser.headed.read_handoff",
+      "expected_authority": "public_browser_interact",
+      "expected_mode": "public_headed_interact",
+      "expected_session_outcome": "transferred"
+    },
+    {
+      "id": "verified-api-replay",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "sufficient",
+      "expected_action": "api_replay.read",
+      "expected_authority": "public_read",
+      "expected_mode": "none",
+      "expected_session_outcome": "not_started"
+    },
+    {
+      "id": "api-replay-fallback-once",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "failed",
+      "expected_action": "browser.headless.read",
+      "expected_authority": "public_browser_read",
+      "expected_mode": "public_headless_read",
+      "expected_session_outcome": "closed"
+    },
+    {
+      "id": "browser-disconnect",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "unavailable",
+      "transport_outcome": "disconnect",
+      "expected_action": "browser.headless.read",
+      "expected_authority": "public_browser_read",
+      "expected_mode": "public_headless_read",
+      "expected_session_outcome": "closed"
+    },
+    {
+      "id": "browser-hang",
+      "static_outcome": "javascript_required",
+      "api_replay_outcome": "unavailable",
+      "transport_outcome": "deadline_exceeded",
+      "expected_action": "browser.headless.read",
+      "expected_authority": "public_browser_read",
+      "expected_mode": "public_headless_read",
+      "expected_session_outcome": "closed"
+    }
+  ]
+}

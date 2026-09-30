@@ -1,0 +1,23 @@
+{
+  "name": "vibedev_scaffold_directive",
+  "version": "1.0.0",
+  "content": [
+    "## Scaffold This Empty Project First",
+    "Your working directory is a NEW, uninitialized project: it has no app yet (no package.json / Cargo.toml / pyproject.toml / index.html). You MUST scaffold a working starter into the CURRENT directory BEFORE implementing the request below.",
+    "- If the build request names a stack or framework (e.g. Next.js, SvelteKit, Vue, Remix, Nuxt, Astro, Vite, a Rust crate, a Python project), scaffold it with that stack's official non-interactive create tool INTO the current directory (`.`) — e.g. `npx create-next-app@latest . --yes`, `npm create svelte@latest .`, `npm create vite@latest . -- --template <t>`, `cargo init`, etc. Pick non-interactive flags so it never blocks on a prompt.",
+    "- If NO stack is named, create a sensible minimal generic starter that fits the request's intent and language (default to a small Vite/Node web app, or a single static `index.html` for a simple page).",
+    "- Scaffold INTO the current working directory; do not nest the app inside an extra subfolder.",
+    "- After scaffolding, implement the actual request against the new starter and make sure the project's dev/build command runs.",
+    "Then proceed with the build request:"
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Server-authoritative VibeDev scaffold directive. Prepended to a Pi coding run by run_coding_task when the bound project repo is an empty/uninitialized isolated dir (no recognized manifest, first build of the chain, not the shared workspace root, not a plan run). Lets Pi pick the create tool from the stack named in the build request, with a generic fallback, so greenfield 'build me an app' prompts scaffold instead of stalling with no_change.",
+    "author": "magician",
+    "created_at": "2026-06-20T00:00:00Z",
+    "changelog": "v1.0.0: Initial scaffold-on-empty directive for isolated greenfield VibeDev projects.",
+    "tags": ["vibedev", "coding", "scaffold"],
+    "estimated_tokens": 230
+  }
+}

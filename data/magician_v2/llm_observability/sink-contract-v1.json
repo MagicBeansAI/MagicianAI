@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "contract_id": "llm-observability-current-sink-v1",
+  "captured_at": "2026-07-22",
+  "sinks": [
+    {
+      "id": "llm_calls",
+      "source_path": "magician/src/magician_v2/analytics/llm_parquet_sink.rs",
+      "input": "RuntimeTransportBroadcaster subscription",
+      "scope": "per principal/workspace from LLMResponseReceived",
+      "flush_interval_seconds": 30,
+      "flush_row_threshold": 100,
+      "flush_queue_capacity": 8,
+      "loss_points": [
+        "broadcast receiver lag logs skipped event count but exposes no durable counter",
+        "flush queue try_send drops the complete batch on saturation",
+        "DuckDB/Parquet write failure logs and drops the batch",
+        "shutdown drain uses the same bounded nonblocking flush queue"
+      ],
+      "durability": "best-effort Parquet batch",
+      "phase2_requirement": "fulfilled by the canonical journal-backed idempotent recorder with durable gap accounting; this sink is a temporary compatibility mirror"
+    },
+    {
+      "id": "llm_dispatch",
+      "source_path": "magician/src/magician_v2/analytics/llm_dispatch_rows.rs",
+      "input": "LlmQueueEvent broadcast subscription",
+      "scope": "per principal/workspace from the queue job's validated typed trace context",
+      "flush_interval_seconds": 30,
+      "flush_row_threshold": 200,
+      "flush_queue_capacity": 8,
+      "loss_points": [
+        "queue event receiver lag logs skipped event count but exposes no durable counter",
+        "flush queue try_send drops the complete batch on saturation",
+        "DuckDB/Parquet write failure logs and drops the batch",
+        "shutdown drain uses the same bounded nonblocking flush queue"
+      ],
+      "durability": "best-effort Parquet batch",
+      "phase2_requirement": "fulfilled for canonical terminal call/attempt facts and explicit gaps; this stream remains the scoped auxiliary timing source during compatibility migration"
+    }
+  ]
+}

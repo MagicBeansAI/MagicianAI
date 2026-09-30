@@ -1,0 +1,79 @@
+# Task 21 typed-storage boundary allowlist.
+# Prefixes are reviewed adapter/kit trees. Exact files are two-way: every listed
+# file must still match the rule, and every match must be listed or under a prefix.
+# Do not add a file to skip a new bypass; route through StorageRuntime::current()
+# or a cataloged owner kit instead. Magician-bin installs the process-wide runtime.
+#
+# Raw database opens stay in docs/components/magician/storage-catalog.yaml
+# measurements.direct_io_files (scripts/storage_catalog_guard.py).
+
+bin_forbidden_crates:
+  - magician-storage-s3
+  - magician-storage-state
+  - magician-storage-migration
+
+bin_forbidden_manifests:
+  - magician-bin/Cargo.toml
+
+migration_allowed_manifests:
+  - magician/Cargo.toml
+  - magician-storage-migration/Cargo.toml
+
+object_sdk_allowed_manifests:
+  - magician-storage-s3/Cargo.toml
+
+ambient_backend:
+  prefixes:
+    - magician-storage/
+    - magician-storage-s3/
+    - magician-storage-state/
+    - magician-storage-migration/
+    - magician/src/magician_v2/profile_acceptance/
+    - magician/src/magician_v2/track_a_acceptance/
+    - magician/src/magician_v2/gate3/
+    - magician/src/magician_v2/storage_activation/
+    - magician/src/magician_v2/recovery/
+    - magician/src/magician_v2/object_owners/
+    - magician/src/magician_v2/artifacts/
+    - magician/src/magician_v2/database_owners/
+    - magician/src/magician_v2/work_owners/
+    - magician/src/magician_v2/chat_owners/
+    - magician/src/magician_v2/agent_owners/
+    - magician/src/magician_v2/system_owners/
+    - magician/src/magician_v2/subprocess_owners/
+  files:
+    - magician-bin/src/main.rs
+
+parquet_glob:
+  prefixes:
+    - magician/src/magician_v2/analytics/
+    - magician-storage/
+  files:
+    - magician-api/src/analytics_api.rs
+    - magician/src/magician_v2/artifact_v2/workspace.rs
+    - magician/src/magician_v2/learning/growth_eval.rs
+    - magician/src/magician_v2/execution/lowering.rs
+    - magician/src/magician_v2/execution/internal_data_provider.rs
+    - magician/src/magician_v2/apps/bound_path.rs
+
+object_sdk:
+  prefixes:
+    - magician-storage-s3/
+  files: []
+
+runtime_root:
+  prefixes:
+    - magician/src/magician_v2/artifact_v2/workspace.rs
+    - magician/src/magician_v2/process_storage.rs
+    - magician/src/magician_v2/subprocess_owners/
+    - desktop/src-tauri/src/engine_roots/
+  files:
+    - magician-bin/src/main.rs
+    - magician/src/config.rs
+    - desktop/src-tauri/src/runtime_paths.rs
+    - desktop/src-tauri/src/container/mod.rs
+    - desktop/src-tauri/src/env_file.rs
+    - magicutor/src/lib.rs
+    # The decision engine process resolves its own root (settings file and
+    # socket); magic-supervisor asks it (`--print-socket`) instead.
+    - decision-engine/src/main.rs

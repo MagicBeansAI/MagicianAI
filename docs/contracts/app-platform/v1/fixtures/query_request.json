@@ -1,0 +1,45 @@
+{
+  "cursor": "cursor:v1:page_2",
+  "entity": "saved_video",
+  "limit": 25,
+  "order": [
+    {
+      "direction": "descending",
+      "field": "created_at"
+    }
+  ],
+  "predicate": {
+    "nodes": [
+      {
+        "field": "duration_seconds",
+        "kind": "compare",
+        "operator": "greater_than",
+        "value": 900
+      },
+      {
+        "field": "status",
+        "kind": "in",
+        "values": [
+          "queued",
+          "ready"
+        ]
+      },
+      {
+        "children": [
+          0,
+          1
+        ],
+        "kind": "all"
+      }
+    ],
+    "root": 2
+  },
+  "protocol_version": "1",
+  "purpose": "library_view",
+  "select": [
+    "title",
+    "duration_seconds",
+    "status"
+  ],
+  "source_installation_id": "install_reading_room"
+}

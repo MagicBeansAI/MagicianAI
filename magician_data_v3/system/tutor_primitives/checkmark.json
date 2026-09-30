@@ -1,0 +1,17 @@
+{
+  "type": "checkmark",
+  "aliases": ["check", "tick"],
+  "version": 1,
+  "defaults": { "size": 28 },
+  "draw": [
+    {
+      "op": "polyline",
+      "points": [
+        ["x", "y+size*0.5"],
+        ["x+size*0.4", "y+size"],
+        ["x+size", "y"]
+      ],
+      "color": "#3ddc84"
+    }
+  ]
+}

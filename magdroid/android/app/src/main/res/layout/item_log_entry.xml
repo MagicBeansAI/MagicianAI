@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="@dimen/spacing_small"
+    android:paddingTop="@dimen/spacing_tiny"
+    android:paddingEnd="@dimen/spacing_small"
+    android:paddingBottom="@dimen/spacing_tiny">
+
+    <!-- Timestamp -->
+    <TextView
+        android:id="@+id/logTimestamp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:text="12:34:56"
+        android:textAppearance="@style/TextAppearance.Magdroid.LabelSmall"
+        android:textColor="@color/text_medium_emphasis" />
+
+    <!-- Command Name -->
+    <TextView
+        android:id="@+id/logCommand"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/spacing_small"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text="android_tap"
+        android:textAppearance="@style/TextAppearance.Magdroid.LabelMedium" />
+
+    <!-- Latency -->
+    <TextView
+        android:id="@+id/logLatency"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/spacing_small"
+        android:fontFamily="monospace"
+        android:text="12ms"
+        android:textAppearance="@style/TextAppearance.Magdroid.LabelSmall" />
+
+    <!-- Status Icon -->
+    <TextView
+        android:id="@+id/logStatus"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:gravity="center"
+        android:text="✓"
+        android:textColor="@color/success"
+        android:textSize="14sp" />
+
+</LinearLayout>

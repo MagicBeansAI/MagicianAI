@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Theme 6: Nordic Frost - Magician UI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       THEME 6: NORDIC FROST
+       Clean & Minimal - Scandinavian ice blue
+       ============================================ */
+
+    :root {
+      /* Core palette - cool whites/grays */
+      --bg-base: #f8f9fb;
+      --bg-surface: #eef1f5;
+      --bg-elevated: #ffffff;
+      --bg-hover: #e3e7ed;
+
+      /* Text hierarchy - cool grays */
+      --text-primary: #1e2a3b;
+      --text-secondary: #3d4f61;
+      --text-muted: #6b7b8c;
+      --text-faint: #a3b1c0;
+
+      /* Primary accent - ice blue */
+      --accent-primary: #3b82c4;
+      --accent-primary-hover: #2d6aa8;
+      --accent-primary-soft: #e0effa;
+
+      /* Secondary accent - slate */
+      --accent-secondary: #64748b;
+      --accent-secondary-soft: #e8ebef;
+
+      /* Tertiary accent - soft indigo */
+      --accent-tertiary: #6366f1;
+      --accent-tertiary-soft: #eef2ff;
+
+      /* Status colors - crisp and clear */
+      --color-success: #059669;
+      --color-success-soft: #d1fae5;
+      --color-warning: #d97706;
+      --color-warning-soft: #fef3c7;
+      --color-error: #dc2626;
+      --color-error-soft: #fee2e2;
+
+      /* Borders - cool gray */
+      --border-soft: #dce1e8;
+      --border-default: #c4cdd8;
+
+      /* Typography */
+      --font-primary: 'Inter', -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+
+      /* Radii - clean, geometric */
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-full: 9999px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-primary);
+      background: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-soft);
+      padding: 1.5rem 2rem;
+    }
+
+    .header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .header .badge {
+      background: var(--accent-primary-soft);
+      color: var(--accent-primary);
+      padding: 0.25rem 0.75rem;
+      border-radius: var(--radius-full);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .header p {
+      color: var(--text-secondary);
+      margin-top: 0.5rem;
+    }
+
+    /* Main content */
+    .main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    /* Section */
+    .section {
+      margin-bottom: 3rem;
+    }
+
+    .section-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    /* Color swatches */
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 1rem;
+    }
+
+    .swatch {
+      text-align: center;
+    }
+
+    .swatch-color {
+      width: 100%;
+      height: 60px;
+      border-radius: var(--radius-md);
+      margin-bottom: 0.5rem;
+      border: 1px solid var(--border-soft);
+    }
+
+    .swatch-label {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    .swatch-value {
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--text-muted);
+    }
+
+    /* Buttons */
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .btn {
+      padding: 0.625rem 1.25rem;
+      border-radius: var(--radius-md);
+      font-weight: 600;
+      font-size: 0.875rem;
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-primary {
+      background: var(--accent-primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-primary-hover);
+    }
+
+    .btn-success {
+      background: var(--color-success);
+      color: white;
+    }
+
+    .btn-secondary {
+      background: var(--accent-secondary-soft);
+      color: var(--accent-secondary);
+    }
+
+    .btn-tertiary {
+      background: var(--accent-tertiary-soft);
+      color: var(--accent-tertiary);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-default);
+    }
+
+    .btn-ghost:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    /* Badges */
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .badge {
+      padding: 0.25rem 0.75rem;
+      border-radius: var(--radius-full);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .badge-success {
+      background: var(--color-success-soft);
+      color: var(--color-success);
+    }
+
+    .badge-warning {
+      background: var(--color-warning-soft);
+      color: var(--color-warning);
+    }
+
+    .badge-error {
+      background: var(--color-error-soft);
+      color: var(--color-error);
+    }
+
+    .badge-primary {
+      background: var(--accent-primary-soft);
+      color: var(--accent-primary);
+    }
+
+    .badge-secondary {
+      background: var(--accent-secondary-soft);
+      color: var(--accent-secondary);
+    }
+
+    .badge-tertiary {
+      background: var(--accent-tertiary-soft);
+      color: var(--accent-tertiary);
+    }
+
+    /* Cards */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1rem;
+    }
+
+    .card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      box-shadow: 0 1px 4px rgba(30, 42, 59, 0.06);
+    }
+
+    .card:hover {
+      border-color: var(--border-default);
+      box-shadow: 0 3px 12px rgba(30, 42, 59, 0.08);
+    }
+
+    .card-title {
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .card-description {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+
+    .card-meta {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-soft);
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Input */
+    .input-group {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+
+    .input {
+      flex: 1;
+      padding: 0.625rem 1rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-size: 0.875rem;
+    }
+
+    .input:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(59, 130, 196, 0.15);
+    }
+
+    .input::placeholder {
+      color: var(--text-muted);
+    }
+
+    /* Progress */
+    .progress {
+      height: 6px;
+      background: var(--bg-hover);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      margin-top: 1rem;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: var(--accent-primary);
+      border-radius: var(--radius-full);
+      transition: width 0.3s ease;
+    }
+
+    /* List */
+    .list {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .list-item {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border-soft);
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .list-item:last-child {
+      border-bottom: none;
+    }
+
+    .list-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .list-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.875rem;
+    }
+
+    .list-icon.success {
+      background: var(--color-success-soft);
+      color: var(--color-success);
+    }
+
+    .list-icon.warning {
+      background: var(--color-warning-soft);
+      color: var(--color-warning);
+    }
+
+    .list-icon.error {
+      background: var(--color-error-soft);
+      color: var(--color-error);
+    }
+
+    .list-content {
+      flex: 1;
+    }
+
+    .list-title {
+      font-weight: 500;
+      font-size: 0.875rem;
+    }
+
+    .list-subtitle {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+
+    /* Stats grid */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .stat-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-md);
+      padding: 1rem;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: var(--accent-primary);
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-top: 0.25rem;
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>
+      <span>Nordic Frost</span>
+      <span class="badge">Light Theme</span>
+    </h1>
+    <p>Clean & Minimal - Ice blue accents with crisp, geometric Scandinavian design</p>
+  </header>
+
+  <main class="main">
+    <!-- Colors -->
+    <section class="section">
+      <h2 class="section-title">Color Palette</h2>
+      <div class="swatches">
+        <div class="swatch">
+          <div class="swatch-color" style="background: #f8f9fb;"></div>
+          <div class="swatch-label">Base</div>
+          <div class="swatch-value">#f8f9fb</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #eef1f5;"></div>
+          <div class="swatch-label">Surface</div>
+          <div class="swatch-value">#eef1f5</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #ffffff;"></div>
+          <div class="swatch-label">Elevated</div>
+          <div class="swatch-value">#ffffff</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #3b82c4;"></div>
+          <div class="swatch-label">Primary</div>
+          <div class="swatch-value">#3b82c4</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #64748b;"></div>
+          <div class="swatch-label">Secondary</div>
+          <div class="swatch-value">#64748b</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #6366f1;"></div>
+          <div class="swatch-label">Tertiary</div>
+          <div class="swatch-value">#6366f1</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #059669;"></div>
+          <div class="swatch-label">Success</div>
+          <div class="swatch-value">#059669</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #dc2626;"></div>
+          <div class="swatch-label">Error</div>
+          <div class="swatch-value">#dc2626</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Buttons -->
+    <section class="section">
+      <h2 class="section-title">Buttons</h2>
+      <div class="buttons">
+        <button class="btn btn-primary">Primary Action</button>
+        <button class="btn btn-success">Execute</button>
+        <button class="btn btn-secondary">Slate</button>
+        <button class="btn btn-tertiary">Planning</button>
+        <button class="btn btn-ghost">Cancel</button>
+      </div>
+    </section>
+
+    <!-- Badges -->
+    <section class="section">
+      <h2 class="section-title">Status Badges</h2>
+      <div class="badges">
+        <span class="badge badge-success">Ready</span>
+        <span class="badge badge-primary">Running</span>
+        <span class="badge badge-tertiary">Planning</span>
+        <span class="badge badge-warning">Pending</span>
+        <span class="badge badge-error">Failed</span>
+        <span class="badge badge-secondary">Queued</span>
+      </div>
+    </section>
+
+    <!-- Stats -->
+    <section class="section">
+      <h2 class="section-title">Statistics</h2>
+      <div class="stats">
+        <div class="stat-card">
+          <div class="stat-value">24</div>
+          <div class="stat-label">Tasks</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color: var(--color-success);">18</div>
+          <div class="stat-label">Completed</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color: var(--accent-tertiary);">4</div>
+          <div class="stat-label">In Progress</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color: var(--color-warning);">2</div>
+          <div class="stat-label">Pending</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Cards -->
+    <section class="section">
+      <h2 class="section-title">Task Cards</h2>
+      <div class="cards">
+        <div class="card">
+          <div class="card-title">Data pipeline optimization</div>
+          <div class="card-description">Analyze and improve ETL process efficiency for real-time dashboard updates.</div>
+          <div class="card-meta">
+            <span>Due: Tomorrow</span>
+            <span class="badge badge-primary">In Progress</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">API documentation review</div>
+          <div class="card-description">Update OpenAPI specifications and generate client SDKs for v3.0 release.</div>
+          <div class="card-meta">
+            <span>Due: Friday</span>
+            <span class="badge badge-success">Ready</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Input -->
+    <section class="section">
+      <h2 class="section-title">Input Field</h2>
+      <div class="input-group">
+        <input type="text" class="input" placeholder="Describe your task...">
+        <button class="btn btn-primary">Add Task</button>
+      </div>
+      <div class="progress">
+        <div class="progress-bar" style="width: 75%;"></div>
+      </div>
+    </section>
+
+    <!-- List -->
+    <section class="section">
+      <h2 class="section-title">Activity List</h2>
+      <div class="list">
+        <div class="list-item">
+          <div class="list-icon success">&#10003;</div>
+          <div class="list-content">
+            <div class="list-title">Deployment successful</div>
+            <div class="list-subtitle">1 minute ago</div>
+          </div>
+        </div>
+        <div class="list-item">
+          <div class="list-icon warning">&#9888;</div>
+          <div class="list-content">
+            <div class="list-title">Requires approval</div>
+            <div class="list-subtitle">8 minutes ago</div>
+          </div>
+        </div>
+        <div class="list-item">
+          <div class="list-icon error">&#10005;</div>
+          <div class="list-content">
+            <div class="list-title">Build failed</div>
+            <div class="list-subtitle">23 minutes ago</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

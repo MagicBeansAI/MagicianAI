@@ -1,0 +1,460 @@
+schema_version: tool-runtime.source-classification-manifest.v1
+inventory_schema_version: tool-runtime.source-inventory.v1
+
+skill_groups:
+  - skills:
+      - csvkit
+      - document-to-markdown
+      - dugite
+      - awk
+      - jq
+      - marimo
+      - office-excel
+      - office-powerpoint
+      - office-word
+      - pdftotext
+      - rg
+      - sed
+    auth_strategies: [none]
+    auth_requirement: none
+    auth_provider: null
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: none, store: none }
+    setup_path: none
+    identity_verification: none
+    approval_class: ordinary
+    runtime_owner: external_cli
+
+  - skills:
+      - arxiv-search
+      - find-details-by-username
+      - hackernews-search
+      - htmltotext
+      - polymarket-search
+      - producthunt-search
+      - structured-web-data
+      - websearch
+      - whatsgoingon2
+      - work-modules
+      - youtube-search
+    auth_strategies: [none]
+    auth_requirement: none
+    auth_provider: null
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: none, store: none }
+    setup_path: none
+    identity_verification: none
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [screen-draw]
+    auth_strategies: [none]
+    auth_requirement: none
+    auth_provider: null
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: none, store: none }
+    setup_path: none
+    identity_verification: none
+    approval_class: ordinary
+    runtime_owner: host_gateway
+
+  - skills: [agentmail-read]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: agentmail
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: external_cli
+
+  - skills: [agentmail-send]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: agentmail
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: conditional_external_side_effect
+    runtime_owner: external_cli
+
+  - skills:
+      - analyze-image-via-minimax
+      - image-generation-via-minimax
+      - music-generation-via-minimax
+      - video-generation-via-minimax
+      - web-search-via-minimax
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: minimax
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills:
+      - deep-research-with-claude
+      - websearch-via-claude
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: anthropic
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills:
+      - deep-research-with-openai
+      - websearch-via-openai
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: openai
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [gif-search-via-klipy]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: klipy
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [reddit-search]
+    auth_strategies: [secrets]
+    auth_requirement: optional
+    auth_provider: reddit
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [github-search]
+    auth_strategies: [secrets]
+    auth_requirement: optional
+    auth_provider: github
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [image-generation]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: nanobanana
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [kapso-whatsapp-read]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: kapso
+    profile: { policy: fixed, source: fixed_binding, selector: null, fixed_alias: presto-kapso }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [kapso-whatsapp-send]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: kapso
+    profile: { policy: fixed, source: fixed_binding, selector: null, fixed_alias: presto-kapso }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: conditional_external_side_effect
+    runtime_owner: skill_adapter
+
+  - skills: [meme-generation-via-imgflip]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: imgflip
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [metabase]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: metabase
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: conditional_external_side_effect
+    runtime_owner: skill_adapter
+
+  - skills: [news-search-via-tavily]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: tavily
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [web-via-tinyfish]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: tinyfish
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: external_cli
+
+  - skills: [semantic-websearch-via-exa]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: exa
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [video-generation-via-veo]
+    auth_strategies: [secrets]
+    auth_requirement: at_least_one
+    auth_provider: google-veo
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [telegram]
+    auth_strategies: [secrets]
+    auth_requirement: required
+    auth_provider: telegram
+    profile: { policy: fixed, source: fixed_binding, selector: null, fixed_alias: deepact-bot }
+    session: { owner: runtime, store: scoped_secret_store }
+    setup_path: operator_secret_binding
+    identity_verification: provider_request
+    approval_class: conditional_external_side_effect
+    runtime_owner: skill_adapter
+
+  - skills:
+      - calendar
+      - gmail
+      - sheets
+    auth_strategies: [cli_profile]
+    auth_requirement: required
+    auth_provider: google-workspace
+    profile: { policy: selectable, source: schema_selector, selector: account, fixed_alias: null }
+    session: { owner: cli, store: scoped_cli_directory }
+    setup_path: schema_auth_hook
+    identity_verification: schema_check_hook
+    approval_class: conditional_external_side_effect
+    runtime_owner: external_cli
+
+  - skills:
+      - presto-calendar
+      - presto-gmail
+      - presto-sheets
+    auth_strategies: [cli_profile]
+    auth_requirement: required
+    auth_provider: google-workspace
+    profile: { policy: fixed, source: fixed_binding, selector: null, fixed_alias: presto }
+    session: { owner: cli, store: scoped_cli_directory }
+    setup_path: schema_auth_hook
+    identity_verification: schema_check_hook
+    approval_class: conditional_external_side_effect
+    runtime_owner: external_cli
+
+  - skills: [higgsfield]
+    auth_strategies: [cli_profile]
+    auth_requirement: required
+    auth_provider: higgsfield
+    profile: { policy: implicit, source: cli_active_identity, selector: null, fixed_alias: null }
+    session: { owner: cli, store: cli_owned_store }
+    setup_path: external_cli_login
+    identity_verification: cli_status
+    approval_class: ordinary
+    runtime_owner: external_cli
+
+  - skills: [ocr]
+    auth_strategies: [cli_profile]
+    auth_requirement: conditional
+    auth_provider: coding-cli
+    profile: { policy: implicit, source: cli_active_identity, selector: null, fixed_alias: null }
+    session: { owner: cli, store: cli_owned_store }
+    setup_path: external_cli_login
+    identity_verification: cli_status
+    approval_class: ordinary
+    runtime_owner: skill_adapter
+
+  - skills: [telegram-self]
+    auth_strategies: [oauth_session]
+    auth_requirement: required
+    auth_provider: telegram
+    profile: { policy: implicit, source: session_identity, selector: null, fixed_alias: null }
+    session: { owner: cli, store: cli_owned_store }
+    setup_path: schema_auth_hook
+    identity_verification: schema_check_hook
+    approval_class: conditional_external_side_effect
+    runtime_owner: external_cli
+
+  - skills: [whatsapp]
+    auth_strategies: [cli_profile]
+    auth_requirement: required
+    auth_provider: whatsapp
+    profile: { policy: implicit, source: cli_active_identity, selector: null, fixed_alias: null }
+    session: { owner: cli, store: cli_owned_store }
+    setup_path: external_cli_qr_login
+    identity_verification: cli_session
+    approval_class: conditional_external_side_effect
+    runtime_owner: external_cli
+
+  - skills: [swiggy-mcp]
+    auth_strategies: [oauth_session]
+    auth_requirement: required
+    auth_provider: swiggy-mcp
+    profile: { policy: selectable, source: schema_selector, selector: profile, fixed_alias: null }
+    session: { owner: official_sdk, store: scoped_secret_store }
+    setup_path: auth_broker_browser_oauth
+    identity_verification: sdk_credential_status
+    approval_class: commerce_checkout
+    runtime_owner: official_mcp_sdk
+
+  - skills: [zepto-mcp]
+    auth_strategies: [oauth_session]
+    auth_requirement: required
+    auth_provider: zepto-mcp
+    profile: { policy: selectable, source: schema_selector, selector: profile, fixed_alias: null }
+    session: { owner: official_sdk, store: scoped_secret_store }
+    setup_path: auth_broker_browser_oauth
+    identity_verification: sdk_credential_status
+    approval_class: commerce_checkout
+    runtime_owner: official_mcp_sdk
+
+  - skills: [browser]
+    auth_strategies: [browser_profile, delegated_credential]
+    auth_requirement: optional
+    auth_provider: browser
+    profile: { policy: selectable, source: runtime_named, selector: null, fixed_alias: null }
+    session: { owner: browser_controller, store: browser_profile }
+    setup_path: browser_login
+    identity_verification: browser_session_evidence
+    approval_class: conditional_external_side_effect
+    runtime_owner: compiled_provider
+
+  - skills: [macos-ui-automation]
+    auth_strategies: [native_permission]
+    auth_requirement: required
+    auth_provider: macos
+    profile: { policy: none, source: none, selector: null, fixed_alias: null }
+    session: { owner: operating_system, store: os_permission_store }
+    setup_path: os_settings
+    identity_verification: os_permission_check
+    approval_class: native_ui_control
+    runtime_owner: skill_adapter
+
+adapter_groups:
+  - role: policy_implementation
+    ownership: [protocol_adapter, policy_adapter]
+    files:
+      - { skill: browser, path: bin/agent-browser }
+      - { skill: kapso-whatsapp-read, path: bin/kapso-governed }
+      - { skill: kapso-whatsapp-send, path: bin/kapso-governed }
+      - { skill: macos-ui-automation, path: bin/macos-ui-controller }
+      - { skill: telegram, path: bin/telegram-bot-adapter }
+      - { skill: whatsapp, path: bin/whatsapp-reaction-adapter }
+
+  - role: protocol_implementation
+    ownership: [protocol_adapter]
+    files:
+      - { skill: arxiv-search, path: bin/arxiv-search }
+      - { skill: deep-research-with-claude, path: bin/claude-deep-research }
+      - { skill: deep-research-with-openai, path: bin/openai-deep-research }
+      - { skill: github-search, path: bin/github-search }
+      - { skill: hackernews-search, path: bin/hackernews-search }
+      - { skill: htmltotext, path: bin/htmltotext }
+      - { skill: metabase, path: bin/metabase-pp-cli }
+      - { skill: news-search-via-tavily, path: bin/tavily-search }
+      - { skill: polymarket-search, path: bin/polymarket-search }
+      - { skill: producthunt-search, path: bin/producthunt-search }
+      - { skill: reddit-search, path: bin/reddit-search }
+      - { skill: semantic-websearch-via-exa, path: bin/exa-search }
+      - { skill: structured-web-data, path: bin/structured-web-data }
+      - { skill: web-search-via-minimax, path: bin/minimax-websearch }
+      - { skill: websearch, path: bin/websearch }
+      - { skill: websearch-via-claude, path: bin/claude-websearch }
+      - { skill: websearch-via-openai, path: bin/openai-websearch }
+      - { skill: whatsgoingon2, path: bin/whatsgoingon2 }
+      - { skill: work-modules, path: bin/work-modules }
+      - { skill: youtube-search, path: bin/youtube-search }
+
+  - role: artifact_bridge
+    ownership: [protocol_adapter, artifact_adapter]
+    files:
+      - { skill: analyze-image-via-minimax, path: bin/minimax-vision }
+      - { skill: find-details-by-username, path: bin/find-details-by-username }
+      - { skill: gif-search-via-klipy, path: bin/klipy-gif-search }
+      - { skill: image-generation, path: bin/nanobanana2 }
+      - { skill: image-generation-via-minimax, path: bin/minimax-image }
+      - { skill: meme-generation-via-imgflip, path: bin/imgflip-meme }
+      - { skill: music-generation-via-minimax, path: bin/minimax-music }
+      - { skill: ocr, path: bin/ocr }
+      - { skill: video-generation-via-minimax, path: bin/minimax-video }
+      - { skill: video-generation-via-veo, path: bin/veo31 }
+
+  - role: verifier
+    ownership: [not_wrapper]
+    files:
+      - { skill: browser, path: scripts/verify-skill-discovery.sh }
+
+  - role: support
+    ownership: [not_wrapper]
+    files:
+      - { skill: metabase, path: scripts/apply-postgen-patches.py }
+      - { skill: metabase, path: scripts/postprocess-spec.py }
+      - { skill: metabase, path: scripts/refresh-spec.sh }
+
+finding_dispositions: []
+exceptions:
+  - id: undeclared-secret-requirements
+    skills: [telegram]
+    kind: undeclared_secret_requirement
+    resolution: declared_in_runtime_contract
+  - id: conditional-browser-and-ocr-auth
+    skills: [browser, ocr]
+    kind: conditional_auth_path
+    resolution: declared_conditional_auth_contract
+  - id: commerce-mcp-policy-coupling
+    skills: [swiggy-mcp, zepto-mcp]
+    kind: legacy_mcp_and_policy_coupled
+    resolution: official_sdk_transport_with_local_commerce_policy
+
+unknowns: []

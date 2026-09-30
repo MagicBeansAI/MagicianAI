@@ -1,0 +1,278 @@
+[
+  {
+    "call_id": "01M3JAAA8CP03ZQ2G26T83KEKF",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.1756e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAAR9BZJ0F76T103A74NV",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.163e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAB1EPGY6T8M1AVQHXB29",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.1588e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAABEXQJ6AY163GN3SWQKM",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.1504000000000003e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAABS25K3T5GZRFH661YJT",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.373e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAC8GSDVY5GC97CTJ98WD",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.3394000000000003e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAACHSVPATC4EBJ8J8P51P",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.9904000000000004e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAACZNG042PTF739FZQE3H",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 3.0492000000000002e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAADA0HYM3DY9YDDM4X4VR",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.2386000000000002e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAADT4V287DJTMMZVVZ7NT",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.4108e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAE5J0H9PKWPHTK0EWW2D",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.6712000000000004e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAEGPQD8BY5GSHF4491EH",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "local",
+      "cost_usd": 0.0,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAFPB8DRVVXCDYWQTJ1Y5",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.6208e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAG1ZJ72P9V5WHAAT3VSB",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 4.914e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAGJC5FMYFEK240NHG6Y9",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 4.9392000000000004e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAGWYPMG259ZD5Y8B3DR5",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "local",
+      "cost_usd": 0.0,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAK6ZK7P1RXJJMC4XSHV0",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.3016e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAKMNYKGQC2JHGS4WN3HH",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.3268e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAPAPJZYXGR01E7QQT6M2",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "local",
+      "cost_usd": 0.0,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAQ89HNRWHHZXD74NANXD",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.8098e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAQJZNVA2ZTW826RK1EWP",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.7888e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAAR11QVJER18VDSMTXVMP",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.8476000000000003e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  },
+  {
+    "call_id": "01M3JAARAQ395WJTHPD743E902",
+    "pricing": {
+      "cache_cost_usd": null,
+      "cost_source": "computed",
+      "cost_usd": 2.7552000000000003e-05,
+      "input_cost_usd": null,
+      "output_cost_usd": null,
+      "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+      "reasoning_cost_usd": null
+    }
+  }
+]

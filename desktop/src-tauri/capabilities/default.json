@@ -1,0 +1,15 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for the Magician desktop app",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "core:event:deny-emit",
+    "core:event:deny-emit-to",
+    "shell:allow-open",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "updater:default"
+  ]
+}

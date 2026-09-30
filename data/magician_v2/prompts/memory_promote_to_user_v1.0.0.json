@@ -1,0 +1,71 @@
+{
+  "name": "memory_promote_to_user",
+  "version": "1.0.0",
+  "content": [
+    "Evaluate the following insights and entities for promotion to user-level memory tiers.",
+    "",
+    "## Source Data",
+    "{source_json}",
+    "",
+    "## Current User-Level Tier Schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Review each insight and entity for user-level promotion worthiness",
+    "2. Classify each entry as EXPLICIT DECLARATION (user directly stated a fact) or INFERRED PATTERN (behavioral pattern across interactions)",
+    "3. Only promote entries that meet these criteria:",
+    "   - Confidence >= 0.7",
+    "   - Explicit declarations: evidence count >= 1 (a single direct statement is sufficient)",
+    "   - Inferred patterns: evidence count >= 2",
+    "   - Low or medium staleness risk",
+    "   - Not already present in the user-level tier (check tier_schema for conflicts)",
+    "4. For each promoted entry, specify the target tier, storage key, and value",
+    "5. Provide a clear rationale for each promotion decision",
+    "6. List entries you considered but chose not to promote, with reasons",
+    "",
+    "## Promotion Tiers",
+    "- **preferences**: Stable user preferences (e.g., UI settings, communication style, timezone, locale)",
+    "- **skills**: Known user skills and expertise areas",
+    "- **contacts**: People and their roles — colleagues, managers, reports, external contacts",
+    "- **workflows**: Established multi-step processes the user regularly follows",
+    "- **identity**: Facts about the user themselves (email, title, team, department)",
+    "- **organization**: Company/team structure, org hierarchy, reporting lines, team names",
+    "- **accounts**: Service accounts, API keys, approval codes, environment credentials (store references, NOT secrets)",
+    "- **channels**: Communication channels and how to reach people (Slack channels, email lists, meeting links)",
+    "",
+    "When in doubt, do NOT promote. False positives degrade the user experience.",
+    "",
+    "Return the JSON object as specified by your system prompt.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized insights and entities to evaluate for user-level promotion",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"insight\": \"User prefers dark mode in all applications\", \"confidence\": 0.9, \"evidence_count\": 15, \"staleness_risk\": \"low\"}]"
+      ]
+    },
+    {
+      "name": "tier_schema",
+      "description": "JSON schema of the current user-level memory tiers including existing entries, for conflict detection",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "{\"preferences\": {\"dark_mode\": true}, \"skills\": [\"python\", \"rust\"], \"contacts\": []}"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to evaluate insights and entities for promotion to user-level memory tiers. Enforces strict promotion criteria to avoid false positives.",
+    "author": "magician",
+    "created_at": "2026-03-04T00:00:00Z",
+    "changelog": "v1.0.0: User promotion user prompt with explicit-declaration vs inferred-pattern classification and 8 promotion tiers (preferences, skills, contacts, workflows, identity, organization, accounts, channels).",
+    "tags": ["memory", "consolidation", "user-promotion", "tier-management"],
+    "estimated_tokens": 250
+  }
+}

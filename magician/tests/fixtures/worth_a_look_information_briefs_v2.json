@@ -1,0 +1,516 @@
+{
+  "schema_version": 1,
+  "privacy": "synthetic_only_no_private_source_content",
+  "cases": [
+    {
+      "id": "lpg_booking_concrete_change",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "LPG booking rule changes from July 1",
+        "body": "From July 1, customers may make one subsidized-cylinder booking every 21 days instead of every 15 days. Emergency non-subsidized bookings are unchanged."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "LPG booking rules are changing from July 1.",
+        "classification": "fyi",
+        "route": "worth_a_look",
+        "candidate_digest": "LPG booking rules are changing from July 1.",
+        "card_line": "LPG booking rules changed."
+      },
+      "expected": {
+        "lane": "worth_a_look",
+        "information_type": "change_notice",
+        "detail_status": "complete",
+        "required_action": false,
+        "required_fact_fragments": ["21 days", "15 days", "July 1", "Emergency non-subsidized bookings are unchanged"]
+      },
+      "v2_output": {
+        "summary": "From July 1, the subsidized LPG booking interval increases from 15 to 21 days; emergency non-subsidized bookings do not change.",
+        "intent": "fyi",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "none"},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "change_notice",
+          "key_facts": ["Affected: subsidized LPG cylinder bookings", "Emergency non-subsidized bookings are unchanged"],
+          "changes": [{"aspect": "Minimum interval between subsidized bookings", "before": "15 days", "after": "21 days", "effective_text": "July 1, 2026"}],
+          "temporal_facts": [{"kind": "effective", "text": "July 1, 2026"}],
+          "stated_action": null,
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "lpg_booking_source_omits_change",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Important LPG booking update",
+        "body": "LPG booking rules change on July 1. Read the linked circular for the revised rules."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "LPG booking rules are changing from July 1.",
+        "classification": "fyi",
+        "route": "worth_a_look",
+        "candidate_digest": "LPG booking rules are changing from July 1.",
+        "card_line": "LPG rules changed."
+      },
+      "expected": {
+        "lane": "worth_a_look",
+        "information_type": "change_notice",
+        "detail_status": "source_omits_details",
+        "required_action": false,
+        "required_fact_fragments": ["July 1", "exact LPG booking rule changes"]
+      },
+      "v2_output": {
+        "summary": "LPG booking rules change on July 1, but this message does not state the revised rules.",
+        "intent": "fyi",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "none"},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "change_notice",
+          "key_facts": ["Effective: July 1, 2026"],
+          "changes": [],
+          "temporal_facts": [{"kind": "effective", "text": "July 1, 2026"}],
+          "stated_action": "Review the issuer's circular before the next LPG booking.",
+          "detail_status": "source_omits_details",
+          "missing_details": ["The exact LPG booking rule changes"]
+        }
+      }
+    },
+    {
+      "id": "credit_card_reward_cap",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Reward-point cap for brand vouchers",
+        "body": "Effective July 1, reward points earned on SmartBuy brand vouchers are capped at 5,000 points per calendar month. Other SmartBuy categories retain their existing limits."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "A new monthly reward-points cap applies to some SmartBuy purchases.",
+        "classification": "fyi",
+        "route": "worth_a_look",
+        "candidate_digest": "A new monthly reward-points cap applies.",
+        "card_line": "Your card rewards policy changed."
+      },
+      "expected": {
+        "lane": "worth_a_look",
+        "information_type": "change_notice",
+        "detail_status": "complete",
+        "required_action": false,
+        "required_fact_fragments": ["SmartBuy brand vouchers", "5,000 points", "calendar month", "July 1"]
+      },
+      "v2_output": {
+        "summary": "From July 1, SmartBuy brand-voucher purchases earn at most 5,000 reward points per calendar month; other category limits remain unchanged.",
+        "intent": "fyi",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "none"},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "change_notice",
+          "key_facts": ["Affected: SmartBuy brand vouchers", "Limit period: calendar month", "Other SmartBuy category limits are unchanged"],
+          "changes": [{"aspect": "Monthly reward-point cap", "before": null, "after": "5,000 points", "effective_text": "July 1, 2026"}],
+          "temporal_facts": [{"kind": "effective", "text": "July 1, 2026"}],
+          "stated_action": null,
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "credit_card_bill_due",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Card statement due July 12",
+        "body": "Your total card payment of INR 42,500 is due July 12, 2026. The minimum amount due is INR 2,500."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "A card statement is available.",
+        "classification": "fyi",
+        "route": "worth_a_look",
+        "candidate_digest": "A card statement is available.",
+        "card_line": "A card statement may be worth reviewing."
+      },
+      "expected": {
+        "lane": "follow_ups",
+        "information_type": "deadline",
+        "detail_status": "complete",
+        "required_action": true,
+        "required_fact_fragments": ["INR 42,500", "INR 2,500", "July 12, 2026"]
+      },
+      "v2_output": {
+        "summary": "A total card payment of INR 42,500, with INR 2,500 minimum due, must be paid by July 12, 2026.",
+        "intent": "action_request",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "owner_owes", "actor": "owner", "due_text": "July 12, 2026", "urgency": "high", "rationale": "The card payment has a stated due date.", "key_details": ["Amount: INR 42,500", "Minimum due: INR 2,500", "Due: July 12, 2026"]},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "deadline",
+          "key_facts": ["Total due: INR 42,500", "Minimum due: INR 2,500"],
+          "changes": [],
+          "temporal_facts": [{"kind": "due", "text": "July 12, 2026"}],
+          "stated_action": "Pay the card amount by the due date.",
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "vendor_invoice_due",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Invoice INV-SYNTH-104 due July 18",
+        "body": "Example Design Studio invoice INV-SYNTH-104 for INR 18,900 is due on July 18, 2026."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "An invoice was received from Example Design Studio.",
+        "classification": "fyi",
+        "route": "worth_a_look",
+        "candidate_digest": "An invoice was received.",
+        "card_line": "A vendor invoice arrived."
+      },
+      "expected": {
+        "lane": "follow_ups",
+        "information_type": "deadline",
+        "detail_status": "complete",
+        "required_action": true,
+        "required_fact_fragments": ["Example Design Studio", "INR 18,900", "July 18, 2026"]
+      },
+      "v2_output": {
+        "summary": "Example Design Studio's INR 18,900 invoice is due July 18, 2026.",
+        "intent": "action_request",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "owner_owes", "actor": "owner", "counterparty": "Example Design Studio", "due_text": "July 18, 2026", "urgency": "normal", "rationale": "The invoice has a payment deadline.", "key_details": ["Amount: INR 18,900", "Due: July 18, 2026"]},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "deadline",
+          "key_facts": ["Biller: Example Design Studio", "Amount: INR 18,900"],
+          "changes": [],
+          "temporal_facts": [{"kind": "due", "text": "July 18, 2026"}],
+          "stated_action": "Pay or resolve the invoice by July 18, 2026.",
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "meeting_reschedule_reply",
+      "synthetic": true,
+      "input": {
+        "channel": "chat",
+        "subject": "Project sync",
+        "body": "Can we move Thursday's project sync to Friday at 10:30 AM? Please confirm."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "The sender proposes moving the project sync.",
+        "classification": "needs_reply",
+        "route": "follow_ups",
+        "candidate_digest": "The project sync may move.",
+        "card_line": "Confirm a meeting change."
+      },
+      "expected": {
+        "lane": "follow_ups",
+        "information_type": "scheduling",
+        "detail_status": "complete",
+        "required_action": true,
+        "required_fact_fragments": ["Friday at 10:30 AM", "Thursday", "confirm"]
+      },
+      "v2_output": {
+        "summary": "The sender asks to move Thursday's project sync to Friday at 10:30 AM and wants confirmation.",
+        "intent": "scheduling",
+        "needs_reply_hint": true,
+        "follow_up_hint": {"kind": "schedule", "actor": "owner", "due_text": "Friday at 10:30 AM", "urgency": "normal", "rationale": "The sender explicitly asks for confirmation.", "key_details": ["Previous: Thursday", "Proposed: Friday at 10:30 AM"]},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "scheduling",
+          "key_facts": ["Previous meeting: Thursday", "Proposed meeting: Friday at 10:30 AM"],
+          "changes": [{"aspect": "Project sync time", "before": "Thursday", "after": "Friday at 10:30 AM", "effective_text": null}],
+          "temporal_facts": [{"kind": "scheduled", "text": "Friday at 10:30 AM"}],
+          "stated_action": "Confirm whether the proposed Friday time works.",
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "terms_update_concrete",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Storage plan terms update",
+        "body": "On August 1, the free storage allowance decreases from 20 GB to 15 GB and deleted-file recovery changes from 60 to 30 days. Existing paid plans are unchanged."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "Storage plan terms will change on August 1.",
+        "classification": "fyi",
+        "route": "worth_a_look",
+        "candidate_digest": "Storage plan terms will change.",
+        "card_line": "Storage terms are changing."
+      },
+      "expected": {
+        "lane": "worth_a_look",
+        "information_type": "change_notice",
+        "detail_status": "complete",
+        "required_action": false,
+        "required_fact_fragments": ["20 GB", "15 GB", "60", "30 days", "paid plans are unchanged"]
+      },
+      "v2_output": {
+        "summary": "From August 1, free storage drops from 20 GB to 15 GB and deleted-file recovery drops from 60 to 30 days; paid plans do not change.",
+        "intent": "fyi",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "none"},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "change_notice",
+          "key_facts": ["Existing paid plans are unchanged"],
+          "changes": [
+            {"aspect": "Free storage allowance", "before": "20 GB", "after": "15 GB", "effective_text": "August 1, 2026"},
+            {"aspect": "Deleted-file recovery period", "before": "60 days", "after": "30 days", "effective_text": "August 1, 2026"}
+          ],
+          "temporal_facts": [{"kind": "effective", "text": "August 1, 2026"}],
+          "stated_action": null,
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "optional_promotion_expiry",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Airport transfer offer",
+        "body": "Get 20% off airport transfers booked by July 31, up to INR 1,200 per booking. No action is required."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "An airport-transfer promotion is available.",
+        "classification": "no_action",
+        "route": "worth_a_look",
+        "candidate_digest": "An airport-transfer promotion is available.",
+        "card_line": "An airport transfer offer may be useful."
+      },
+      "expected": {
+        "lane": "worth_a_look",
+        "information_type": "promotion",
+        "detail_status": "complete",
+        "required_action": false,
+        "required_fact_fragments": ["20%", "July 31", "INR 1,200", "airport transfers"]
+      },
+      "v2_output": {
+        "summary": "Airport transfers booked by July 31 receive 20% off, capped at INR 1,200 per booking.",
+        "intent": "newsletter",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "none"},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "promotion",
+          "key_facts": ["Discount: 20%", "Maximum discount: INR 1,200 per booking", "Affected: airport transfers"],
+          "changes": [],
+          "temporal_facts": [{"kind": "expiry", "text": "July 31, 2026"}],
+          "stated_action": null,
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "payment_confirmation",
+      "synthetic": true,
+      "input": {
+        "channel": "chat",
+        "subject": "Rent transfer received",
+        "body": "We received your INR 35,000 rent transfer for July on July 3. No further action is needed."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "A rent payment was received.",
+        "classification": "no_action",
+        "route": "worth_a_look",
+        "candidate_digest": "A rent payment was received.",
+        "card_line": "A payment was confirmed."
+      },
+      "expected": {
+        "lane": "worth_a_look",
+        "information_type": "transaction",
+        "detail_status": "complete",
+        "required_action": false,
+        "required_fact_fragments": ["INR 35,000", "July rent", "July 3"]
+      },
+      "v2_output": {
+        "summary": "The INR 35,000 July rent transfer was received on July 3; no action is needed.",
+        "intent": "transactional",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "none"},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "transaction",
+          "key_facts": ["Amount: INR 35,000", "Period: July rent", "Status: received"],
+          "changes": [],
+          "temporal_facts": [{"kind": "occurred", "text": "July 3, 2026"}],
+          "stated_action": null,
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "newsletter_product_launch",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Analytics export is generally available",
+        "body": "The analytics CSV export is now available on Pro and Business plans. Exports include the last 24 months and can be scheduled weekly."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "A new analytics export feature is available.",
+        "classification": "no_action",
+        "route": "worth_a_look",
+        "candidate_digest": "A new analytics export feature is available.",
+        "card_line": "A product feature launched."
+      },
+      "expected": {
+        "lane": "worth_a_look",
+        "information_type": "general_information",
+        "detail_status": "complete",
+        "required_action": false,
+        "required_fact_fragments": ["Pro and Business", "24 months", "weekly", "CSV export"]
+      },
+      "v2_output": {
+        "summary": "Pro and Business plans now include CSV analytics exports for the last 24 months, with optional weekly scheduling.",
+        "intent": "newsletter",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "none"},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "general_information",
+          "key_facts": ["Plans: Pro and Business", "History included: 24 months", "Optional schedule: weekly", "Format: CSV export"],
+          "changes": [],
+          "temporal_facts": [],
+          "stated_action": null,
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "document_request",
+      "synthetic": true,
+      "input": {
+        "channel": "chat",
+        "subject": "Address verification",
+        "body": "Please send the signed address declaration by July 15 so we can complete verification."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "The sender needs an address-verification document.",
+        "classification": "needs_reply",
+        "route": "follow_ups",
+        "candidate_digest": "An address-verification document is requested.",
+        "card_line": "Send an address document."
+      },
+      "expected": {
+        "lane": "follow_ups",
+        "information_type": "request",
+        "detail_status": "complete",
+        "required_action": true,
+        "required_fact_fragments": ["signed address declaration", "July 15", "verification"]
+      },
+      "v2_output": {
+        "summary": "The sender requests the signed address declaration by July 15 to complete verification.",
+        "intent": "action_request",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "owner_owes", "actor": "owner", "due_text": "July 15, 2026", "urgency": "normal", "rationale": "The sender requests a document by a deadline.", "key_details": ["Document: signed address declaration", "Due: July 15, 2026"]},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "request",
+          "key_facts": ["Document: signed address declaration", "Purpose: complete verification"],
+          "changes": [],
+          "temporal_facts": [{"kind": "due", "text": "July 15, 2026"}],
+          "stated_action": "Send the signed address declaration by July 15.",
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    },
+    {
+      "id": "deadline_source_omits_date",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Renewal action required",
+        "body": "Your service renewal needs action soon. The exact renewal deadline appears only in the account portal."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "A service renewal needs attention.",
+        "classification": "follow_up",
+        "route": "follow_ups",
+        "candidate_digest": "A service renewal needs attention.",
+        "card_line": "Review a service renewal."
+      },
+      "expected": {
+        "lane": "follow_ups",
+        "information_type": "deadline",
+        "detail_status": "source_omits_details",
+        "required_action": true,
+        "required_fact_fragments": ["renewal", "exact renewal deadline"]
+      },
+      "v2_output": {
+        "summary": "The service renewal requires action, but this message does not state the deadline.",
+        "intent": "action_request",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "owner_owes", "actor": "owner", "urgency": "normal", "rationale": "The renewal requires action but the deadline is absent.", "key_details": ["Deadline: not stated in the message"]},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "deadline",
+          "key_facts": ["The service renewal requires owner action"],
+          "changes": [],
+          "temporal_facts": [],
+          "stated_action": "Open the account portal and resolve the renewal.",
+          "detail_status": "source_omits_details",
+          "missing_details": ["The exact renewal deadline"]
+        }
+      }
+    },
+    {
+      "id": "identifier_and_link_redaction",
+      "synthetic": true,
+      "input": {
+        "channel": "email",
+        "subject": "Synthetic account notice",
+        "body": "Account 12345-67890 moves to the Standard plan on September 1. Details: https://example.test/accounts/12345-67890. This is synthetic test data."
+      },
+      "legacy_snapshot": {
+        "distill_summary": "An account plan will change on September 1.",
+        "classification": "fyi",
+        "route": "worth_a_look",
+        "candidate_digest": "An account plan will change.",
+        "card_line": "An account plan is changing."
+      },
+      "expected": {
+        "lane": "worth_a_look",
+        "information_type": "change_notice",
+        "detail_status": "complete",
+        "required_action": false,
+        "required_fact_fragments": ["Account ****7890", "Standard plan", "September 1", "[link omitted]"]
+      },
+      "v2_output": {
+        "summary": "Account 12345-67890 moves to the Standard plan on September 1; see https://example.test/accounts/12345-67890.",
+        "intent": "fyi",
+        "needs_reply_hint": false,
+        "follow_up_hint": {"kind": "none"},
+        "brief": {
+          "schema_version": 2,
+          "information_type": "change_notice",
+          "key_facts": ["Account 12345-67890", "Details: https://example.test/accounts/12345-67890"],
+          "changes": [{"aspect": "Account 12345-67890 plan", "before": null, "after": "Standard plan", "effective_text": "September 1, 2026"}],
+          "temporal_facts": [{"kind": "effective", "text": "September 1, 2026"}],
+          "stated_action": null,
+          "detail_status": "complete",
+          "missing_details": []
+        }
+      }
+    }
+  ]
+}

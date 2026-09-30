@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "records": [],
+  "workflows": [
+    {
+      "name": "accept_plan_input",
+      "workflow": "accept_plan",
+      "input": { "source_plan_id": "plan_demo" },
+      "expected_entities": []
+    }
+  ],
+  "views": []
+}

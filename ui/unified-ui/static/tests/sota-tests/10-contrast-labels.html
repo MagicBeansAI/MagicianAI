@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Contrast-Aware SoM Labels (Phase 11)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #6f42c1, #563d7c);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+        .status-btn.reset:hover { background: #545b62; }
+
+        /* Standard buttons */
+        .btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px;
+        }
+
+        /* Dark backgrounds */
+        .dark-section {
+            background: #1a1a2e;
+            padding: 40px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        .btn-on-dark { background: #4a4a6a; color: white; }
+        .text-on-dark { color: #e0e0e0; }
+        .link-on-dark { color: #6c9bd4; }
+
+        /* Light backgrounds */
+        .light-section {
+            background: #ffffff;
+            padding: 40px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border: 1px solid #ddd;
+        }
+        .btn-on-light { background: #e8e8e8; color: #333; }
+        .text-on-light { color: #333; }
+
+        /* Gradient backgrounds */
+        .gradient-section {
+            background: linear-gradient(135deg, #1a1a2e 0%, #f8f9fa 100%);
+            padding: 40px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+
+        /* Colored theme sections */
+        .red-section { background: #dc3545; padding: 40px; border-radius: 8px; margin: 15px 0; }
+        .btn-on-red { background: #a71d2a; color: white; }
+        .yellow-section { background: #ffc107; padding: 40px; border-radius: 8px; margin: 15px 0; }
+        .btn-on-yellow { background: #d39e00; color: #333; }
+        .blue-section { background: #007bff; padding: 40px; border-radius: 8px; margin: 15px 0; }
+        .btn-on-blue { background: #0056b3; color: white; }
+
+        /* Multi-color cards */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        .color-card {
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .color-card button {
+            margin-top: 10px;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        /* Input fields */
+        .input-field {
+            padding: 10px;
+            font-size: 16px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            width: 200px;
+            margin: 10px;
+        }
+        .input-dark { background: #2d2d44; color: white; border-color: #4a4a6a; }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            margin: 5px;
+        }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+        .status-radio {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #f8fafc;
+            color: #334155;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .status-radio input {
+            margin: 0;
+        }
+
+        .status-radio.pass:has(input:checked) {
+            border-color: #16a34a;
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-radio.fail:has(input:checked) {
+            border-color: #dc2626;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "10-contrast-labels",
+        "phase": "Phase 11",
+        "title": "Contrast-Aware SoM Labels",
+        "description": "Tests the system's ability to choose appropriate label colors based on background contrast",
+        "totalTests": 4
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 11: Contrast-Aware SoM Labels</h1>
+        <p>Test the system's ability to choose appropriate label colors based on background contrast.</p>
+    </div>
+
+    <!-- Test Case 1: Dark Background -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="10-dark-background"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Click Button on Dark Background</h3>
+            <span class="test-case-id">10-dark-background</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Primary Action" button in the dark section below. The SoM labels should use light colors for visibility.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="light-labels">SoM labels should use light colors (white/yellow) on dark background</li>
+                <li data-check="wcag-contrast">Labels should have sufficient contrast (4.5:1 ratio per WCAG)</li>
+                <li data-check="button-clicked">Button click triggers alert with "Dark button 1 clicked!"</li>
+            </ul>
+        </div>
+
+        <div class="dark-section">
+            <h3 class="text-on-dark">Dark Theme Section</h3>
+            <p class="text-on-dark">This section has a dark background (#1a1a2e).</p>
+            <button class="btn btn-on-dark" data-testid="dark-btn-1" onclick="alert('Dark button 1 clicked!')">
+                Primary Action
+            </button>
+            <button class="btn btn-on-dark" data-testid="dark-btn-2" onclick="alert('Dark button 2 clicked!')">
+                Secondary Action
+            </button>
+            <a href="#" class="link-on-dark" data-testid="dark-link-1" onclick="alert('Dark link clicked!'); return false;">
+                Click this link
+            </a>
+            <br><br>
+            <input type="text" class="input-field input-dark" placeholder="Email address" data-testid="dark-input">
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-1" value="pass" data-status-radio="test-1"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-1" value="fail" data-status-radio="test-1"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Light Background -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="10-light-background"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Click Button on Light Background</h3>
+            <span class="test-case-id">10-light-background</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Primary Action" button in the light section below. The SoM labels should use dark colors for visibility.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="dark-labels">SoM labels should use dark colors (black/dark blue) on light background</li>
+                <li data-check="no-white-on-white">No white or light-colored labels on white background</li>
+                <li data-check="button-clicked">Button click triggers alert with "Light button 1 clicked!"</li>
+            </ul>
+        </div>
+
+        <div class="light-section">
+            <h3 class="text-on-light">Light Theme Section</h3>
+            <p class="text-on-light">This section has a light background (#ffffff).</p>
+            <button class="btn btn-on-light" data-testid="light-btn-1" onclick="alert('Light button 1 clicked!')">
+                Primary Action
+            </button>
+            <button class="btn btn-on-light" data-testid="light-btn-2" onclick="alert('Light button 2 clicked!')">
+                Secondary Action
+            </button>
+            <br><br>
+            <input type="text" class="input-field" placeholder="Search..." data-testid="light-input">
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-2" value="pass" data-status-radio="test-2"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-2" value="fail" data-status-radio="test-2"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Gradient Background -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="10-gradient-background"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Labels Adapt Across Gradient</h3>
+            <span class="test-case-id">10-gradient-background</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click both buttons on the gradient background - one on the dark left side and one on the light right side.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="left-light-label">Left button (dark area) gets light-colored label</li>
+                <li data-check="right-dark-label">Right button (light area) gets dark-colored label</li>
+                <li data-check="both-clicked">Both buttons clicked successfully (alerts shown)</li>
+            </ul>
+        </div>
+
+        <div class="gradient-section">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h3 style="color: white; margin: 0;">Gradient Left (Dark)</h3>
+                    <button class="btn" style="background: rgba(255,255,255,0.2); color: white;"
+                            data-testid="gradient-left-btn" onclick="alert('Left clicked!')">
+                        Left Button
+                    </button>
+                </div>
+                <div style="text-align: right;">
+                    <h3 style="color: #333; margin: 0;">Gradient Right (Light)</h3>
+                    <button class="btn" style="background: rgba(0,0,0,0.1); color: #333;"
+                            data-testid="gradient-right-btn" onclick="alert('Right clicked!')">
+                        Right Button
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-3" value="pass" data-status-radio="test-3"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-3" value="fail" data-status-radio="test-3"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 4: Multiple Colored Sections -->
+    <div class="test-case"
+         id="test-4"
+         data-test-id="10-colored-sections"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 4: Navigate Across Color Themes</h3>
+            <span class="test-case-id">10-colored-sections</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click all three colored buttons (Red Button, Yellow Button, Blue Button) in the sections below.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="red-light-label">Red section gets light labels (red is dark enough)</li>
+                <li data-check="yellow-dark-label">Yellow section gets dark labels (yellow is too light for white text)</li>
+                <li data-check="blue-light-label">Blue section gets light labels</li>
+                <li data-check="all-clicked">All three buttons clicked successfully (alerts shown)</li>
+            </ul>
+        </div>
+
+        <div class="red-section">
+            <h3 style="color: white; margin-top: 0;">Red Theme</h3>
+            <button class="btn btn-on-red" data-testid="red-btn" onclick="alert('Red button!')">
+                Red Button
+            </button>
+            <span class="badge" style="background: #a71d2a; color: white;">Important</span>
+        </div>
+
+        <div class="yellow-section">
+            <h3 style="color: #333; margin-top: 0;">Yellow Theme</h3>
+            <button class="btn btn-on-yellow" data-testid="yellow-btn" onclick="alert('Yellow button!')">
+                Yellow Button
+            </button>
+            <span class="badge" style="background: #d39e00; color: #333;">Warning</span>
+        </div>
+
+        <div class="blue-section">
+            <h3 style="color: white; margin-top: 0;">Blue Theme</h3>
+            <button class="btn btn-on-blue" data-testid="blue-btn" onclick="alert('Blue button!')">
+                Blue Button
+            </button>
+            <span class="badge" style="background: #0056b3; color: white;">Info</span>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-4">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-4" value="pass" data-status-radio="test-4"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-4" value="fail" data-status-radio="test-4"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Contrast Label Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">4</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+</body>
+</html>

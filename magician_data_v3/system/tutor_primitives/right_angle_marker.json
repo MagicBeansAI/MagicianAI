@@ -1,0 +1,15 @@
+{
+  "type": "right_angle_marker",
+  "version": 1,
+  "defaults": { "size": 28 },
+  "draw": [
+    {
+      "op": "polyline",
+      "points": [
+        ["(x|cx)+size", "y|cy"],
+        ["(x|cx)+size", "(y|cy)+size"],
+        ["x|cx", "(y|cy)+size"]
+      ]
+    }
+  ]
+}

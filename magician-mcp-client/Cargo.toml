@@ -1,0 +1,43 @@
+[package]
+name = "magician-mcp-client"
+version = "0.1.22"
+edition = "2021"
+authors = ["MagicBeansAI"]
+description = "Governed official-rmcp client boundary for Magician"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rmcp = { workspace = true, features = [
+    "auth",
+    "client",
+    "reqwest",
+    "transport-async-rw",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
+bytes = "1"
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+http = "1"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls"] }
+oauth2 = { version = "5.0", default-features = false }
+rand = "0.8"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.10"
+sse-stream = "0.2.5"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process", "rt", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+tool-runtime-core = { workspace = true }
+tracing = { workspace = true }
+url = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["server", "transport-async-rw"] }
+static_assertions = "1"
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+scripts/signing_guard.sh
+python3 scripts/docs_guard.py --staged

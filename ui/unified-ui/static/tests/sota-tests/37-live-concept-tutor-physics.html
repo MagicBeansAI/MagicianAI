@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test: Live Concept Tutor Physics Forces</title>
+  <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+  <style>
+    .test-header {
+      background: linear-gradient(135deg, #7c2d12, #7e22ce);
+    }
+
+    .concept-stage {
+      position: relative;
+      min-height: 470px;
+      border-radius: 20px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #fffaf4 0%, #f4f0ff 100%);
+    }
+
+    .concept-stage svg {
+      display: block;
+      width: 100%;
+      height: 470px;
+    }
+
+    .surface {
+      fill: #d8b58a;
+      stroke: #7c2d12;
+      stroke-width: 3;
+    }
+
+    .block {
+      fill: #ffffff;
+      stroke: #334155;
+      stroke-width: 4;
+      filter: drop-shadow(0 14px 18px rgba(51, 65, 85, 0.18));
+    }
+
+    .force {
+      stroke-width: 6;
+      stroke-linecap: round;
+      marker-end: url(#arrow-head);
+    }
+
+    .force-normal {
+      stroke: #2563eb;
+    }
+
+    .force-weight {
+      stroke: #dc2626;
+    }
+
+    .force-push {
+      stroke: #16a34a;
+    }
+
+    .force-friction {
+      stroke: #ea580c;
+    }
+
+    .axis {
+      stroke: #64748b;
+      stroke-width: 3;
+      stroke-dasharray: 8 8;
+      marker-end: url(#axis-head);
+    }
+
+    .label {
+      fill: #1f2937;
+      font: 800 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .note-card {
+      position: absolute;
+      right: 28px;
+      top: 28px;
+      width: 280px;
+      padding: 18px 20px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(124, 45, 18, 0.18);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+    }
+
+    .note-card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #7c2d12;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .note-card p {
+      margin: 0;
+      color: #334155;
+      font-weight: 650;
+    }
+  </style>
+</head>
+<body>
+  <script type="application/json" id="test-metadata">
+  {
+    "testId": "37-live-concept-tutor-physics",
+    "phase": "Live Concept Tutor",
+    "title": "Live Concept Tutor Physics Forces",
+    "description": "Static free-body diagram fixture for force tutoring overlays.",
+    "totalTests": 1
+  }
+  </script>
+  <script type="application/json" id="tutor-ground-truth">
+  {
+    "fixture_id": "37-live-concept-tutor-physics",
+    "subject": "physics",
+    "expected_entities": [
+      {"id": "body-main", "kind": "diagram_node", "bounds": [336, 214, 512, 326]},
+      {"id": "force-normal", "kind": "vector", "bounds": [424, 214, 424, 92]},
+      {"id": "force-weight", "kind": "vector", "bounds": [424, 326, 424, 436]},
+      {"id": "force-push", "kind": "vector", "bounds": [514, 270, 676, 270]},
+      {"id": "force-friction", "kind": "vector", "bounds": [334, 270, 184, 270]},
+      {"id": "axis-main", "kind": "axis", "bounds": [154, 392, 302, 392]}
+    ],
+    "expected_overlay_primitives": ["free_body_body", "force_arrow", "component_vector", "axis", "unit_label"],
+    "acceptance": [
+      "Overlay identifies the body before explaining forces.",
+      "Overlay labels normal force, weight, applied push, and friction.",
+      "Explanation distinguishes vertical balance from horizontal net force.",
+      "Overlay sequence is stepwise and visually grounded."
+    ]
+  }
+  </script>
+
+  <div class="page-shell">
+    <div class="test-header">
+      <h1>Live Concept Tutor: Forces On A Block</h1>
+      <p>Ask the tutor to explain the free-body diagram. The expected explanation separates vertical equilibrium from horizontal competing forces.</p>
+      <div class="results-summary">
+        <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+        <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+        <div class="summary-pill">Pending<strong id="pending-count">1</strong></div>
+      </div>
+    </div>
+
+    <div class="fixture-grid">
+      <section class="test-case" id="test-1" data-test-id="37-physics-forces" data-status="pending">
+        <div class="test-case-header">
+          <h2 class="test-case-title">Explain the forces and resulting motion</h2>
+          <span class="test-case-id">37-physics-forces</span>
+        </div>
+        <div class="goal-section" data-goal>
+          <strong>Goal:</strong> Use <code>@tutor</code> to explain the forces on the block with a stepwise overlay.
+        </div>
+        <div class="workspace-card">
+          <div class="workspace-toolbar">
+            <div>
+              <h3>Free-Body Diagram</h3>
+              <p class="caption">The block is pushed right. Friction opposes motion. Vertical forces balance.</p>
+            </div>
+          </div>
+          <div class="workspace-surface concept-stage" aria-label="Free-body diagram of a block with four force vectors">
+            <span class="surface-label">Physics Fixture</span>
+            <svg viewBox="0 0 860 470" role="img" aria-label="Block on a surface with force arrows">
+              <defs>
+                <marker id="arrow-head" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+                  <path d="M 0 0 L 12 6 L 0 12 Z" fill="currentColor"></path>
+                </marker>
+                <marker id="axis-head" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+                  <path d="M 0 0 L 10 5 L 0 10 Z" fill="#64748b"></path>
+                </marker>
+              </defs>
+              <rect class="surface" x="110" y="326" width="620" height="36" rx="10"></rect>
+              <rect class="block" x="336" y="214" width="176" height="112" rx="16"></rect>
+              <line class="force force-normal" x1="424" y1="214" x2="424" y2="92"></line>
+              <line class="force force-weight" x1="424" y1="326" x2="424" y2="436"></line>
+              <line class="force force-push" x1="514" y1="270" x2="676" y2="270"></line>
+              <line class="force force-friction" x1="334" y1="270" x2="184" y2="270"></line>
+              <line class="axis" x1="154" y1="392" x2="302" y2="392"></line>
+              <line class="axis" x1="154" y1="392" x2="154" y2="250"></line>
+              <text class="label" x="438" y="106">N</text>
+              <text class="label" x="438" y="426">mg</text>
+              <text class="label" x="628" y="252">push</text>
+              <text class="label" x="188" y="252">friction</text>
+              <text class="label" x="312" y="282">block</text>
+              <text class="label" x="286" y="418">+x</text>
+              <text class="label" x="126" y="250">+y</text>
+            </svg>
+            <div class="note-card">
+              <strong>Target idea</strong>
+              <p>Vertical forces balance: N and mg cancel. Horizontally, push competes with friction.</p>
+            </div>
+          </div>
+        </div>
+        <div class="verify-section">
+          <strong>Expected tutor evidence:</strong>
+          <ul>
+            <li data-check="body" data-check-state="pending">Body is grounded before forces are explained.</li>
+            <li data-check="forces" data-check-state="pending">All four force vectors are identified.</li>
+            <li data-check="net" data-check-state="pending">Horizontal and vertical effects are separated.</li>
+          </ul>
+        </div>
+        <div class="fixture-result" aria-live="polite"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="./sota-test-harness.js"></script>
+</body>
+</html>

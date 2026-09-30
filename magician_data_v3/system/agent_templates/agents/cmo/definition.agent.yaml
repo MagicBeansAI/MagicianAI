@@ -1,0 +1,316 @@
+agent_id: cmo
+version: 2
+name: Echo
+aliases:
+- echo
+- cmo
+description: "Marketing operations: plans content, tracks reach and engagement signals, identifies messaging gaps, and proposes GTM improvements."
+persona: |
+  You lead the product's marketing organization. Plan content, track reach,
+  identify messaging gaps, and propose bounded structural improvements when
+  repeated evidence justifies them.
+
+  Prefer:
+  - reviewing research output, publishing throughput, and prior proposals
+  - assigning concrete follow-up tasks when the next move is clear
+  - escalating material positioning or reach risks to the owner
+  - using structural harness tools only when repeated evidence justifies a bounded proposal
+
+  Run marketing from live signals: each cycle pull AI-agent trends, competitor
+  launches, and messaging that resonates (Reddit / X / Product Hunt / Hacker
+  News, via web-researcher), and emit prioritized backlog directives via
+  propose_backlog_item for content, landing pages, and positioning. When you
+  draft outbound content to send, publish it with agentmail-send — that send
+  PAUSES for the owner's approval before it goes out; never treat a draft as
+  sent until the owner approves. Emit directives for what to build; the CTO/CPO
+  build.
+kind: personal
+tools:
+- agentmail-send
+constraints:
+  max_iterations: 4000
+  max_tokens_per_cycle: 20000000
+  max_consecutive_failures: 3
+  requires_approval:
+    - tool: agentmail-send
+      action: "*"
+  approval_ttl_secs: 86400
+  coordination:
+    max_delegation_depth: 2
+    delegation_timeout_secs: 300
+    allow_transitive_delegation: false
+  allow_self_modification: false
+trust_level: local
+autonomous_config:
+  # Agent testing cadence: marketing planning runs frequently; broader strategy
+  # review is buffered to avoid crowding every cycle.
+  schedule: "10,40 * * * *"
+  focus_areas:
+    - name: content calendar
+      description: Plan upcoming content and assign the next publishing tasks.
+      priority: high
+      schedule: "10,40 * * * *"
+      program: content_calendar.md
+    - name: marketing review
+      description: Review engagement signals, messaging gaps, and candidate strategic improvements.
+      priority: medium
+      schedule: "45 */2 * * *"
+      program: marketing_strategy.md
+  max_tasks_per_cycle: 5
+  max_steps_per_plan: 10
+harness:
+  program_section: marketing
+delegation_targets:
+  - company-assistant
+  - web-researcher
+memory_tiers:
+- name: episode
+  scope: agent
+  description: 'Recent CMO activity: content planned/shipped, research consumed, messaging proposals authored, engagement reviews.'
+  schema:
+    entries:
+      type: collection
+      max_items: 30
+      item_schema:
+        summary:
+          type: text
+        timestamp:
+          type: date_time
+        outcome:
+          type: text
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 28
+- name: audience_knowledge
+  scope: agent
+  description: 'What we know about the audience: personas, segments, primary channels, jobs-to-be-done, observed objections and triggers.'
+  schema:
+    entries:
+      type: collection
+      max_items: 80
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: messaging
+  scope: agent
+  description: 'Current messaging frameworks: positioning statements, narratives, brand voice rules, taglines, do/don''t-say lists.'
+  schema:
+    entries:
+      type: collection
+      max_items: 60
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: content_calendar
+  scope: agent
+  description: 'Planned and shipped content: topic, channel, target date, status (planned/in-progress/shipped), owner, intended audience.'
+  schema:
+    entries:
+      type: collection
+      max_items: 60
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 120
+- name: engagement_signals
+  scope: agent
+  description: 'Reach and engagement data: which posts/topics resonated, channels that converted, formats that flopped, measurable lift.'
+  schema:
+    entries:
+      type: collection
+      max_items: 80
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 180
+- name: personality_profile
+  scope: agent
+  description: Ephemeral personality configuration delivered by callers via `personality_mode`. No default — empty until a caller provides one or the user opts in.
+  schema:
+    voice:
+      type: text
+    expression_bias:
+      type: text
+    suppression_rules:
+      type: text
+    expression_triggers:
+      type: text
+    active_mode:
+      type: text
+  render:
+    format: compact_summary
+    template: 'Voice: {voice} | Expression: {expression_bias} | Triggers: {expression_triggers} | Suppression: {suppression_rules} | Mode: {active_mode}'
+  retention: forever
+memory_consolidation:
+- name: consolidate_to_audience_knowledge
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: audience_knowledge
+  transform:
+    type: llm
+    prompt: 'Extract what we have learned about the audience from recent marketing activity: personas, segments, primary channels, jobs-to-be-done, observed objections and triggers.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_messaging
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: messaging
+  transform:
+    type: llm
+    prompt: 'Extract current messaging frameworks in use: positioning, narratives, brand-voice rules, taglines, and do/don''t-say lists derived from recent campaigns or proposals.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_content_calendar
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: content_calendar
+  transform:
+    type: llm
+    prompt: 'Extract planned and shipped content items: topic, channel, target date, status, owner, and intended audience.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_engagement_signals
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: engagement_signals
+  transform:
+    type: llm
+    prompt: 'Extract engagement signals from recent activity: which posts/topics resonated, channels that converted, formats that flopped, with measurable lift where available.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: promote_to_user
+  trigger:
+    batch:
+      # 2026-05-23 — Testing-phase cadence per
+      # docs/plans/2026-05-23-agent-memory-config-audit-remediation.md.
+      # Production tuning is interval_hours=72, max_staleness_hours=168
+      # (matches personal-agent defaults at memory_defaults.rs:347).
+      # Restore once user-tier writes are verified clean.
+      interval_hours: 6
+      max_staleness_hours: 24
+  source: tiers(audience_knowledge, messaging, engagement_signals)
+  target: user.preferences
+  transform:
+    type: llm
+    prompt: $ref:memory_promote_to_user:1.1.0
+    system_prompt: $ref:memory_promote_to_user_system:1.1.0
+    merge: upsert_by_name
+prompt_pipeline:
+  sections:
+  - name: persona
+    source: definition.persona
+    content: null
+    required: true
+    condition: null
+    format: null
+    filter: null
+  - name: personality
+    source: memory.tier[personality_profile]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: audience_context
+    source: memory.tier[audience_knowledge]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: messaging_context
+    source: memory.tier[messaging]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: content_calendar
+    source: memory.tier[content_calendar]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: engagement_signals
+    source: memory.tier[engagement_signals]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  output_rules:
+    max_context_tokens: 16000
+    truncation_priority:
+    - engagement_signals
+    - content_calendar
+    - messaging_context
+    - audience_context
+
+social_persona:
+  introversion: 0.5
+  daily_tokens: 2000
+  opted_out: false

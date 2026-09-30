@@ -1,0 +1,173 @@
+schema_version: tool-runtime.phase0-live-agentic-manifest.v1
+
+offline_baseline:
+  schema_version: tool-runtime.phase0-offline-baseline.v1
+  # The OFFLINE baseline's catalog digest, which is what this field names.
+  # It carried the live-agentic catalog's digest instead, so `load_contract`
+  # compared two different catalogs and had never once passed.
+  catalog_digest: 2f04f0b9436f20139a26ce3923e83b93b9dedfe1abaa887f6783d606781ee0bb
+
+surface:
+  decision_prompt_version: 1.3.7
+  system_prompt_version: 1.0.6
+  catalog_mode: loaded_family_with_cross_family_distractors_v1
+  execution_mode: provider_decision_only
+  tool_choice: required
+  max_output_tokens: 2048
+  max_tools_per_request: 128
+
+gates:
+  minimum_runs_per_task: 5
+  http_success_rate: 1.0
+  catalog_confinement_rate: 1.0
+  schema_validity_rate: 1.0
+  auth_profile_correctness_rate: 1.0
+  approval_correctness_rate: 1.0
+  exact_first_action_rate: 0.95
+  decision_success_rate: 0.95
+  minimum_successes_per_task: 4
+  require_provider_usage: true
+  require_priced_cost: true
+
+tasks:
+  - id: public-paper-research
+    goal: Find four arXiv papers about graph neural networks for molecular property prediction in cs.LG.
+    success_criteria: Call the arXiv search action with the requested query, limit, and category.
+    state: No search has been run. The user asked specifically for arXiv rather than general web or news results.
+    expected_action: arxiv-search::run
+    catalog_skills: [arxiv-search, news-search-via-tavily, github-search, hackernews-search]
+    profile_binding: {source: none}
+    argument_expectations:
+      - {path: query, operator: contains, value: graph neural}
+      - {path: limit, operator: equals, value: 4}
+      - {path: category, operator: equals, value: cs.LG}
+
+  - id: secret-backed-news-research
+    goal: Search the last week of news for orbital manufacturing developments and return at most five results.
+    success_criteria: Use the Tavily news-search action with news topic, week recency, and five-result limit.
+    state: No retrieval has run. This is current news research, not an arXiv, Hacker News, or generic repository search.
+    expected_action: news-search-via-tavily::run
+    catalog_skills: [news-search-via-tavily, arxiv-search, hackernews-search, producthunt-search]
+    profile_binding: {source: none}
+    argument_expectations:
+      - {path: query, operator: contains, value: orbital manufacturing}
+      - {path: topic, operator: equals, value: news}
+      - {path: time_range, operator: equals, value: week}
+      - {path: max_results, operator: equals, value: 5}
+
+  - id: google-profile-read-and-send
+    goal: Send a message from the personal Gmail account to phase0-recipient@example.invalid.
+    success_criteria: Call Gmail send with account personal, subject exactly 'Phase 0 hello', and body exactly 'Contract baseline 714' without trailing punctuation.
+    state: The user explicitly requested this send. The harness records only the proposed provider tool call and never executes it; runtime approval remains authoritative.
+    expected_action: gmail::send
+    catalog_skills: [gmail, calendar, agentmail-send, kapso-whatsapp-send]
+    profile_binding: {source: argument, argument: account, value: personal}
+    argument_expectations:
+      - {path: to, operator: equals, value: phase0-recipient@example.invalid}
+      - {path: subject, operator: equals, value: Phase 0 hello}
+      - {path: body, operator: equals, value: Contract baseline 714}
+      - {path: account, operator: equals, value: personal}
+
+  - id: browser-profile-session
+    goal: Open https://example.com/phase0 in the already-bound authenticated browser profile.
+    success_criteria: Call the loaded browser open leaf with that exact URL.
+    state: The selectable browser profile and delegated credential are already bound by the runtime. Do not start a different engine or use generic web search.
+    expected_action: browser::open
+    catalog_skills: [browser, websearch, htmltotext]
+    profile_binding: {source: runtime_bound}
+    argument_expectations:
+      - {path: args, operator: list_equals, value: [https://example.com/phase0]}
+
+  - id: delegated-coding-session
+    goal: List Higgsfield models as JSON without mutating auth or workspace.
+    success_criteria: Call the Higgsfield run action with exact inert model-list argv.
+    state: The CLI-owned Higgsfield login is already resolved by the runtime. Do not call auth or set workspace.
+    expected_action: higgsfield::run
+    catalog_skills: [higgsfield, csvkit, document-to-markdown, awk]
+    profile_binding: {source: runtime_implicit}
+    argument_expectations:
+      - {path: args, operator: list_equals, value: [model, list, --json]}
+
+  - id: conditional-cli-ocr
+    goal: Extract text from /workspace/receipt.png with the recommended agy OCR engine.
+    success_criteria: Call OCR extract with exact inert argv tokens for the input file and engine.
+    state: The image exists. Its mixed receipt layout requires the agy VLM route rather than a clean-book tesseract pass.
+    expected_action: ocr::extract
+    catalog_skills: [ocr, analyze-image-via-minimax, pdftotext, image-generation]
+    profile_binding: {source: runtime_implicit}
+    argument_expectations:
+      - {path: args, operator: list_equals, value: [--input-file, /workspace/receipt.png, --engine, agy]}
+
+  - id: fixed-profile-message-send
+    goal: Send WhatsApp text Contract baseline 714 to +15550107145 from the fixed Presto sender.
+    success_criteria: Call the fixed-profile Kapso WhatsApp send action with the exact recipient and text.
+    state: The user explicitly requested the send. The fixed sender identity is runtime-owned; this harness never executes the proposed call.
+    expected_action: kapso-whatsapp-send::send
+    catalog_skills: [kapso-whatsapp-send, agentmail-send, telegram, whatsapp]
+    profile_binding: {source: runtime_fixed}
+    argument_expectations:
+      - {path: to, operator: equals, value: '+15550107145'}
+      - {path: text, operator: equals, value: Contract baseline 714}
+
+  - id: native-ui-control
+    goal: Read the accessibility window state for process 714 through the native macOS automation boundary.
+    success_criteria: Call macOS UI automation with action get_window_state and JSON arguments containing pid 714.
+    state: Native Accessibility permission is runtime-owned. No UI action has been attempted and no screenshot is requested.
+    expected_action: macos-ui-automation::call
+    catalog_skills: [macos-ui-automation, screen-draw, browser]
+    profile_binding: {source: none}
+    argument_expectations:
+      - {path: action_name, operator: equals, value: get_window_state}
+      - {path: args_json, operator: json_subset, value: {pid: 714}}
+
+  - id: host-screen-drawing
+    goal: Draw blackboard text PHASE0-DRAW-714 for the active Tutor run.
+    success_criteria: Call screen-draw with a JSON text shape containing the exact marker and blackboard canvas mode.
+    state: The Tutor overlay is active and the host gateway is available. This is drawing, not general macOS UI automation or image generation.
+    expected_action: screen-draw::call
+    catalog_skills: [screen-draw, macos-ui-automation, image-generation]
+    profile_binding: {source: none}
+    argument_expectations:
+      - {path: shape_json, operator: json_subset, value: {type: text, text: PHASE0-DRAW-714}}
+      - {path: canvas_mode, operator: equals, value: blackboard}
+
+  - id: commerce-oauth-and-checkout
+    goal: Propose placing the already-reviewed Swiggy food order for INR 714 using remote tool place_food_order.
+    success_criteria: Call the Swiggy MCP tool boundary with checkout risk, amount 714, and confirmed false so runtime Attention approval remains mandatory.
+    state: OAuth is runtime-managed and the cart was already reviewed. The user requested checkout, but this decision-only harness must not execute or claim HITL approval.
+    expected_action: swiggy-mcp::call_tool
+    catalog_skills: [swiggy-mcp, zepto-mcp, browser]
+    profile_binding: {source: runtime_implicit}
+    argument_expectations:
+      - {path: service, operator: equals, value: food}
+      - {path: tool_name, operator: equals, value: place_food_order}
+      - {path: risk, operator: equals, value: checkout_or_payment}
+      - {path: confirmed, operator: equals, value: false}
+      - {path: order_amount_inr, operator: equals, value: 714}
+    approval_argument_expectations:
+      - {path: risk, operator: equals, value: checkout_or_payment}
+      - {path: confirmed, operator: equals, value: false}
+
+  - id: local-document-authoring
+    goal: Create a new editable Word document at /workspace/phase0-report.docx.
+    success_criteria: Call the Office Word create action with that exact workspace path.
+    state: The output does not exist. The request is for Word, not a spreadsheet, presentation, PDF, or in-place modification.
+    expected_action: office-word::create
+    catalog_skills: [office-word, office-excel, office-powerpoint, pdftotext]
+    profile_binding: {source: none}
+    argument_expectations:
+      - {path: file, operator: equals, value: /workspace/phase0-report.docx}
+
+  - id: secret-backed-image-generation
+    goal: Generate a square balanced-quality image of a luminous blue orb on a dark background and save it to /workspace/phase0-orb.jpg.
+    success_criteria: Call image generation with the requested concept, path, 1:1 aspect ratio, and balanced tier.
+    state: This is text-to-image generation with no input image. The provider secret is runtime-bound and no generation has started.
+    expected_action: image-generation::run
+    catalog_skills: [image-generation, image-generation-via-minimax, video-generation-via-minimax, analyze-image-via-minimax]
+    profile_binding: {source: none}
+    argument_expectations:
+      - {path: prompt, operator: contains_terms, value: [luminous, blue, orb]}
+      - {path: prompt, operator: contains_terms, value: [dark, background]}
+      - {path: output_path, operator: equals, value: /workspace/phase0-orb.jpg}
+      - {path: aspect_ratio, operator: equals, value: '1:1'}
+      - {path: quality_tier, operator: equals, value: balanced}

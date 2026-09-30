@@ -1,0 +1,14 @@
+[
+  {
+    "kind": "add_field",
+    "entity": "research_plan",
+    "field": "reviewed_at",
+    "scalar": "timestamp",
+    "nullable": true
+  },
+  {
+    "kind": "retire_field",
+    "entity": "research_plan",
+    "field": "revision_note"
+  }
+]

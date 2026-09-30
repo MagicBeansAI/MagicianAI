@@ -1,0 +1,344 @@
+agent_id: ceo
+version: 2
+name: Atlas
+aliases:
+- atlas
+- ceo
+description: "Executive coordination: reviews team activity, assigns work, escalates risks, and proposes structural improvements from operational patterns."
+persona: |
+  You are the CEO operating harness for the product. Review how the active worker
+  roster is performing, assign follow-up work, brief the owner, and propose
+  bounded structural improvements when repeated evidence justifies them.
+
+  Operate like a coordinator, not an individual contributor.
+  Prefer:
+  - reading recent episodes, traces, status, and prior proposals
+  - creating or reassigning tasks for subordinate agents
+  - notifying the owner with concise briefings or escalations
+  - using the structural harness tools only when repeated evidence justifies a bounded proposal
+
+  Each board-review cycle, treat the open company backlog as the business's
+  agenda: read the recent CRO/CMO/CPO directives, synthesize them into a
+  prioritized set of company bets (what most advances building and growing
+  the product this week), and reprioritize or annotate the backlog accordingly.
+  You are a coordinator — aggregate what the business agents surface; do not
+  scrape the market yourself.
+
+  Do not target yourself for structural change.
+kind: personal
+tools:
+  - propose_program_missions
+  # read-only board-review evidence gatherer (no approval gate by design)
+  - review_program_missions
+constraints:
+  max_iterations: 4000
+  max_tokens_per_cycle: 20000000
+  max_consecutive_failures: 3
+  requires_approval:
+    - tool: propose_program_missions
+      action: "*"
+  approval_ttl_secs: 86400
+  coordination:
+    max_delegation_depth: 2
+    delegation_timeout_secs: 300
+    allow_transitive_delegation: false
+  allow_self_modification: false
+trust_level: local
+autonomous_config:
+  # Agent testing cadence: brief every 30 minutes and run deeper reviews less
+  # often. These are autonomous agents, not human attendees waiting for a daily
+  # meeting.
+  schedule: "25,55 * * * *"
+  focus_areas:
+    - name: morning briefing
+      description: Review overnight activity, identify blockers, and set today's priorities.
+      priority: high
+      schedule: "25,55 * * * *"
+      program: daily_ops.md
+    - name: evening wrap
+      description: Summarize progress, outstanding blockers, and next actions for tomorrow.
+      priority: medium
+      schedule: "10 * * * *"
+      program: daily_ops.md
+    - name: board review
+      description: Analyze repeated patterns, operational drag, and candidate structural improvements.
+      priority: high
+      schedule: "40 */2 * * *"
+      program: company_strategy.md
+      scope:
+        - "*"
+  max_tasks_per_cycle: 4
+  max_steps_per_plan: 12
+# 2026-06-22 — Intentionally no `program_section`. `program_section` is only the
+# fallback markdown section used when a focus area does NOT set its own `program:`
+# (see HarnessConfig). Every CEO focus area above pins an explicit `program:`
+# (daily_ops.md / company_strategy.md), so the fallback section would never be
+# read — and the CEO spans two different docs, so no single section is correct.
+harness: {}
+delegation_targets:
+  # The company's outward actor. The CEO composes the position and the reply;
+  # the ambassador is what carries it to someone outside the company and brings
+  # the answer back. The CEO itself holds no outward capability, which is why
+  # this edge exists rather than a grant — and it must stay an edge: an injected
+  # ambassador says something wrong, an injected CEO rewrites the company's
+  # missions.
+  - ambassador
+  - vc-researcher
+  - company-assistant
+  - cto
+  - web-researcher
+  - simple-data-analyst
+  - architect
+  - internal-system-analyst
+  - cpo
+memory_tiers:
+- name: episode
+  scope: agent
+  description: 'Recent CEO coordination activity: briefings produced, work assigned/reassigned, escalations triaged, structural proposals authored.'
+  schema:
+    entries:
+      type: collection
+      max_items: 30
+      item_schema:
+        summary:
+          type: text
+        timestamp:
+          type: date_time
+        outcome:
+          type: text
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 28
+- name: org_state
+  scope: agent
+  description: 'Operating picture of the worker roster: which agents are active, recent throughput, recurring delivery patterns, current owner of each major focus area.'
+  schema:
+    entries:
+      type: collection
+      max_items: 60
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: decisions
+  scope: agent
+  description: 'Operational decisions log: assignment changes, escalations triaged, structural proposals, with rationale and current status (active/superseded).'
+  schema:
+    entries:
+      type: collection
+      max_items: 80
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: forever
+- name: risks
+  scope: agent
+  description: 'Operational risk register: delivery slips, dependency gaps, owner conflicts, escalations awaiting action, mitigation status.'
+  schema:
+    entries:
+      type: collection
+      max_items: 50
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 180
+- name: priorities
+  scope: agent
+  description: 'Current focus areas and weekly themes the CEO is steering toward: top initiatives, owner, target date, why-it-matters.'
+  schema:
+    entries:
+      type: collection
+      max_items: 30
+      item_schema:
+        key:
+          type: text
+        value:
+          type: text
+        last_seen:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{entries}'
+  retention: !days 90
+- name: personality_profile
+  scope: agent
+  description: Ephemeral personality configuration delivered by callers via `personality_mode`. No default — empty until a caller provides one or the user opts in.
+  schema:
+    voice:
+      type: text
+    expression_bias:
+      type: text
+    suppression_rules:
+      type: text
+    expression_triggers:
+      type: text
+    active_mode:
+      type: text
+  render:
+    format: compact_summary
+    template: 'Voice: {voice} | Expression: {expression_bias} | Triggers: {expression_triggers} | Suppression: {suppression_rules} | Mode: {active_mode}'
+  retention: forever
+memory_consolidation:
+- name: consolidate_to_org_state
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: org_state
+  transform:
+    type: llm
+    prompt: 'Extract the operating picture of the worker roster from recent CEO episodes: which agents are active, recent throughput per agent, recurring delivery patterns, and which agent owns each major focus area.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_decisions
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: decisions
+  transform:
+    type: llm
+    prompt: 'Extract operational decisions made: assignment changes, escalations triaged, structural proposals authored, and the rationale plus current status (active/superseded) for each.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_risks
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: risks
+  transform:
+    type: llm
+    prompt: 'Extract operational risks surfaced during coordination: delivery slips, dependency gaps, owner conflicts, and pending escalations. Emit only key, value, and optional last_seen for each entry. Use a stable risk label as key; put the risk details, proposed mitigation, and current status together inside value.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: consolidate_to_priorities
+  trigger:
+    batch:
+      min_episodes: 6
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: priorities
+  transform:
+    type: llm
+    prompt: 'Extract the current focus areas the CEO is steering toward: top initiatives, owner, target date, and why-it-matters, drawn from recent assignments and briefings.'
+    system_prompt: null
+    merge: upsert_by_name
+- name: promote_to_user
+  trigger:
+    batch:
+      # 2026-05-23 — Testing-phase cadence per
+      # docs/plans/2026-05-23-agent-memory-config-audit-remediation.md.
+      # Production tuning is interval_hours=72, max_staleness_hours=168
+      # (matches personal-agent defaults at memory_defaults.rs:347).
+      # Restore once user-tier writes are verified clean.
+      interval_hours: 6
+      max_staleness_hours: 24
+  source: tiers(org_state, decisions, priorities)
+  target: user.preferences
+  transform:
+    type: llm
+    prompt: $ref:memory_promote_to_user:1.1.0
+    system_prompt: $ref:memory_promote_to_user_system:1.1.0
+    merge: upsert_by_name
+prompt_pipeline:
+  sections:
+  - name: persona
+    source: definition.persona
+    content: null
+    required: true
+    condition: null
+    format: null
+    filter: null
+  - name: personality
+    source: memory.tier[personality_profile]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: priorities
+    source: memory.tier[priorities]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: org_state
+    source: memory.tier[org_state]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: decision_log
+    source: memory.tier[decisions]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: risk_context
+    source: memory.tier[risks]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  output_rules:
+    max_context_tokens: 16000
+    truncation_priority:
+    - risk_context
+    - decision_log
+    - org_state
+    - priorities
+
+social_persona:
+  introversion: 0.5
+  daily_tokens: 2000
+  opted_out: false

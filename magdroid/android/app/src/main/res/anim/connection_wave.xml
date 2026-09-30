@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:anim/overshoot_interpolator">
+
+    <!-- Expand from center like a ripple -->
+    <scale
+        android:duration="800"
+        android:fromXScale="0.0"
+        android:fromYScale="0.0"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:toXScale="1.0"
+        android:toYScale="1.0" />
+
+    <!-- Fade in -->
+    <alpha
+        android:duration="600"
+        android:fromAlpha="0.0"
+        android:toAlpha="1.0" />
+
+    <!-- Slight rotation for dynamic effect -->
+    <rotate
+        android:duration="800"
+        android:fromDegrees="-5"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:toDegrees="0" />
+</set>

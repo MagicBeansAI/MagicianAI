@@ -1,0 +1,12 @@
+{
+  "destination_action_id": "accept_plan",
+  "destination_installation_id": "install_contract_destination",
+  "idempotency_key": "compose:fixture:1",
+  "mapping": [
+    {
+      "kind": "select",
+      "source": "plan",
+      "target": "plan"
+    }
+  ]
+}

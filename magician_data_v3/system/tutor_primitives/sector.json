@@ -1,0 +1,30 @@
+{
+  "type": "sector",
+  "version": 1,
+  "defaults": {
+    "start_angle": 0
+  },
+  "draw": [
+    {
+      "op": "arc",
+      "cx": "cx",
+      "cy": "cy",
+      "r": "r",
+      "from": "start_angle",
+      "to": "end_angle|start_angle+360*size/r"
+    },
+    {
+      "op": "line",
+      "from": ["cx", "cy"],
+      "to": ["cx+cos(deg(start_angle))*r", "cy+sin(deg(start_angle))*r"]
+    },
+    {
+      "op": "line",
+      "from": ["cx", "cy"],
+      "to": [
+        "cx+cos(deg(end_angle|start_angle+360*size/r))*r",
+        "cy+sin(deg(end_angle|start_angle+360*size/r))*r"
+      ]
+    }
+  ]
+}

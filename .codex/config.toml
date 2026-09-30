@@ -1,0 +1,38 @@
+[mcp_servers.codegraph]
+command = "python3"
+args = ["docs/codegraph/mcp_server.py"]
+cwd = "."
+required = false
+
+[mcp_servers.codegraph.tools.cgraph_capabilities]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_detail]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_search]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_how]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_endpoints]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_flows]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_dead_code]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_skills]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_test_coverage]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_audit]
+approval_mode = "approve"
+
+[mcp_servers.codegraph.tools.cgraph_tauri]
+approval_mode = "approve"

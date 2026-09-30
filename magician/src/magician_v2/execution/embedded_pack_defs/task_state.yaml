@@ -1,0 +1,53 @@
+name: task_state
+description: Persist structured state that survives between runs of this task.
+version: "1.0.0"
+guide: |
+  Tool name: `task_state`
+
+  This is a system-injected task-backed capability. It is available during
+  executions that have a real `task_id`, even if the owning agent definition
+  does not list `task_state` in its `tools:` allowlist. It is hidden for
+  non-task executions.
+
+  Persist structured data that survives between runs of this task.
+  Your state from previous runs is already in your prompt context —
+  you do not need to read it.  Use this tool to UPDATE it.
+
+  The state is a single JSON object.  You control its shape.
+
+  Example:
+    {
+      "state": {
+        "summary": "Generated the first homepage draft",
+        "artifacts": [{ "name": "hero.png", "path": "/abs/path/hero.png" }],
+        "decisions": ["Used warmer colors and larger headline"],
+        "next_step": "Refine the CTA area if the user asks for changes"
+      }
+    }
+
+  Guidelines:
+    - Write state AFTER meaningful progress, and refresh it as your final action.
+    - Use it for progress, decisions, artifact pointers, and next steps.
+    - On the first run of a task, create initial state if the work is multi-step,
+      delegated, or likely to be refined later.
+    - Keep state small (under 4 KB).  Store IDs, paths, and summaries — not file content.
+    - Your previous state is already visible in the prompt — just use it.
+parameters:
+  - name: state
+    required: true
+    description: "JSON object to persist.  Replaces any prior state."
+    schema:
+      type: object
+      additionalProperties: true
+
+implementation:
+  type: compiled
+  provider_name: task_state
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - state
+    - persistence
+  composition_category: state_management
+  sandbox: none

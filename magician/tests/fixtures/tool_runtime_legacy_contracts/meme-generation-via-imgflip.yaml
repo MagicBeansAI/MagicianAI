@@ -1,0 +1,78 @@
+name: meme-generation-via-imgflip
+version: 0.1.0
+parameters:
+- name: action
+  param_type: string
+  description: 'Action to perform: ''caption'' (generate meme, default) or ''list_templates'' (browse templates)'
+  default: caption
+  enum_values:
+  - caption
+  - list_templates
+- name: template_id
+  param_type: string
+  description: Imgflip template ID. Use list_templates to find IDs, or use template_name for fuzzy lookup.
+- name: template_name
+  param_type: string
+  description: Meme template name for fuzzy matching (e.g., 'Drake', 'Distracted Boyfriend', 'This Is Fine'). Ignored if template_id is set.
+- name: text0
+  param_type: string
+  description: Top text for the meme. Required for caption action.
+- name: text1
+  param_type: string
+  description: Bottom text for the meme. Optional but recommended.
+  default: ''
+native_action_schemas:
+  run:
+    description: Run the direct meme_generator_imgflip capability with the arguments selected from this guide. Keep caption text short and readable. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after the generated meme URL or requested template list is present.
+    parameters:
+    - action
+    - template_id
+    - template_name
+    - text0
+    - text1
+    required: []
+    parameter_overrides:
+      action:
+        type: string
+        description: 'Action to perform: ''caption'' (generate meme, default) or ''list_templates'' (browse templates)'
+        enum:
+        - caption
+        - list_templates
+        default: caption
+      template_id:
+        type: string
+        description: Imgflip template ID. Use list_templates to find IDs, or use template_name for fuzzy lookup.
+      template_name:
+        type: string
+        description: Meme template name for fuzzy matching (e.g., 'Drake', 'Distracted Boyfriend', 'This Is Fine'). Ignored if template_id is set.
+      text0:
+        type: string
+        description: Top text for the meme. Required for caption action.
+      text1:
+        type: string
+        description: Bottom text for the meme. Optional but recommended.
+        default: ''
+    skip_tool_name: true
+    timeout_secs: 30
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_ACTION: '{action}'
+    _TOOL_TEMPLATE_ID: '{template_id}'
+    _TOOL_TEMPLATE_NAME: '{template_name}'
+    _TOOL_TEXT0: '{text0}'
+    _TOOL_TEXT1: '{text1}'
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - meme
+  - image
+  - expression
+  - creative
+  composition_category: media_operations
+  sandbox: shell

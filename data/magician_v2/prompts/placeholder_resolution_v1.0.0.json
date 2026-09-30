@@ -1,0 +1,79 @@
+{
+  "name": "placeholder_resolution",
+  "version": "1.0.0",
+  "content": [
+    "You are a parameter resolution assistant for workflow execution.",
+    "Given a task description and execution context, infer appropriate values for missing parameters.",
+    "",
+    "# Guidelines",
+    "- For file paths: Use sensible defaults in /tmp or the working directory.",
+    "- For URLs: Derive from context or use descriptive placeholders that indicate the endpoint.",
+    "- For commands: Construct the appropriate shell command for the task.",
+    "- Always provide concrete, usable values - never return placeholders or empty strings.",
+    "",
+    "# Task",
+    "{task_description}",
+    "",
+    "# Tool",
+    "{tool_name}",
+    "",
+    "# Previous Outputs",
+    "{previous_outputs}",
+    "",
+    "# User-Provided Values",
+    "{user_provided_values}",
+    "",
+    "# Parameters to Resolve",
+    "{parameters_to_resolve}",
+    "",
+    "# Instructions",
+    "Provide values for the missing parameters listed above.",
+    "Return ONLY valid JSON with the parameter names as keys and resolved values as strings."
+  ],
+  "variables": [
+    {
+      "name": "task_description",
+      "description": "The task description from the plan step",
+      "required": true,
+      "default_value": null,
+      "examples": ["Read the configuration file and extract API keys"]
+    },
+    {
+      "name": "tool_name",
+      "description": "The tool being used for this step",
+      "required": true,
+      "default_value": "unknown",
+      "examples": ["files", "http_get", "shell"]
+    },
+    {
+      "name": "previous_outputs",
+      "description": "Outputs from previous execution steps that may inform parameter values",
+      "required": false,
+      "default_value": "None",
+      "examples": ["Step 1 output: /tmp/downloaded_file.json"]
+    },
+    {
+      "name": "user_provided_values",
+      "description": "Any values already provided by the user through clarification",
+      "required": false,
+      "default_value": "None",
+      "examples": ["api_endpoint: https://api.example.com"]
+    },
+    {
+      "name": "parameters_to_resolve",
+      "description": "List of parameters needing resolution with their intent descriptions",
+      "required": true,
+      "default_value": null,
+      "examples": ["- path: Read the configuration file and extract API keys:path"]
+    }
+  ],
+  "metadata": {
+    "category": "General",
+    "description": "Runtime resolution of placeholder parameters in native actions (File, HTTP, Bash)",
+    "author": "magician",
+    "created_at": "2025-11-29T00:00:00Z",
+    "changelog": "Initial version for tolerant lowering runtime resolution",
+    "tags": ["execution", "placeholder", "resolution", "native_actions"],
+    "estimated_tokens": 600
+  }
+}

@@ -1,0 +1,67 @@
+name: propose_program_missions
+description: Propose a mission breakdown into an officer program's managed "Missions (CEO)" section (approval-gated).
+version: "1.0.0"
+guide: |
+  Tool name: `propose_program_missions`
+
+  Decompose a strategic goal into missions for ONE officer program. The call is
+  APPROVAL-GATED: it pauses for the owner's decision, and only an approval
+  applies the missions to the program document. On apply, the missions land in
+  the program's managed `## Missions (CEO)` section (the rest of the document
+  is never touched), a history snapshot is taken first, and the agents whose
+  focus areas bind that program pick the missions up on their next autonomous
+  cycle.
+
+  Guidelines:
+  - read the target program (and `company_strategy.md`) BEFORE proposing —
+    missions must fit the program's charter
+  - 1 to 5 missions per proposal; each needs a crisp `title`, an `objective`
+    (what must become true), and `success_criteria` (how we know it's done)
+  - missions must be officer-actionable: concrete enough to drive that
+    program's next cycles, never a restatement of the whole goal
+  - `rationale` (one paragraph) is shown on the owner's approval card —
+    explain WHY this breakdown serves the goal
+  - only propose to programs that exist; one applied proposal per program per
+    hour (cooldown) — a rejection is terminal for that proposal: revise or
+    conclude, never retry the same content
+parameters:
+  - name: program
+    required: true
+    param_type: string
+    description: Target program document file name (e.g. product_strategy.md). Must already exist in this scope.
+  - name: missions
+    required: true
+    param_type: array
+    description: 1..=5 mission objects.
+    schema:
+      type: array
+      minItems: 1
+      maxItems: 5
+      items:
+        type: object
+        required: [title, objective, success_criteria]
+        properties:
+          title:
+            type: string
+            description: Short mission name.
+          objective:
+            type: string
+            description: What must become true.
+          success_criteria:
+            type: string
+            description: How completion is judged.
+          priority:
+            type: string
+            enum: [high, medium, low]
+  - name: rationale
+    required: true
+    param_type: string
+    description: One paragraph shown on the approval card — why this breakdown serves the goal.
+implementation:
+  type: compiled
+  provider_name: propose_program_missions
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 20
+  categories:
+    - harness

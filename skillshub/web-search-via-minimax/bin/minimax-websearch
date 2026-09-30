@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""MiniMax web search — `mmx search query` normalization adapter.
+
+Subprocess-spawns the `mmx` CLI shipped by `mmx-cli` (npm) rather than
+calling the REST API directly — the canonical magician pattern (matches
+`minimax_image.py` and the other `*-via-minimax` skills).
+
+Responsibilities:
+  - Map the governed canonical JSON request onto `mmx search query`.
+  - Read `MMX_CONFIG_DIR` from the environment and let `mmx` consume
+    credentials from `<MMX_CONFIG_DIR>/config.json`. This keeps the token
+    off process arguments and matches config-directory credential placement.
+  - Pin `--output json --quiet --non-interactive` so the CLI emits a stable
+    JSON shape and skips region-detection prompts.
+  - Normalize the CLI's `{"organic": [{title, link, snippet, date}], ...}`
+    into `{"query", "count", "results": [{title, url, snippet, date}]}`,
+    capped to `max_results`.
+
+Auth: reads `MMX_CONFIG_DIR` from env (injected by magician's secret
+binding) and lets `mmx` load credentials from `<MMX_CONFIG_DIR>/config.json`.
+"""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import time
+
+
+def log_event(message: str) -> None:
+    print(f"[MINIMAX-WEBSEARCH] {message}", file=sys.stderr, flush=True)
+
+
+def normalize_optional_text(value: str) -> str:
+    return (value or "").strip()
+
+
+def parse_int(value: str, default: int, name: str) -> int:
+    raw = normalize_optional_text(value)
+    if not raw or raw.lower() == "none":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(json.dumps({"error": f"{name} must be an integer (got {raw!r})"}))
+        sys.exit(1)
+
+
+def resolve_mmx_binary() -> str:
+    """Find the `mmx` binary.
+
+    Looks first on PATH (which the dispatcher pre-prepends
+    `skillshub/node_modules/.bin/` onto), then falls back to walking up from
+    this script to the npm root in case PATH wasn't massaged.
+    """
+    found = shutil.which("mmx")
+    if found:
+        return found
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "node_modules" / ".bin" / "mmx"
+        if candidate.is_file():
+            return str(candidate)
+    print(
+        json.dumps(
+            {
+                "error": (
+                    "mmx CLI not found on PATH. Run `make -C skillshub install` "
+                    "(or `npm install` at the skillshub workspace root) to vendor "
+                    "mmx-cli into skillshub/node_modules/."
+                )
+            }
+        )
+    )
+    sys.exit(1)
+
+
+def main() -> None:
+    request = json.load(sys.stdin)
+    mmx_config_dir = os.environ.get("MMX_CONFIG_DIR", "").strip()
+    if not mmx_config_dir:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "MMX_CONFIG_DIR not set. Runtime must inject the temporary "
+                        "MiniMax config directory via config_directory credentials."
+                    )
+                }
+            )
+        )
+        sys.exit(1)
+
+    query = normalize_optional_text(str(request.get("query", "")))
+    if not query:
+        print(json.dumps({"error": "query is required"}))
+        sys.exit(1)
+
+    max_results = int(request.get("max_results", 10))
+    max_results = max(1, min(max_results, 20))
+    api_timeout_secs = 30
+
+    mmx = resolve_mmx_binary()
+
+    # Pin behavior:
+    #   --output json       → machine-parseable stdout
+    #   --quiet             → suppress spinner / progress lines
+    #   --non-interactive   → never prompt; bail on auth issues
+    #   MMX_CONFIG_DIR      → config.json auth source under non-interactive mode
+    #   --timeout <secs>    → cap on the upstream API call
+    argv = [
+        mmx,
+        "--output", "json",
+        "--quiet",
+        "--non-interactive",
+        "--timeout", str(api_timeout_secs),
+        "search", "query",
+        "--q", query,
+    ]
+
+    log_event(
+        f"web_search started query_len={len(query)} max_results={max_results} "
+        f"timeout_secs={api_timeout_secs}"
+    )
+    started_at = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, timeout=api_timeout_secs + 30
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            json.dumps(
+                {"error": f"mmx CLI hung past adapter timeout ({api_timeout_secs + 30}s)."}
+            )
+        )
+        sys.exit(1)
+    except Exception as e:
+        print(
+            json.dumps(
+                {"error": f"Unexpected error spawning mmx: {type(e).__name__}: {e}"}
+            )
+        )
+        sys.exit(1)
+
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+    stdout = (completed.stdout or "").strip()
+    stderr_tail = "\n".join((completed.stderr or "").strip().splitlines()[-10:])
+    log_event(f"mmx returned exit={completed.returncode} elapsed_ms={elapsed_ms}")
+
+    if completed.returncode != 0:
+        # Surface the structured `{ "error": { ... } }` mmx emits on stderr
+        # under --output json; fall back to the raw tail.
+        upstream_error: object = stderr_tail
+        try:
+            for ln in reversed(
+                [l for l in (completed.stderr or "").splitlines() if l.strip()]
+            ):
+                if ln.startswith("{"):
+                    upstream_error = json.loads(ln)
+                    break
+        except Exception:
+            pass
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        f"mmx CLI exit {completed.returncode}. "
+                        "See `upstream` for the structured error."
+                    ),
+                    "upstream": upstream_error,
+                    "stdout": stdout[:2000],
+                }
+            )
+        )
+        sys.exit(1)
+
+    try:
+        parsed = json.loads(stdout) if stdout else {}
+    except json.JSONDecodeError:
+        print(
+            json.dumps(
+                {
+                    "error": "mmx returned non-JSON stdout (unexpected).",
+                    "stdout": stdout[:2000],
+                    "stderr_tail": stderr_tail,
+                }
+            )
+        )
+        sys.exit(1)
+
+    organic = parsed.get("organic") or []
+    results = []
+    for item in organic[:max_results]:
+        if not isinstance(item, dict):
+            continue
+        results.append(
+            {
+                "title": item.get("title"),
+                "url": item.get("link") or item.get("url"),
+                "snippet": item.get("snippet"),
+                "date": item.get("date") or None,
+            }
+        )
+
+    result = {
+        "query": query,
+        "count": len(results),
+        "results": results,
+        "elapsed_ms": elapsed_ms,
+    }
+    # Pass through useful non-organic blocks when MiniMax returns them.
+    for extra_key in ("answer", "answerBox", "knowledgeGraph", "relatedSearches"):
+        if extra_key in parsed:
+            result[extra_key] = parsed[extra_key]
+    if not results:
+        result["warning"] = "MiniMax search returned no organic results."
+        result["upstream"] = parsed
+        result["stderr_tail"] = stderr_tail
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

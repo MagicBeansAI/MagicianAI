@@ -1,0 +1,25 @@
+# Gradle and AGP outputs. One module's `build/` alone reaches ~90MB after a
+# debug build.
+#
+# Matched per module rather than by name. These were pinned to `app/` and the
+# native build moved to `bridge/` when the companion was split out of the shell,
+# so 153 CMake and Ninja artifacts were tracked and churned on every build. A
+# wildcard cannot be left behind by the next module that appears.
+android/.gradle/
+android/build/
+android/*/build/
+android/*/.cxx/
+
+# Machine-specific SDK path, written by scripts/setup-magdroid-build.sh.
+android/local.properties
+
+# Keep the wrapper jar. Upstream's ignore rules excluded it and it never made it
+# into their repository, so a fresh clone could not run ./gradlew at all.
+!android/gradle/wrapper/gradle-wrapper.jar
+
+# Build-provisioned Cloudflare Access token, mirroring magios/Secrets.xcconfig.
+android/secrets.properties
+
+# Per-deployment Firebase routing identifiers. The generic companion does not
+# embed one customer's push project.
+android/app/google-services.json

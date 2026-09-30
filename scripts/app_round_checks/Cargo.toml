@@ -1,0 +1,16 @@
+[package]
+name = "magician-app-round-checks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+thiserror = "2"
+chrono = "0.4"
+futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

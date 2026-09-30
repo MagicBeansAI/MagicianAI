@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>ai.magicbeans.magican.desktop</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>magican</string>
+			</array>
+		</dict>
+	</array>
+	<!--
+		macOS permission usage strings. macOS reads these out of the
+		app bundle's Info.plist when WKWebView (or any native code) asks
+		for the corresponding capability. Without them, the OS rejects
+		the request silently and the underlying web API (e.g.
+		`navigator.mediaDevices`, `MediaRecorder`) may not even be
+		exposed to JavaScript.
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Magician records voice notes and supports live voice calls in the chat composer.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Magician transcribes voice locally with Apple's Speech Recognition service.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Magician creates reminders in Apple Reminders from your follow-ups and Worth-a-look items.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Magician uses the camera for attachment capture in the chat composer.</string>
+</dict>
+</plist>

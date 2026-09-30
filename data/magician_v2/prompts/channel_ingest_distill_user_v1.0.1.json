@@ -1,0 +1,53 @@
+{
+  "name": "channel_ingest_distill_user",
+  "version": "1.0.1",
+  "content": [
+    "Distill this {channel} thread update per the system contract. Respond with ONLY the JSON object.",
+    "",
+    "## Message header",
+    "{header_document}",
+    "",
+    "Content truncated: {content_truncated}",
+    "## Message content",
+    "{content}"
+  ],
+  "variables": [
+    {
+      "name": "channel",
+      "description": "Channel word for the message, kept generic so the prompt stays channel-agnostic ('email' | 'chat' | 'message').",
+      "required": true,
+      "default_value": null,
+      "examples": ["email"]
+    },
+    {
+      "name": "header_document",
+      "description": "Metadata header block built by channel_assist::assist::content::build_header_document (subject, sender, recipient domains, date, direction, attachment count) - already-persisted metadata only.",
+      "required": true,
+      "default_value": null,
+      "examples": ["Subject: Quarterly planning\nFrom: Alice Example <alice@example.com>\nDate: 2026-07-01T09:00:00+00:00\nDirection: inbound"]
+    },
+    {
+      "name": "content",
+      "description": "The message's new content, or a same-thread newest-first batch assembled from recent messages. Quoted history/signatures are already stripped where the provider supports it. Exists in process memory only and is never persisted.",
+      "required": true,
+      "default_value": null,
+      "examples": ["Can we move Thursday's sync to Friday morning?"]
+    },
+    {
+      "name": "content_truncated",
+      "description": "Whether the supplied content contains only the beginning of the available message or thread batch.",
+      "required": true,
+      "default_value": null,
+      "examples": ["false", "true"]
+    }
+  ],
+  "metadata": {
+    "category": "ChannelAssist",
+    "description": "User prompt for the legacy channel-assist local distillation contract with explicit truncation state.",
+    "author": "magician",
+    "created_at": "2026-07-12T00:00:00Z",
+    "changelog": "v1.0.1: Replaces a Rust-authored truncation sentence with an explicit managed boolean prompt field.",
+    "tags": ["channel-assist", "distillation", "local-only", "privacy"],
+    "estimated_tokens": 120
+  }
+}

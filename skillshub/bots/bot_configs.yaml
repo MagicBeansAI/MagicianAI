@@ -1,0 +1,97 @@
+# Standalone bots keep scoped env files in their own bot directories because the
+# bot launcher passes an explicit --env-file. Per-skill API/tool secrets live
+# alongside each skill at <data_root>/system/skills/<skill>/config/.env (or at
+# <scope>/skills/<skill>/config/.env for scope-installed skills) — populated
+# by `make -C skillshub setup-env` from <repo>/.env.copy.development.
+bots:
+  agentmail:
+    enabled: true
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/agentmail/.env.development
+      - "{scope_capabilities_root}/bots/agentmail/dist/index.js"
+    env: {}
+    cwd: "{scope_capabilities_root}/bots/agentmail"
+    auto_restart: true
+    restart_max_backoff_secs: 30
+  gmail-business:
+    enabled: true
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/gmail/.env.business
+      - "{scope_capabilities_root}/bots/gmail/dist/index.js"
+    env: {}
+    cwd: "{scope_capabilities_root}/bots/gmail"
+    auto_restart: true
+    restart_max_backoff_secs: 30
+  gmail-personal:
+    enabled: true
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/gmail/.env.personal
+      - "{scope_capabilities_root}/bots/gmail/dist/index.js"
+    env: {}
+    cwd: "{scope_capabilities_root}/bots/gmail"
+    auto_restart: true
+    restart_max_backoff_secs: 30
+  gmail-presto:
+    enabled: false
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/gmail/.env.presto
+      - "{scope_capabilities_root}/bots/gmail/dist/index.js"
+    env: {}
+    cwd: "{scope_capabilities_root}/bots/gmail"
+    auto_restart: true
+    restart_max_backoff_secs: 30
+  gmail-work:
+    enabled: true
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/gmail/.env.work
+      - "{scope_capabilities_root}/bots/gmail/dist/index.js"
+    env: {}
+    cwd: "{scope_capabilities_root}/bots/gmail"
+    auto_restart: true
+    restart_max_backoff_secs: 30
+  kapso:
+    enabled: true
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/kapso/.env.development
+      - "{scope_capabilities_root}/bots/kapso/dist/index.js"
+    env: {}
+    cwd: "{scope_capabilities_root}/bots/kapso"
+    auto_restart: true
+    restart_max_backoff_secs: 30
+  telegram:
+    enabled: true
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/telegram/.env.development
+      - "{scope_capabilities_root}/bots/telegram/dist/index.js"
+    env: {}
+    cwd: "{scope_capabilities_root}/bots/telegram"
+    auto_restart: true
+    restart_max_backoff_secs: 30
+  telegram-self:
+    enabled: false
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/telegram-self/.env.development
+      - "{scope_capabilities_root}/bots/telegram-self/dist/index.js"
+    env: {}
+    cwd: "{scope_capabilities_root}/bots/telegram-self"
+    auto_restart: true
+    restart_max_backoff_secs: 30
+  whatsapp:
+    enabled: true
+    command: node
+    args:
+      - --env-file={scope_capabilities_root}/bots/whatsapp/.env.development
+      - "{scope_capabilities_root}/bots/whatsapp/dist/index.js"
+    env:
+      WU_HOME: "{scope_capability_workdir_root}/home/.wu"
+    cwd: "{scope_capabilities_root}/bots/whatsapp"
+    auto_restart: true
+    restart_max_backoff_secs: 30

@@ -1,0 +1,12 @@
+{
+  "type": "circle",
+  "version": 1,
+  "draw": [
+    {
+      "op": "circle",
+      "cx": "cx",
+      "cy": "cy",
+      "r": "r"
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+name: create_note
+description: Write a new note into the owner's Notes space. Use for durable notes the owner should be able to find and edit later, not for scratch reasoning.
+version: "1.0.0"
+guide: |
+  Tool name: `create_note`
+
+  Creates a NEW note in the owner's configured Notes space (SilverBullet or
+  local Markdown, depending on their settings). The note is a plain Markdown
+  file the owner can open, edit, and link like any other.
+
+  Use it when the owner asks you to save, write down, or keep something — a
+  decision, a summary worth returning to, a reference they will want later.
+
+  Do NOT use it for:
+  - your own working notes or intermediate reasoning; that is not the owner's;
+  - adding to something that already exists — use `append_note`, which adds
+    without rewriting the whole file;
+  - task output, which reaches Notes through task publishing.
+
+  `title` becomes the page name, so write it as the owner would look for it
+  later, not as a sentence. `body` is Markdown.
+
+  `target_dir` is optional and relative to the Notes space; omit it and the
+  note lands in `Inbox`. `provider` is optional and normally omitted — the
+  owner's configured default and fallback already apply.
+
+  Creating twice with the same title does NOT update the first note; it writes
+  a second file at a distinct path. If you mean to add to something that
+  exists, use `append_note`.
+
+  Read the response rather than assuming it: `provider` is where the note
+  ACTUALLY landed. When `used_fallback` is true the requested provider was
+  unavailable and `fallback_reason` says why, so tell the owner where it really
+  went instead of naming the provider you asked for. `path` and `open_url` are
+  what to show them.
+
+  On error, `retryable` distinguishes a provider outage — worth one retry —
+  from a bad argument, which retrying unchanged cannot fix.
+parameters:
+  - name: title
+    required: true
+    param_type: string
+    description: Page name for the note, written the way the owner would search for it later.
+  - name: body
+    required: true
+    param_type: string
+    description: Markdown body of the note.
+  - name: target_dir
+    param_type: string
+    description: Optional directory inside the Notes space. Omit to use the scope's configured default.
+  - name: provider
+    param_type: string
+    description: Optional notes provider override. Normally omit — the scope's configured default and fallback already apply.
+implementation:
+  type: compiled
+  provider_name: create_note
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - notes
+  composition_category: action
+  sandbox: none

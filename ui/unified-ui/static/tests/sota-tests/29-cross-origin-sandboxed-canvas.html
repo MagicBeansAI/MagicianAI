@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Cross-Origin Sandboxed Canvas</title>
+    <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+    <style>
+        .test-header {
+            background: linear-gradient(135deg, #12243f, #3a6df0);
+        }
+
+        .iframe-shell {
+            border-radius: 20px;
+            overflow: hidden;
+            border: 1px solid #c9d5ec;
+            background: #dfe7f5;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+        }
+
+        .iframe-chrome {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            padding: 12px 14px;
+            background: rgba(255, 255, 255, 0.92);
+            border-bottom: 1px solid #d6dff0;
+        }
+
+        .iframe-shell iframe {
+            display: block;
+            width: 100%;
+            height: 360px;
+            border: none;
+            background: #ffffff;
+        }
+
+        .bridge-log {
+            font-size: 13px;
+            color: #4f5f7d;
+        }
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "29-cross-origin-sandboxed-canvas",
+        "phase": "Phase 4",
+        "title": "Cross-Origin Sandboxed Canvas",
+        "description": "Opaque sandboxed iframes that exercise canvas drawing and text placement through postMessage-only verification.",
+        "totalTests": 2
+    }
+    </script>
+
+    <div class="page-shell">
+        <div class="test-header">
+            <h1>Cross-Origin Sandboxed Canvas</h1>
+            <p>These fixtures emulate canvas editors inside opaque iframe contexts. The parent page cannot inspect the frame DOM; the frame reports verified state back through <code>postMessage</code>.</p>
+            <div class="results-summary">
+                <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+                <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+                <div class="summary-pill">Pending<strong id="pending-count">2</strong></div>
+            </div>
+        </div>
+
+        <div class="fixture-grid">
+            <section class="test-case" id="test-1" data-test-id="29-cross-origin-draw" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">1. Draw the route stroke inside the opaque iframe</h2>
+                    <span class="test-case-id">29-cross-origin-draw</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Inside the sandboxed iframe, draw a single stroke across both orange route beacons. The parent page must stay on this same URL.
+                </div>
+                <div class="workspace-card">
+                    <div class="iframe-shell">
+                        <div class="iframe-chrome">
+                            <div>
+                                <strong>Opaque Frame: Route Canvas</strong>
+                                <div class="bridge-log">Verification only accepts messages from the opaque iframe itself. Parent-page message spoofing does not count.</div>
+                            </div>
+                            <button class="surface-btn" type="button" id="draw-frame-reset">Reset surface</button>
+                        </div>
+                        <iframe id="draw-frame" title="Opaque draw frame" sandbox="allow-scripts"></iframe>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="iframe-route-complete">The opaque iframe should report that the stroke crossed both route beacons.</li>
+                        <li data-check="parent-stayed-put">The parent page should remain active and embedded while receiving the verification event.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" id="draw-frame-reset-status" data-status-reset="test-1">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-2" data-test-id="29-cross-origin-text" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">2. Commit the approval note inside the opaque iframe</h2>
+                    <span class="test-case-id">29-cross-origin-text</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Inside the sandboxed iframe, click the note target, type <code>Approved route</code>, and commit it with <span class="kbd">Enter</span>.
+                </div>
+                <div class="workspace-card">
+                    <div class="iframe-shell">
+                        <div class="iframe-chrome">
+                            <div>
+                                <strong>Opaque Frame: Approval Note</strong>
+                                <div class="bridge-log">Interact inside the opaque iframe. Parent-page bridge messages or status toggles are not valid for this test.</div>
+                            </div>
+                            <button class="surface-btn" type="button" id="text-frame-reset">Reset surface</button>
+                        </div>
+                        <iframe id="text-frame" title="Opaque text frame" sandbox="allow-scripts"></iframe>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="iframe-text-committed">The opaque iframe should report that the note text equals <code>Approved route</code>.</li>
+                        <li data-check="approval-badge-visible">The approval badge inside the frame should become visible after commit.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" id="text-frame-reset-status" data-status-reset="test-2">Reset</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        (function () {
+            const drawFrame = document.getElementById("draw-frame");
+            const textFrame = document.getElementById("text-frame");
+
+            function isTrustedFrameMessage(event, expectedFrame, expectedKind) {
+                const data = event.data;
+                return Boolean(
+                    data &&
+                        data.fixtureId === "29-cross-origin-sandboxed-canvas" &&
+                        data.frameKind === expectedKind &&
+                        typeof data.success === "boolean" &&
+                        expectedFrame &&
+                        expectedFrame.contentWindow &&
+                        event.source === expectedFrame.contentWindow
+                );
+            }
+
+            function setMessageResult(testId, successText, infoText, success) {
+                setResult(testId, success ? successText : infoText, success ? "success" : "info");
+                if (success) {
+                    setTestStatus(testId, "pass");
+                }
+            }
+
+            function resetDrawState() {
+                setTestStatus("test-1", null);
+                setCheckState("test-1", "iframe-route-complete", "pending");
+                setCheckState("test-1", "parent-stayed-put", "pending");
+                setResult("test-1", "Interact inside the opaque iframe and draw across both route beacons.", "info");
+            }
+
+            function resetTextState() {
+                setTestStatus("test-2", null);
+                setCheckState("test-2", "iframe-text-committed", "pending");
+                setCheckState("test-2", "approval-badge-visible", "pending");
+                setResult("test-2", "Commit the note text Approved route inside the opaque iframe.", "info");
+            }
+
+            function drawFrameHtml() {
+                return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: linear-gradient(180deg, #fbfdff 0%, #edf4ff 100%); color: #20304b; }
+    .shell { padding: 18px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .badge { padding: 6px 10px; border-radius: 999px; background: #eaf1ff; color: #1f53b8; font-weight: 700; }
+    .canvas-wrap { display: flex; justify-content: center; }
+    canvas { width: min(100%, 720px); height: auto; aspect-ratio: 720 / 260; display: block; border-radius: 18px; background: linear-gradient(180deg, #ffffff 0%, #f1f6ff 100%); box-shadow: inset 0 0 0 1px rgba(58, 91, 156, 0.12); touch-action: none; cursor: crosshair; }
+    .hint { margin-top: 10px; color: #5e6d88; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="toolbar">
+      <strong>Route Canvas</strong>
+      <span class="badge">Ink active</span>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="route-canvas" width="720" height="260"></canvas>
+    </div>
+    <div class="hint">Draw one stroke across both orange beacons.</div>
+  </div>
+  <script>
+    (function () {
+      const canvas = document.getElementById("route-canvas");
+      const ctx = canvas.getContext("2d");
+      const guides = [{ x: 210, y: 132, r: 18 }, { x: 492, y: 158, r: 18 }];
+      let stroke = [];
+      let pointerId = null;
+      let mouseTracking = false;
+      let pointerTracking = false;
+      let lastPointerInputAt = 0;
+      function pointFromEvent(event) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / Math.max(rect.width, 1);
+        const scaleY = canvas.height / Math.max(rect.height, 1);
+        return {
+          x: (event.clientX - rect.left) * scaleX,
+          y: (event.clientY - rect.top) * scaleY
+        };
+      }
+      function post(success) {
+        parent.postMessage({
+          fixtureId: "29-cross-origin-sandboxed-canvas",
+          frameKind: "draw",
+          success: success
+        }, "*");
+      }
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = "#dde6f5";
+        for (let x = 18; x < canvas.width; x += 34) {
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+        }
+        for (let y = 18; y < canvas.height; y += 34) {
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+        }
+        guides.forEach((guide) => {
+          ctx.beginPath(); ctx.fillStyle = "rgba(255, 133, 0, 0.24)"; ctx.arc(guide.x, guide.y, guide.r + 9, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.fillStyle = "#ff8500"; ctx.arc(guide.x, guide.y, guide.r, 0, Math.PI * 2); ctx.fill();
+        });
+        if (stroke.length > 1) {
+          ctx.beginPath();
+          ctx.strokeStyle = "#2358ec";
+          ctx.lineWidth = 6;
+          ctx.lineCap = "round";
+          ctx.moveTo(stroke[0].x, stroke[0].y);
+          for (let index = 1; index < stroke.length; index += 1) {
+            ctx.lineTo(stroke[index].x, stroke[index].y);
+          }
+          ctx.stroke();
+        }
+      }
+      function hitAllGuides() {
+        return guides.every((guide) => stroke.some((point) => Math.hypot(point.x - guide.x, point.y - guide.y) <= guide.r + 9));
+      }
+      function markPointerInput(event) {
+        if (event.type.startsWith("pointer")) {
+          lastPointerInputAt = Date.now();
+        }
+      }
+      function shouldIgnoreCompatMouse(event) {
+        return event.type.startsWith("mouse") && Date.now() - lastPointerInputAt < 400;
+      }
+      function inputToken(event) {
+        return event.type.startsWith("pointer") ? "pointer:" + event.pointerId : "mouse";
+      }
+      function safeSetPointerCapture(event) {
+        if (!event.type.startsWith("pointer")) return;
+        try {
+          canvas.setPointerCapture(event.pointerId);
+        } catch (_) {}
+      }
+      function safeReleasePointerCapture(event) {
+        if (!event.type.startsWith("pointer")) return;
+        try {
+          canvas.releasePointerCapture(event.pointerId);
+        } catch (_) {}
+      }
+      function beginMouseTracking() {
+        if (mouseTracking) return;
+        mouseTracking = true;
+        document.addEventListener("mousemove", onStrokeMove, true);
+        document.addEventListener("mouseup", onStrokeUp, true);
+      }
+      function endMouseTracking() {
+        if (!mouseTracking) return;
+        mouseTracking = false;
+        document.removeEventListener("mousemove", onStrokeMove, true);
+        document.removeEventListener("mouseup", onStrokeUp, true);
+      }
+      function beginPointerTracking() {
+        if (pointerTracking) return;
+        pointerTracking = true;
+        document.addEventListener("pointermove", onStrokeMove, true);
+        document.addEventListener("pointerup", onStrokeUp, true);
+        document.addEventListener("pointercancel", onStrokeCancel, true);
+      }
+      function endPointerTracking() {
+        if (!pointerTracking) return;
+        pointerTracking = false;
+        document.removeEventListener("pointermove", onStrokeMove, true);
+        document.removeEventListener("pointerup", onStrokeUp, true);
+        document.removeEventListener("pointercancel", onStrokeCancel, true);
+      }
+      function onStrokeDown(event) {
+        if (shouldIgnoreCompatMouse(event)) return;
+        if (event.type === "mousedown" && event.button !== 0) return;
+        markPointerInput(event);
+        pointerId = inputToken(event);
+        stroke = [pointFromEvent(event)];
+        safeSetPointerCapture(event);
+        if (event.type === "pointerdown") beginPointerTracking();
+        if (event.type === "mousedown") beginMouseTracking();
+        draw();
+      }
+      function onStrokeMove(event) {
+        if (pointerId !== inputToken(event)) return;
+        if ((event.type === "pointermove" || event.type === "mousemove") && event.buttons === 0) return;
+        markPointerInput(event);
+        stroke.push(pointFromEvent(event));
+        draw();
+      }
+      function onStrokeUp(event) {
+        if (pointerId !== inputToken(event)) return;
+        markPointerInput(event);
+        safeReleasePointerCapture(event);
+        if (event.type === "pointerup") endPointerTracking();
+        if (event.type === "mouseup") endMouseTracking();
+        pointerId = null;
+        post(hitAllGuides());
+      }
+      function onStrokeCancel(event) {
+        if (pointerId !== inputToken(event)) return;
+        safeReleasePointerCapture(event);
+        endPointerTracking();
+        endMouseTracking();
+        pointerId = null;
+        post(false);
+      }
+      canvas.addEventListener("pointerdown", onStrokeDown);
+      canvas.addEventListener("pointermove", onStrokeMove);
+      canvas.addEventListener("pointerup", onStrokeUp);
+      canvas.addEventListener("mousedown", onStrokeDown);
+      draw();
+    })();
+  <\/script>
+</body>
+</html>`;
+            }
+
+            function textFrameHtml() {
+                return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: linear-gradient(180deg, #fbfdff 0%, #f3f6ff 100%); color: #22324b; }
+    .shell { padding: 18px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .chip { padding: 6px 10px; border-radius: 999px; background: #fff1f4; color: #d2375c; font-weight: 700; }
+    .stage { position: relative; height: 260px; border-radius: 18px; background: linear-gradient(180deg, #ffffff 0%, #f1f6ff 100%); box-shadow: inset 0 0 0 1px rgba(58, 91, 156, 0.12); overflow: hidden; }
+    .target { position: absolute; left: 140px; top: 82px; width: 260px; height: 112px; border-radius: 16px; border: 2px dashed rgba(210, 55, 92, 0.6); background: rgba(255, 255, 255, 0.82); display: flex; align-items: center; justify-content: center; color: #915266; font-weight: 700; }
+    .target.active { box-shadow: 0 0 0 8px rgba(210, 55, 92, 0.12); }
+    .editor { position: absolute; left: 154px; top: 116px; width: 226px; padding: 10px 12px; border-radius: 14px; border: 2px solid #d2375c; font: 700 20px/1.2 "Segoe UI", sans-serif; outline: none; }
+    .badge { position: absolute; left: 24px; bottom: 20px; padding: 10px 12px; border-radius: 999px; background: rgba(10, 33, 73, 0.9); color: #ffffff; opacity: 0; transform: translateY(10px); transition: opacity 0.2s ease, transform 0.2s ease; }
+    .badge.visible { opacity: 1; transform: translateY(0); }
+    .committed { position: absolute; left: 156px; top: 122px; font: 700 24px/1.1 "Segoe UI", sans-serif; color: #26334d; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="toolbar">
+      <strong>Approval Note</strong>
+      <span class="chip">Text tool active</span>
+    </div>
+    <div class="stage" id="stage">
+      <div class="target active" id="target">Click to edit</div>
+      <div class="badge" id="badge">Approval badge visible</div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const stage = document.getElementById("stage");
+      const target = document.getElementById("target");
+      const badge = document.getElementById("badge");
+      let editor = null;
+      let committed = null;
+      function post(success) {
+        parent.postMessage({
+          fixtureId: "29-cross-origin-sandboxed-canvas",
+          frameKind: "text",
+          success: success
+        }, "*");
+      }
+      function commit(value) {
+        const trimmed = value.trim();
+        if (!trimmed) return;
+        if (editor) {
+          editor.remove();
+          editor = null;
+        }
+        if (!committed) {
+          committed = document.createElement("div");
+          committed.className = "committed";
+          stage.appendChild(committed);
+        }
+        committed.textContent = trimmed;
+        const success = trimmed === "Approved route";
+        badge.classList.toggle("visible", success);
+        post(success);
+      }
+      target.addEventListener("click", () => {
+        if (editor) return;
+        editor = document.createElement("input");
+        editor.className = "editor";
+        stage.appendChild(editor);
+        editor.focus();
+        editor.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit(editor.value);
+          }
+        });
+      });
+    })();
+  <\/script>
+</body>
+</html>`;
+            }
+
+            function renderDrawFrame() {
+                drawFrame.srcdoc = drawFrameHtml();
+                resetDrawState();
+            }
+
+            function renderTextFrame() {
+                textFrame.srcdoc = textFrameHtml();
+                resetTextState();
+            }
+
+            window.addEventListener("message", (event) => {
+                const data = event.data;
+                if (isTrustedFrameMessage(event, drawFrame, "draw")) {
+                    setCheckState("test-1", "iframe-route-complete", data.success ? "pass" : "pending");
+                    setCheckState(
+                        "test-1",
+                        "parent-stayed-put",
+                        data.success && drawFrame.isConnected && window.location.pathname.includes("29-cross-origin-sandboxed-canvas")
+                            ? "pass"
+                            : "pending"
+                    );
+                    setMessageResult(
+                        "test-1",
+                        "Opaque iframe reported a complete route stroke.",
+                        "Interact inside the opaque iframe and draw across both route beacons.",
+                        Boolean(data.success)
+                    );
+                }
+                if (isTrustedFrameMessage(event, textFrame, "text")) {
+                    setCheckState("test-2", "iframe-text-committed", data.success ? "pass" : "pending");
+                    setCheckState("test-2", "approval-badge-visible", data.success ? "pass" : "pending");
+                    setMessageResult(
+                        "test-2",
+                        "Opaque iframe reported the approval note and badge.",
+                        "Commit the note text Approved route inside the opaque iframe.",
+                        Boolean(data.success)
+                    );
+                }
+            });
+
+            document.getElementById("draw-frame-reset").addEventListener("click", renderDrawFrame);
+            document.getElementById("draw-frame-reset-status").addEventListener("click", renderDrawFrame);
+            document.getElementById("text-frame-reset").addEventListener("click", renderTextFrame);
+            document.getElementById("text-frame-reset-status").addEventListener("click", renderTextFrame);
+
+            renderDrawFrame();
+            renderTextFrame();
+        })();
+    </script>
+
+</body>
+</html>

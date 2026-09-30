@@ -1,0 +1,29 @@
+[package]
+name = "magician-storage-s3"
+version = "0.1.0"
+edition = "2021"
+publish = false
+authors = ["MagicBeansAI"]
+description = "Dormant S3-compatible ObjectStore and DatasetStore adapters. Not used by default startup."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = "1"
+chrono = { workspace = true }
+futures-util = { workspace = true }
+hex = "0.4"
+hmac = "0.12"
+magician-storage = { path = "../magician-storage" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.10"
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+uuid = { workspace = true, features = ["v4"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

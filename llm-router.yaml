@@ -1,0 +1,4912 @@
+# Magician LLM router tables: `profiles` and `operation_mapping`.
+#
+# Spliced into `magician-config.yaml` under `llm.router` when the config
+# is loaded, as TEXT rather than as a merged document — the block aliases
+# `*local_generation_model`, whose anchor is defined in `runtime:` of the main
+# config, and YAML anchors do not cross files. Splicing keeps it one document at
+# parse time, so the alias resolves untouched.
+#
+# That also means this file is NOT valid YAML on its own. Edit it as the body of
+# `llm.router.profiles`, keeping the four-space indent of the `profiles:` key.
+#
+# Resolved as a sibling of whichever config was loaded, so a live runtime config
+# can never pair with the repository's profiles. A missing or unparseable file
+# is fatal, not a warning: unlike `llm_pricing.json`, which overlays built-in
+# rates, there are no built-in profiles — booting without them would leave the
+# router with nothing to route to.
+
+    profiles:
+      gptluna-chat-toolsany-rnone:
+        provider: openai
+        model: gpt-5.6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: chat
+          tool_choice:
+            type: any
+
+      # GPT-6 equivalent of gptluna-chat-toolsany-rnone.
+      gpt6luna-chat-toolsany-rnone:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: chat
+          tool_choice:
+            type: any
+
+      gptterra-chat-toolsany-rnone:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: chat
+          tool_choice:
+            type: any
+
+      gptsol-responses-toolsany-rhigh-out64k:
+        provider: openai
+        model: gpt-5.6-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      # GPT-6 equivalent of gptsol-responses-toolsany-rhigh-out64k.
+      gpt61sol-responses-toolsany-rhigh-out64k: &profile_gpt61sol_responses_toolsany_rhigh_out64k
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      gptsol-responses-toolsnone-rhigh-out64k:
+        provider: openai
+        model: gpt-5.6-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      # GPT-6 equivalent of gptsol-responses-toolsnone-rhigh-out64k.
+      gpt61sol-responses-toolsnone-rhigh-out64k: &profile_gpt61sol_responses_toolsnone_rhigh_out64k
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      gptastra-responses-toolsany-rhigh-out64k:
+        provider: openai
+        model: gpt-6-astra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      gptastra-responses-toolsnone-rhigh-out64k:
+        provider: openai
+        model: gpt-6-astra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      chat-gptterra-responses-toolsauto-rnone:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+
+      # Fast variant of the default chat profile — same model + vision +
+      # tool support, but reasoning is turned off and the output budget is
+      # tightened. Used as the `fast_profile` of `chat-openai-adaptive`
+      # below: chat starts here, escalates to the thinking variant via
+      # `request_thinking_mode` only when the LLM decides extended
+      # reasoning is warranted.
+      #
+      # NOTE on `max_output_tokens: 4096`: chat-perceived latency is
+      # dominated by visible-token streaming at ~50–60 tok/s on
+      # gpt-5.x. The original 32K cap rarely bound the model but
+      # also gave it no incentive to be concise, so typical chat
+      # replies ran 1,200–1,800 tokens (~22–30s of streaming). The
+      # 4K cap bounds tail latency and pairs with the v0.0.3 chat
+      # outer-loop system prompt's "Response shape" guidance, which
+      # nudges the model toward ~3–5 sentence replies unless the
+      # user signals they want depth. Scope is chat-only — agentic
+      # / memory / mining flows use their own profiles with their
+      # own (higher) caps because their outputs feed downstream
+      # turns and can't be truncated safely.
+      chat-gptterra-responses-vision-toolsauto-fast:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # Thinking variant — same model with high reasoning effort and a
+      # generous output budget. Used as the `thinking_profile` of
+      # `chat-openai-adaptive`. The chat runtime swaps to this profile
+      # when the LLM emits `request_thinking_mode` from the fast variant.
+      #
+      # NOTE on reasoning token caps: OpenAI's Responses API does NOT
+      # accept `reasoning.max_tokens` (it 400s as `Unknown parameter`).
+      # The total budget is bounded by top-level `max_output_tokens`,
+      # which is shared between visible output and reasoning tokens.
+      # Reasoning intensity is controlled qualitatively via `effort`.
+      # `summary: auto` enables the API's reasoning-summary stream so
+      # the UI can render "Thought" rows.
+      #
+      # NOTE on `max_output_tokens: 8192`: chat-mode thinking turns
+      # typically need 800–1,200 visible output tokens + 900–1,100
+      # reasoning tokens (~2,000–2,300 total). The original 64K cap
+      # was a no-op ceiling; 8K bounds tail latency and pairs with
+      # the v0.0.3 chat outer-loop system prompt that biases toward
+      # concise replies. Reasoning effort stays `high` because the
+      # whole point of escalating to this profile is that the user's
+      # request needed deeper thinking. Scope is chat-only.
+      chat-gptterra-responses-vision-toolsauto-thinking:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          summary: auto
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # GPT-5.6 Sol chat pair — the frontier OpenAI tier. Advanced chat starts
+      # with reasoning disabled on Sol and can explicitly escalate the same
+      # turn to Sol with high reasoning, avoiding a model-family switch while
+      # preserving the adaptive fast/thinking contract.
+      chat-gptsol-responses-vision-toolsauto-fast:
+        provider: openai
+        model: gpt-5.6-sol
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # GPT-6 equivalent of chat-gptsol-responses-vision-toolsauto-fast.
+      chat-gpt61sol-responses-vision-toolsauto-fast: &profile_chat_gpt61sol_responses_vision_toolsauto_fast
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      chat-gptsol-responses-vision-toolsauto-thinking:
+        provider: openai
+        model: gpt-5.6-sol
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          summary: auto
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # GPT-6 equivalent of chat-gptsol-responses-vision-toolsauto-thinking.
+      chat-gpt61sol-responses-vision-toolsauto-thinking: &profile_chat_gpt61sol_responses_vision_toolsauto_thinking
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          summary: auto
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # GPT-6 Astra chat pair — a new generation above GPT-5.6 Sol.
+      # Astra does not accept reasoning.effort none/minimal, so the fast
+      # variant uses low instead of turning reasoning off.
+      chat-gptastra-responses-vision-toolsauto-fast:
+        provider: openai
+        model: gpt-6-astra
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        reasoning:
+          effort: low
+          summary: auto
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      chat-gptastra-responses-vision-toolsauto-thinking:
+        provider: openai
+        model: gpt-6-astra
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          summary: auto
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # ----------------------------------------------------------------
+      # GPT-5.6 Luna chat pair — the cheapest / fastest GPT-5.6 tier.
+      # Paired into the
+      # `chat-openai-adaptive-instant` composite below so users can pick
+      # an "Instant" tier in the chat profile picker (mapped to the
+      # `instant` tier chip in the UI).
+      chat-gptluna-responses-vision-toolsauto-fast:
+        provider: openai
+        model: gpt-5.6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # GPT-6 equivalent of chat-gptluna-responses-vision-toolsauto-fast.
+      chat-gpt6luna-responses-vision-toolsauto-fast:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      chat-gptluna-responses-vision-toolsauto-thinking:
+        provider: openai
+        model: gpt-5.6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          summary: auto
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # GPT-6 equivalent of chat-gptluna-responses-vision-toolsauto-thinking.
+      chat-gpt6luna-responses-vision-toolsauto-thinking:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          summary: auto
+        metadata:
+          openai_api_mode: responses
+          tool_choice: auto
+          streaming: true
+
+      # Anthropic adaptive pair — Claude Sonnet 4.6 with vision + tool use.
+      # Fast variant turns extended thinking off; thinking variant flips
+      # `supports_reasoning: true` and sets a 32K thinking budget. Sonnet
+      # 4.6 supports up to a 64K thinking budget and a 64K output cap;
+      # we stay well within both. Used as the pair for the
+      # `chat-anthropic-adaptive` composite below.
+      chat-sonnet46-messages-vision-toolsauto-fast:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-sonnet46-messages-vision-toolsauto-thinking:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          max_reasoning_tokens: 32768
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Anthropic Haiku 4.6 chat pair — instant tier under
+      # `chat-anthropic-adaptive-instant`. Cheapest / fastest Anthropic
+      # model; vision-capable. 4K / 8K output caps match the chat-only
+      # latency posture (see magician CHANGELOG v0.6.595 + v0.6.596).
+      chat-haiku46-messages-vision-toolsauto-fast:
+        provider: anthropic
+        model: claude-haiku-4-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-haiku46-messages-vision-toolsauto-thinking:
+        provider: anthropic
+        model: claude-haiku-4-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          max_reasoning_tokens: 4096
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Anthropic Opus 4.7 chat pair — advanced tier under
+      # `chat-anthropic-adaptive-advanced`. Most capable Anthropic model;
+      # vision-capable. Reasoning budget bumped to 16K to give Opus
+      # room (still bounded — 4K / 8K visible output keeps tail
+      # latency in check).
+      chat-opus47-messages-vision-toolsauto-fast:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-opus47-messages-vision-toolsauto-thinking:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          max_reasoning_tokens: 16384
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Anthropic Opus 5 chat pair — advanced tier (one step below Fable).
+      # Thinking is on by default; the fast variant uses effort low instead
+      # of omitting thinking (omitted effort would default to high).
+      chat-opus5-messages-vision-toolsauto-fast:
+        provider: anthropic
+        model: claude-opus-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Claude Opus 5.5 equivalent of chat-opus5-messages-vision-toolsauto-fast.
+      chat-opus55-messages-vision-toolsauto-fast:
+        provider: anthropic
+        model: claude-opus-5-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-opus5-messages-vision-toolsauto-thinking:
+        provider: anthropic
+        model: claude-opus-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Claude Opus 5.5 equivalent of chat-opus5-messages-vision-toolsauto-thinking.
+      chat-opus55-messages-vision-toolsauto-thinking:
+        provider: anthropic
+        model: claude-opus-5-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Anthropic Fable 5.1 chat pair — frontier tier. Adaptive thinking is
+      # always on; forced tool_choice any/tool returns 400, so these stay
+      # on auto. Fast uses effort low.
+      chat-fable51-messages-vision-toolsauto-fast:
+        provider: anthropic
+        model: claude-fable-5-1
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-fable51-messages-vision-toolsauto-thinking:
+        provider: anthropic
+        model: claude-fable-5-1
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Gemini tier profiles. Flash-Lite backs the inexpensive instant tier;
+      # 3.1 Pro remains the advanced/frontier tier. Each model has a fast and
+      # thinking profile below so adaptive escalation stays within one pricing
+      # and capability tier for the duration of a user-selected chat mode.
+      chat-gemini35-flash-lite-vision-toolsauto-fast:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-gemini31-pro-vision-toolsauto-thinking:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          max_reasoning_tokens: 32768
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Pair mates for the tiered adaptive composites
+      # `chat-gemini-adaptive-instant` (Flash-Lite) and
+      # `chat-gemini-adaptive-advanced` (Pro).
+      chat-gemini35-flash-lite-vision-toolsauto-thinking:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          max_reasoning_tokens: 4096
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-gemini31-pro-vision-toolsauto-fast:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # DeepSeek adaptive pair — one model, DeepSeek-V4.1-Flash
+      # (`deepseek-flash`): vision + thinking. Fast sends
+      # `thinking.type: disabled`; thinking uses `deepseek_thinking`
+      # with `thinking.type: enabled`. Retired V4 Flash / V4 Pro names
+      # are not used. DeepSeek's thinking budget is internal — no
+      # `max_reasoning_tokens` knob — so thinking output caps are
+      # bumped to leave room for the trace + final response.
+      chat-dsv4-flash-toolsauto-fast:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-dsv4-pro-toolsauto-thinking:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Instant vs advanced still share `deepseek-flash`. Advanced uses
+      # the larger thinking budget (`effort: max`) rather than a
+      # different model.
+      chat-dsv4-flash-toolsauto-thinking:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # Chat Instant pair — V4.1 Flash with image input. Thinking
+      # defaults ON at the API; the fast variant sends thinking.type:
+      # disabled.
+      chat-dsv4-flash-vision-toolsauto-fast:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-dsv4-flash-vision-toolsauto-thinking:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-dsv4-pro-toolsauto-fast:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # MiniMax adaptive pair — MiniMax M2.7 for both sides. The model
+      # exposes a single reasoning toggle (`supports_reasoning`); the
+      # provider doesn't honor an explicit `max_reasoning_tokens` budget
+      # — the reasoning trace just consumes output tokens — so the
+      # thinking variant bumps `max_output_tokens` to 64K to leave room
+      # for both the reasoning trace and the final answer. Used as the
+      # pair for `chat-minimax-adaptive`.
+      chat-m27-toolsauto-fast:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 32768
+        timeout_secs: 600
+        # Fast tier: explicitly turn M2.7 thinking OFF. `effort: none` is mapped
+        # by the provider to MiniMax's native `thinking: {type: disabled}` (probe:
+        # 0 reasoning tokens vs ~239 on the adaptive default), keeping this leg
+        # quick/cheap. The router does NOT reject it despite supports_reasoning:
+        # false because a disabled effort counts as "reasoning not requested".
+        # `chat-minimax-adaptive` escalates to the -thinking profile when needed.
+        reasoning:
+          effort: none
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-m27-toolsauto-thinking:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      # MiniMax M3 adaptive pair — multimodal flagship (image + reasoning + tools
+      # in one request, OpenAI-compatible /v1/chat/completions endpoint). Vision-
+      # capable on BOTH sides (unlike the text-only M2.7 pair above). The thinking
+      # variant sets `reasoning.effort` — which the provider maps to MiniMax's
+      # BINARY native `thinking: {type: enabled}` switch (M3 has no high/medium/low
+      # tiers) — and bumps max_output to 64K for the reasoning trace; the fast
+      # variant carries no reasoning block, so M3 stays on its adaptive default.
+      # Pair for `chat-minimax-adaptive-advanced`.
+      chat-m3-vision-toolsauto-fast:
+        provider: minimax
+        model: MiniMax-M3
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: false
+        max_output_tokens: 32768
+        timeout_secs: 600
+        # Fast tier: explicitly turn M3 thinking OFF. `effort: none` is mapped by
+        # the provider to MiniMax's native `thinking: {type: disabled}`, keeping
+        # this leg quick/cheap. The router does NOT reject it despite
+        # supports_reasoning: false because a disabled effort counts as "reasoning
+        # not requested". `chat-minimax-adaptive-advanced` escalates to the
+        # -thinking profile when deeper reasoning is needed.
+        reasoning:
+          effort: none
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-m3-vision-toolsauto-thinking:
+        provider: minimax
+        model: MiniMax-M3
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-sonnet46-messages-vision-toolsauto-rnone:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-sonnet46-messages-vision-toolsauto:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-m27-toolsauto-rnone:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-m27-toolsauto:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: auto
+          streaming: true
+
+      gptterra-responses-toolsany-rnone:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+
+      opus47-messages-toolsany-rnone:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.02
+
+      sonnet46-messages-toolsany-rnone:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.02
+
+      gptterra-chat-toolsany-rlow:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: chat
+          tool_choice:
+            type: any
+
+      # Phase 7 authoritative local logical-context profiles. Each operation
+      # can be rolled back independently by restoring its prior mapping and
+      # setting this flag false; physical calls remain fail-closed at 32K.
+      op-memory-episode-quality-local-chunked:
+        provider: ollama
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        context_window_tokens: 32768
+        chunking:
+          enabled: true
+          adapter: memory_episode_quality_v1
+          logical_window_tokens: 262144
+          logical_timeout_secs: 1200
+          target_payload_tokens: 24576
+          safety_margin_tokens: 2048
+          fallback_policy: same_provider_only
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-memory-utility-review-local-chunked:
+        provider: ollama
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        context_window_tokens: 32768
+        chunking:
+          enabled: true
+          adapter: memory_utility_review_v1
+          logical_window_tokens: 262144
+          logical_timeout_secs: 1200
+          target_payload_tokens: 24576
+          safety_margin_tokens: 2048
+          fallback_policy: same_provider_only
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-memory-entity-extraction-local-chunked:
+        provider: ollama
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        context_window_tokens: 32768
+        chunking:
+          enabled: true
+          adapter: memory_entities_v1
+          logical_window_tokens: 262144
+          logical_timeout_secs: 1200
+          target_payload_tokens: 24576
+          safety_margin_tokens: 2048
+          fallback_policy: same_provider_only
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-memory-environment-extraction-local-chunked:
+        provider: ollama
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        context_window_tokens: 32768
+        chunking:
+          enabled: true
+          adapter: memory_environment_v1
+          logical_window_tokens: 262144
+          logical_timeout_secs: 1200
+          target_payload_tokens: 24576
+          safety_margin_tokens: 2048
+          fallback_policy: same_provider_only
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-memory-evidence-distillation-local-chunked:
+        provider: ollama
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        context_window_tokens: 32768
+        chunking:
+          enabled: true
+          adapter: evidence_distill_v1
+          logical_window_tokens: 262144
+          logical_timeout_secs: 1200
+          target_payload_tokens: 24576
+          safety_margin_tokens: 2048
+          fallback_policy: same_provider_only
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-memory-archive-summary-local-chunked:
+        provider: ollama
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        context_window_tokens: 32768
+        chunking:
+          enabled: true
+          adapter: memory_archive_v1
+          logical_window_tokens: 262144
+          logical_timeout_secs: 1200
+          target_payload_tokens: 24576
+          safety_margin_tokens: 2048
+          fallback_policy: same_provider_only
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-memory-entity-extraction-fast:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: chat
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry
+
+      op-memory-environment-extraction-fast:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: chat
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry
+
+      op-memory-archive-summary-fast:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: chat
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry
+
+      op-memory-extraction-retry:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      op-memory-episode-quality-standard:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+          fallback_profile: op-memory-episode-quality-retry
+
+      op-memory-episode-quality-retry:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      op-memory-insight-distillation-standard:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+          fallback_profile: op-memory-judgment-frontier-gpt61sol
+
+      # Embedding profile for the routed seam (magicllm
+      # `embed_for_operation`). Mirrors `runtime.ollama.embedding_*`
+      # field-for-field so the routed path resolves to the same dedicated
+      # daemon on day one. The `embedding_profile` marker exempts it from the
+      # MAGICIAN_OLLAMA_BASE_URL generation-endpoint override. NOTE: switching
+      # the embedding provider here is a profile edit PLUS a full re-embed of
+      # every persisted vector (embedding_contract_id rotates) — a migration,
+      # not a toggle.
+      op-embedding-local:
+        provider: ollama
+        model: hf.co/mykor/pplx-embed-v1-4b-GGUF:Q6_K
+        api_base_url: http://127.0.0.1:11435
+        # The repo-wide native-tool-calling invariant requires the flag on
+        # every profile; inert for embeddings (never a generation path).
+        supports_tool_calling: true
+        timeout_secs: 180
+        metadata:
+          embedding_profile: true
+          tool_choice:
+            type: none
+          dimensions: 2560
+          context_tokens: 8192
+          batch_tokens: 512
+          keep_alive: "-1"
+
+      # Observe-tabs ambient browsing distillation must stay local. The ambient
+      # distill worker and HTTP endpoint fail closed unless `ambient_distill` is
+      # explicitly bound to an Ollama-family profile, so do not add a remote
+      # fallback here.
+      op-ambient-distill-local:
+        provider: ollama
+        context_window_tokens: 32768
+        chunking:
+          enabled: false
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 300
+        metadata:
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      # Channel-assist local JSON workers. Keep these separate from ambient
+      # distillation so high-volume mail/chat queue work has a tight generation
+      # cap and does not inherit broad summarization limits.
+      op-channel-distill-local:
+        provider: ollama
+        context_window_tokens: 32768
+        chunking:
+          enabled: false
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        supports_tool_calling: true
+        temperature: 0.1
+        # Distill output has a ≤900-char summary + nested brief; 4096 keeps those
+        # from truncating mid-JSON. Vet model changes with scripts/golden-eval-channel.py.
+        max_output_tokens: 4096
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-channel-classify-local:
+        provider: ollama
+        context_window_tokens: 32768
+        chunking:
+          enabled: false
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        supports_tool_calling: true
+        temperature: 0.1
+        # Modest headroom over the original 1024.
+        max_output_tokens: 2048
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      # Mail Assist Phase-2 reply drafter. Sees the raw latest message being
+      # replied to, so it is LOCAL-PINNED like the distiller (channel_reply_draft
+      # refuses any non-ollama binding; unbound => draft unavailable). temperature
+      # 0.0 for a deterministic, faithful draft.
+      op-channel-reply-draft-local:
+        provider: ollama
+        context_window_tokens: 32768
+        chunking:
+          enabled: false
+        model: *local_generation_model  # match the distill/classify local model; see docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        supports_tool_calling: true
+        temperature: 0.0
+        max_output_tokens: 2048
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      # Unused after LLM-led history compaction was removed. Kept so the
+      # `agentic_ledger_compaction` operation family still has a profile.
+      # Dedicated physical cohort for app-labeled prompts. It has no remote
+      # fallback; Phase 4C pins each request to this exact endpoint/model.
+      op-app-workflow-local:
+        provider: ollama
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        # Native Ollama chat is the tool-capable contract. `/api/generate`
+        # rejects the non-empty app workflow tool catalog.
+        api_base_url: http://localhost:11434/api/chat
+        context_window_tokens: 32768
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 300
+        temperature: 0.1
+        metadata:
+          think: false
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice: auto
+
+      # Dedicated remote physical cohort for app-labeled prompts. This is
+      # intentionally separate so you can switch between local and
+      # remote runtime execution without changing the local shape.
+      op-app-workflow-remote:
+        provider: openai
+        model: gpt-6-luna
+        # Explicit admission ceiling for Apps physical-call resource accounting.
+        context_window_tokens: 32768
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        # Leave room for admission, bootstrap, and tool work inside the run.
+        timeout_secs: 60
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+
+      op-agentic-ledger-compaction-local:
+        provider: ollama
+        context_window_tokens: 32768
+        chunking:
+          enabled: false
+        model: *local_generation_model  # match the channel local model; keep without a reasoning: block so think:false is sent. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        supports_tool_calling: true
+        temperature: 0.1
+        # A full patch lists one verdict per window item (≤256 entries) plus
+        # summaries (≤600 chars each in practice far fewer are summarized);
+        # 4096 keeps a large patch from truncating mid-JSON.
+        max_output_tokens: 4096
+        timeout_secs: 300
+        metadata:
+          format: json
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-memory-evidence-distillation-fast:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+          fallback_profile: op-memory-evidence-distillation-retry
+
+      op-memory-evidence-distillation-retry:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      # Live Thinking Map interpreter (operation `thinking_map_interpret`).
+      # Cloned from op-memory-evidence-distillation-fast: proven strict-JSON,
+      # tool-free OpenAI GPT-6 Luna structured-output profile. Dedicated so
+      # the Thinking Map stays isolated from the general chat default (per the
+      # brainstorm_facilitation isolation note) and can be tuned independently.
+      op-thinking-map-interpret:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      op-memory-user-promotion-standard:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+          fallback_profile: op-memory-judgment-frontier-gpt61sol
+
+      op-memory-conflict-review-standard:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+          fallback_profile: op-memory-conflict-review-retry
+
+      op-memory-conflict-review-retry:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      op-memory-conflict-review-high-risk:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+          fallback_profile: op-memory-judgment-frontier-gpt61sol
+
+      op-memory-judgment-frontier:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      op-memory-judgment-frontier-gpt61sol: &profile_op_memory_judgment_frontier_gpt61sol
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      op-learning-reflection-standard:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+          fallback_profile: op-learning-reflection-retry
+
+      op-learning-reflection-retry:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      # ── Media-rail senses (screen observation / understanding, meeting
+      #    summaries). These operations were previously env-configured
+      #    standalone HTTP clients; they now route here like every other
+      #    LLM call — change the model by changing the profile.
+      # Per-frame screen narration: high-frequency (up to 120 calls/hour
+      # while observing), one image at low detail + ~120 output tokens per
+      # call — the cheap vision tier is the right fit; the HUD asks and
+      # /screen/describe get the full-tier profile below.
+      op-screen-observation-mini-vision:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 2048
+        timeout_secs: 120
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      # One-shot "look at this frame and answer" (the screen-observation
+      # skill's /screen/describe path) — full-tier vision for Q&A quality.
+      op-screen-understanding-vision:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 180
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-screen-understanding-vision-gpt61sol: &profile_op_screen_understanding_vision_gpt61sol
+        provider: openai
+        model: gpt-6.1-sol
+        supports_reasoning: true
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 180
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      # Explicit OpenAI vision tool. Keep its provider/model contract while
+      # routing through MagicLLM for queueing and canonical observability.
+      op-analyze-image-openai-mini:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 2000
+        timeout_secs: 60
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      # Provider-grounded one-shot web answer (web_answer compiled tool).
+      # The server_web_search flag makes the transport search server-side.
+      # Spend control: per-call spend gate at dispatch + settlement rates in
+      # magicllm pricing (OpenAI's web_search tool accepts no per-request
+      # search cap). Swap provider and model to any supporting transport
+      # (anthropic / gemini / openrouter) to move lanes — transport-neutral.
+      op-web-answer:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 2000
+        timeout_secs: 60
+        metadata:
+          openai_api_mode: responses
+          server_web_search: true
+          # The request carries no function tools; `none` keeps the
+          # tool-capable-profile contract explicit.
+          tool_choice:
+            type: none
+
+      # Pixel grounding: locate a click target in a frame → center
+      # coordinates (the /screen/ground endpoint; plan:
+      # docs/plans/2026-06-12-screen-grounding.md). Tiny strict-JSON
+      # output, its own timeout. Starting on gpt-5.6-terra (user decision
+      # 2026-06-12 — measure before reaching for gpt-6.1-sol or a local
+      # specialist; swapping = editing THIS profile).
+      op-screen-grounding-vision:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 1024
+        timeout_secs: 60
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-screen-grounding-vision-gpt61sol: &profile_op_screen_grounding_vision_gpt61sol
+        provider: openai
+        model: gpt-6.1-sol
+        supports_reasoning: true
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 60
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      # Meeting/observation transcript → prose summary. Local Ollama keeps
+      # whole-meeting transcripts on-device (the pre-router behavior:
+      # MEET_BOT_OLLAMA_URL/MEET_BOT_SUMMARY_MODEL env — now a profile).
+      # MUST stay on the native `ollama` provider, NOT an OpenAI-compat
+      # detour: providers are instantiated ONE PER PROVIDER KIND from an
+      # arbitrary representative profile, so a second `openai` profile
+      # with a custom api_base_url either loses its URL (requests go to
+      # api.openai.com — caught live: summary 404'd against OpenAI) or,
+      # worse, hijacks ALL openai traffic to localhost depending on
+      # iteration order. The lone ollama-kind profile owns its base URL
+      # safely. `supports_tool_calling: true` satisfies the blanket
+      # config invariant; the ollama provider rejects tool-bearing
+      # requests loudly at call time (summaries send none).
+      # Task-result card/list metadata is auxiliary and runs after the primary
+      # answer is durable + projected. Keep it off the single-slot Ollama lane:
+      # Luna is cheap/fast, needs no tools, and reasoning is unnecessary here.
+      op-task-summary-luna:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 2048
+        timeout_secs: 120
+        reasoning:
+          effort: none
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      op-meeting-summary-local:
+        provider: ollama
+        context_window_tokens: 32768
+        chunking:
+          enabled: false
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        # FULL endpoint URL, not the host root — the ollama provider's
+        # `api_base_url` replaces its whole default endpoint
+        # (http://localhost:11434/api/generate). The host root alone
+        # gets ollama's plain-text `404 page not found`, which surfaces
+        # as `serialization: trailing characters at line 1 column 5`.
+        api_base_url: http://localhost:11434/api/generate
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        metadata:
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      # Public Kapso ordinary chat fallback. This profile is intentionally local
+      # and tool-free; the chat runtime strips tools/delegation before reaching
+      # the LLM, and this keeps reply-to-everyone behavior alive after paid
+      # daily thresholds are exhausted.
+      op-kapso-envoy-chat-fallback-local:
+        provider: ollama
+        context_window_tokens: 32768
+        chunking:
+          enabled: false
+        model: *local_generation_model  # Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL + MTP. See docs/components/magician/local-channel-llm.md.
+        api_base_url: http://localhost:11434/api/generate
+        supports_tool_calling: true
+        max_output_tokens: 2048
+        timeout_secs: 300
+        metadata:
+          options:
+            num_ctx: 32768
+            draft_num_predict: 4
+          tool_choice:
+            type: none
+
+      op-memory-entity-extraction-fast-gemini35-flash-lite:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry-gemini35-flash-lite
+
+      op-memory-environment-extraction-fast-gemini35-flash-lite:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry-gemini35-flash-lite
+
+      op-memory-archive-summary-fast-gemini35-flash-lite:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry-gemini35-flash-lite
+
+      op-memory-extraction-retry-gemini35-flash-lite:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: any
+
+      op-memory-episode-quality-standard-gemini35-flash-lite:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-episode-quality-retry-gemini31-pro
+
+      op-memory-episode-quality-retry-gemini31-pro:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+
+      op-memory-insight-distillation-standard-gemini31-pro:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-judgment-frontier-gemini31-pro
+
+      op-memory-user-promotion-standard-gemini31-pro:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-judgment-frontier-gemini31-pro
+
+      op-memory-conflict-review-standard-gemini31-pro:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-judgment-frontier-gemini31-pro
+
+      op-memory-conflict-review-high-risk-gemini31-pro:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-judgment-frontier-gemini31-pro
+
+      op-memory-judgment-frontier-gemini31-pro:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: none
+
+      op-learning-reflection-standard-gemini35-flash-lite:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: any
+          fallback_profile: op-learning-reflection-retry-gemini31-pro
+
+      op-learning-reflection-retry-gemini31-pro:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: any
+
+      op-memory-entity-extraction-fast-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+          fallback_profile: op-memory-extraction-retry-m27
+
+      op-memory-environment-extraction-fast-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+          fallback_profile: op-memory-extraction-retry-m27
+
+      op-memory-archive-summary-fast-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+          fallback_profile: op-memory-extraction-retry-m27
+
+      op-memory-extraction-retry-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+
+      op-memory-episode-quality-standard-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-episode-quality-retry-m27
+
+      op-memory-episode-quality-retry-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: none
+          streaming: true
+
+      op-memory-insight-distillation-standard-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-judgment-frontier-m27
+
+      op-memory-user-promotion-standard-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-judgment-frontier-m27
+
+      op-memory-conflict-review-standard-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-judgment-frontier-m27
+
+      op-memory-conflict-review-high-risk-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-judgment-frontier-m27
+
+      op-memory-judgment-frontier-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: none
+          streaming: true
+
+      op-learning-reflection-standard-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+          fallback_profile: op-learning-reflection-retry-m27
+
+      op-learning-reflection-retry-m27:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+
+      op-memory-entity-extraction-fast-dsv4-flash:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: any
+          streaming: true
+          fallback_profile: op-memory-extraction-retry-dsv4-flash
+
+      op-memory-environment-extraction-fast-dsv4-flash:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: any
+          streaming: true
+          fallback_profile: op-memory-extraction-retry-dsv4-flash
+
+      op-memory-archive-summary-fast-dsv4-flash:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: any
+          streaming: true
+          fallback_profile: op-memory-extraction-retry-dsv4-flash
+
+      op-memory-extraction-retry-dsv4-flash:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: high
+          tool_choice:
+            type: any
+          streaming: true
+
+      op-memory-episode-quality-standard-dsv4-flash:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: high
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-episode-quality-retry-dsv4-pro
+
+      op-memory-episode-quality-retry-dsv4-pro:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: none
+          streaming: true
+
+      op-memory-insight-distillation-standard-dsv4-pro:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-judgment-frontier-dsv4-pro
+
+      op-memory-user-promotion-standard-dsv4-pro:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-judgment-frontier-dsv4-pro
+
+      op-memory-conflict-review-standard-dsv4-pro:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-judgment-frontier-dsv4-pro
+
+      op-memory-conflict-review-high-risk-dsv4-pro:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: none
+          streaming: true
+          fallback_profile: op-memory-judgment-frontier-dsv4-pro
+
+      op-memory-judgment-frontier-dsv4-pro:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: none
+          streaming: true
+
+      op-learning-reflection-standard-dsv4-flash:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: high
+          tool_choice:
+            type: any
+          streaming: true
+          fallback_profile: op-learning-reflection-retry-dsv4-pro
+
+      op-learning-reflection-retry-dsv4-pro:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: any
+          streaming: true
+
+      op-memory-entity-extraction-fast-haiku46:
+        provider: anthropic
+        model: claude-haiku-4-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry-sonnet46
+
+      op-memory-environment-extraction-fast-haiku46:
+        provider: anthropic
+        model: claude-haiku-4-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry-sonnet46
+
+      op-memory-archive-summary-fast-haiku46:
+        provider: anthropic
+        model: claude-haiku-4-5
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          fallback_profile: op-memory-extraction-retry-sonnet46
+
+      op-memory-extraction-retry-sonnet46:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: any
+
+      op-memory-episode-quality-standard-sonnet46:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 4096
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-episode-quality-retry-opus47
+
+      op-memory-episode-quality-retry-opus47:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: none
+
+      op-memory-insight-distillation-standard-sonnet46:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-judgment-frontier-opus47
+
+      op-memory-user-promotion-standard-sonnet46:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-judgment-frontier-opus47
+
+      op-memory-conflict-review-standard-sonnet46:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-judgment-frontier-opus47
+
+      op-memory-conflict-review-high-risk-opus47:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: none
+          fallback_profile: op-memory-judgment-frontier-opus47
+
+      op-memory-judgment-frontier-opus47:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          max_reasoning_tokens: 49152
+        metadata:
+          tool_choice:
+            type: none
+
+      op-learning-reflection-standard-sonnet46:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: any
+          fallback_profile: op-learning-reflection-retry-opus47
+
+      op-learning-reflection-retry-opus47:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: any
+
+      gptterra-responses-toolsany-rhigh:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      gpt61sol-responses-toolsany-rhigh: &profile_gpt61sol_responses_toolsany_rhigh
+        provider: openai
+        model: gpt-6.1-sol
+        supports_reasoning: true
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      # gpt-5.6-terra + reasoning=high + 64K output. Built for analytical
+      # agents whose inner-loop / sub-goal-planning steps benefit from a
+      # generous chain-of-thought budget but where the gpt-6.1-sol cost
+      # premium isn't worth it. Currently consumed by simple-data-analyst
+      # via its per-agent llm_routing.operations override (atomic_composition +
+      # atomic_composition). `summary: detailed` keeps the reasoning
+      # surface auditable in the trace files.
+      gptterra-responses-toolsany-rhigh-out64k:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 300
+        reasoning:
+          effort: high
+          summary: detailed
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      gptsol-responses-toolsnone-rhigh:
+        provider: openai
+        model: gpt-5.6-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      # GPT-6 equivalent of gptsol-responses-toolsnone-rhigh.
+      gpt61sol-responses-toolsnone-rhigh: &profile_gpt61sol_responses_toolsnone_rhigh
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      gptastra-responses-toolsnone-rhigh:
+        provider: openai
+        model: gpt-6-astra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      gptterra-responses-toolsnone-rhigh:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: medium
+
+      gptterra-responses-toolsnone-out16k:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      gpt61sol-responses-toolsnone-out16k: &profile_gpt61sol_responses_toolsnone_out16k
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      gptterra-responses-toolsnone-out8k:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      gptterra-responses-toolsany:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      gpt61sol-responses-toolsany: &profile_gpt61sol_responses_toolsany
+        provider: openai
+        model: gpt-6.1-sol
+        supports_reasoning: true
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      gptterra-responses-vision-toolsany:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      # GPT-5.6 Luna — the budget tier for nano-class operations. Active for
+      # instant chat and bounded extraction/classification work.
+      gptluna-responses-toolsany:
+        provider: openai
+        model: gpt-5.6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      # GPT-6 equivalent of gptluna-responses-toolsany.
+      gpt6luna-responses-toolsany:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      gptluna-responses-toolsnone-out16k:
+        provider: openai
+        model: gpt-5.6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      # GPT-6 equivalent of gptluna-responses-toolsnone-out16k.
+      gpt6luna-responses-toolsnone-out16k:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      gptluna-responses-toolsnone-out8k:
+        provider: openai
+        model: gpt-5.6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      # GPT-6 equivalent of gptluna-responses-toolsnone-out8k.
+      gpt6luna-responses-toolsnone-out8k:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      gptluna-responses-toolsany-rnone:
+        provider: openai
+        model: gpt-5.6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: none
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      # GPT-6 equivalent of gptluna-responses-toolsany-rnone.
+      gpt6luna-responses-toolsany-rnone:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: none
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: any
+          verbosity: low
+
+      # Town Square admission is a bounded binary decision. It deliberately
+      # has no tools and a tiny output allowance.
+      op-social-gate-luna:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 32
+        timeout_secs: 30
+        reasoning:
+          effort: none
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      # Town Square composition is likewise tool-free and output-capped so
+      # reservation variance stays bounded and observable.
+      op-social-compose-luna:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_tool_calling: true
+        max_output_tokens: 512
+        timeout_secs: 60
+        reasoning:
+          effort: none
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+          verbosity: low
+
+      opus47-messages-toolsauto-rmax-think48k-out64k:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          max_reasoning_tokens: 49152
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_observation: 0.02
+
+      opus47-messages-toolsauto-rhigh-think8k:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_observation: 0.02
+
+      opus47-messages-toolsauto-think8k:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_observation: 0.02
+
+      sonnet46-messages-toolsauto-think16k:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 16384
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_observation: 0.02
+
+      opus47-messages-toolsauto-rmin-think8k:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: minimal
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_observation: 0.02
+
+      haiku46-messages-vision-toolsany-rnone:
+        provider: anthropic
+        model: claude-haiku-4-5
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.006
+
+      sonnet46-messages-vision-toolsany-rnone:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.015
+          fallback_profile: sonnet46-messages-vision-toolsauto-think8k
+
+      sonnet46-messages-vision-toolsauto-think8k:
+        provider: anthropic
+        model: claude-sonnet-4-6
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_observation: 0.02
+
+      gptterra-responses-vision-toolsany-rdefault:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.03
+          openai_api_mode: responses
+          fallback_profile: gpt61sol-responses-vision-toolsany-rhigh
+
+      gpt61sol-responses-vision-toolsany-rdefault: &profile_gpt61sol_responses_vision_toolsany_rdefault
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.03
+          openai_api_mode: responses
+          fallback_profile: gpt61sol-responses-vision-toolsany-rhigh
+
+      # gpt-5.6-terra vision + reasoning=high + 64K output. The vision sibling
+      # of `gptterra-responses-toolsany-rhigh-out64k`; used by the outer
+      # loop (`agentic_decision`) for analytical agents that need to
+      # reason over screenshots + tool catalogs at high effort but
+      # don't justify the gpt-6.1-sol cost. Pairs with the text profile
+      # above in simple-data-analyst's llm_routing.
+      gptterra-responses-vision-toolsany-rhigh-out64k: &gptterra_rhigh_64k
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 300
+        reasoning:
+          effort: high
+          summary: detailed
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.03
+          openai_api_mode: responses
+          verbosity: low
+
+      gpt61sol-responses-vision-toolsany-rhigh-out64k: &gpt61sol_rhigh_64k
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 300
+        reasoning:
+          effort: high
+          summary: detailed
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.03
+          openai_api_mode: responses
+          verbosity: low
+
+      # MiniMax M3 agentic-decision profile. AVAILABLE but NOT currently bound:
+      # `agentic_decision` uses `gpt61sol-responses-vision-toolsany-rhigh-out64k`
+      # (GPT-5.6 Terra, reasoning=high). M3 was validated end-to-end on the browser loop
+      # (vision + tool-results + thinking all work) but under-drove the task
+      # (inspect-don't-act → premature yield), so the proven GPT-5.6 Terra decider stays.
+      # Swap this profile into operation_mapping.agentic_decision to drive the loop
+      # with M3. M3 is natively multimodal (image + reasoning + tools in one request
+      # on MiniMax's OpenAI-compatible /v1/chat/completions endpoint) and handles
+      # text-only turns too, so one profile covers both.
+      #
+      # tool_choice: auto because MiniMax only accepts `auto` | `none` (never
+      # `any`/`required`).
+      #
+      # reasoning.effort: M3's thinking is a BINARY native switch
+      # (`thinking: {type: enabled|disabled}`) — it has NO high/medium/low intensity
+      # dial (the OpenAI-style `reasoning_effort` is a no-op on M3). The provider
+      # collapses `effort` to on/off: any non-`none` value (here `high`) enables
+      # thinking; `none`/`off` disables it. So `high` (and the `rhigh` in the name)
+      # means "think before deciding", NOT a tunable depth — when enabled, M3 reasons
+      # adaptively per turn. Without this the decider ran shallow and emitted zero
+      # reasoning on some turns (the lazy inspect-don't-act failure).
+      # xAI Grok 4.7 over the xAI Responses API (`provider: xai`,
+      # https://api.x.ai/v1/responses). Server continuation
+      # (`previous_response_id`) is the default reuse strategy and every
+      # request carries the execution-scoped `prompt_cache_key` — xAI caches
+      # per server, measured at ~75–80 % cached input on continued turns.
+      # Reasoning cannot be disabled (xAI refuses `effort: none`), so the
+      # "fast" chat half runs at `low` effort. $2 / $0.50 cached / $6 per 1M,
+      # doubled for prompts that reach 200k. Key: XAI_API_KEY.
+      grok47-responses-vision-toolsany-rhigh:
+        provider: xai
+        model: grok-4.7
+        api_key_env: XAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 300
+        reasoning:
+          effort: high
+          summary: auto
+        metadata:
+          tool_choice:
+            type: any
+
+      chat-grok47-responses-vision-toolsauto-fast:
+        provider: xai
+        model: grok-4.7
+        api_key_env: XAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 300
+        reasoning:
+          effort: low
+          summary: auto
+        metadata:
+          tool_choice: auto
+          streaming: true
+
+      chat-grok47-responses-vision-toolsauto-thinking:
+        provider: xai
+        model: grok-4.7
+        api_key_env: XAI_API_KEY
+        supports_vision: true
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        reasoning:
+          effort: high
+          summary: auto
+        metadata:
+          tool_choice: auto
+          streaming: true
+
+      # Sarvam 105B over Sarvam's Chat Completions API (`provider: sarvam`,
+      # https://api.sarvam.ai/v1/chat/completions). Indic-first: answers in
+      # the scheduled Indian languages (native script or romanized) and
+      # English — the default for demos with Indian customers. Text-only
+      # (image turns render as text placeholders), 128K context. Reasoning
+      # cannot be disabled and counts against `max_output_tokens`, so the
+      # "fast" half runs at `low` effort; unset effort spends the whole
+      # budget thinking. ₹29.28 / ₹10.98 cached / ₹73.2 per 1M (~$0.33 /
+      # $0.125 / $0.83). Key: SARVAM_API_KEY.
+      chat-sarvam105b-toolsauto-fast:
+        provider: sarvam
+        model: sarvam-105b
+        api_key_env: SARVAM_API_KEY
+        supports_vision: false
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 8192
+        timeout_secs: 300
+        reasoning:
+          effort: low
+        metadata:
+          tool_choice: auto
+          streaming: true
+
+      chat-sarvam105b-toolsauto-thinking:
+        provider: sarvam
+        model: sarvam-105b
+        api_key_env: SARVAM_API_KEY
+        supports_vision: false
+        supports_tool_calling: true
+        supports_reasoning: true
+        max_output_tokens: 24576
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice: auto
+          streaming: true
+
+      m3-vision-toolsauto-rhigh-out64k:
+        provider: minimax
+        model: MiniMax-M3
+        api_key_env: MINIMAX_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 65536
+        timeout_secs: 300
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_observation: 0.01
+          streaming: true
+
+      gptsol-responses-vision-toolsany-rhigh: &gptsol_rhigh
+        provider: openai
+        model: gpt-5.6-sol
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.05
+          openai_api_mode: responses
+
+      # GPT-6 equivalent of gptsol-responses-vision-toolsany-rhigh.
+      gpt61sol-responses-vision-toolsany-rhigh: &gpt61sol_rhigh
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.05
+          openai_api_mode: responses
+
+      gptastra-responses-vision-toolsany-rhigh: &gptastra_rhigh
+        provider: openai
+        model: gpt-6-astra
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.10
+          openai_api_mode: responses
+
+      gptterra-responses-vision-toolsany-rnone-out16k: &gptterra_rnone_16k
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        reasoning:
+          effort: none
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.006
+          openai_api_mode: responses
+          fallback_profile: gpt61sol-responses-vision-toolsany-rdefault
+
+      gpt61sol-responses-vision-toolsany-rlow-out16k: &gpt61sol_rlow_16k
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        reasoning:
+          effort: low
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.006
+          openai_api_mode: responses
+          fallback_profile: gpt61sol-responses-vision-toolsany-rdefault
+
+      gptluna-responses-vision-toolsany-rnone-out16k: &gptluna_rnone_16k
+        provider: openai
+        model: gpt-5.6-luna
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        reasoning:
+          effort: none
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.006
+          openai_api_mode: responses
+          fallback_profile: gpt61sol-responses-vision-toolsany-rdefault
+
+      # GPT-6 equivalent of gptluna-responses-vision-toolsany-rnone-out16k.
+      gpt6luna-responses-vision-toolsany-rnone-out16k: &gpt6luna_rnone_16k
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        reasoning:
+          effort: none
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.006
+          openai_api_mode: responses
+          fallback_profile: gpt61sol-responses-vision-toolsany-rdefault
+
+      # ---- Compatibility aliases (added 2026-06-15) ----
+      # Legacy semantic profile names referenced by agent llm_routing slots
+      # (templates + scoped active defs + version snapshots + keka-clocker) that
+      # don't exist in this deployment's descriptive-name config. Aliased via YAML
+      # anchors to the live OpenAI profiles — mirrors the engineer hot-patch in
+      # commit 8741fc6fc so EVERY referencing agent resolves instead of failing
+      # "Profile '<name>' not found" on agentic_decision. Anchors resolve at parse
+      # time → zero body duplication. (OpenAI targets per the chosen coding routing;
+      # flip an alias to an opus47-/sonnet46- profile here to restore Anthropic.)
+      llm-opus-4.6: *gpt61sol_rhigh_64k
+      llm-sonnet-4.6: *gpt61sol_rhigh_64k
+      llm-openai-small: *gpt61sol_rhigh_64k
+      llm-reasoning-opus-max-60k-64k: *gpt61sol_rhigh_64k
+      llm-openai-reasoning-large: *gpt61sol_rhigh
+      llm-openai-chat-reasoning: *gpt61sol_rhigh
+      llm-openai-chat: *gpt61sol_rhigh
+      llm-memory-small: *gpt61sol_rlow_16k
+      llm-openai-nano: *gpt6luna_rnone_16k
+
+      opus47-messages-vision-toolsauto-rhigh-think8k:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_million_input_tokens: 5
+          cost_per_million_output_tokens: 25
+          fallback_profile: sonnet46-messages-vision-toolsany-rnone
+
+      opus5-messages-vision-toolsauto-rhigh-think8k:
+        provider: anthropic
+        model: claude-opus-5
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_million_input_tokens: 5
+          cost_per_million_output_tokens: 25
+          fallback_profile: sonnet46-messages-vision-toolsany-rnone
+
+      # Claude Opus 5.5 equivalent of opus5-messages-vision-toolsauto-rhigh-think8k.
+      opus55-messages-vision-toolsauto-rhigh-think8k:
+        provider: anthropic
+        model: claude-opus-5-5
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_million_input_tokens: 4
+          cost_per_million_output_tokens: 20
+          fallback_profile: sonnet46-messages-vision-toolsany-rnone
+
+      fable51-messages-vision-toolsauto-rhigh:
+        provider: anthropic
+        model: claude-fable-5-1
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_million_input_tokens: 10
+          cost_per_million_output_tokens: 50
+          fallback_profile: opus55-messages-vision-toolsauto-rhigh-think8k
+
+      opus47-messages-vision-toolsauto-think8k:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_million_input_tokens: 5
+          cost_per_million_output_tokens: 25
+          fallback_profile: sonnet46-messages-vision-toolsany-rnone
+
+      opus47-messages-vision-toolsauto-rmin-think8k:
+        provider: anthropic
+        model: claude-opus-4-7
+        api_key_env: ANTHROPIC_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: minimal
+          max_reasoning_tokens: 8192
+        metadata:
+          tool_choice:
+            type: auto
+          cost_per_million_input_tokens: 5
+          cost_per_million_output_tokens: 25
+          fallback_profile: sonnet46-messages-vision-toolsany-rnone
+
+      gemini35-flash-lite-toolsany:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+
+      gemini35-flash-lite-toolsany-rhigh:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: any
+
+      gemini31-pro-toolsany:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+
+      gemini31-pro-toolsany-rhigh:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: any
+
+      chat-gemini31-pro-vision-toolsauto-rhigh:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+
+      chat-gemini35-flash-lite-vision-toolsauto-rhigh:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: auto
+
+      gemini35-flash-lite-vision-toolsany:
+        provider: gemini
+        model: gemini-3.5-flash-lite
+        api_key_env: GEMINI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+
+      gemini31-pro-vision-toolsany:
+        provider: gemini
+        model: gemini-3.1-pro-preview
+        api_key_env: GEMINI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+
+      vision-yutori-n1.5:
+        provider: yutori
+        model: n1.5-latest
+        api_key_env: YUTORI_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_tool_calling: true
+        supports_computer_use: true
+        temperature: 0.3
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          tool_choice:
+            type: any
+          cost_per_observation: 0.003
+
+      chat-dsv4-flash-messages-toolsauto-rnone:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-dsv4-flash-messages-toolsauto-rhigh:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: high
+          tool_choice:
+            type: auto
+          streaming: true
+
+      dsv4-flash-messages-toolsany-rnone:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: any
+          streaming: true
+
+      dsv4-flash-messages-toolsany-rhigh:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: high
+          tool_choice:
+            type: any
+          streaming: true
+
+      dsv4-flash-vision-messages-toolsany-rhigh:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        default_modality: vision
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: high
+          tool_choice:
+            type: any
+          streaming: true
+
+      chat-dsv4-pro-messages-toolsauto-rnone:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: auto
+          streaming: true
+
+      chat-dsv4-pro-messages-toolsauto-rmax:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: auto
+          streaming: true
+
+      dsv4-pro-messages-toolsany-rnone:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        metadata:
+          thinking:
+            type: disabled
+          tool_choice:
+            type: any
+          streaming: true
+
+      dsv4-pro-messages-toolsany-rmax:
+        provider: deepseek
+        model: deepseek-flash
+        api_key_env: DEEPSEEK_API_KEY
+        supports_vision: true
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: max
+          strategy: deepseek_thinking
+        metadata:
+          thinking:
+            type: enabled
+          output_config:
+            effort: max
+          tool_choice:
+            type: any
+          streaming: true
+
+      m27-toolsany-rhigh:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+
+      m27-toolsany:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+
+      m27-toolsany-rnone-out16k:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        metadata:
+          tool_choice:
+            type: any
+          streaming: true
+
+      m27-toolsnone-rhigh:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: high
+        metadata:
+          tool_choice:
+            type: none
+          streaming: true
+
+      m27-toolsnone:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 32768
+        timeout_secs: 600
+        reasoning:
+          effort: medium
+        metadata:
+          format: json
+          tool_choice:
+            type: none
+          streaming: true
+
+      m27-toolsnone-rnone-out16k:
+        provider: minimax
+        model: MiniMax-M2.7
+        api_key_env: MINIMAX_API_KEY
+        supports_vision: false
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 300
+        metadata:
+          format: json
+          tool_choice:
+            type: none
+          streaming: true
+
+    # Adaptive composite profiles — each one pairs a `fast_profile` and
+    # `thinking_profile` defined in the `profiles` map above. When a chat
+    # operation resolves to a name listed here, the chat runtime starts
+    # the turn in `fast_profile` and exposes a `request_thinking_mode`
+    # tool. If the LLM emits that tool call (it's prompted to do so when
+    # the task warrants extended reasoning), the runtime swaps to
+    # `thinking_profile` and restarts the turn with the same user message.
+    # Non-chat operations (memory, query analysis, etc.) that resolve to
+    # an adaptive name transparently fall back to its `fast_profile`.
+      # ── Remote counterparts of the local qwen profiles (locality policy) ──
+      # One-to-one mirrors of the local arms: same output budget and
+      # non-reasoning posture, with no Ollama-only metadata
+      # (format/options/draft_num_predict/keep_alive must NOT be carried over
+      # — unknown keys are forwarded verbatim by remote providers and 400).
+      # `supports_reasoning: false` plus no `reasoning` block makes the OpenAI
+      # adapter send effort:none, matching Ollama think:false. Selected by the
+      # `when_cloud` arms under `privacy.processing.mode: cloud`.
+
+      op-memory-episode-quality-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+        chunking:
+          enabled: false
+
+      op-memory-utility-review-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+        chunking:
+          enabled: false
+
+      op-memory-entity-extraction-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+        chunking:
+          enabled: false
+
+      op-memory-environment-extraction-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+        chunking:
+          enabled: false
+
+      op-memory-evidence-distillation-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+        chunking:
+          enabled: false
+
+      op-memory-archive-summary-remote:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+        chunking:
+          enabled: false
+
+      op-memory-archive-summary-remote-gpt61sol: &profile_op_memory_archive_summary_remote_gpt61sol
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+        chunking:
+          enabled: false
+
+      op-ambient-distill-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 8192
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-channel-distill-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-channel-classify-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 2048
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-channel-reply-draft-remote:
+        provider: openai
+        model: gpt-5.6-terra
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 2048
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-channel-reply-draft-remote-gpt61sol: &profile_op_channel_reply_draft_remote_gpt61sol
+        provider: openai
+        model: gpt-6.1-sol
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: true
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        reasoning:
+          effort: low
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-agentic-ledger-compaction-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 4096
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-meeting-summary-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 16384
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      op-kapso-envoy-chat-fallback-remote:
+        provider: openai
+        model: gpt-6-luna
+        api_key_env: OPENAI_API_KEY
+        supports_reasoning: false
+        supports_tool_calling: true
+        max_output_tokens: 2048
+        timeout_secs: 600
+        metadata:
+          openai_api_mode: responses
+          tool_choice:
+            type: none
+
+      # ── Harness CLI profiles (2026-08-31 plan) ──────────────────────────
+      # Subscription-backed model calls: `invoke` is a one-shot call to an
+      # installed, user-signed-in CLI. Text-in/text-out only — no tools, no
+      # MCP, no plane. These profiles exist as CHOICES; by the plan's
+      # no-override guarantee NO operation maps to them in shipped defaults,
+      # and local models (Ollama) and API profiles remain selectable for
+      # every operation. To ride the subscription for one operation, add
+      # exactly one line under operation_mapping, e.g.:
+      #   meeting_summary: op-harness-claude
+      # Reverting is deleting that line. These profiles must never back an
+      # execution-native operation or an agent/model override: the execution
+      # router refuses profiles without explicit tool-calling support before
+      # provider dispatch. Sensitive and agentic operations stay on local/API
+      # profiles; nothing here can displace them silently.
+      op-harness-claude:
+        provider: harness-claude_code
+        model: default
+        timeout_secs: 300
+      op-harness-codex:
+        provider: harness-codex
+        model: default
+        timeout_secs: 300
+      op-harness-grok:
+        provider: harness-grok
+        model: default
+        timeout_secs: 300
+      op-harness-agy:
+        provider: harness-agy
+        model: default
+        timeout_secs: 300
+      op-harness-pi:
+        provider: harness-pi
+        model: default
+        timeout_secs: 300
+      # Size variants — background ops want SMALL models, and CLI
+      # defaults are the flagship tier. The profile's `model` rides the
+      # CLI's model flag (claude/agy/pi --model, codex/grok -m).
+      # Names are owner-editable — check the
+      # CLI's own list (`claude --help` aliases, `agy models`) for current
+      # ids. `op-harness-*` above left at the CLI default for comparison.
+      op-harness-claude-small:
+        provider: harness-claude_code
+        model: haiku
+        timeout_secs: 300
+      op-harness-grok-small:
+        provider: harness-grok
+        model: grok-4-fast
+        timeout_secs: 300
+      op-harness-agy-small:
+        provider: harness-agy
+        model: gemini-3.7-flash-low
+        timeout_secs: 300
+      op-harness-claude-sonnet:
+        provider: harness-claude_code
+        model: sonnet
+        timeout_secs: 300
+      op-harness-claude-opus:
+        provider: harness-claude_code
+        model: opus
+        timeout_secs: 300
+      op-harness-claude-fable:
+        provider: harness-claude_code
+        model: fable
+        timeout_secs: 300
+
+      op-harness-grok-4:
+        provider: harness-grok
+        model: grok-4
+        timeout_secs: 300
+      op-harness-agy-medium:
+        provider: harness-agy
+        model: gemini-3.7-flash-medium
+        timeout_secs: 300
+      op-harness-agy-high:
+        provider: harness-agy
+        model: gemini-3.7-flash-high
+        timeout_secs: 300
+
+    # Canonical operation registry. Each key owns both its routing selector
+    # and optional Settings metadata; do not maintain a second UI catalog.
+    # Legacy `operation: profile` entries still parse and receive fallback
+    # labels, but shipped entries should carry `description` and `group`.
+      # Legacy Sol profile IDs remain aliases for saved selections.
+      # All aliases below now use GPT-6.1 Sol, including low in place of none.
+      gpt6sol-responses-toolsany-rhigh-out64k: *profile_gpt61sol_responses_toolsany_rhigh_out64k
+      gpt6sol-responses-toolsnone-rhigh-out64k: *profile_gpt61sol_responses_toolsnone_rhigh_out64k
+      chat-gpt6sol-responses-vision-toolsauto-fast: *profile_chat_gpt61sol_responses_vision_toolsauto_fast
+      chat-gpt6sol-responses-vision-toolsauto-thinking: *profile_chat_gpt61sol_responses_vision_toolsauto_thinking
+      op-memory-judgment-frontier-gpt6sol: *profile_op_memory_judgment_frontier_gpt61sol
+      op-screen-understanding-vision-gpt6sol: *profile_op_screen_understanding_vision_gpt61sol
+      op-screen-grounding-vision-gpt6sol: *profile_op_screen_grounding_vision_gpt61sol
+      gpt6sol-responses-toolsany-rhigh: *profile_gpt61sol_responses_toolsany_rhigh
+      gpt6sol-responses-toolsnone-rhigh: *profile_gpt61sol_responses_toolsnone_rhigh
+      gpt6sol-responses-toolsnone-out16k: *profile_gpt61sol_responses_toolsnone_out16k
+      gpt6sol-responses-toolsany: *profile_gpt61sol_responses_toolsany
+      gpt6sol-responses-vision-toolsany-rdefault: *profile_gpt61sol_responses_vision_toolsany_rdefault
+      gpt6sol-responses-vision-toolsany-rhigh-out64k: *gpt61sol_rhigh_64k
+      gpt6sol-responses-vision-toolsany-rhigh: *gpt61sol_rhigh
+      gpt6sol-responses-vision-toolsany-rnone-out16k: *gpt61sol_rlow_16k
+      op-memory-archive-summary-remote-gpt6sol: *profile_op_memory_archive_summary_remote_gpt61sol
+      op-channel-reply-draft-remote-gpt6sol: *profile_op_channel_reply_draft_remote_gpt61sol
+
+    operation_mapping:
+      # Reviewed Town Square steps follow the selected app-processing mode.
+      "app:engagement_gate":
+        default: op-app-workflow-local
+        when_cloud: op-app-workflow-remote
+        description: "Judges whether the owning app should engage with a candidate item."
+        group: "Apps"
+      "app:compose_post":
+        default: op-app-workflow-local
+        when_cloud: op-app-workflow-remote
+        description: "Lets the owning app compose a post from admitted app data."
+        group: "Apps"
+      chat_completion:
+        default: chat-openai-adaptive-instant
+        when_has_images: chat-openai-adaptive-instant
+        description: "Produces the main Magician chat response."
+        group: "Chat"
+      # App query results use the reviewed local/cloud app-workflow profile.
+      # Chat ignores per-turn profile overrides whenever an app-data tool is
+      # in the admitted catalog.
+      app_data_processing:
+        default: op-app-workflow-local
+        when_cloud: op-app-workflow-remote
+        description: "Processes app-owned data through the admitted app LLM boundary."
+        group: "Apps"
+      # Loom/Thinking Map is intentionally isolated on the bounded Luna chat
+      # profile. The runtime accepts only OpenAI GPT-5.6 Terra/Luna here.
+      brainstorm_facilitation:
+        default: chat-gpt6luna-responses-vision-toolsauto-fast
+        description: "Facilitates Loom and Thinking Map brainstorming turns."
+        group: "Chat"
+      kapso_envoy_chat:
+        default: chat-gpt6luna-responses-vision-toolsauto-fast
+        description: "Produces the primary public envoy chat response."
+        group: "Channels"
+      kapso_envoy_chat_fallback:
+        default: op-kapso-envoy-chat-fallback-local
+        when_cloud: op-kapso-envoy-chat-fallback-remote
+        description: "Produces the fallback public envoy chat response."
+        group: "Channels"
+      task_decomposition:
+        default: gpt61sol-responses-toolsany
+        description: "Breaks a request into executable tasks and dependencies."
+        group: "Planning & execution"
+      query_analysis:
+        default: gpt6luna-responses-toolsany
+        description: "Analyzes request intent, complexity, dependencies, and required capabilities."
+        group: "Planning & execution"
+      entity_mapping:
+        default: gpt6luna-responses-toolsany-rnone
+        description: "Maps extracted entities into structured task fields."
+        group: "Planning & execution"
+      atomic_composition_outline:
+        default: gpt6luna-responses-toolsany
+        description: "Drafts the outline used before detailed atomic composition."
+        group: "Planning & execution"
+      atomic_composition:
+        default: gpt61sol-responses-toolsany-rhigh
+        description: "Builds the detailed atomic action composition for an execution."
+        group: "Planning & execution"
+      tool_evaluation:
+        default: gpt6luna-responses-toolsany
+        description: "Evaluates candidate tools for a requested capability."
+        group: "Planning & execution"
+      # Taste-profile distillation: reads a finished session and proposes
+      # standing directives. Bound to the Luna tier because this is bounded
+      # extraction — the same shape as category_matching below — and it runs
+      # once per finished session, not per turn. Not required to be local: the
+      # transcript already went to whichever model conducted the session.
+      # UNBOUND MEANS CAPTURE IS OFF; the router default is never used here.
+      taste_profile_distill:
+        default: gpt6luna-chat-toolsany-rnone
+        description: "Distills interaction signals into the user's taste profile."
+        group: "Learning"
+      # Slice 3 stage-2 applicability judge. Runs per run/resume/steer behind a
+      # 3s timeout, so it is bound to the cheapest/fastest tier deliberately —
+      # its worst case is added to every run's time-to-first-token. On timeout,
+      # error, or unbound it falls back to stage-1 tag ranking, which is a real
+      # ranking and ships as the default. UNBOUND MEANS THE JUDGE IS OFF.
+      memory_applicability_judge:
+        default: gpt6luna-chat-toolsany-rnone
+        description: "Decides whether a memory is relevant to the current request."
+        group: "Memory"
+      category_matching:
+        default: gpt6luna-chat-toolsany-rnone
+        description: "Matches free-form input against known categories."
+        group: "Planning & execution"
+      ask_loop_clarifier:
+        default: gpt6luna-responses-toolsany-rnone
+        description: "Generates the next clarification in the ask loop."
+        group: "Planning & execution"
+      answer_interpretation:
+        default: gpt6luna-chat-toolsany-rnone
+        description: "Interprets a user's answer to a clarification question."
+        group: "Planning & execution"
+      question_rewriting:
+        default: gpt6luna-chat-toolsany-rnone
+        description: "Rewrites clarification questions for clarity and answerability."
+        group: "Planning & execution"
+      question_curation:
+        default: gpt6luna-responses-toolsany-rnone
+        description: "Chooses which clarification questions are worth asking."
+        group: "Planning & execution"
+      slot_extraction:
+        default: gpt6luna-responses-toolsany
+        description: "Extracts structured task slots from a request."
+        group: "Planning & execution"
+      parameter_extraction:
+        default: gpt6luna-responses-toolsany-rnone
+        description: "Extracts explicit parameter values from a user's request."
+        group: "Planning & execution"
+      parameter_default_inference:
+        default: gpt6luna-responses-toolsany
+        description: "Infers context-aware defaults for missing parameters."
+        group: "Planning & execution"
+      parameter_safety_check:
+        default: gpt6luna-responses-toolsany
+        description: "Checks whether a proposed discovery action is safe."
+        group: "Planning & execution"
+      discovery_planning:
+        default: gpt61sol-responses-toolsany
+        description: "Plans autonomous discovery steps for missing information."
+        group: "Planning & execution"
+      discovery_extraction:
+        default: gpt6luna-responses-toolsany
+        description: "Extracts requested values from discovery command output."
+        group: "Planning & execution"
+      placeholder_resolution:
+        default: gpt6luna-chat-toolsany-rnone
+        description: "Resolves placeholder values immediately before execution."
+        group: "Planning & execution"
+
+      memory_entity_extraction:
+        default: op-memory-entity-extraction-local-chunked
+        when_cloud: op-memory-entity-extraction-remote
+        description: "Extracts entities and relationships from memory episodes."
+        group: "Memory"
+      memory_environment_knowledge_extraction:
+        default: op-memory-environment-extraction-local-chunked
+        when_cloud: op-memory-environment-extraction-remote
+        description: "Extracts reusable environment knowledge from memory episodes."
+        group: "Memory"
+      memory_archive_summary:
+        default: op-memory-archive-summary-local-chunked
+        when_cloud: op-memory-archive-summary-remote-gpt61sol
+        description: "Compresses older memory episodes for archival retention."
+        group: "Memory"
+      # Voice context compaction — same shape + budget as
+      # memory_archive_summary (short factual prose, fast model). Kept
+      # as its own operation so per-domain tuning is independent.
+      voice_context_compaction:
+        default: op-memory-archive-summary-fast
+        description: "Compacts older voice turns before a realtime session rotates."
+        group: "Voice & meetings"
+      memory_insight_distillation:
+        default: op-memory-insight-distillation-standard
+        description: "Distills reusable insights from extracted memory entities."
+        group: "Memory"
+      # Work-evidence graph: episode -> structured evidence record. Evidence
+      # distillation is strict JSON + salience/sensitivity gated, so run the
+      # bounded Luna profile first and retry on the stronger profile if needed.
+      distill_evidence:
+        default: op-memory-evidence-distillation-local-chunked
+        when_cloud: op-memory-evidence-distillation-remote
+        description: "Distills raw evidence into memory-ready evidence."
+        group: "Evidence"
+      # Work-evidence graph Phase 2: distill a per-origin/day ambient browser
+      # signal cluster into user-owned evidence. Local-only by policy: both the
+      # lifecycle worker and endpoint refuse to run unless this maps to Ollama.
+      ambient_distill:
+        default: op-ambient-distill-local
+        when_cloud: op-ambient-distill-remote
+        description: "Turns ambient activity into compact context for later use."
+        group: "Attention"
+      local_prep:
+        default: op-ambient-distill-local
+        description: "Prepares local context before a routed workflow."
+        group: "Planning & execution"
+      # Mail Assist: local-only channel distillation (Gmail/AgentMail/WhatsApp/
+      # Kapso message content → {summary,intent}). SAME fail-closed policy as
+      # ambient_distill — the worker refuses to run unless this maps to an
+      # Ollama profile (raw bodies never leave the box).
+      channel_ingest_distill:
+        default: op-channel-distill-local
+        when_cloud: op-channel-distill-remote
+        description: "Distills an incoming channel message into durable context."
+        group: "Channels"
+      # Mail Assist Phase-2 classifier. BODY-BLIND (reads only the local
+      # summaries, never raw bodies), so it may run local OR remote — kept on
+      # the local gemma profile here for privacy; swap to a capable remote
+      # (e.g. gpt61sol-responses-toolsany) for sharper triage if wanted.
+      channel_classify:
+        default: op-channel-classify-local
+        when_cloud: op-channel-classify-remote
+        description: "Classifies incoming channel messages for routing and attention."
+        group: "Channels"
+      # Mail Assist Phase-2 reply drafter. LOCAL-PINNED (sees the raw latest
+      # message), same fail-closed policy as channel_ingest_distill: the drafter
+      # refuses any non-Ollama binding, and unbound => draft unavailable.
+      channel_reply_draft:
+        default: op-channel-reply-draft-local
+        when_cloud: op-channel-reply-draft-remote-gpt61sol
+        description: "Drafts an assisted reply for a channel conversation."
+        group: "Channels"
+      # Passive metadata/summary-only recurrence learning. This operation is
+      # body-blind and writes generic timing/topic patterns to user memory.
+      channel_pattern_synthesis:
+        default: op-channel-classify-local
+        when_cloud: op-channel-classify-remote
+        description: "Synthesizes recurring patterns across channel activity."
+        group: "Channels"
+      # Proactive semantic resurfacing curator. Reads bounded safe briefs and
+      # signal profiles (never raw bodies), picks the few durable items most
+      # worth resurfacing, and authors a one-line surface + "why now". Bound to
+      # local Gemma; unbound/failure uses the conservative deterministic path.
+      resurfacing_curate:
+        default: op-ambient-distill-local
+        when_cloud: op-ambient-distill-remote
+        description: "Curates which remembered items should resurface now."
+        group: "Attention"
+      # Explicit owner-triggered deeper summary of the exact live source.
+      # Privacy lock: code refuses any non-Ollama binding and pins dispatch to
+      # this verified local profile with fallback disabled.
+      resurfacing_deep_summary:
+        default: op-channel-distill-local
+        when_cloud: op-channel-distill-remote
+        description: "Produces a deeper summary for resurfaced context."
+        group: "Attention"
+      # Work-evidence graph: screen/session and tier-backed distillation are
+      # memory-quality promotion jobs, not generic default-profile work.
+      screen_evidence_distill:
+        default: op-memory-evidence-distillation-fast
+        description: "Distills captured screen evidence into compact findings."
+        group: "Vision"
+      tier_evidence_distill:
+        default: op-memory-evidence-distillation-fast
+        description: "Distills evidence while moving memory between tiers."
+        group: "Evidence"
+      # Live Thinking Map interpreter: finalized utterance → bounded, model-safe
+      # {"operations":[...]} JSON. Isolated on its own OpenAI GPT-6 Luna
+      # profile (NOT a shared memory/chat profile) so tuning stays independent.
+      thinking_map_interpret:
+        default: op-thinking-map-interpret
+        description: "Turns a Thinking Map utterance into bounded map operations."
+        group: "Planning & execution"
+      # Agentic ledger compactor (compaction Phase B): itemized live-window →
+      # strict {"patches":[...],"rationale"} JSON, validated + enforced in
+      # Rust. Bound to the cheap local think-off profile; DORMANT until the
+      # Phase C executor trigger wires it (nothing dispatches this op today).
+      # Unbound would read as router_unavailable → deterministic-eviction
+      # fallback, never default_profile.
+      agentic_ledger_compaction:
+        default: op-agentic-ledger-compaction-local
+        when_cloud: op-agentic-ledger-compaction-remote
+        description: "Compacts the live execution ledger while preserving actionable state."
+        group: "Planning & execution"
+      # Work-evidence graph eval helpers stay on the bounded Terra profile, but are
+      # explicit so they do not silently inherit future default-profile changes.
+      evidence_claims:
+        default: gpt6luna-responses-toolsany
+        description: "Extracts evidence-backed claims from source material."
+        group: "Evidence"
+      evidence_precision_judge:
+        default: gpt61sol-responses-toolsany
+        description: "Judges whether evidence precisely supports each claim."
+        group: "Evidence"
+      # Work-evidence graph read path: synthesize an impact review from accrued
+      # evidence over a caller-chosen window (no fixed weekly cadence). Output /
+      # synthesis op — a bounded Terra model, no tools, larger output budget.
+      evidence_review:
+        default: gpt6luna-responses-toolsnone-out16k
+        description: "Reviews evidence coverage, quality, and conflicts."
+        group: "Evidence"
+      # Work-evidence graph verification gate: grounding critic that flags review
+      # claims unsupported by the evidence packet. A focused judging task — use
+      # the bounded Terra evidence profile; deterministic citation checks still
+      # guard verifier failures.
+      evidence_review_verify:
+        default: op-memory-evidence-distillation-fast
+        description: "Performs a fast verification pass on distilled evidence."
+        group: "Evidence"
+      memory_user_promotion:
+        default: op-memory-user-promotion-standard
+        description: "Promotes durable insights into user-level memory."
+        group: "Memory"
+      memory_episode_quality_classification:
+        default: op-memory-episode-quality-local-chunked
+        when_cloud: op-memory-episode-quality-remote
+        description: "Classifies whether an episode contains useful extractable memory."
+        group: "Memory"
+      memory_temperature_utility_review:
+        default: op-memory-utility-review-local-chunked
+        when_cloud: op-memory-utility-review-remote
+        description: "Reviews memory utility and recommends temperature or retention changes."
+        group: "Memory"
+      memory_conflict_review:
+        default: op-memory-conflict-review-standard
+        description: "Resolves conflicting memory items."
+        group: "Memory"
+      memory_conflict_review_high_risk:
+        default: op-memory-conflict-review-high-risk
+        description: "Resolves sensitive user or global memory conflicts."
+        group: "Memory"
+      learning_reflection:
+        default: op-learning-reflection-standard
+        description: "Reflects on outcomes to identify reusable learning."
+        group: "Learning"
+
+      durable_task_state_generate:
+        default: gpt6luna-responses-toolsnone-out8k
+        description: "Creates the initial durable-task state document."
+        group: "Planning & execution"
+      durable_task_state_patch:
+        default: gpt6luna-responses-toolsnone-out8k
+        description: "Updates durable-task state after execution progress."
+        group: "Planning & execution"
+      durable_task_state_close_summary:
+        default: gpt6luna-responses-toolsnone-out8k
+        description: "Summarizes completed durable-task state before closure."
+        group: "Planning & execution"
+      durable_task_state_generate_retry:
+        default: gpt61sol-responses-toolsnone-out16k
+        description: "Retries invalid initial durable-task state with a stronger route."
+        group: "Planning & execution"
+      durable_task_state_patch_retry:
+        default: gpt61sol-responses-toolsnone-out16k
+        description: "Retries an invalid durable-task state patch with a stronger route."
+        group: "Planning & execution"
+      v3_execution_output_synthesis:
+        default: gpt6luna-responses-toolsany
+        description: "Synthesizes execution-level outputs into one result."
+        group: "Planning & execution"
+      v3_task_agent_output_synthesis:
+        default: gpt6luna-responses-toolsany
+        description: "Synthesizes agent-facing task outputs."
+        group: "Planning & execution"
+      v3_task_user_output_synthesis:
+        default: gpt6luna-responses-toolsany
+        description: "Synthesizes the final user-facing task output."
+        group: "Planning & execution"
+      workflow_compilation:
+        default: gpt61sol-responses-toolsany
+        description: "Compiles capability sequences into an executable workflow graph."
+        group: "Planning & execution"
+
+      # Analytical agent decision loop. ACTIVE: Gemini 3.1 Pro
+      # (gemini-3.1-pro-preview) — native multimodal (vision + reasoning=high +
+      # tools), serving both text and image turns — under evaluation on the SoTA
+      # browser tests.
+      #
+      # Alternatives (uncomment ONE + comment the active line below, then restart):
+      #   - GPT-5.6 Terra (prior validated default; vision + reasoning=high + 64K output):
+      #       agentic_decision: gpt61sol-responses-vision-toolsany-rhigh-out64k
+      #   - DeepSeek V4 Pro (text) + MiniMax M3 (vision when_has_images fallback) —
+      #     completed the drag-and-drop SoTA test that M3-alone failed:
+      #       agentic_decision:
+      #         default: dsv4-pro-messages-toolsany-rmax
+      #         when_has_images: m3-vision-toolsauto-rhigh-out64k
+      #   - Yutori Navigator (coordinate vision) on image turns —
+      #     router.agentic_decision_uses_yutori() forces a screenshot + CSS
+      #     viewport every browser turn (see decision.rs / FLAT_LOOP.md):
+      #       agentic_decision:
+      #         default: gpt61sol-responses-vision-toolsany-rhigh-out64k
+      #         when_has_images: vision-yutori-n1.5
+      agentic_decision:
+        default: gpt61sol-responses-vision-toolsany-rhigh-out64k
+        description: "Chooses the next action in an agentic execution loop."
+        group: "Planning & execution"
+      agentic_decision_retry:
+        default: gpt61sol-responses-vision-toolsany-rhigh
+        description: "Retries a failed or invalid agentic decision with the stronger retry route."
+        group: "Planning & execution"
+      agentic_input_interpretation:
+        default: gpt6luna-chat-toolsany-rnone
+        description: "Interprets and validates a user's reply while an agentic run is waiting for input."
+        group: "Planning & execution"
+      # Media-rail senses (see the op-screen-* / op-meeting-summary-local
+      # profiles): per-frame narration = mini vision; one-shot describe =
+      # full vision; transcript summaries stay local.
+      screen_observation:
+        default: op-screen-observation-mini-vision
+        description: "Narrates meaningful changes in periodically captured screen frames."
+        group: "Vision"
+      screen_understanding:
+        default: op-screen-understanding-vision-gpt61sol
+        description: "Answers a one-shot question about a captured screen frame."
+        group: "Vision"
+      screen_grounding:
+        default: op-screen-grounding-vision-gpt61sol
+        description: "Locates a requested interaction target in a screen image."
+        group: "Vision"
+      analyze_image_via_openai:
+        default: op-analyze-image-openai-mini
+        description: "Analyzes an image through the OpenAI vision path."
+        group: "Vision"
+      web_answer:
+        default: op-web-answer
+        description: "Builds an answer from web research results."
+        group: "Web"
+      meeting_summary:
+        default: op-meeting-summary-local
+        when_cloud: op-meeting-summary-remote
+        description: "Summarizes a meeting or observation transcript."
+        group: "Voice & meetings"
+      meeting_response:
+        default: op-meeting-summary-local
+        when_cloud: op-meeting-summary-remote
+        description: "Drafts a live response when a meeting participant addresses Magician."
+        group: "Voice & meetings"
+      # Auxiliary task-result metadata. The primary answer is committed and
+      # projected first; an exactly-once background revision then condenses a
+      # long/noisy deliverable. Never runs from the /tasks listing read path.
+      task_summary:
+        default: op-task-summary-luna
+        description: "Produces a compact task summary for display and retrieval."
+        group: "Planning & execution"
+
+      # ── Previously-unmapped operations (2026-08-24 chokepoint closure) ──
+      # These four silently resolved to `default_profile` (remote OpenAI)
+      # because no explicit binding existed. Each entry below freezes that
+      # prior default-fallback behavior explicitly; flipping one to a local
+      # profile later is a one-line edit.
+      memory_attach_stage2:
+        default: gpt6luna-responses-toolsany
+        description: "Selects and attaches second-stage memories to the current context."
+        group: "Memory"
+      memory_connection_review:
+        default: gpt6luna-responses-toolsany
+        description: "Connects current activity with scoped memories and proposes grounded context or an owner clarification. Bounded to three calls per scope per hour."
+        group: "Memory"
+      memory_lifecycle_review:
+        default: gpt6luna-responses-toolsany
+        description: "Reconciles saved and learned memories, preserving evidence and resolving duplicates, corrections, exceptions and owner clarifications. Bounded to six reviews per scope per hour."
+        group: "Memory"
+      progress_review:
+        default: gpt61sol-responses-toolsany
+        description: "Reviews execution progress and recommends the next course."
+        group: "Planning & execution"
+      agent_general:
+        default: gpt61sol-responses-toolsany
+        description: "Handles agent reasoning without a more specific operation route."
+        group: "Planning & execution"
+      page_understanding_vision:
+        default: gpt61sol-responses-toolsany
+        description: "Understands the structure and content of a captured page image."
+        group: "Vision"
+
+      # Routed embeddings (2026-08-24 chokepoint closure): both keys resolve
+      # through the dedicated embedding daemon profile (`op-embedding-local`).
+      # Admission/batching/dimensions policy stays in runtime.ollama — the
+      # profile owns provider identity only.
+      embed_documents:
+        default: op-embedding-local
+        description: "Creates vector embeddings for stored documents."
+        group: "Embeddings"
+      embed_query:
+        default: op-embedding-local
+        description: "Creates a vector embedding for a retrieval query."
+        group: "Embeddings"
+
+    # Default profile used when no operation mapping matches. Stays on
+    # a standard profile — adaptive escalation is a chat-runtime
+    # feature only (see `chat/service.rs::process_chat_inline_turn`).
+    # Non-chat operations don't run the escalation interceptor, so
+    # pointing `default_profile` at an adaptive composite would just
+    # collapse to its `fast_profile` via `resolve_adaptive_to_fast`
+    # — visually misleading without any behavioral upside. Chat itself
+    # picks adaptive through `operation_mapping.chat_completion`.
+    #
+    # `gpt61sol-responses-toolsany` is the active unrouted-operation default:
+    # gpt-5.6-terra with `reasoning.effort: medium`, `tool_choice: any`,
+    # 32K output. Cheap reasoning-capable fallback for unrouted ops.

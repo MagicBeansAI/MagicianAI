@@ -1,0 +1,34 @@
+name: find_agents_for_capability
+description: Find which agents own a given capability — the inverse of get_agent_details. Pass a skill/pack name (e.g. comic-strip), a canonical <pack>__<action> leaf, or an agent id/name/alias (e.g. web_research, web-researcher, Sleuth) and get back every reachable agent that owns it. Use it to route each part of a multi-capability request to the agent that can actually do it.
+version: "1.0.0"
+guide: |
+  Tool name: `find_agents_for_capability`
+
+  When a request needs a capability you don't have — or spans several
+  capabilities that live on different agents — call this with the capability
+  name to find its owner(s), then `delegate_to_agent` to the right one.
+
+  - `capability`: a skill/pack name as shown in the delegation roster
+    (e.g. `comic-strip`, `image-generation`, `eli5-explainer`), a precise
+    `<pack>__<action>` leaf, or an agent id / display name / alias
+    (`web_research` finds `web-researcher`).
+
+  Returns each owning agent's `agent_id`, `name`, `description`, and `owns_via`
+  (the pack/leaf that matched). For a single agent's full guide + exact tool
+  names use `get_agent_details` instead.
+parameters:
+  - name: capability
+    required: true
+    param_type: string
+    description: The capability to look up — a skill/pack name (e.g. comic-strip), a <pack>__<action> leaf, or an agent id/name/alias (e.g. web_research).
+implementation:
+  type: compiled
+  provider_name: find_agents_for_capability
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - meta
+    - introspection
+  composition_category: action
+  sandbox: none

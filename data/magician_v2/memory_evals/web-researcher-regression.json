@@ -1,0 +1,46 @@
+{
+  "suite_id": "web-researcher-regression",
+  "enabled": true,
+  "cases": [
+    {
+      "case_id": "flight-search-query-phrasing",
+      "agent_id": "web-researcher",
+      "query": "How should I phrase web search queries for flight route and fare research?",
+      "scopes": ["agent"],
+      "expected_substrings": ["IATA", "fare calendar"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "search-tool-best-settings",
+      "agent_id": "web-researcher",
+      "query": "What search tool settings and query style work best for current travel research?",
+      "scopes": ["agent"],
+      "expected_substrings": ["best_settings", "IATA"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "sota-test-environment-recall",
+      "agent_id": "web-researcher",
+      "query": "What do I know about the local browser test pages environment and its blockers?",
+      "scopes": ["agent"],
+      "expected_substrings": ["sota-tests", "cross-origin"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "search-snippet-caution",
+      "agent_id": "web-researcher",
+      "query": "Can I rely on search engine snippets alone during web research?",
+      "scopes": ["agent"],
+      "expected_substrings": ["snippets"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    }
+  ]
+}

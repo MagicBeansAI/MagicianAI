@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Magician as the phone's assistant.
+
+  `supportsAssist` is what puts it in the system's assistant picker; without it
+  the service exists and the gesture never reaches it. No recognition service is
+  named: Magician does its own listening through the wake word, and claiming the
+  system's recogniser here would take over voice input the owner did not ask us
+  to take.
+-->
+<voice-interaction-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="ai.magicbeans.magdroid.ui.MagicianAssistSessionService"
+    android:recognitionService="ai.magicbeans.magdroid.ui.MagicianAssistService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="false" />

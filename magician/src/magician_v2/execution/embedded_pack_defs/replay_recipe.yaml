@@ -1,0 +1,36 @@
+name: replay_recipe
+description: Run a learned Task Recipe over the site's internal APIs with no browser.
+version: "1.0.0"
+guide: |
+  Tool name: `replay_recipe`
+
+  Recipes are learned from earlier browser runs. Call this when a Candidate+
+  recipe id is known; Draft recipes are rejected on planner surfaces. A
+  successful call returns the extracted answer and per-step outcomes.
+  A write recipe obtains the same scoped approval or durable grant as task-start
+  replay. Read failures may return a browser fallback payload. A failed write
+  returns `write_outcome_uncertain` with `retryable=false`; never repeat that
+  mutation through this tool, another API call, or the browser.
+parameters:
+  - name: recipe_id
+    required: true
+    param_type: string
+    description: Bound task recipe id.
+  - name: inputs
+    required: false
+    description: Named input values for the recipe placeholders.
+    schema:
+      type: object
+      additionalProperties:
+        type: string
+implementation:
+  type: compiled
+  provider_name: replay_recipe
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories:
+    - api-mining
+    - recipe
+  composition_category: action
+  sandbox: none

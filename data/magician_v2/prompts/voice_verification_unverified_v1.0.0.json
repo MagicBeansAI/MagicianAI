@@ -1,0 +1,17 @@
+{
+  "name": "voice_verification_unverified",
+  "version": "1.0.0",
+  "content": [
+    "Nothing checked that code, so I can't tell you whether it works."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "Conversational",
+    "description": "Spoken clause for verification_state `unverified` — the run finished but the repository had no checks to run, or they could not be run, so the work is done and unproven. Says 'nothing checked it', never 'it failed': unverified is an absence of evidence, and speaking it as a failure would send the user looking for a break that may not exist.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial unverified clause.",
+    "tags": ["voice", "realtime-voice", "verification", "announcement", "vibedev"],
+    "estimated_tokens": 14
+  }
+}

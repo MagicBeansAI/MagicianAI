@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""youtube_search — search YouTube for recent videos matching a query.
+
+Runs the youtube-search skill using `yt-dlp` as the keyless backend.
+yt-dlp wraps youtube search and returns rich metadata (view count,
+duration, description). Stdlib + subprocess only.
+
+If the backend dependency is missing, the script returns status=failed
+with a clear remediation hint — the agent can fall back to browser-based
+search.
+
+This asks yt-dlp for the whole search as one playlist object (`-J`) rather
+than a stream of per-video JSON lines (`--dump-json`), because the line
+stream cannot distinguish success from failure. yt-dlp exits 0 with empty
+stdout *and* empty stderr both when a search legitimately matches nothing and
+when the search page is blocked or its extractor breaks — verified against the
+live provider — so the old adapter reported `status=ok, count=0, reason=null`
+for an outage. The playlist object is the positive signal: receiving one means
+the search ran, and `entries: []` inside it means the provider really had
+nothing. No object at all is now an error.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+
+class ProviderUnavailable(RuntimeError):
+    """yt-dlp ran but did not deliver a search result to parse."""
+
+
+def _published_iso(entry: dict) -> str | None:
+    """Best available publication time for one flat search entry.
+
+    Flat search entries carry `timestamp` / `release_timestamp` when YouTube
+    exposes them and `upload_date` only on a full (non-flat) extraction, so
+    this reads whichever is present and returns None when none is — which is
+    most of the time, and is why `days` is reported as advisory rather than
+    applied.
+    """
+    for key in ("timestamp", "release_timestamp"):
+        value = entry.get(key)
+        if isinstance(value, (int, float)):
+            return (
+                datetime.fromtimestamp(value, tz=timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            )
+    upload_date = entry.get("upload_date")
+    if isinstance(upload_date, str) and len(upload_date) == 8:
+        try:
+            return (
+                datetime.strptime(upload_date, "%Y%m%d")
+                .replace(tzinfo=timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            )
+        except ValueError:
+            return None
+    return None
+
+
+def _within_window(upload_iso: str | None, from_date) -> bool:
+    if not upload_iso:
+        return True
+    try:
+        dt = datetime.fromisoformat(upload_iso.replace("Z", "+00:00")).date()
+    except ValueError:
+        return True
+    return dt >= from_date
+
+
+def _yt_dlp_command() -> list[str] | None:
+    """Return a command prefix for yt-dlp from PATH, env override, or module."""
+    env_bin = os.environ.get("YTDLP_BIN", "").strip()
+    if env_bin:
+        return [env_bin]
+
+    bin_path = shutil.which("yt-dlp")
+    if bin_path:
+        return [bin_path]
+
+    if importlib.util.find_spec("yt_dlp") is not None:
+        return [sys.executable, "-m", "yt_dlp"]
+
+    return None
+
+
+def _js_runtime_args() -> list[str]:
+    """Use Node for yt-dlp JS challenges when it is present in the runtime."""
+    if shutil.which("node"):
+        return ["--js-runtimes", "node"]
+    return []
+
+
+def search_playlist(query: str, requested: int) -> dict:
+    """Run one yt-dlp search and return the playlist object it produced.
+
+    Raises `ProviderUnavailable` when yt-dlp did not produce one — a non-zero
+    exit, no stdout, or stdout that is not a playlist. That is the whole point
+    of this function: an empty `entries` list inside a real playlist means the
+    provider had nothing, and everything else means the provider was not
+    reached, and those two outcomes used to be the same empty stdout.
+    """
+    yt_dlp = _yt_dlp_command()
+    if not yt_dlp:
+        raise RuntimeError(
+            "youtube-search backend unavailable. Run "
+            "`make -C skillshub setup-python` to install the skillshub "
+            "Python environment, or install `yt-dlp` on PATH."
+        )
+
+    # `-J` dumps the search as a single playlist object. `--no-warnings` is
+    # deliberately absent: when the playlist does not arrive, yt-dlp's warning
+    # on stderr is the only account of why.
+    cmd = [
+        *yt_dlp,
+        *_js_runtime_args(),
+        f"ytsearch{requested}:{query}",
+        "--flat-playlist",
+        "-J",
+        "--quiet",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    diagnostic = (proc.stderr or "").strip()[:300] or "yt-dlp reported nothing on stderr"
+    if proc.returncode != 0:
+        raise ProviderUnavailable(f"yt-dlp exited {proc.returncode}: {diagnostic}")
+    if not (proc.stdout or "").strip():
+        raise ProviderUnavailable(
+            f"yt-dlp produced no search result for the query: {diagnostic}"
+        )
+    try:
+        playlist = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise ProviderUnavailable(f"yt-dlp output was not JSON: {error}") from error
+    if not isinstance(playlist, dict) or "entries" not in playlist:
+        raise ProviderUnavailable("yt-dlp output was not a search playlist")
+    return playlist
+
+
+def project(entries: list[dict], limit: int, days: int) -> tuple[list[dict], bool]:
+    """Normalize flat search entries, applying the date window where it can be.
+
+    Returns the items and whether the window was actually applied to anything.
+    A flat search usually carries no publication time at all, so `days` is
+    honestly reported as unapplied rather than pretended.
+    """
+    today = datetime.now(timezone.utc).date()
+    from_date = today - timedelta(days=max(1, days))
+
+    out: list[dict] = []
+    dated = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        published = _published_iso(entry)
+        if published:
+            dated = True
+            if not _within_window(published, from_date):
+                continue
+        video_id = entry.get("id") or ""
+        url = entry.get("url") or entry.get("webpage_url") or (
+            f"https://www.youtube.com/watch?v={video_id}" if video_id else ""
+        )
+        engagement = {"duration_s": int(entry.get("duration") or 0)}
+        # Flat search entries carry view_count but never like_count. Reporting
+        # zero likes for every video would be a measurement nobody made.
+        for key, field in (("views", "view_count"), ("likes", "like_count")):
+            value = entry.get(field)
+            if isinstance(value, (int, float)):
+                engagement[key] = int(value)
+        out.append({
+            "title": entry.get("title") or "",
+            "url": url,
+            "snippet": (entry.get("description") or "")[:1500].strip(),
+            "published_at": published,
+            "source": "youtube",
+            "source_native_id": video_id,
+            "engagement": engagement,
+            "author": entry.get("channel") or entry.get("uploader") or None,
+            "container": entry.get("channel") or None,
+        })
+        if len(out) >= limit:
+            break
+    return out, dated
+
+
+def fetch(query: str, limit: int, days: int) -> tuple[list[dict], int, bool]:
+    """Search YouTube and return items, entries served, and window applicability."""
+    playlist = search_playlist(query, min(max(limit, 1) * 2, 50))
+    entries = playlist.get("entries") or []
+    items, dated = project(entries, limit, days)
+    return items, len(entries), dated
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    query = str(request["query"])
+    limit = int(request.get("limit", 10))
+    days = int(request.get("days", 30))
+
+    today = datetime.now(timezone.utc).date()
+    from_date = today - timedelta(days=max(1, days))
+
+    started = time.monotonic()
+    error: dict | None = None
+    items: list[dict] = []
+    provider_entries = 0
+    dated = False
+    try:
+        items, provider_entries, dated = fetch(query, limit, days)
+    except FileNotFoundError as exc:
+        error = {"kind": "FileNotFoundError", "message": str(exc)}
+    except subprocess.TimeoutExpired:
+        error = {"kind": "TimeoutExpired", "message": "yt-dlp timed out"}
+    except Exception as exc:  # noqa: BLE001
+        error = {"kind": type(exc).__name__, "message": f"{type(exc).__name__}: {exc}"[:500]}
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    status = "failed" if error else "ok"
+    reason = error["message"][:200] if error else None
+
+    parts = [
+        "[youtube_search]",
+        f"status={status}",
+        f"count={len(items)}",
+        f"provider_entries={provider_entries}",
+        f"duration_ms={duration_ms}",
+    ]
+    if reason:
+        parts.append(f'reason="{reason}"')
+    sys.stderr.write(" ".join(parts) + "\n")
+    sys.stderr.flush()
+
+    envelope = {
+        "query": query, "source": "youtube",
+        "from_date": from_date.isoformat(), "to_date": today.isoformat(),
+        "items": items, "count": len(items),
+        # How many results the search returned before local filtering, and
+        # whether the `days` window could be applied at all. A flat YouTube
+        # search usually carries no publication time, so saying "applied" when
+        # nothing was dated would be the same silent lie as a phantom zero.
+        "provider_entries": provider_entries,
+        "date_filter": "applied" if dated else "unavailable",
+        "status": status, "reason": reason, "error": error,
+        "duration_ms": duration_ms,
+    }
+    print(json.dumps(envelope, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

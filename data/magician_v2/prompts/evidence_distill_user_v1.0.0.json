@@ -1,0 +1,29 @@
+{
+  "name": "evidence_distill_user",
+  "version": "1.0.0",
+  "content": [
+    "## Episode",
+    "{episode_json}",
+    "",
+    "Distill this single episode into one evidence-record proposal, following your system instructions.",
+    "Respond with ONLY the JSON object."
+  ],
+  "variables": [
+    {
+      "name": "episode_json",
+      "description": "The serialized V3EpisodeRecord to distill into an evidence proposal.",
+      "required": true,
+      "default_value": null,
+      "examples": ["{\"episode_id\":\"ep_1\",\"outcome_summary\":\"...\"}"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt carrying a single serialized episode for evidence distillation (work-evidence graph, Phase 0).",
+    "author": "magician",
+    "created_at": "2026-06-13T00:00:00Z",
+    "changelog": "v1.0.0: Initial episode-to-evidence distillation user prompt.",
+    "tags": ["evidence", "work-evidence-graph", "distillation"],
+    "estimated_tokens": 60
+  }
+}

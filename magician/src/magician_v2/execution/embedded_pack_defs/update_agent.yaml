@@ -1,0 +1,60 @@
+name: update_agent
+description: Propose a scoped definition update for a subordinate agent. Approval-backed in the initial release.
+version: "1.0.0"
+guide: |
+  Tool name: `update_agent`
+
+  Use this when a subordinate agent needs a bounded configuration change such as
+  persona, tools, constraints, or autonomous settings.
+  This tool creates a structural proposal; it does not mutate the workspace immediately.
+
+  Guidelines:
+  - target only agents already inside the active harness scope
+  - pass a JSON merge patch in `patch`
+  - cite concrete evidence in `evidence_refs`
+  - avoid identity or ownership changes; immutable fields are pinned automatically
+parameters:
+  - name: agent_id
+    required: true
+    param_type: string
+    description: Target agent id inside the active harness scope.
+  - name: summary
+    required: true
+    param_type: string
+    description: Short rationale for the proposed change.
+  - name: rationale
+    param_type: string
+    description: Optional longer explanation for the reviewer.
+  - name: evidence_refs
+    required: true
+    description: Non-empty list of evidence references backing the proposal.
+    schema:
+      type: array
+      items: { type: string }
+      minItems: 1
+
+  - name: patch
+    required: true
+    description: JSON merge patch applied to the current definition to produce the proposed revision.
+    schema:
+      type: object
+      additionalProperties: true
+
+  - name: payload
+    description: Optional structured metadata to persist alongside the proposal.
+    schema:
+      type: object
+      additionalProperties: true
+
+implementation:
+  type: compiled
+  provider_name: update_agent
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+    - structure
+    - approval
+  composition_category: action
+  sandbox: none

@@ -1,0 +1,84 @@
+name: app_memory_propose
+description: Propose a reviewed, source-linked memory candidate from one governed app query row. It never auto-promotes a raw record or accepts the candidate.
+version: "1.0.0"
+result_projection:
+  contract_id: app_memory_candidate_v1
+  priority_fields:
+    - candidate_id
+    - candidate_revision
+    - status
+    - publication_outcome
+    - error_code
+    - retryable
+    - effect_uncertain
+    - effect_committed
+    - intended_tier_scope
+    - semantic_destination
+guide: |
+  Tool name: `app_memory_propose`
+
+  Use after `app_data_query` or `app_data_search` when the owner wants a
+  derived claim to become a reviewable memory candidate. Supply the opaque
+  projection handle and select one row when the page contains several. The
+  server reopens the current record and policy, preserves exact provenance,
+  and publishes only `status: proposed`. Acceptance is a separate user action.
+  A new durable proposal returns `publication_outcome: published`; an exact
+  idempotent replay returns `publication_outcome: recovered`. Both report
+  `effect_committed: true`. Cancellation is checked by the durable store owner
+  after exact replay recovery and immediately before inserting a missing
+  candidate. A Stop that wins there returns `status: cancelled`,
+  `retryable: false`, and `effect_committed: false`; no missing candidate is
+  published.
+
+  If storage cannot prove whether publication committed, or the original
+  provider fence expires after commit, the result is `status: unavailable`,
+  `effect_uncertain: true`, `retryable: true`, and omits `effect_committed`.
+  Retry only with the same candidate_id. Pre-publication failures are
+  content-free, non-retryable, and explicitly report `effect_committed: false`.
+
+  `intended_tier_scope` is a tagged object such as `{kind: "user"}` or
+  `{kind: "agent", agent_id: "agent:personal-assistant"}`.
+parameters:
+  - name: source_projection_handle
+    required: true
+    param_type: string
+    description: Opaque projection_handle.handle_ref returned by app_data_query or app_data_search.
+  - name: source_record_id
+    required: false
+    param_type: string
+    description: Record to use when the source projection contains more than one row.
+  - name: candidate_id
+    required: true
+    param_type: string
+    description: Stable idempotency identity for this proposed claim.
+  - name: intended_tier_scope
+    required: true
+    param_type: object
+    description: Tagged AppMemoryTierScope object.
+  - name: semantic_destination
+    required: true
+    param_type: string
+    enum_values:
+      - task_progress
+      - entities
+      - knowledge
+      - archive
+    description: Intended semantic memory destination.
+  - name: derived_claim_or_summary
+    required: true
+    param_type: string
+    description: Bounded derived claim or summary supported by the selected source row.
+implementation:
+  type: compiled
+  provider_name: app_memory_propose
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - apps
+    - memory
+  composition_category: action
+  sandbox: none
+reliability:
+  read_only: false
+  idempotent: true

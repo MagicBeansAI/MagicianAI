@@ -1,0 +1,3096 @@
+{
+  "schema_version": "tool-runtime.source-inventory.v1",
+  "source_root": "skillshub",
+  "activation_rule": "direct child directory containing one governed SKILL.md runtime package or legacy tool_schema.yaml",
+  "summary": {
+    "active_tool_skills": 62,
+    "schema_actions": 451,
+    "auth_blocks": 38,
+    "required_binary_declarations": 94,
+    "required_env_name_declarations": 19,
+    "injected_env_name_declarations": 37,
+    "adapter_files": 40,
+    "profile_selectors": 5,
+    "errors": 0,
+    "warnings": 0
+  },
+  "skills": [
+    {
+      "id": "agentmail-read",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/agentmail-read/SKILL.md",
+        "tool_schema": "skillshub/agentmail-read/SKILL.md"
+      },
+      "required_binaries": [
+        "agentmail"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "attachment_get",
+        "drafts_list",
+        "help",
+        "inboxes_list",
+        "messages_get",
+        "messages_list",
+        "threads_get",
+        "threads_list"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "agentmail",
+        "fixed_prefix_arity": 2,
+        "injected_env_names": [
+          "AGENTMAIL_API_KEY"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "agentmail",
+          "email",
+          "messaging"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "agentmail-send",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/agentmail-send/SKILL.md",
+        "tool_schema": "skillshub/agentmail-send/SKILL.md"
+      },
+      "required_binaries": [
+        "agentmail"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "forward",
+        "reply",
+        "send"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "agentmail",
+        "fixed_prefix_arity": 2,
+        "injected_env_names": [
+          "AGENTMAIL_API_KEY"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "agentmail",
+          "email",
+          "messaging"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "analyze-image-via-minimax",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/analyze-image-via-minimax/SKILL.md",
+        "tool_schema": "skillshub/analyze-image-via-minimax/SKILL.md"
+      },
+      "required_binaries": [
+        "minimax-vision",
+        "mmx",
+        "node"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "minimax-vision",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 120
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "analysis",
+          "image",
+          "minimax",
+          "vision"
+        ]
+      },
+      "adapter_files": [
+        "bin/minimax-vision"
+      ]
+    },
+    {
+      "id": "arxiv-search",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/arxiv-search/SKILL.md",
+        "tool_schema": "skillshub/arxiv-search/SKILL.md"
+      },
+      "required_binaries": [
+        "arxiv-search"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "arxiv-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "papers",
+          "research",
+          "search"
+        ]
+      },
+      "adapter_files": [
+        "bin/arxiv-search"
+      ]
+    },
+    {
+      "id": "awk",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/awk/SKILL.md",
+        "tool_schema": "skillshub/awk/SKILL.md"
+      },
+      "required_binaries": [
+        "awk"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "awk",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "data_processing",
+          "reporting",
+          "text_processing"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "browser",
+      "version": "0.5.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/browser/SKILL.md",
+        "tool_schema": "skillshub/browser/SKILL.md"
+      },
+      "required_binaries": [
+        "agent-browser"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "a11y",
+        "auth",
+        "awaitfilechooser",
+        "back",
+        "batch",
+        "check",
+        "click",
+        "clipboard",
+        "confirm",
+        "console",
+        "cookies",
+        "dblclick",
+        "deny",
+        "dialog",
+        "diff",
+        "download",
+        "drag",
+        "errors",
+        "eval",
+        "fill",
+        "find",
+        "focus",
+        "forward",
+        "frame",
+        "get",
+        "help",
+        "highlight",
+        "hover",
+        "inspect",
+        "is",
+        "keyboard",
+        "mouse",
+        "network",
+        "open",
+        "pdf",
+        "press",
+        "read",
+        "record",
+        "reload",
+        "screenshot",
+        "scroll",
+        "scrollintoview",
+        "select",
+        "session",
+        "set",
+        "setinterceptfilechooser",
+        "skills",
+        "snapshot",
+        "state",
+        "storage",
+        "stream",
+        "tab",
+        "trace",
+        "type",
+        "uncheck",
+        "upload",
+        "wait"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "agent-browser",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 300
+      },
+      "auth": {
+        "declared": true,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "browser"
+        ]
+      },
+      "adapter_files": [
+        "bin/agent-browser",
+        "scripts/verify-skill-discovery.sh"
+      ]
+    },
+    {
+      "id": "calendar",
+      "version": "0.1.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/calendar/SKILL.md",
+        "tool_schema": "skillshub/calendar/SKILL.md"
+      },
+      "required_binaries": [
+        "gws"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "agenda",
+        "auth_login",
+        "auth_setup",
+        "auth_status",
+        "calendar_list",
+        "calendars_get",
+        "events_delete",
+        "events_get",
+        "events_insert",
+        "events_list",
+        "events_patch",
+        "help",
+        "raw"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "gws",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "CLOUDSDK_CONFIG",
+          "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": [
+          "check_command",
+          "reauth_command",
+          "setup_command"
+        ]
+      },
+      "profile_selectors": [
+        {
+          "parameter": "account",
+          "aliases": [
+            "business",
+            "personal",
+            "work"
+          ],
+          "default_alias": "work"
+        }
+      ],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "calendar",
+          "meetings",
+          "productivity",
+          "scheduling"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "csvkit",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/csvkit/SKILL.md",
+        "tool_schema": "skillshub/csvkit/SKILL.md"
+      },
+      "required_binaries": [
+        "csvclean",
+        "csvcut",
+        "csvformat",
+        "csvgrep",
+        "csvjoin",
+        "csvjson",
+        "csvlook",
+        "csvsort",
+        "csvsql",
+        "csvstack",
+        "csvstat",
+        "in2csv",
+        "sql2csv"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "csvclean",
+        "csvcut",
+        "csvformat",
+        "csvgrep",
+        "csvjoin",
+        "csvjson",
+        "csvlook",
+        "csvsort",
+        "csvsql",
+        "csvstack",
+        "csvstat",
+        "help_csvclean",
+        "help_csvcut",
+        "help_csvformat",
+        "help_csvgrep",
+        "help_csvjoin",
+        "help_csvjson",
+        "help_csvlook",
+        "help_csvsort",
+        "help_csvsql",
+        "help_csvstack",
+        "help_csvstat",
+        "help_in2csv",
+        "help_sql2csv",
+        "in2csv",
+        "sql2csv"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "in2csv",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "conversion",
+          "csv",
+          "data",
+          "excel-input",
+          "light-tabular-transform",
+          "lightweight-analysis",
+          "spreadsheet-input",
+          "sql",
+          "tabular"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "deep-research-with-claude",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/deep-research-with-claude/SKILL.md",
+        "tool_schema": "skillshub/deep-research-with-claude/SKILL.md"
+      },
+      "required_binaries": [
+        "claude-deep-research"
+      ],
+      "required_env_names": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "claude-deep-research",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "ANTHROPIC_API_KEY"
+        ],
+        "timeout_secs": 120
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "deep_research",
+          "llm",
+          "research",
+          "search",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/claude-deep-research"
+      ]
+    },
+    {
+      "id": "deep-research-with-openai",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/deep-research-with-openai/SKILL.md",
+        "tool_schema": "skillshub/deep-research-with-openai/SKILL.md"
+      },
+      "required_binaries": [
+        "openai-deep-research"
+      ],
+      "required_env_names": [
+        "OPENAI_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "openai-deep-research",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "OPENAI_API_KEY"
+        ],
+        "timeout_secs": 600
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "deep_research",
+          "llm",
+          "research",
+          "search",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/openai-deep-research"
+      ]
+    },
+    {
+      "id": "document-to-markdown",
+      "version": "0.1.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/document-to-markdown/SKILL.md",
+        "tool_schema": "skillshub/document-to-markdown/SKILL.md"
+      },
+      "required_binaries": [
+        "document-to-markdown"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "convert",
+        "convert_to_workspace"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "document-to-markdown",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 120
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "data_processing",
+          "document_processing",
+          "markdown",
+          "office",
+          "pdf",
+          "text_extraction"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "dugite",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/dugite/SKILL.md",
+        "tool_schema": "skillshub/dugite/SKILL.md"
+      },
+      "required_binaries": [
+        "git"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "git",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "delegation",
+          "git",
+          "vcs"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "find-details-by-username",
+      "version": "0.2.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/find-details-by-username/SKILL.md",
+        "tool_schema": "skillshub/find-details-by-username/SKILL.md"
+      },
+      "required_binaries": [
+        "find-details-by-username"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "help",
+        "parse_url",
+        "search",
+        "version"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "find-details-by-username",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 900
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "executive_assistant",
+          "osint",
+          "research",
+          "search",
+          "social"
+        ]
+      },
+      "adapter_files": [
+        "bin/find-details-by-username"
+      ]
+    },
+    {
+      "id": "gif-search-via-klipy",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/gif-search-via-klipy/SKILL.md",
+        "tool_schema": "skillshub/gif-search-via-klipy/SKILL.md"
+      },
+      "required_binaries": [
+        "klipy-gif-search"
+      ],
+      "required_env_names": [
+        "KLIPY_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "klipy-gif-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "KLIPY_API_KEY"
+        ],
+        "timeout_secs": 20
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "creative",
+          "expression",
+          "gif",
+          "search"
+        ]
+      },
+      "adapter_files": [
+        "bin/klipy-gif-search"
+      ]
+    },
+    {
+      "id": "github-search",
+      "version": "0.4.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/github-search/SKILL.md",
+        "tool_schema": "skillshub/github-search/SKILL.md"
+      },
+      "required_binaries": [
+        "github-search"
+      ],
+      "required_env_names": [
+        "GITHUB_TOKEN"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "github-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "GITHUB_TOKEN"
+        ],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": true,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "code",
+          "research",
+          "search"
+        ]
+      },
+      "adapter_files": [
+        "bin/github-search"
+      ]
+    },
+    {
+      "id": "gmail",
+      "version": "0.1.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/gmail/SKILL.md",
+        "tool_schema": "skillshub/gmail/SKILL.md"
+      },
+      "required_binaries": [
+        "gws"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "auth_login",
+        "auth_setup",
+        "auth_status",
+        "forward",
+        "help",
+        "labels_list",
+        "messages_get",
+        "messages_list",
+        "messages_modify",
+        "messages_trash",
+        "raw",
+        "reply",
+        "reply_all",
+        "send",
+        "threads_get",
+        "threads_list",
+        "triage",
+        "watch"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "gws",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "CLOUDSDK_CONFIG",
+          "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
+        ],
+        "timeout_secs": 300
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": [
+          "check_command",
+          "reauth_command",
+          "setup_command"
+        ]
+      },
+      "profile_selectors": [
+        {
+          "parameter": "account",
+          "aliases": [
+            "business",
+            "personal",
+            "work"
+          ],
+          "default_alias": "work"
+        }
+      ],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "communication",
+          "email",
+          "gmail",
+          "messaging"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "hackernews-search",
+      "version": "0.2.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/hackernews-search/SKILL.md",
+        "tool_schema": "skillshub/hackernews-search/SKILL.md"
+      },
+      "required_binaries": [
+        "hackernews-search"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "hackernews-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "research",
+          "search"
+        ]
+      },
+      "adapter_files": [
+        "bin/hackernews-search"
+      ]
+    },
+    {
+      "id": "higgsfield",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/higgsfield/SKILL.md",
+        "tool_schema": "skillshub/higgsfield/SKILL.md"
+      },
+      "required_binaries": [
+        "higgsfield"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "higgsfield",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 1800
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "3d",
+          "audio",
+          "creative",
+          "generation",
+          "image",
+          "marketing",
+          "video"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "htmltotext",
+      "version": "0.3.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/htmltotext/SKILL.md",
+        "tool_schema": "skillshub/htmltotext/SKILL.md"
+      },
+      "required_binaries": [
+        "htmltotext",
+        "python3"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "htmltotext",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "html",
+          "research",
+          "text_extraction",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/htmltotext"
+      ]
+    },
+    {
+      "id": "image-generation",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/image-generation/SKILL.md",
+        "tool_schema": "skillshub/image-generation/SKILL.md"
+      },
+      "required_binaries": [
+        "nanobanana2"
+      ],
+      "required_env_names": [
+        "NANOBANANA2_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "nanobanana2",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "NANOBANANA2_API_KEY"
+        ],
+        "timeout_secs": 1200
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "creative",
+          "design",
+          "editing",
+          "generation",
+          "image",
+          "marketing"
+        ]
+      },
+      "adapter_files": [
+        "bin/nanobanana2"
+      ]
+    },
+    {
+      "id": "image-generation-via-minimax",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/image-generation-via-minimax/SKILL.md",
+        "tool_schema": "skillshub/image-generation-via-minimax/SKILL.md"
+      },
+      "required_binaries": [
+        "minimax-image",
+        "mmx",
+        "node"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "minimax-image",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 300
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "creative",
+          "design",
+          "fallback",
+          "generation",
+          "image"
+        ]
+      },
+      "adapter_files": [
+        "bin/minimax-image"
+      ]
+    },
+    {
+      "id": "jq",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/jq/SKILL.md",
+        "tool_schema": "skillshub/jq/SKILL.md"
+      },
+      "required_binaries": [
+        "jq"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "jq",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "data_processing",
+          "json",
+          "text_processing"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "kapso-whatsapp-read",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/kapso-whatsapp-read/SKILL.md",
+        "tool_schema": "skillshub/kapso-whatsapp-read/SKILL.md"
+      },
+      "required_binaries": [
+        "kapso",
+        "kapso-governed"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "conversations_get",
+        "conversations_list",
+        "help",
+        "messages_get",
+        "messages_list",
+        "numbers_list",
+        "numbers_resolve"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "kapso-governed",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "KAPSO_API_KEY",
+          "KAPSO_PHONE_NUMBER_ID"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "kapso",
+          "messaging",
+          "whatsapp"
+        ]
+      },
+      "adapter_files": [
+        "bin/kapso-governed"
+      ]
+    },
+    {
+      "id": "kapso-whatsapp-send",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/kapso-whatsapp-send/SKILL.md",
+        "tool_schema": "skillshub/kapso-whatsapp-send/SKILL.md"
+      },
+      "required_binaries": [
+        "kapso",
+        "kapso-governed"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "send"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "kapso-governed",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "KAPSO_API_KEY",
+          "KAPSO_PHONE_NUMBER_ID"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "kapso",
+          "messaging",
+          "whatsapp"
+        ]
+      },
+      "adapter_files": [
+        "bin/kapso-governed"
+      ]
+    },
+    {
+      "id": "macos-ui-automation",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/macos-ui-automation/SKILL.md",
+        "tool_schema": "skillshub/macos-ui-automation/SKILL.md"
+      },
+      "required_binaries": [
+        "cua-driver",
+        "macos-ui-controller",
+        "open",
+        "python3"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "call"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "macos-ui-controller",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "desktop_operations",
+          "macos_automation",
+          "ui_automation"
+        ]
+      },
+      "adapter_files": [
+        "bin/macos-ui-controller"
+      ]
+    },
+    {
+      "id": "marimo",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/marimo/SKILL.md",
+        "tool_schema": "skillshub/marimo/SKILL.md"
+      },
+      "required_binaries": [
+        "marimo"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "check",
+        "config",
+        "convert",
+        "edit",
+        "env",
+        "export_html",
+        "export_html_wasm",
+        "export_ipynb",
+        "export_md",
+        "export_pdf",
+        "export_script",
+        "export_session",
+        "export_thumbnail",
+        "help",
+        "new",
+        "raw",
+        "recover",
+        "run",
+        "shell_completion",
+        "tutorial"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "marimo",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 300
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "data_analysis",
+          "notebooks",
+          "visualization"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "meme-generation-via-imgflip",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/meme-generation-via-imgflip/SKILL.md",
+        "tool_schema": "skillshub/meme-generation-via-imgflip/SKILL.md"
+      },
+      "required_binaries": [
+        "imgflip-meme"
+      ],
+      "required_env_names": [
+        "IMGFLIP_PASSWORD",
+        "IMGFLIP_USERNAME"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "imgflip-meme",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "IMGFLIP_PASSWORD",
+          "IMGFLIP_USERNAME"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "creative",
+          "expression",
+          "image",
+          "meme"
+        ]
+      },
+      "adapter_files": [
+        "bin/imgflip-meme"
+      ]
+    },
+    {
+      "id": "metabase",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/metabase/SKILL.md",
+        "tool_schema": "skillshub/metabase/SKILL.md"
+      },
+      "required_binaries": [
+        "metabase-pp-cli"
+      ],
+      "required_env_names": [
+        "METABASE_API_KEY",
+        "METABASE_BASE_URL"
+      ],
+      "action_names": [
+        "card_collections",
+        "card_copy",
+        "card_copy_with_body",
+        "card_create",
+        "card_dashboards",
+        "card_export",
+        "card_export_with_body",
+        "card_get",
+        "card_list",
+        "card_param_remapping",
+        "card_param_search",
+        "card_param_values",
+        "card_query_metadata",
+        "card_run",
+        "card_run_with_body",
+        "card_series",
+        "card_update",
+        "cards_dashboards",
+        "cards_move",
+        "collection_create",
+        "collection_dashboard_question_candidates",
+        "collection_get",
+        "collection_graph",
+        "collection_items",
+        "collection_list",
+        "collection_move_dashboard_question_candidates",
+        "collection_root",
+        "collection_root_dashboard_question_candidates",
+        "collection_root_items",
+        "collection_root_move_dashboard_question_candidates",
+        "collection_trash",
+        "collection_tree",
+        "collection_update",
+        "collection_update_graph",
+        "dashboard_copy",
+        "dashboard_copy_with_body",
+        "dashboard_create",
+        "dashboard_dashcard_export",
+        "dashboard_dashcard_export_with_body",
+        "dashboard_dashcard_query",
+        "dashboard_dashcard_query_with_body",
+        "dashboard_get",
+        "dashboard_items",
+        "dashboard_list",
+        "dashboard_param_remapping",
+        "dashboard_param_search",
+        "dashboard_param_values",
+        "dashboard_query_metadata",
+        "dashboard_related",
+        "dashboard_save",
+        "dashboard_save_in_collection",
+        "dashboard_update",
+        "dashboard_update_cards",
+        "dashboard_valid_filter_fields",
+        "database_autocomplete_suggestions",
+        "database_card_autocomplete_suggestions",
+        "database_fields",
+        "database_get",
+        "database_idfields",
+        "database_list",
+        "database_metadata",
+        "database_schema",
+        "database_schema_list",
+        "database_schemas",
+        "database_usage_info",
+        "dataset_export",
+        "dataset_parameter_remapping",
+        "dataset_parameter_search",
+        "dataset_parameter_values",
+        "dataset_pivot",
+        "dataset_query",
+        "dataset_query_metadata",
+        "dataset_to_native",
+        "doctor",
+        "field_get",
+        "field_related",
+        "field_remapping",
+        "field_search",
+        "field_summary",
+        "field_table_ids",
+        "field_values",
+        "find_search",
+        "help",
+        "metric_dimension_remapping",
+        "metric_dimension_search",
+        "metric_dimension_values",
+        "metric_get",
+        "metric_list",
+        "raw",
+        "snippet_create",
+        "snippet_get",
+        "snippet_list",
+        "snippet_update",
+        "table_card_fks",
+        "table_card_query_metadata",
+        "table_data",
+        "table_fks",
+        "table_get",
+        "table_list",
+        "table_query_metadata",
+        "table_related"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "metabase-pp-cli",
+        "fixed_prefix_arity": 4,
+        "injected_env_names": [
+          "METABASE_API_KEY",
+          "METABASE_BASE_URL"
+        ],
+        "timeout_secs": 180
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "analytics",
+          "business_intelligence",
+          "data",
+          "metabase"
+        ]
+      },
+      "adapter_files": [
+        "bin/metabase-pp-cli",
+        "scripts/apply-postgen-patches.py",
+        "scripts/postprocess-spec.py",
+        "scripts/refresh-spec.sh"
+      ]
+    },
+    {
+      "id": "music-generation-via-minimax",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/music-generation-via-minimax/SKILL.md",
+        "tool_schema": "skillshub/music-generation-via-minimax/SKILL.md"
+      },
+      "required_binaries": [
+        "minimax-music",
+        "mmx",
+        "node"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "minimax-music",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 300
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "audio",
+          "creative",
+          "generation",
+          "music"
+        ]
+      },
+      "adapter_files": [
+        "bin/minimax-music"
+      ]
+    },
+    {
+      "id": "news-search-via-tavily",
+      "version": "0.2.3",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/news-search-via-tavily/SKILL.md",
+        "tool_schema": "skillshub/news-search-via-tavily/SKILL.md"
+      },
+      "required_binaries": [
+        "tavily-search"
+      ],
+      "required_env_names": [
+        "TAVILY_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "tavily-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "TAVILY_API_KEY"
+        ],
+        "timeout_secs": 35
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "news",
+          "research",
+          "search",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/tavily-search"
+      ]
+    },
+    {
+      "id": "ocr",
+      "version": "0.3.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/ocr/SKILL.md",
+        "tool_schema": "skillshub/ocr/SKILL.md"
+      },
+      "required_binaries": [
+        "ocr",
+        "pdftoppm",
+        "tesseract"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "extract",
+        "help",
+        "raw"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "ocr",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 600
+      },
+      "auth": {
+        "declared": true,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "document_processing",
+          "image",
+          "ocr",
+          "pdf",
+          "text_extraction"
+        ]
+      },
+      "adapter_files": [
+        "bin/ocr"
+      ]
+    },
+    {
+      "id": "office-excel",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/office-excel/SKILL.md",
+        "tool_schema": "skillshub/office-excel/SKILL.md"
+      },
+      "required_binaries": [
+        "officecli"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "add",
+        "batch",
+        "create",
+        "get",
+        "help",
+        "load_guidance",
+        "merge",
+        "move",
+        "query",
+        "raw",
+        "remove",
+        "set",
+        "validate",
+        "view"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "officecli",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 240
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "document",
+          "excel",
+          "local-artifact",
+          "office",
+          "spreadsheet",
+          "workbook-analysis",
+          "workbook-authoring",
+          "xlsx"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "office-powerpoint",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/office-powerpoint/SKILL.md",
+        "tool_schema": "skillshub/office-powerpoint/SKILL.md"
+      },
+      "required_binaries": [
+        "officecli"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "add",
+        "batch",
+        "create",
+        "get",
+        "help",
+        "load_guidance",
+        "merge",
+        "move",
+        "query",
+        "raw",
+        "remove",
+        "set",
+        "swap",
+        "validate",
+        "view"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "officecli",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 240
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "deck",
+          "design",
+          "office",
+          "powerpoint",
+          "pptx",
+          "presentation"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "office-word",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/office-word/SKILL.md",
+        "tool_schema": "skillshub/office-word/SKILL.md"
+      },
+      "required_binaries": [
+        "officecli"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "add",
+        "batch",
+        "create",
+        "get",
+        "help",
+        "load_guidance",
+        "merge",
+        "move",
+        "query",
+        "raw",
+        "refresh",
+        "remove",
+        "set",
+        "validate",
+        "view"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "officecli",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 240
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "document",
+          "docx",
+          "office",
+          "word",
+          "writing"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "pdftotext",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/pdftotext/SKILL.md",
+        "tool_schema": "skillshub/pdftotext/SKILL.md"
+      },
+      "required_binaries": [
+        "pdftotext"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "pdftotext",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "data_processing",
+          "document_processing",
+          "pdf",
+          "text_extraction"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "polymarket-search",
+      "version": "0.2.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/polymarket-search/SKILL.md",
+        "tool_schema": "skillshub/polymarket-search/SKILL.md"
+      },
+      "required_binaries": [
+        "polymarket-search"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "polymarket-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "prediction-markets",
+          "research",
+          "search"
+        ]
+      },
+      "adapter_files": [
+        "bin/polymarket-search"
+      ]
+    },
+    {
+      "id": "presto-calendar",
+      "version": "0.1.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/presto-calendar/SKILL.md",
+        "tool_schema": "skillshub/presto-calendar/SKILL.md"
+      },
+      "required_binaries": [
+        "gws"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "agenda",
+        "auth_login",
+        "auth_setup",
+        "auth_status",
+        "calendar_list",
+        "calendars_get",
+        "events_delete",
+        "events_get",
+        "events_insert",
+        "events_list",
+        "events_patch",
+        "help",
+        "raw"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "gws",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "CLOUDSDK_CONFIG",
+          "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": [
+          "check_command",
+          "reauth_command",
+          "setup_command"
+        ]
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "calendar",
+          "meetings",
+          "productivity",
+          "scheduling"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "presto-gmail",
+      "version": "0.1.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/presto-gmail/SKILL.md",
+        "tool_schema": "skillshub/presto-gmail/SKILL.md"
+      },
+      "required_binaries": [
+        "gws"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "auth_login",
+        "auth_setup",
+        "auth_status",
+        "forward",
+        "help",
+        "labels_list",
+        "messages_get",
+        "messages_list",
+        "messages_modify",
+        "messages_trash",
+        "raw",
+        "reply",
+        "reply_all",
+        "send",
+        "threads_get",
+        "threads_list",
+        "triage",
+        "watch"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "gws",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "CLOUDSDK_CONFIG",
+          "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
+        ],
+        "timeout_secs": 300
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": [
+          "check_command",
+          "reauth_command",
+          "setup_command"
+        ]
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "communication",
+          "email",
+          "gmail",
+          "messaging"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "presto-sheets",
+      "version": "0.1.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/presto-sheets/SKILL.md",
+        "tool_schema": "skillshub/presto-sheets/SKILL.md"
+      },
+      "required_binaries": [
+        "gws"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "append",
+        "auth_login",
+        "auth_setup",
+        "auth_status",
+        "copy_to",
+        "help",
+        "raw",
+        "read",
+        "spreadsheets_batch_update",
+        "spreadsheets_create",
+        "spreadsheets_get",
+        "values_append",
+        "values_batch_clear",
+        "values_batch_get",
+        "values_batch_update",
+        "values_clear",
+        "values_get",
+        "values_update"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "gws",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "CLOUDSDK_CONFIG",
+          "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": [
+          "check_command",
+          "reauth_command",
+          "setup_command"
+        ]
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "cloud",
+          "cloud-data",
+          "google-sheets",
+          "google-workspace",
+          "presto-identity",
+          "spreadsheet",
+          "tabular"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "producthunt-search",
+      "version": "0.3.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/producthunt-search/SKILL.md",
+        "tool_schema": "skillshub/producthunt-search/SKILL.md"
+      },
+      "required_binaries": [
+        "producthunt-search"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "producthunt-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "products",
+          "research",
+          "search"
+        ]
+      },
+      "adapter_files": [
+        "bin/producthunt-search"
+      ]
+    },
+    {
+      "id": "reddit-search",
+      "version": "0.3.1",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/reddit-search/SKILL.md",
+        "tool_schema": "skillshub/reddit-search/SKILL.md"
+      },
+      "required_binaries": [
+        "reddit-search"
+      ],
+      "required_env_names": [
+        "REDDIT_CLIENT_ID",
+        "REDDIT_CLIENT_SECRET"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "reddit-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "REDDIT_CLIENT_ID",
+          "REDDIT_CLIENT_SECRET"
+        ],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": true,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "research",
+          "search"
+        ]
+      },
+      "adapter_files": [
+        "bin/reddit-search"
+      ]
+    },
+    {
+      "id": "rg",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/rg/SKILL.md",
+        "tool_schema": "skillshub/rg/SKILL.md"
+      },
+      "required_binaries": [
+        "rg"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "rg",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "data",
+          "filtering",
+          "search",
+          "text_processing"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "screen-draw",
+      "version": "0.1.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/screen-draw/SKILL.md",
+        "tool_schema": "skillshub/screen-draw/SKILL.md"
+      },
+      "required_binaries": [
+        "curl"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "call"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "curl",
+        "fixed_prefix_arity": 7,
+        "injected_env_names": [],
+        "timeout_secs": 5
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "desktop_operations",
+          "ui_automation"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "sed",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/sed/SKILL.md",
+        "tool_schema": "skillshub/sed/SKILL.md"
+      },
+      "required_binaries": [
+        "sed"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "sed",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "editing",
+          "text_processing",
+          "transformation"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "semantic-websearch-via-exa",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/semantic-websearch-via-exa/SKILL.md",
+        "tool_schema": "skillshub/semantic-websearch-via-exa/SKILL.md"
+      },
+      "required_binaries": [
+        "exa-search"
+      ],
+      "required_env_names": [
+        "EXA_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "exa-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "EXA_API_KEY"
+        ],
+        "timeout_secs": 65
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "research",
+          "search",
+          "semantic",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/exa-search"
+      ]
+    },
+    {
+      "id": "sheets",
+      "version": "0.1.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/sheets/SKILL.md",
+        "tool_schema": "skillshub/sheets/SKILL.md"
+      },
+      "required_binaries": [
+        "gws"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "append",
+        "auth_login",
+        "auth_setup",
+        "auth_status",
+        "copy_to",
+        "help",
+        "raw",
+        "read",
+        "spreadsheets_batch_update",
+        "spreadsheets_create",
+        "spreadsheets_get",
+        "values_append",
+        "values_batch_clear",
+        "values_batch_get",
+        "values_batch_update",
+        "values_clear",
+        "values_get",
+        "values_update"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "gws",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "CLOUDSDK_CONFIG",
+          "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
+        ],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": [
+          "check_command",
+          "reauth_command",
+          "setup_command"
+        ]
+      },
+      "profile_selectors": [
+        {
+          "parameter": "account",
+          "aliases": [
+            "business",
+            "personal",
+            "work"
+          ],
+          "default_alias": "work"
+        }
+      ],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "cloud",
+          "cloud-data",
+          "collaboration",
+          "google-sheets",
+          "google-workspace",
+          "spreadsheet",
+          "tabular"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "structured-web-data",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/structured-web-data/SKILL.md",
+        "tool_schema": "skillshub/structured-web-data/SKILL.md"
+      },
+      "required_binaries": [
+        "structured-web-data"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "structured-web-data",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 20
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "extraction",
+          "research",
+          "structured_data"
+        ]
+      },
+      "adapter_files": [
+        "bin/structured-web-data"
+      ]
+    },
+    {
+      "id": "swiggy-mcp",
+      "version": "0.1.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/swiggy-mcp/SKILL.md",
+        "tool_schema": "skillshub/swiggy-mcp/SKILL.md"
+      },
+      "required_binaries": [],
+      "required_env_names": [],
+      "action_names": [
+        "auth_start",
+        "call_tool",
+        "clear_auth",
+        "list_tools",
+        "status"
+      ],
+      "implementation": {
+        "kind": "mcp",
+        "program": "official_mcp_sdk",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 90
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [
+        {
+          "parameter": "profile",
+          "aliases": [
+            "personal"
+          ],
+          "default_alias": "personal"
+        }
+      ],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "commerce",
+          "food",
+          "shopping"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "telegram",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/telegram/SKILL.md",
+        "tool_schema": "skillshub/telegram/SKILL.md"
+      },
+      "required_binaries": [
+        "telegram-bot-adapter"
+      ],
+      "required_env_names": [
+        "TELEGRAM_TOKEN"
+      ],
+      "action_names": [
+        "run",
+        "send"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "telegram-bot-adapter",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "TELEGRAM_TOKEN"
+        ],
+        "timeout_secs": 15
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "communication",
+          "messaging",
+          "telegram"
+        ]
+      },
+      "adapter_files": [
+        "bin/telegram-bot-adapter"
+      ]
+    },
+    {
+      "id": "telegram-self",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/telegram-self/SKILL.md",
+        "tool_schema": "skillshub/telegram-self/SKILL.md"
+      },
+      "required_binaries": [
+        "tgcli"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run",
+        "send"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "tgcli",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 30
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "communication",
+          "messaging",
+          "telegram"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "video-generation-via-minimax",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/video-generation-via-minimax/SKILL.md",
+        "tool_schema": "skillshub/video-generation-via-minimax/SKILL.md"
+      },
+      "required_binaries": [
+        "minimax-video",
+        "mmx",
+        "node"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "minimax-video",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 600
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "animation",
+          "creative",
+          "fallback",
+          "generation",
+          "video"
+        ]
+      },
+      "adapter_files": [
+        "bin/minimax-video"
+      ]
+    },
+    {
+      "id": "video-generation-via-veo",
+      "version": "0.2.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/video-generation-via-veo/SKILL.md",
+        "tool_schema": "skillshub/video-generation-via-veo/SKILL.md"
+      },
+      "required_binaries": [
+        "veo31"
+      ],
+      "required_env_names": [
+        "GEMINI_API_KEY",
+        "VEO31_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "veo31",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "GEMINI_API_KEY",
+          "VEO31_API_KEY"
+        ],
+        "timeout_secs": 1200
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "creative",
+          "generation",
+          "marketing",
+          "media",
+          "video"
+        ]
+      },
+      "adapter_files": [
+        "bin/veo31"
+      ]
+    },
+    {
+      "id": "web-search-via-minimax",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/web-search-via-minimax/SKILL.md",
+        "tool_schema": "skillshub/web-search-via-minimax/SKILL.md"
+      },
+      "required_binaries": [
+        "minimax-websearch",
+        "mmx",
+        "node"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "minimax-websearch",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "research",
+          "search",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/minimax-websearch"
+      ]
+    },
+    {
+      "id": "web-via-tinyfish",
+      "version": "0.1.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/web-via-tinyfish/SKILL.md",
+        "tool_schema": "skillshub/web-via-tinyfish/SKILL.md"
+      },
+      "required_binaries": [
+        "node"
+      ],
+      "required_env_names": [
+        "TINYFISH_API_KEY"
+      ],
+      "action_names": [
+        "fetch",
+        "search"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "node",
+        "fixed_prefix_arity": 1,
+        "injected_env_names": [
+          "TINYFISH_API_KEY"
+        ],
+        "timeout_secs": 115
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "extraction",
+          "fetch",
+          "research",
+          "search",
+          "web"
+        ]
+      },
+      "adapter_files": []
+    },
+    {
+      "id": "websearch",
+      "version": "0.3.0",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/websearch/SKILL.md",
+        "tool_schema": "skillshub/websearch/SKILL.md"
+      },
+      "required_binaries": [
+        "websearch"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "websearch",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 15
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "research",
+          "search",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/websearch"
+      ]
+    },
+    {
+      "id": "websearch-via-claude",
+      "version": "0.2.2",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/websearch-via-claude/SKILL.md",
+        "tool_schema": "skillshub/websearch-via-claude/SKILL.md"
+      },
+      "required_binaries": [
+        "claude-websearch"
+      ],
+      "required_env_names": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "claude-websearch",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "ANTHROPIC_API_KEY"
+        ],
+        "timeout_secs": 305
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "llm",
+          "research",
+          "search",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/claude-websearch"
+      ]
+    },
+    {
+      "id": "websearch-via-openai",
+      "version": "0.2.2",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/websearch-via-openai/SKILL.md",
+        "tool_schema": "skillshub/websearch-via-openai/SKILL.md"
+      },
+      "required_binaries": [
+        "openai-websearch"
+      ],
+      "required_env_names": [
+        "OPENAI_API_KEY"
+      ],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "openai-websearch",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [
+          "OPENAI_API_KEY"
+        ],
+        "timeout_secs": 65
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "llm",
+          "research",
+          "search",
+          "web"
+        ]
+      },
+      "adapter_files": [
+        "bin/openai-websearch"
+      ]
+    },
+    {
+      "id": "whatsapp",
+      "version": "0.2.1",
+      "declared_skill_type": null,
+      "sources": {
+        "skill_markdown": "skillshub/whatsapp/SKILL.md",
+        "tool_schema": "skillshub/whatsapp/SKILL.md"
+      },
+      "required_binaries": [
+        "node",
+        "whatsapp-reaction-adapter",
+        "wu"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "react",
+        "run",
+        "send"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "wu",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 120
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "communication",
+          "messaging",
+          "whatsapp"
+        ]
+      },
+      "adapter_files": [
+        "bin/whatsapp-reaction-adapter"
+      ]
+    },
+    {
+      "id": "whatsgoingon2",
+      "version": "0.2.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/whatsgoingon2/SKILL.md",
+        "tool_schema": "skillshub/whatsgoingon2/SKILL.md"
+      },
+      "required_binaries": [
+        "whatsgoingon2"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "whatsgoingon2",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "merge",
+          "research"
+        ]
+      },
+      "adapter_files": [
+        "bin/whatsgoingon2"
+      ]
+    },
+    {
+      "id": "work-modules",
+      "version": "0.1.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/work-modules/SKILL.md",
+        "tool_schema": "skillshub/work-modules/SKILL.md"
+      },
+      "required_binaries": [
+        "work-modules"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "answer",
+        "bind_claims",
+        "carrying_claim",
+        "close",
+        "declare_field",
+        "expect",
+        "fulfil_expectation",
+        "hold",
+        "list_negotiations",
+        "list_obligations",
+        "list_runs",
+        "offer_times",
+        "open_run",
+        "raise_gap",
+        "re_offer",
+        "read_manifest",
+        "read_negotiation",
+        "read_run",
+        "record_obligation",
+        "record_reply",
+        "reschedule",
+        "resolve_gap",
+        "settle_obligation"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "work-modules",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 60
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "coordination",
+          "work"
+        ]
+      },
+      "adapter_files": [
+        "bin/work-modules"
+      ]
+    },
+    {
+      "id": "youtube-search",
+      "version": "0.3.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/youtube-search/SKILL.md",
+        "tool_schema": "skillshub/youtube-search/SKILL.md"
+      },
+      "required_binaries": [
+        "python3",
+        "youtube-search",
+        "yt-dlp"
+      ],
+      "required_env_names": [],
+      "action_names": [
+        "run"
+      ],
+      "implementation": {
+        "kind": "primitive",
+        "program": "youtube-search",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 90
+      },
+      "auth": {
+        "declared": false,
+        "required": false,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "research",
+          "search",
+          "video"
+        ]
+      },
+      "adapter_files": [
+        "bin/youtube-search"
+      ]
+    },
+    {
+      "id": "zepto-mcp",
+      "version": "0.2.0",
+      "declared_skill_type": "tool",
+      "sources": {
+        "skill_markdown": "skillshub/zepto-mcp/SKILL.md",
+        "tool_schema": "skillshub/zepto-mcp/SKILL.md"
+      },
+      "required_binaries": [],
+      "required_env_names": [],
+      "action_names": [
+        "auth_start",
+        "call_tool",
+        "clear_auth",
+        "list_tools",
+        "status"
+      ],
+      "implementation": {
+        "kind": "mcp",
+        "program": "official_mcp_sdk",
+        "fixed_prefix_arity": 0,
+        "injected_env_names": [],
+        "timeout_secs": 90
+      },
+      "auth": {
+        "declared": true,
+        "required": true,
+        "lifecycle_hooks": []
+      },
+      "profile_selectors": [
+        {
+          "parameter": "profile",
+          "aliases": [
+            "personal"
+          ],
+          "default_alias": "personal"
+        }
+      ],
+      "execution": {
+        "requires_browser_session": false,
+        "categories": [
+          "commerce",
+          "groceries",
+          "shopping"
+        ]
+      },
+      "adapter_files": []
+    }
+  ],
+  "findings": []
+}

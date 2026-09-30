@@ -1,0 +1,18 @@
+{
+  "type": "angle_marker",
+  "aliases": ["arc", "perpendicular_marker", "parallel_marker"],
+  "version": 2,
+  "defaults": { "size": 36, "start_angle": 0, "end_angle": 90 },
+  "draw": [
+    {
+      "op": "arc",
+      "cx": "cx",
+      "cy": "cy",
+      "r": "r|size",
+      "rx": "rx|r|size",
+      "ry": "ry|r|size",
+      "from": "start_angle",
+      "to": "end_angle"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+[package]
+name = "magician-components"
+version = "0.1.4"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Which stack components are present, and what that means for features"
+
+# Minimal dep set, on purpose. This crate is read by the API, the setup wizard
+# and (later) the desktop onboarding, so it must compile in seconds and must not
+# drag the runtime's dependency graph behind it.
+#
+# The model and the resolver perform NO I/O and have no dependency beyond serde:
+# probes are declared as data (`ProbeSpec`) rather than executed, which is what
+# keeps `resolve` a pure function testable without a running stack.
+#
+# Executing those specs needs a network client, so it lives behind the `probe`
+# feature. A caller that only wants to reason about a report — the wizard's plan
+# screen, a test — pays nothing for it. `reqwest` is already a workspace
+# dependency compiled by magician-api, so enabling the feature adds no new crate
+# to the workspace build.
+[features]
+default = []
+probe = ["dep:reqwest"]
+# Rendering the graph page needs JSON; nothing at runtime does.
+codegen = ["dep:serde_json"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_yaml = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+# The example probes the live machine, so it needs both the feature and a
+# runtime to drive the async probes.
+[[example]]
+name = "status"
+required-features = ["probe"]
+
+[[bin]]
+name = "component_graph_page"
+path = "src/bin/component_graph_page.rs"
+required-features = ["codegen"]

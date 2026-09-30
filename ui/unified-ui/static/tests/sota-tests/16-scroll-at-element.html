@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: scroll (container) - Nested Scroll Containers (Phase 8)</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+            /* Main page scrolls to navigate between tests, but nested containers have their own scroll */
+            min-height: 100vh;
+            overflow-y: auto;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #6f42c1, #5a32a3);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset {
+            background: #6c757d;
+            color: white;
+        }
+        .status-btn:hover {
+            filter: brightness(1.1);
+        }
+
+        /* Interactive content area */
+        .interactive-area {
+            margin: 15px 0;
+            padding: 15px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+
+        /* Results summary */
+        .results-summary {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border: 1px solid #ddd;
+        }
+        .results-summary h3 { margin: 0 0 10px 0; }
+        .results-summary .counts {
+            display: flex;
+            gap: 15px;
+        }
+        .results-summary .count {
+            font-weight: bold;
+        }
+        .results-summary .passed { color: #28a745; }
+        .results-summary .failed { color: #dc3545; }
+        .results-summary .pending { color: #6c757d; }
+
+        /* ================== TEST-SPECIFIC STYLES ================== */
+
+        /* Test 1: Chat Panel (like WhatsApp/Slack) */
+        .chat-app-container {
+            display: flex;
+            height: 400px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .chat-sidebar {
+            width: 250px;
+            background: #2c3e50;
+            color: white;
+            overflow-y: auto;
+        }
+        .chat-sidebar-header {
+            padding: 15px;
+            background: #1a252f;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+        }
+        .chat-contact {
+            padding: 12px 15px;
+            border-bottom: 1px solid #34495e;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .chat-contact:hover {
+            background: #34495e;
+        }
+        .chat-contact.active {
+            background: #3498db;
+        }
+        .chat-contact .name {
+            font-weight: 500;
+        }
+        .chat-contact .preview {
+            font-size: 12px;
+            opacity: 0.7;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .chat-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #ecf0f1;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+        .chat-message {
+            max-width: 70%;
+            margin: 8px 0;
+            padding: 10px 14px;
+            border-radius: 18px;
+            position: relative;
+        }
+        .chat-message.sent {
+            background: #3498db;
+            color: white;
+            margin-left: auto;
+            border-bottom-right-radius: 4px;
+        }
+        .chat-message.received {
+            background: white;
+            color: #333;
+            border-bottom-left-radius: 4px;
+        }
+        .chat-message .time {
+            font-size: 10px;
+            opacity: 0.7;
+            margin-top: 4px;
+        }
+        .chat-input-area {
+            padding: 15px;
+            background: white;
+            border-top: 1px solid #ddd;
+            display: flex;
+            gap: 10px;
+        }
+        .chat-input {
+            flex: 1;
+            padding: 10px 15px;
+            border: 1px solid #ddd;
+            border-radius: 20px;
+            outline: none;
+        }
+        .chat-send-btn {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+        .target-message {
+            background: #27ae60 !important;
+            color: white !important;
+        }
+
+        /* Test 2: Data Table with fixed header */
+        .data-table-container {
+            height: 350px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .data-table-wrapper {
+            height: 100%;
+            overflow-y: auto;
+        }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .data-table thead {
+            position: sticky;
+            top: 0;
+            background: #2c3e50;
+            color: white;
+        }
+        .data-table th, .data-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .data-table tbody tr:hover {
+            background: #f8f9fa;
+        }
+        .data-table .action-btn {
+            padding: 5px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .data-table .edit-btn {
+            background: #3498db;
+            color: white;
+        }
+        .data-table .delete-btn {
+            background: #e74c3c;
+            color: white;
+            margin-left: 5px;
+        }
+        .target-row {
+            background: #d4edda !important;
+        }
+        .target-row td {
+            font-weight: bold;
+        }
+
+        /* Test 3: File Explorer with nested folders */
+        .file-explorer {
+            display: flex;
+            height: 400px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .folder-tree {
+            width: 280px;
+            background: #f5f5f5;
+            overflow-y: auto;
+            border-right: 1px solid #ddd;
+        }
+        .folder-tree-header {
+            padding: 12px 15px;
+            background: #e0e0e0;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+        }
+        .tree-item {
+            padding: 8px 15px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid #eee;
+        }
+        .tree-item:hover {
+            background: #e8e8e8;
+        }
+        .tree-item.folder::before {
+            content: '📁';
+        }
+        .tree-item.file::before {
+            content: '📄';
+        }
+        .tree-item.nested {
+            padding-left: 30px;
+        }
+        .tree-item.nested-2 {
+            padding-left: 45px;
+        }
+        .tree-item.target-file {
+            background: #d4edda;
+            font-weight: bold;
+        }
+        .file-preview {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .file-preview h3 {
+            margin-top: 0;
+        }
+
+        /* Test 4: Kanban Board with horizontal + vertical scroll */
+        .kanban-board {
+            display: flex;
+            gap: 15px;
+            height: 380px;
+            overflow-x: auto;
+            padding: 10px;
+            background: #e0e0e0;
+            border: 2px solid #333;
+            border-radius: 8px;
+        }
+        .kanban-column {
+            min-width: 280px;
+            max-width: 280px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+        }
+        .kanban-column-header {
+            padding: 12px 15px;
+            background: #2c3e50;
+            color: white;
+            border-radius: 8px 8px 0 0;
+            font-weight: bold;
+        }
+        .kanban-cards {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .kanban-card {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            cursor: pointer;
+        }
+        .kanban-card:hover {
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        }
+        .kanban-card .card-title {
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+        .kanban-card .card-desc {
+            font-size: 12px;
+            color: #666;
+        }
+        .kanban-card .card-tags {
+            display: flex;
+            gap: 5px;
+            margin-top: 8px;
+        }
+        .kanban-card .tag {
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #e0e0e0;
+        }
+        .kanban-card.target-card {
+            background: #d4edda;
+            border: 2px solid #28a745;
+        }
+
+        /* Scroll indicator */
+        .scroll-indicator {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: monospace;
+        }
+
+    </style>
+
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "16-scroll-container",
+        "phase": "Phase 8",
+        "title": "scroll (container) - Nested Scroll Containers",
+        "description": "Tests unified scroll action with container strategy for nested scrollable containers (chat panels, data tables, file explorers, kanban boards). Uses wheel event dispatch at element coordinates instead of page scroll.",
+        "totalTests": 4,
+        "action": "scroll"
+    }
+    </script>
+</head>
+<body>
+    <div class="test-header">
+        <h1>🔄 scroll (container) Test</h1>
+        <p>Phase 8: Test unified scroll (container strategy) for nested scrollable containers (chat panels, data tables, file trees, kanban boards)</p>
+    </div>
+
+    <div class="results-summary">
+        <h3>Results</h3>
+        <div class="counts">
+            <span class="count passed">✓ <span id="passed-count">0</span></span>
+            <span class="count failed">✗ <span id="failed-count">0</span></span>
+            <span class="count pending">○ <span id="pending-count">4</span></span>
+        </div>
+    </div>
+
+    <!-- Test 1: Chat Panel Scroll -->
+    <div class="test-case" id="test-1" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 1: Chat Panel Scroll Up</h2>
+            <span class="test-case-id">nested-scroll-01</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click on the message from "Alice" that says "Hey, did you see the meeting notes?" (this message is at the TOP of the chat, requires scrolling UP)
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="scrolled-chat">Chat panel was scrolled up to reveal hidden messages</li>
+                <li data-check="found-alice-message">Found and clicked Alice's meeting notes message</li>
+                <li data-check="message-highlighted">Message is now highlighted (green background)</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> WhatsApp-style chat. Main page has no scroll. Messages panel scrolls independently. Target message is above current viewport.</p>
+            <div class="chat-app-container">
+                <div class="chat-sidebar">
+                    <div class="chat-sidebar-header">Chats</div>
+                    <div class="chat-contact active">
+                        <div class="name">Team Group</div>
+                        <div class="preview">You: Sounds good!</div>
+                    </div>
+                    <div class="chat-contact">
+                        <div class="name">Alice</div>
+                        <div class="preview">See you tomorrow!</div>
+                    </div>
+                    <div class="chat-contact">
+                        <div class="name">Bob</div>
+                        <div class="preview">Thanks for the update</div>
+                    </div>
+                    <div class="chat-contact">
+                        <div class="name">Charlie</div>
+                        <div class="preview">👍</div>
+                    </div>
+                </div>
+                <div class="chat-main">
+                    <div class="chat-messages" id="chat-messages-1">
+                        <!-- Messages will be populated by JS -->
+                    </div>
+                    <div class="chat-input-area">
+                        <input type="text" class="chat-input" placeholder="Type a message...">
+                        <button class="chat-send-btn">Send</button>
+                    </div>
+                </div>
+            </div>
+            <div class="scroll-indicator" id="scroll-indicator-1">Scroll: 100% (bottom)</div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 2: Data Table Scroll -->
+    <div class="test-case" id="test-2" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 2: Data Table Scroll to Row</h2>
+            <span class="test-case-id">nested-scroll-02</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click the "Edit" button for the user with email "target.user@example.com" (row is near the BOTTOM of the table, requires scrolling DOWN)
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="scrolled-table">Table was scrolled down to reveal the target row</li>
+                <li data-check="found-target-row">Located the row with target.user@example.com</li>
+                <li data-check="clicked-edit">Clicked the Edit button for that row</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> Fixed-header data table. Main page has no scroll. Table body scrolls independently. Target row is below current viewport.</p>
+            <div class="data-table-container">
+                <div class="data-table-wrapper" id="table-wrapper-2">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>Email</th>
+                                <th>Role</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-body-2">
+                            <!-- Rows will be populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="scroll-indicator" id="scroll-indicator-2">Scroll: 0% (top)</div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 3: File Explorer Scroll -->
+    <div class="test-case" id="test-3" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 3: File Explorer Tree Scroll</h2>
+            <span class="test-case-id">nested-scroll-03</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click on the file named "important-config.json" in the folder tree (file is deep in the tree, requires scrolling in the folder panel)
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="scrolled-tree">Folder tree was scrolled to reveal hidden files</li>
+                <li data-check="found-config-file">Located important-config.json</li>
+                <li data-check="file-selected">File is now selected (highlighted)</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> VS Code-style file explorer. Main page has no scroll. Folder tree scrolls independently. Target file is below current viewport.</p>
+            <div class="file-explorer">
+                <div class="folder-tree" id="folder-tree-3">
+                    <div class="folder-tree-header">📂 Project Files</div>
+                    <!-- Items will be populated by JS -->
+                </div>
+                <div class="file-preview">
+                    <h3>File Preview</h3>
+                    <p id="file-preview-content">Select a file to preview its contents.</p>
+                </div>
+            </div>
+            <div class="scroll-indicator" id="scroll-indicator-3">Scroll: 0% (top)</div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 4: Kanban Board Horizontal + Vertical Scroll -->
+    <div class="test-case" id="test-4" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 4: Kanban Board Multi-Direction Scroll</h2>
+            <span class="test-case-id">nested-scroll-04</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click on the card titled "Deploy to Production" in the "Done" column (requires HORIZONTAL scroll to see column, then VERTICAL scroll within column)
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="scrolled-horizontal">Board was scrolled horizontally to reveal "Done" column</li>
+                <li data-check="scrolled-vertical">Column was scrolled vertically to reveal the card</li>
+                <li data-check="card-selected">Card is now selected (green border)</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> Trello-style kanban board. Main page has no scroll. Board scrolls horizontally. Each column scrolls vertically. Target card requires both scrolls.</p>
+            <div class="kanban-board" id="kanban-board-4">
+                <!-- Columns will be populated by JS -->
+            </div>
+            <div class="scroll-indicator" id="scroll-indicator-4">H-Scroll: 0% | V-Scroll: 0%</div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-4">
+            <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // ================== TEST RUNNER API ==================
+
+        function setTestStatus(testId, status) {
+            const testEl = document.getElementById(testId);
+            if (testEl) {
+                testEl.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const tests = Array.from(document.querySelectorAll('.test-case'));
+            const results = {
+                passed: tests.filter(test => test.dataset.status === 'pass').length,
+                failed: tests.filter(test => test.dataset.status === 'fail').length,
+                pending: tests.filter(test => !test.dataset.status || test.dataset.status === 'pending' || test.dataset.status === 'running').length
+            };
+            document.getElementById('passed-count').textContent = results.passed;
+            document.getElementById('failed-count').textContent = results.failed;
+            document.getElementById('pending-count').textContent = results.pending;
+        }
+
+        // ================== TEST 1: CHAT MESSAGES ==================
+        function populateChatMessages() {
+            const container = document.getElementById('chat-messages-1');
+            const messages = [
+                // TARGET MESSAGE - at top, requires scroll up
+                { sender: 'Alice', text: "Hey, did you see the meeting notes?", time: '9:00 AM', type: 'received', isTarget: true },
+                { sender: 'You', text: "Not yet, can you share?", time: '9:01 AM', type: 'sent' },
+                { sender: 'Alice', text: "Sure, let me find them", time: '9:02 AM', type: 'received' },
+                { sender: 'Alice', text: "Here they are: meeting-notes.pdf", time: '9:03 AM', type: 'received' },
+                { sender: 'You', text: "Thanks!", time: '9:04 AM', type: 'sent' },
+                { sender: 'Bob', text: "Hey everyone, what's the status?", time: '9:30 AM', type: 'received' },
+                { sender: 'You', text: "Working on the implementation", time: '9:31 AM', type: 'sent' },
+                { sender: 'Bob', text: "Great, keep me posted", time: '9:32 AM', type: 'received' },
+                { sender: 'Charlie', text: "Can someone review my PR?", time: '10:00 AM', type: 'received' },
+                { sender: 'You', text: "I'll take a look", time: '10:01 AM', type: 'sent' },
+                { sender: 'Charlie', text: "Thanks! It's PR #234", time: '10:02 AM', type: 'received' },
+                { sender: 'Alice', text: "I can help too", time: '10:05 AM', type: 'received' },
+                { sender: 'You', text: "Sounds good, let's sync later", time: '10:10 AM', type: 'sent' },
+                { sender: 'Bob', text: "Don't forget the standup at 11", time: '10:30 AM', type: 'received' },
+                { sender: 'You', text: "Got it 👍", time: '10:31 AM', type: 'sent' },
+                { sender: 'Charlie', text: "I'll present the new feature", time: '10:45 AM', type: 'received' },
+                { sender: 'Alice', text: "Excited to see it!", time: '10:46 AM', type: 'received' },
+                { sender: 'You', text: "Me too!", time: '10:47 AM', type: 'sent' },
+                { sender: 'Bob', text: "Starting in 5 minutes", time: '10:55 AM', type: 'received' },
+                { sender: 'You', text: "On my way", time: '10:56 AM', type: 'sent' },
+                { sender: 'Team', text: "Standup ended - great progress everyone!", time: '11:30 AM', type: 'received' },
+                { sender: 'You', text: "Agreed, good meeting!", time: '11:31 AM', type: 'sent' },
+                { sender: 'Alice', text: "Back to coding!", time: '11:32 AM', type: 'received' },
+                { sender: 'You', text: "Same here", time: '11:33 AM', type: 'sent' },
+                { sender: 'Bob', text: "Lunch at 12?", time: '11:45 AM', type: 'received' },
+                { sender: 'You', text: "Sounds good!", time: '11:46 AM', type: 'sent' },
+            ];
+
+            container.innerHTML = messages.map((msg, i) => `
+                <div class="chat-message ${msg.type}${msg.isTarget ? ' target-message-hidden' : ''}"
+                     data-message-id="${i}"
+                     onclick="handleMessageClick(this, ${msg.isTarget || false})">
+                    ${msg.type === 'received' ? `<div style="font-size:11px;opacity:0.8;margin-bottom:3px;">${msg.sender}</div>` : ''}
+                    ${msg.text}
+                    <div class="time">${msg.time}</div>
+                </div>
+            `).join('');
+
+            // Scroll to bottom initially
+            container.scrollTop = container.scrollHeight;
+            updateScrollIndicator1();
+
+            // Track scroll position
+            container.addEventListener('scroll', updateScrollIndicator1);
+        }
+
+        function updateScrollIndicator1() {
+            const container = document.getElementById('chat-messages-1');
+            const scrollPercent = Math.round((container.scrollTop / (container.scrollHeight - container.clientHeight)) * 100);
+            document.getElementById('scroll-indicator-1').textContent = `Scroll: ${scrollPercent}% (${scrollPercent > 90 ? 'bottom' : scrollPercent < 10 ? 'top' : 'middle'})`;
+        }
+
+        function handleMessageClick(el, isTarget) {
+            if (isTarget) {
+                el.classList.add('target-message');
+                el.classList.remove('target-message-hidden');
+                document.querySelectorAll('#test-1 [data-check]').forEach(check => {
+                    check.style.textDecoration = 'line-through';
+                    check.style.color = '#28a745';
+                });
+            }
+        }
+
+        // ================== TEST 2: DATA TABLE ==================
+        function populateDataTable() {
+            const tbody = document.getElementById('table-body-2');
+            const users = [
+                { id: 1, name: 'John Doe', email: 'john.doe@example.com', role: 'Developer' },
+                { id: 2, name: 'Jane Smith', email: 'jane.smith@example.com', role: 'Designer' },
+                { id: 3, name: 'Bob Wilson', email: 'bob.wilson@example.com', role: 'Manager' },
+                { id: 4, name: 'Alice Brown', email: 'alice.brown@example.com', role: 'Developer' },
+                { id: 5, name: 'Charlie Davis', email: 'charlie.davis@example.com', role: 'QA' },
+                { id: 6, name: 'Diana Miller', email: 'diana.miller@example.com', role: 'DevOps' },
+                { id: 7, name: 'Edward Jones', email: 'edward.jones@example.com', role: 'Developer' },
+                { id: 8, name: 'Fiona Garcia', email: 'fiona.garcia@example.com', role: 'Designer' },
+                { id: 9, name: 'George Martinez', email: 'george.martinez@example.com', role: 'Manager' },
+                { id: 10, name: 'Hannah Lee', email: 'hannah.lee@example.com', role: 'Developer' },
+                { id: 11, name: 'Ivan Rodriguez', email: 'ivan.rodriguez@example.com', role: 'QA' },
+                { id: 12, name: 'Julia Kim', email: 'julia.kim@example.com', role: 'DevOps' },
+                { id: 13, name: 'Kevin Nguyen', email: 'kevin.nguyen@example.com', role: 'Developer' },
+                { id: 14, name: 'Laura Chen', email: 'laura.chen@example.com', role: 'Designer' },
+                { id: 15, name: 'Michael Wang', email: 'michael.wang@example.com', role: 'Manager' },
+                // TARGET ROW - near bottom
+                { id: 16, name: 'Target User', email: 'target.user@example.com', role: 'Admin', isTarget: true },
+                { id: 17, name: 'Nancy Taylor', email: 'nancy.taylor@example.com', role: 'Developer' },
+                { id: 18, name: 'Oscar White', email: 'oscar.white@example.com', role: 'QA' },
+                { id: 19, name: 'Patricia Harris', email: 'patricia.harris@example.com', role: 'DevOps' },
+                { id: 20, name: 'Quinn Martin', email: 'quinn.martin@example.com', role: 'Developer' },
+            ];
+
+            tbody.innerHTML = users.map(user => `
+                <tr class="${user.isTarget ? 'target-row-hidden' : ''}" data-email="${user.email}">
+                    <td>${user.id}</td>
+                    <td>${user.name}</td>
+                    <td>${user.email}</td>
+                    <td>${user.role}</td>
+                    <td>
+                        <button class="action-btn edit-btn" onclick="handleEditClick('${user.email}', ${user.isTarget || false})">Edit</button>
+                        <button class="action-btn delete-btn">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+
+            const wrapper = document.getElementById('table-wrapper-2');
+            wrapper.addEventListener('scroll', updateScrollIndicator2);
+            updateScrollIndicator2();
+        }
+
+        function updateScrollIndicator2() {
+            const wrapper = document.getElementById('table-wrapper-2');
+            const scrollPercent = Math.round((wrapper.scrollTop / (wrapper.scrollHeight - wrapper.clientHeight)) * 100);
+            document.getElementById('scroll-indicator-2').textContent = `Scroll: ${scrollPercent}% (${scrollPercent > 90 ? 'bottom' : scrollPercent < 10 ? 'top' : 'middle'})`;
+        }
+
+        function handleEditClick(email, isTarget) {
+            if (isTarget) {
+                const row = document.querySelector(`tr[data-email="${email}"]`);
+                if (row) {
+                    row.classList.add('target-row');
+                    row.classList.remove('target-row-hidden');
+                    document.querySelectorAll('#test-2 [data-check]').forEach(check => {
+                        check.style.textDecoration = 'line-through';
+                        check.style.color = '#28a745';
+                    });
+                }
+            }
+            alert(`Editing user: ${email}`);
+        }
+
+        // ================== TEST 3: FILE EXPLORER ==================
+        function populateFileExplorer() {
+            const tree = document.getElementById('folder-tree-3');
+            const items = [
+                { name: 'src', type: 'folder' },
+                { name: 'components', type: 'folder', nested: 1 },
+                { name: 'Header.tsx', type: 'file', nested: 2 },
+                { name: 'Footer.tsx', type: 'file', nested: 2 },
+                { name: 'Sidebar.tsx', type: 'file', nested: 2 },
+                { name: 'utils', type: 'folder', nested: 1 },
+                { name: 'helpers.ts', type: 'file', nested: 2 },
+                { name: 'constants.ts', type: 'file', nested: 2 },
+                { name: 'pages', type: 'folder', nested: 1 },
+                { name: 'Home.tsx', type: 'file', nested: 2 },
+                { name: 'About.tsx', type: 'file', nested: 2 },
+                { name: 'Contact.tsx', type: 'file', nested: 2 },
+                { name: 'public', type: 'folder' },
+                { name: 'images', type: 'folder', nested: 1 },
+                { name: 'logo.png', type: 'file', nested: 2 },
+                { name: 'banner.jpg', type: 'file', nested: 2 },
+                { name: 'config', type: 'folder' },
+                { name: 'development.json', type: 'file', nested: 1 },
+                { name: 'production.json', type: 'file', nested: 1 },
+                // TARGET FILE - deep in the tree
+                { name: 'important-config.json', type: 'file', nested: 1, isTarget: true },
+                { name: 'staging.json', type: 'file', nested: 1 },
+                { name: 'tests', type: 'folder' },
+                { name: 'unit', type: 'folder', nested: 1 },
+                { name: 'test1.spec.ts', type: 'file', nested: 2 },
+                { name: 'test2.spec.ts', type: 'file', nested: 2 },
+                { name: 'integration', type: 'folder', nested: 1 },
+                { name: 'api.spec.ts', type: 'file', nested: 2 },
+                { name: 'node_modules', type: 'folder' },
+                { name: '(many packages...)', type: 'file', nested: 1 },
+                { name: 'package.json', type: 'file' },
+                { name: 'tsconfig.json', type: 'file' },
+                { name: 'README.md', type: 'file' },
+            ];
+
+            tree.innerHTML = `<div class="folder-tree-header">📂 Project Files</div>` +
+                items.map((item, i) => `
+                <div class="tree-item ${item.type}${item.nested === 1 ? ' nested' : item.nested === 2 ? ' nested-2' : ''}${item.isTarget ? ' target-file-hidden' : ''}"
+                     data-file="${item.name}"
+                     onclick="handleFileClick('${item.name}', ${item.isTarget || false})">
+                    ${item.name}
+                </div>
+            `).join('');
+
+            tree.addEventListener('scroll', updateScrollIndicator3);
+            updateScrollIndicator3();
+        }
+
+        function updateScrollIndicator3() {
+            const tree = document.getElementById('folder-tree-3');
+            const scrollPercent = Math.round((tree.scrollTop / (tree.scrollHeight - tree.clientHeight)) * 100);
+            document.getElementById('scroll-indicator-3').textContent = `Scroll: ${scrollPercent}% (${scrollPercent > 90 ? 'bottom' : scrollPercent < 10 ? 'top' : 'middle'})`;
+        }
+
+        function handleFileClick(fileName, isTarget) {
+            if (isTarget) {
+                const fileEl = document.querySelector(`[data-file="${fileName}"]`);
+                if (fileEl) {
+                    fileEl.classList.add('target-file');
+                    fileEl.classList.remove('target-file-hidden');
+                    document.querySelectorAll('#test-3 [data-check]').forEach(check => {
+                        check.style.textDecoration = 'line-through';
+                        check.style.color = '#28a745';
+                    });
+                }
+            }
+            document.getElementById('file-preview-content').innerHTML = `
+                <strong>Selected:</strong> ${fileName}<br><br>
+                <code>${fileName.endsWith('.json') ? '{ "config": true }' : '// File contents...'}</code>
+            `;
+        }
+
+        // ================== TEST 4: KANBAN BOARD ==================
+        function populateKanbanBoard() {
+            const board = document.getElementById('kanban-board-4');
+            const columns = [
+                { name: 'Backlog', cards: [
+                    { title: 'Research new framework', desc: 'Evaluate React vs Vue', tags: ['research'] },
+                    { title: 'Design system audit', desc: 'Review component library', tags: ['design'] },
+                    { title: 'Performance optimization', desc: 'Improve load times', tags: ['tech-debt'] },
+                ]},
+                { name: 'To Do', cards: [
+                    { title: 'User authentication', desc: 'Implement OAuth flow', tags: ['feature'] },
+                    { title: 'API documentation', desc: 'Update Swagger docs', tags: ['docs'] },
+                    { title: 'Unit tests', desc: 'Increase coverage to 80%', tags: ['testing'] },
+                ]},
+                { name: 'In Progress', cards: [
+                    { title: 'Dashboard redesign', desc: 'New analytics layout', tags: ['feature', 'design'] },
+                    { title: 'Bug fix #234', desc: 'Login redirect issue', tags: ['bug'] },
+                    { title: 'Database migration', desc: 'Upgrade to PostgreSQL 15', tags: ['infra'] },
+                ]},
+                { name: 'Review', cards: [
+                    { title: 'Code review PR #567', desc: 'Feature branch review', tags: ['review'] },
+                    { title: 'Security audit', desc: 'Quarterly security check', tags: ['security'] },
+                ]},
+                // TARGET COLUMN - requires horizontal scroll
+                { name: 'Done', cards: [
+                    { title: 'Setup CI/CD', desc: 'GitHub Actions pipeline', tags: ['devops'] },
+                    { title: 'Implement search', desc: 'Full-text search feature', tags: ['feature'] },
+                    { title: 'Mobile responsiveness', desc: 'Tablet and phone support', tags: ['design'] },
+                    { title: 'Error monitoring', desc: 'Sentry integration', tags: ['devops'] },
+                    { title: 'User onboarding', desc: 'Welcome flow complete', tags: ['feature'] },
+                    { title: 'Email notifications', desc: 'Transactional emails', tags: ['feature'] },
+                    { title: 'Rate limiting', desc: 'API throttling', tags: ['security'] },
+                    { title: 'Caching layer', desc: 'Redis implementation', tags: ['infra'] },
+                    // TARGET CARD - requires vertical scroll within column
+                    { title: 'Deploy to Production', desc: 'v2.0 release complete', tags: ['release'], isTarget: true },
+                    { title: 'Documentation update', desc: 'v2.0 docs', tags: ['docs'] },
+                ]},
+                { name: 'Archived', cards: [
+                    { title: 'Legacy migration', desc: 'Old system retired', tags: ['archived'] },
+                ]},
+            ];
+
+            board.innerHTML = columns.map((col, ci) => `
+                <div class="kanban-column">
+                    <div class="kanban-column-header">${col.name} (${col.cards.length})</div>
+                    <div class="kanban-cards" id="kanban-col-${ci}">
+                        ${col.cards.map((card, cardi) => `
+                            <div class="kanban-card${card.isTarget ? ' target-card-hidden' : ''}"
+                                 data-card-title="${card.title}"
+                                 onclick="handleCardClick('${card.title}', ${card.isTarget || false})">
+                                <div class="card-title">${card.title}</div>
+                                <div class="card-desc">${card.desc}</div>
+                                <div class="card-tags">
+                                    ${card.tags.map(t => `<span class="tag">${t}</span>`).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+
+            board.addEventListener('scroll', updateScrollIndicator4);
+            document.querySelectorAll('.kanban-cards').forEach(col => {
+                col.addEventListener('scroll', updateScrollIndicator4);
+            });
+            updateScrollIndicator4();
+        }
+
+        function updateScrollIndicator4() {
+            const board = document.getElementById('kanban-board-4');
+            const hScrollPercent = Math.round((board.scrollLeft / (board.scrollWidth - board.clientWidth)) * 100);
+
+            // Check the "Done" column (index 4)
+            const doneCol = document.getElementById('kanban-col-4');
+            let vScrollPercent = 0;
+            if (doneCol && doneCol.scrollHeight > doneCol.clientHeight) {
+                vScrollPercent = Math.round((doneCol.scrollTop / (doneCol.scrollHeight - doneCol.clientHeight)) * 100);
+            }
+
+            document.getElementById('scroll-indicator-4').textContent = `H-Scroll: ${hScrollPercent}% | Done V-Scroll: ${vScrollPercent}%`;
+        }
+
+        function handleCardClick(cardTitle, isTarget) {
+            if (isTarget) {
+                const cardEl = document.querySelector(`[data-card-title="${cardTitle}"]`);
+                if (cardEl) {
+                    cardEl.classList.add('target-card');
+                    cardEl.classList.remove('target-card-hidden');
+                    document.querySelectorAll('#test-4 [data-check]').forEach(check => {
+                        check.style.textDecoration = 'line-through';
+                        check.style.color = '#28a745';
+                    });
+                }
+            }
+        }
+
+        // ================== INITIALIZATION ==================
+        document.addEventListener('DOMContentLoaded', function() {
+            populateChatMessages();
+            populateDataTable();
+            populateFileExplorer();
+            populateKanbanBoard();
+            updateResultsSummary();
+        });
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

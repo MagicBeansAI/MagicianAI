@@ -1,0 +1,591 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "before_message_id": {
+              "value_type": 1,
+              "required": false
+            },
+            "limit": {
+              "value_type": 2,
+              "required": false
+            },
+            "session_id": {
+              "value_type": 3,
+              "required": false
+            },
+            "thread_id": {
+              "value_type": 4,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:109e2ddfa7b2a64d5750e5ee8f62b7c3684216c3126db369102ad4d34242bf93",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:109e2ddfa7b2a64d5750e5ee8f62b7c3684216c3126db369102ad4d34242bf93",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {
+            "transcript": {
+              "tool": "meetings_data",
+              "action": "read_thread",
+              "primitive_ref": "primitive:platform:1e210ace99d5d06dbba1aa938b7b1cbec97d333b740a78beb1f72210a024b806",
+              "action_ref": "primitive-action:platform:a3b4ee4dc189cea5555442f119d2e04d79a638ea264dbfe881aea09149c3e03e",
+              "parameters": {
+                "limit": 20
+              },
+              "input_parameters": {
+                "thread_id": "thread_id",
+                "session_id": "session_id",
+                "before_message_id": "before_message_id"
+              },
+              "when_input_present": null,
+              "rows": {
+                "kind": "document"
+              }
+            }
+          },
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/limit"
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "coalesce",
+                  "values": [
+                    3,
+                    4
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "clamp",
+                  "value": 5,
+                  "minimum": 6,
+                  "maximum": 7
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/thread_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 9
+                },
+                {
+                  "kind": "if",
+                  "condition": 10,
+                  "then_value": 9,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/session_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 12
+                },
+                {
+                  "kind": "if",
+                  "condition": 13,
+                  "then_value": 12,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/count"
+                },
+                {
+                  "kind": "present",
+                  "value": 15
+                },
+                {
+                  "kind": "if",
+                  "condition": 16,
+                  "then_value": 15,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/next_before_message_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 18
+                },
+                {
+                  "kind": "if",
+                  "condition": 19,
+                  "then_value": 18,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/has_older"
+                },
+                {
+                  "kind": "present",
+                  "value": 21
+                },
+                {
+                  "kind": "if",
+                  "condition": 22,
+                  "then_value": 21,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/skipped_non_text"
+                },
+                {
+                  "kind": "present",
+                  "value": 24
+                },
+                {
+                  "kind": "if",
+                  "condition": 25,
+                  "then_value": 24,
+                  "else_value": 0
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "thread_id": 11,
+                    "session_id": 14,
+                    "count": 17,
+                    "next_before_message_id": 20,
+                    "has_older": 23,
+                    "skipped_non_text": 26
+                  }
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/messages"
+                },
+                {
+                  "kind": "slice",
+                  "value": 28,
+                  "limit": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/thread_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript/session_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/message_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/speaker"
+                },
+                {
+                  "kind": "present",
+                  "value": 33
+                },
+                {
+                  "kind": "if",
+                  "condition": 34,
+                  "then_value": 33,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/text"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/transcript"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/created_at"
+                },
+                {
+                  "kind": "project",
+                  "rows": 29,
+                  "pointer": "/message_id",
+                  "skip_missing": false
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 39
+                },
+                {
+                  "kind": "less_than",
+                  "left": 40,
+                  "right": 41
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/transcript_line_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 43,
+                  "key_pointer": "/fields/message_id",
+                  "key": 32,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 43,
+                  "key_pointer": "/fields/message_id",
+                  "key": 32,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 44
+                },
+                {
+                  "kind": "not",
+                  "value": 46
+                },
+                {
+                  "kind": "literal",
+                  "value": "transcript_line"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    48,
+                    32
+                  ]
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "transcript": 27
+                  }
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "source_pages": 50
+                  }
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 51
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "transcript_line_existing",
+                "entity": "transcript_line",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "message_id"
+                  ],
+                  "limit": 100,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "in",
+                        "field": "message_id",
+                        "values": []
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/values": 39
+                }
+              }
+            ],
+            "query_when": {
+              "transcript_line_existing": 42
+            },
+            "guards": [],
+            "mutations": [
+              {
+                "entity": "transcript_line",
+                "for_each": 29,
+                "when": 47,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 49,
+                  "fields": {
+                    "message_id": 32,
+                    "thread_id": 30,
+                    "session_id": 31,
+                    "speaker": 35,
+                    "line_text": 36,
+                    "transcript": 37,
+                    "line_at": 38,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "transcript_line",
+                "for_each": 29,
+                "when": 46,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 44,
+                  "fields": {
+                    "message_id": 32,
+                    "thread_id": 30,
+                    "session_id": 31,
+                    "speaker": 35,
+                    "line_text": 36,
+                    "transcript": 37,
+                    "line_at": 38,
+                    "synced_at": 1
+                  },
+                  "revision": 45
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64,
+            "source_parameters": {
+              "transcript": {
+                "limit": 8
+              }
+            },
+            "scan_queries": [
+              "transcript_line_existing"
+            ],
+            "summary": 52
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 1,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 1
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "magician-app-contract"
+version = "0.3.2"
+edition = "2021"
+authors = ["MagicBeansAI"]
+description = "Pure public wire and compatibility contracts for Magician Apps"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+blake3 = { workspace = true }
+ring = "0.17.14"
+schemars = "1.2.1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+url = "2.4"

@@ -1,0 +1,306 @@
+{
+  "engine_instance": "01M3HVM8RGE34KWZYEFEW16DFB",
+  "policy_revision": "f35f935f57fffda35c3a4f071753d11572010ebadd158b8fa726db9055193eb3",
+  "contract_version": 4,
+  "action_contract_version": 4,
+  "operations": [
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "e51726b0a647db63c26934e554b5bc938089108dfe3b2c7a5163108cafcddbb8",
+        "pack": "evidence_promote",
+        "pack_version": "1.1.0"
+      },
+      "name": "evidence_promote",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "39deb6bcaf8ba024a66bfe410ad9cb0700d74e8ce58d954634f7a871e4292f34",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_applicability",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "39deb6bcaf8ba024a66bfe410ad9cb0700d74e8ce58d954634f7a871e4292f34",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_attach",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "869732a24801a8ade901429de272705aad18533f38348c03807cf22b0e5a8168",
+        "pack": "memory_conflict_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_conflict_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "21e290d4171eb776a63ab03aa2cf8cc5d23d6dfc1d446595827eff55e67688b6",
+        "pack": "memory_connection_gate",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_connection_gate",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "03113a851f436f88321dc1ce060e0f96b82fad76869aea5f41746777fcadf074",
+        "pack": "memory_episode_quality",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_episode_quality",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "3ca67e5f60d8f2c6e5e2221695a58e92709753e9fe61e843711e00e8359d9924",
+        "pack": "memory_lifecycle_relation",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_lifecycle_relation",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 8192,
+          "max_request_bytes": 131072,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "2be38cbfd358af2d47be0df987ba336e1c02411af8cd47c175804810bcb96665",
+        "pack": "memory_utility_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_utility_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "b8c4d058a8c289430719ae82685d05aebf0d249fede582cacf23b1cc2dd01738",
+        "pack": "procedure_feedback",
+        "pack_version": "1.0.0"
+      },
+      "name": "procedure_feedback",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev"
+      ],
+      "route_cloud": [
+        "jev"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": false,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 1000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "76285c646ad7b539e157ab38be21914c3a3d57cbc18d2d1f357fc62517a0fe25",
+        "pack": "tool_action_judge",
+        "pack_version": "1.0.0"
+      },
+      "name": "tool_action_judge",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [],
+      "route_cloud": [
+        "jev"
+      ]
+    }
+  ]
+}

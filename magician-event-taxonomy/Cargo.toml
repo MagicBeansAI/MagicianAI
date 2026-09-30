@@ -1,0 +1,15 @@
+[package]
+name = "magician-event-taxonomy"
+version = "0.1.5"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# Minimal dep set — this crate must stay thin so `cargo run --bin
+# event_taxonomy_dump` compiles in seconds even when the main `magician`
+# crate has changed.
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+
+[[bin]]
+name = "event_taxonomy_dump"
+path = "src/bin/event_taxonomy_dump.rs"

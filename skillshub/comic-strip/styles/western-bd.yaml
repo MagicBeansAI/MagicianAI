@@ -1,0 +1,15 @@
+name: Modern Western Graphic Novel
+prompt_fragment: |
+  Contemporary digital graphic novel style. Clean ink outlines (2-3px)
+  with selective lineweight emphasis on foregrounds. Coloring is digital
+  flat-with-gradient — moderate cell-shading plus soft ambient gradients
+  for depth. Color palette is muted and cinematic: desaturated teal,
+  burnt orange, slate gray, off-white. Lighting is deliberate and
+  cinematic — rim light, dramatic shadows, key-and-fill setups.
+  Character design is realistic-leaning, less cartoon exaggeration,
+  more rendered facial detail. Compositions favor cinematic framing:
+  rule-of-thirds, varied panel sizes hinted by cropping, focused
+  depth of field. Mood is moody, modern, with literary depth.
+  Suitable for adult and YA graphic novel narratives.
+ip_safe_note: |
+  Generic modern graphic-novel aesthetic. No specific IP reference.

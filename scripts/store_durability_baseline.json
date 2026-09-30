@@ -1,0 +1,106 @@
+{
+  "_comment": "Known-bad counts per file for scripts/check_store_durability_adoption.py. Counts, not line numbers, so ordinary edits do not churn this file. The ratchet is two-way: fix a store, re-run with --update, commit the smaller number. See docs/archive/plans/2026-08-11-store-durability-adoption.md. 2026-08-27: +3 = pre-existing attention-learning writes entering scope when the engines moved comms\u2192lib (plan 3.0); the paths for vibedev dispatch_intent and monitors monitor_run repointed with their files (plan 3.4/3.2). 2026-08-29: +2 = run_loop/store/fs.rs entering scope when the stateless loop merged. BOTH hits are deliberate and NEITHER is a store that should adopt the helper. (1) overwrite_atomically hand-rolls because reap_leaked_temporaries finds a leaked staging file by the TEMP_INFIX '.tmp-' that temp_sibling writes, and the shared helper stages at '.artifact-write-{uuid}.tmp' which lacks that infix \u2014 adopting it would leave crashed temporaries nothing in that store ever cleans. The reasoning is on the function. (2) overwrite_derived_atomically publishes reconstructible cache state whose crash durability is deliberately unnecessary. 2026-08-30: +3 test-only rename calls simulate lock-inode substitution, a legacy pause filename, and a symlinked execution directory. They do not publish store state; each call is documented at its fixture. This checker intentionally counts test code, so the baseline records those false positives. MagicRun's 11 counts and MagicVault core's 3 counts moved unchanged to their repositories; removal here is ownership transfer, not a fix. 2026-09-24: +1 database recovery inode rename. This publishes a checkpointed database without buffering the file in memory; a unique staging sibling, immutable rollback backup, durable marker and parent-directory fsync protect restart recovery. See recover_interrupted_compaction.",
+  "total_violations": 65,
+  "files": {
+    "magician/src/magician_v2/agents/storage.rs": {
+      "hand_rolled_atomic_write": 2
+    },
+    "magician/src/magician_v2/analytics/llm_fact_compactor.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/analytics/llm_reprice.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/analytics/llm_trace_materializer.rs": {
+      "hand_rolled_atomic_write": 2
+    },
+    "magician/src/magician_v2/analytics/parquet_maintenance.rs": {
+      "hand_rolled_atomic_write": 3
+    },
+    "magician/src/magician_v2/analytics/pool.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/apps/authoring.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/apps/bound_path.rs": {
+      "hand_rolled_atomic_write": 3
+    },
+    "magician/src/magician_v2/artifact_v2/io.rs": {
+      "hand_rolled_atomic_write": 2
+    },
+    "magician/src/magician_v2/artifact_v2/service.rs": {
+      "intolerant_jsonl_reader": 4
+    },
+    "magician/src/magician_v2/artifact_v2/workspace.rs": {
+      "hand_rolled_atomic_write": 3,
+      "intolerant_jsonl_reader": 2
+    },
+    "magician/src/magician_v2/artifacts/durable_store.rs": {
+      "hand_rolled_atomic_write": 2
+    },
+    "magician/src/magician_v2/attention/learning/store.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/attention/learning/training/mod.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/attention/learning/training/routing.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/delivery_hygiene/worker.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/delivery_receipts/maildir.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/device_pairing.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/execution/agentic/executor.rs": {
+      "hand_rolled_atomic_write": 6
+    },
+    "magician/src/magician_v2/execution/agentic/run_loop/store/fs.rs": {
+      "hand_rolled_atomic_write": 3
+    },
+    "magician/src/magician_v2/execution/coding_engine/task_budget.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/execution/native_executors.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/execution/verification/journal.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/execution/verification/store.rs": {
+      "hand_rolled_atomic_write": 3
+    },
+    "magician/src/magician_v2/feed/store.rs": {
+      "hand_rolled_atomic_write": 2
+    },
+    "magician/src/magician_v2/monitors/monitor_run.rs": {
+      "intolerant_jsonl_reader": 5
+    },
+    "magician/src/magician_v2/notes.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/resource_authority/persistence.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/runtime_settings.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/storage/list_index.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/storage_governance/duckdb_compaction.rs": {
+      "hand_rolled_atomic_write": 3
+    },
+    "magician/src/magician_v2/strategy/history/file_storage.rs": {
+      "hand_rolled_atomic_write": 1
+    },
+    "magician/src/magician_v2/vibedev/dispatch_intent.rs": {
+      "hand_rolled_atomic_write": 2
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "contract_version": "1.0.0",
+  "fixture_digest": "blake3:a151be30e178f3b56e5aee2b47916ccd3cfd0326c820960cf78e8b7e3a0cbed0",
+  "generated_clients": [
+    "typescript_fixture_contract",
+    "swift_fixture_contract"
+  ],
+  "protocol_version": "1",
+  "runtime_routes_enabled": false,
+  "schema_digest": "blake3:b2f2e2d9df926ae1153b2657ae29075e3df50c5285cc276a8b46733115b98dc7",
+  "schema_version": 1,
+  "source_of_truth": "magician/src/magician_v2/apps/models.rs",
+  "supported_protocol_versions": [
+    "1"
+  ]
+}

@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Network permissions -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Keep screen on while MCP client is connected -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Dictation. The recogniser runs in another process but the capture is
+         attributed to this app, so the grant has to be ours. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- The tutor overlay. Android can draw over other apps and iOS cannot, so
+         a lesson can happen on the phone, on top of what is being taught,
+         rather than on a paired desktop. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Foreground service for keeping AccessibilityService alive -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Without this the ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS intent is
+         refused and the card silently does nothing when tapped. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Notification listener for full notification content -->
+    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- System settings modification -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Package visibility (Android 11+) - Allow querying all apps for launch intents -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- Query intent for MAIN/LAUNCHER activities to launch any app -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Magdroid"
+        tools:targetApi="31">
+
+        <!-- Firebase's current direct-send contract targets the registered
+             Firebase Installation ID rather than the legacy FCM token. -->
+        <meta-data
+            android:name="firebase_messaging_installation_id_enabled"
+            android:value="true" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.artifact-files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/artifact_file_paths" />
+        </provider>
+
+        <!-- Main Activity (minimal UI for setup instructions) -->
+        <activity
+            android:name=".ui.ChatActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="@string/chat_title"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Magdroid">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="magican" android:host="task" />
+                <data android:scheme="magican" android:host="monitor" />
+                <!-- Launcher shortcut destinations. iOS reaches these through
+                     Siri phrases; the long press on the app icon is Android's
+                     own answer to the same question. -->
+                <data android:scheme="magican" android:host="new-chat" />
+                <data android:scheme="magican" android:host="tutor" />
+                <data android:scheme="magican" android:host="listen" />
+                <data android:scheme="magican" android:host="talk" />
+                <data android:scheme="magican" android:host="attention" />
+                <data android:scheme="magican" android:host="today" />
+                <data android:scheme="magican" android:host="observe" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="magican.ai" android:pathPrefix="/tasks" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="magican" android:host="connect" />
+                <data android:scheme="magican" android:host="pair" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".widget.MagicanGlanceWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="ai.magicbeans.magdroid.action.REFRESH_GLANCE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/magican_glance_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".push.TaskActivityPushRouteReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ai.magicbeans.magdroid.action.REGISTER_TASK_PUSH" />
+                <action android:name="ai.magicbeans.magdroid.action.REMOVE_TASK_PUSH" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".push.MagicanMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <activity
+            android:name=".SplashActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Magdroid">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.Magdroid">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="magican" android:host="apps-connect" />
+            </intent-filter>
+        </activity>
+
+        <!-- Screenshot Consent Activity - Transparent activity for MediaProjection consent -->
+
+        <!-- AccessibilityService - Core automation service -->
+
+        <!-- NotificationListenerService - For full notification content -->
+
+
+        <!-- Always-on wake word. Declared with the microphone type so Android
+             holds it to the microphone rules: startable only from a visible
+             screen, and disclosed by a permanent notification the whole time
+             it listens. -->
+        <!-- Ambient capture. Separate from the wake word on purpose: this one
+             records the room and uploads it, and nothing about the two should
+             be confusable — not the notification, not the service. -->
+        <!-- Magican as a share target. iOS needs an Action Extension and a shared
+             inbox because an extension is a separate process; Android's share
+             sheet hands the image straight to this activity. -->
+        <activity
+            android:name="ai.magicbeans.magdroid.ui.TutorShareActivity"
+            android:exported="true"
+            android:label="Ask Magician"
+            android:theme="@style/Theme.Magdroid">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- The plain share target, beside the contextual one above. "Ask
+             Magician" teaches about a screenshot; this drops whatever was
+             shared into the composer and waits. iOS ships the same pair, as a
+             Share Extension next to the Assist Action Extension, and both show
+             in the sheet. Without this, a link or a document could not be sent
+             to Magician at all — only an image, and only into a lesson. -->
+        <activity
+            android:name="ai.magicbeans.magdroid.ui.ShareReceiverActivity"
+            android:exported="true"
+            android:label="Send to Magician"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Magician as the phone's assistant: the long-press-power gesture,
+             which is the system's own "help me with what I am looking at". The
+             session is handed a screenshot by the system, so this route needs
+             no capture of its own. -->
+        <service
+            android:name="ai.magicbeans.magdroid.ui.MagicianAssistService"
+            android:exported="true"
+            android:label="Magician"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/assist_interaction_service" />
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name="ai.magicbeans.magdroid.ui.MagicianAssistSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionSessionService" />
+            </intent-filter>
+        </service>
+
+        <!-- A real system keyboard, not a Settings placeholder. Secure and
+             numeric fields suppress every agent action before field text is
+             read; ordinary typing remains device-local. -->
+        <service
+            android:name="ai.magicbeans.magdroid.keyboard.MagicanKeyboardService"
+            android:exported="true"
+            android:label="Magican Keyboard"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/magican_input_method" />
+        </service>
+
+        <!-- "Teach me this screen", from the shade of any app. The entry point
+             has to live outside Magician: by the time the app is open, the
+             screen somebody wanted explained is gone. -->
+        <service
+            android:name="ai.magicbeans.magdroid.ui.TeachScreenTile"
+            android:exported="true"
+            android:icon="@drawable/ic_notification"
+            android:label="Teach me this screen"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name="ai.magicbeans.magdroid.ui.TutorOverlayService"
+            android:exported="false" />
+
+        <service
+            android:name="ai.magicbeans.magdroid.observe.ObserveService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|mediaProjection" />
+
+        <service
+            android:name="ai.magicbeans.magdroid.voice.WakeService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+    </application>
+
+    <!-- Package visibility: without this the speech recogniser is invisible on
+         Android 11+, and availability answers false on a device that plainly
+         can transcribe. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
+</manifest>

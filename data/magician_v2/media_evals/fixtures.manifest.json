@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "suite_id": "magician-audio-surface-baseline-v1",
+  "description": "Privacy-safe fixture catalog for audio provider and surface-profile evaluation.",
+  "control_fixture_generator": "scripts/generate-media-audio-fixtures.sh",
+  "canonical_input": {
+    "container": "wav",
+    "codec": "pcm_s16le",
+    "sample_rate_hz": 16000,
+    "channels": 1
+  },
+  "privacy_policy": {
+    "committed_audio_must_be_redistributable": true,
+    "committed_audio_must_not_contain_personal_data": true,
+    "local_opt_in_audio_must_not_be_committed": true,
+    "provider_requests_must_be_explicitly_enabled": true
+  },
+  "fixtures": [
+    {
+      "id": "control-silence-5s",
+      "category": "silence",
+      "path": "generated/control-silence-5s.wav",
+      "materialization": "deterministic_generator",
+      "duration_ms": 5000,
+      "source": {
+        "kind": "generated",
+        "license": "CC0-1.0",
+        "redistributable": true,
+        "contains_personal_data": false
+      },
+      "expected": {
+        "speech": false,
+        "transcript": "",
+        "must_not_commit_turn": true
+      }
+    },
+    {
+      "id": "control-room-noise-5s",
+      "category": "background_noise",
+      "path": "generated/control-room-noise-5s.wav",
+      "materialization": "deterministic_generator",
+      "duration_ms": 5000,
+      "source": {
+        "kind": "generated_seeded_noise",
+        "seed": 7142026,
+        "license": "CC0-1.0",
+        "redistributable": true,
+        "contains_personal_data": false
+      },
+      "expected": {
+        "speech": false,
+        "transcript": "",
+        "must_not_commit_turn": true
+      }
+    },
+    {
+      "id": "control-tone-1khz-3s",
+      "category": "non_speech_signal",
+      "path": "generated/control-tone-1khz-3s.wav",
+      "materialization": "deterministic_generator",
+      "duration_ms": 3000,
+      "source": {
+        "kind": "generated_tone",
+        "frequency_hz": 1000,
+        "license": "CC0-1.0",
+        "redistributable": true,
+        "contains_personal_data": false
+      },
+      "expected": {
+        "speech": false,
+        "transcript": "",
+        "must_not_commit_turn": true
+      }
+    },
+    {
+      "id": "synthetic-clean-en",
+      "category": "synthetic_clean_english",
+      "path": "local/synthetic-clean-en.wav",
+      "transcript_path": "local/synthetic-clean-en.txt",
+      "materialization": "local_generated",
+      "source": {
+        "kind": "project_authored_macos_tts",
+        "generator": "scripts/generate-media-local-speech-fixtures.sh",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": false,
+        "evaluation_limit": "Use for provider plumbing and latency smoke only, not human-speech adoption decisions."
+      },
+      "expected": {
+        "speech": true,
+        "must_commit_one_turn": true
+      }
+    },
+    {
+      "id": "synthetic-indian-en",
+      "category": "synthetic_indian_english",
+      "path": "local/synthetic-indian-en.wav",
+      "transcript_path": "local/synthetic-indian-en.txt",
+      "materialization": "local_generated",
+      "source": {
+        "kind": "project_authored_macos_tts",
+        "generator": "scripts/generate-media-local-speech-fixtures.sh",
+        "voice": "Aman (en-IN)",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": false,
+        "evaluation_limit": "Synthetic accent coverage does not replace consented human speech."
+      },
+      "expected": {
+        "speech": true,
+        "must_commit_one_turn": true
+      }
+    },
+    {
+      "id": "synthetic-hinglish-names-numbers",
+      "category": "synthetic_english_hindi_code_switching",
+      "path": "local/synthetic-hinglish-names-numbers.wav",
+      "transcript_path": "local/synthetic-hinglish-names-numbers.txt",
+      "materialization": "local_generated",
+      "source": {
+        "kind": "project_authored_macos_tts",
+        "generator": "scripts/generate-media-local-speech-fixtures.sh",
+        "voice": "Aman (en-IN)",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": false,
+        "content_rule": "All names, dates, invoice numbers, and amounts are invented.",
+        "evaluation_limit": "Synthetic code switching does not replace consented human speech."
+      },
+      "expected": {
+        "speech": true,
+        "must_commit_one_turn": true,
+        "score_named_entities": true
+      }
+    },
+    {
+      "id": "speech-clean-en",
+      "category": "clean_english",
+      "path": "local/speech-clean-en.wav",
+      "transcript_path": "local/speech-clean-en.txt",
+      "materialization": "local_opt_in",
+      "source": {
+        "kind": "consented_local_recording",
+        "license": "not-for-redistribution",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": true
+      },
+      "expected": {
+        "speech": true,
+        "must_commit_one_turn": true
+      }
+    },
+    {
+      "id": "speech-indian-en",
+      "category": "indian_accented_english",
+      "path": "local/speech-indian-en.wav",
+      "transcript_path": "local/speech-indian-en.txt",
+      "materialization": "local_opt_in",
+      "source": {
+        "kind": "consented_local_recording",
+        "license": "not-for-redistribution",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": true
+      },
+      "expected": {
+        "speech": true,
+        "must_commit_one_turn": true
+      }
+    },
+    {
+      "id": "speech-hinglish-names-numbers",
+      "category": "english_hindi_code_switching",
+      "path": "local/speech-hinglish-names-numbers.wav",
+      "transcript_path": "local/speech-hinglish-names-numbers.txt",
+      "materialization": "local_opt_in",
+      "source": {
+        "kind": "consented_local_recording",
+        "license": "not-for-redistribution",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": true,
+        "content_rule": "Use invented names, dates, account suffixes, and amounts only."
+      },
+      "expected": {
+        "speech": true,
+        "must_commit_one_turn": true,
+        "score_named_entities": true
+      }
+    },
+    {
+      "id": "meeting-two-speakers-overlap",
+      "category": "overlapping_speakers",
+      "path": "local/meeting-two-speakers-overlap.wav",
+      "transcript_path": "local/meeting-two-speakers-overlap.json",
+      "materialization": "local_opt_in",
+      "source": {
+        "kind": "consented_local_recording",
+        "license": "not-for-redistribution",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": true
+      },
+      "expected": {
+        "speech": true,
+        "minimum_speakers": 2,
+        "score_speaker_attribution": true
+      }
+    },
+    {
+      "id": "synthetic-two-speaker-dialogue",
+      "category": "synthetic_two_speaker_dialogue",
+      "path": "local/synthetic-two-speaker-dialogue.wav",
+      "transcript_path": "local/synthetic-two-speaker-dialogue.json",
+      "materialization": "local_generated",
+      "source": {
+        "kind": "project_authored_macos_tts_composition",
+        "generator": "scripts/generate-media-local-speech-fixtures.sh",
+        "voices": ["Samantha (en-US)", "Aman (en-IN)"],
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": false,
+        "evaluation_limit": "Synthetic voices validate provider plumbing and provide a repeatable diarization baseline; they do not replace consented human multi-speaker audio."
+      },
+      "expected": {
+        "speech": true,
+        "minimum_speakers": 2,
+        "score_speaker_attribution": true
+      }
+    },
+    {
+      "id": "listening-system-audio",
+      "category": "system_audio",
+      "path": "local/listening-system-audio.wav",
+      "transcript_path": "local/listening-system-audio.txt",
+      "materialization": "local_opt_in",
+      "source": {
+        "kind": "project_owned_playback_capture",
+        "license": "not-for-redistribution",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": false,
+        "content_rule": "Use only project-authored spoken text and no third-party media."
+      },
+      "expected": {
+        "speech": true,
+        "must_commit_one_turn": true
+      }
+    },
+    {
+      "id": "hands-free-playback-leak",
+      "category": "assistant_playback_leakage",
+      "path": "local/hands-free-playback-leak.wav",
+      "transcript_path": "local/hands-free-playback-leak.json",
+      "materialization": "local_opt_in",
+      "source": {
+        "kind": "project_owned_hardware_capture",
+        "license": "not-for-redistribution",
+        "redistributable": false,
+        "contains_personal_data": false,
+        "consent_required": true
+      },
+      "expected": {
+        "speech": true,
+        "must_not_answer_assistant_playback": true,
+        "must_detect_user_interjection": true
+      }
+    }
+  ]
+}

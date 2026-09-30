@@ -1,0 +1,66 @@
+name: web_answer
+description: One-shot provider-executed web search for fresh facts. The routed provider (OpenAI Responses, Anthropic, Gemini, or OpenRouter per the web_answer operation profile) searches server-side and returns a grounded answer with deduplicated citations and a per-call search count.
+guide: |-
+  Tool name: `web_answer`
+
+  When to reach for this:
+    - You need ONE fresh fact or a quick grounded lookup: current versions,
+      prices, dates, news, "is X still true".
+    - The answer must come with sources — the response carries a deduplicated
+      citation list.
+
+  When NOT to use it:
+    - Multi-source investigations, comparisons across many pages, or anything
+      requiring synthesis of several searches — that is the research agent's
+      job. `web_answer` is the cheap single-lookup lane; the research agent is
+      the deep lane.
+    - You only need a list of links to inspect yourself — the free
+      `web_search` tool (DuckDuckGo result list, no LLM cost) serves that;
+      `web_answer` is for when you want the provider to read the results
+      and answer.
+    - Information you already have in context or in local files.
+
+  Cost model: each call runs 1+ provider-side searches (~$0.01/search on
+  OpenAI/Anthropic, similar elsewhere) plus ordinary token costs. Keep
+  queries focused; do not fan out batches of lookups through this tool.
+
+  Input shapes:
+    - `query` (required) — the question or lookup, phrased so a search
+      engine returns the answer. Include entity names and disambiguators.
+
+  Output:
+    - `answer` — the grounded text answer (concise, fact-first).
+    - `citations` — deduplicated `{url, title}` list.
+    - `searches` — how many provider-side searches ran (cost attribution).
+    - `model` / `provider` — the transport that served the call.
+    - `status: "error"` with a `reason` on empty query or empty answer.
+
+  Configuration: the tool works when the `web_answer` operation maps to an
+  LLM profile carrying `server_web_search` metadata (see the `op-web-answer`
+  profile). No mapping — the tool reports the router is not configured for
+  it. Switching transports (e.g. OpenAI → Gemini) is a config change, not a
+  code change.
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: The question or lookup, phrased so a search engine returns the answer. Include entity names and disambiguators.
+implementation:
+  type: compiled
+  provider_name: web_answer
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories:
+  - research
+  - web
+  - grounding
+  composition_category: search_operations
+  sandbox: none
+  # Each call runs 1+ billed provider-side searches plus ordinary tokens;
+  # the counted gate surfaces that spend at dispatch instead of letting the
+  # tool run ungated.
+  spend:
+    type: counted
+    commodity: usd
+    cost_per_action: "0.05"

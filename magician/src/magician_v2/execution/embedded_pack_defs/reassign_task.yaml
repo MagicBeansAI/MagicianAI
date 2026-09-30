@@ -1,0 +1,49 @@
+name: reassign_task
+description: Cancel a scoped task and recreate it for a different agent inside the active harness scope while preserving whether it is user-visible or internal.
+version: "1.1.0"
+guide: |
+  Tool name: `reassign_task`
+
+  Use this when work is already defined but the current assignee is not the right owner.
+  The original task is cancelled and a replacement task is created for the new agent.
+  The replacement preserves the original task lifecycle: internal work remains
+  internal and a user-visible commitment remains user-visible.
+
+  Prefer this over `create_task` when you are explicitly rerouting existing work.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: Existing task id inside the active scope.
+  - name: agent_id
+    required: true
+    param_type: string
+    description: New assignee inside the active harness scope.
+  - name: reason
+    param_type: string
+    description: Optional explanation for the reassignment.
+  - name: title
+    param_type: string
+    description: Optional replacement title override.
+  - name: description
+    param_type: string
+    description: Optional replacement description override.
+  - name: priority
+    param_type: string
+    description: Optional replacement priority override.
+    enum_values: [urgent, high, medium, low, p1, p2, p3, p4]
+  - name: due_date
+    param_type: string
+    description: Optional replacement due date override.
+implementation:
+  type: compiled
+  provider_name: reassign_task
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - tasks
+    - delegation
+  composition_category: action
+  sandbox: none

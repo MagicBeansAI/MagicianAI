@@ -1,0 +1,50 @@
+[package]
+name = "magician-decision"
+version = "0.4.2"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Vendor-neutral structured-decision plane: Choice/Score/Noul IR, versioned question packs, and model adapters."
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# sysctlbyname("hw.memsize") for the local-model memory gate (host.rs).
+libc = "0.2"
+
+[dependencies]
+runtime-core = { path = "../runtime-core" }
+decision-engine-contract = { path = "../decision-engine-contract" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+# Full JSON Schema validation; tool schemas cannot fetch files or URLs.
+jsonschema = { version = "=0.33.0", default-features = false }
+sha2 = "0.10"
+ulid = "1"
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["time", "sync"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+# Local ONNX models (laya, Kev): only the decision-engine process enables
+# this, so a host binding models in process never links ONNX Runtime. The
+# runtime is loaded at start (`load-dynamic`), not bundled: Kev's graph needs
+# ONNX Runtime >= 1.30 (its LinearAttention contrib ops), and ort's bundled
+# build is 1.28. `make setup-decision-models` installs the pinned 1.30.
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
+tokenizers = { version = "0.23.2", optional = true, default-features = false, features = ["onig"] }
+# Kev on Apple's MLX (the `mlx` feature): our fork of codesoda/kev-rs,
+# pinned to its 8-bit quantization + chunked-state commit (offered upstream
+# as codesoda/kev-rs#2). Building it needs Rust >= 1.95, CMake, and Xcode's
+# Metal Toolchain; the workspace root repeats the mlx-sys patch it requires.
+kev-core = { git = "https://github.com/MagicBeansAI/kev-rs.git", rev = "9fddfbdfd17851e09b8f58f08e8eab7d6afa9aaf", optional = true, features = ["mlx"] }
+# The MLX version kev-core pins, for the process-wide allocator cache limit.
+mlx-rs = { version = "=0.32.0", optional = true }
+
+[features]
+default = []
+onnx = ["dep:ort", "dep:tokenizers"]
+# Kev fully on the GPU (Apple Silicon): the `kev-mlx` adapter.
+mlx = ["dep:kev-core", "dep:mlx-rs", "dep:tokenizers"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.5"
+serde_yaml = { workspace = true }

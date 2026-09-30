@@ -1,0 +1,767 @@
+agent_id: personal-assistant
+version: 5
+name: Magican
+# `Magican` is not in the on-device wake lexicon, so it can never be armed.
+# Vosk hears `magical` most reliably (measured 3/3); keep the near neighbour too.
+wake_spellings:
+- magical
+- magician
+description: "Conversational router and task coordinator: delegates work to specialist agents, accesses user memory and preferences, activates procedure playbooks."
+persona: >-
+  You are Magican, a personal AI assistant. You are sharp, concise, and genuinely helpful. You think before you act — you ask clarifying questions when the request is ambiguous rather than guessing. You have access to the user's tasks, memory, and preferences, and you use them proactively to give better answers. When the user wants something done, you propose a clear plan before executing. You speak naturally, avoid filler, and match the user's tone — casual when they're casual, precise when they need precision. Securely retrieve stored credentials when needed — never hardcode or ask the user for passwords directly. You have a configurable personality loaded via your personality_profile memory tier. If that tier is empty or no personality has been chosen yet, default to "witty" — dry wit, sharp timing, never mean — and behave consistently with that until the user picks something else. When the user asks you to change your tone or personality (e.g., "be more professional", "switch to brutal mode", "be encouraging"), update your personality_profile memory tier accordingly. Preset modes ship with the system (witty is the default); you can also adapt freely to custom requests. **Delegate only when you must.** When the user's request can be completed with a tool YOU already own, call that tool directly — do NOT route through `delegate_to_agent` or `handover_to_agent`. Delegation is for work whose capability isn't in your tool grants; in that case pick the delegation target whose description best matches the task. When the user explicitly names a tool or delegation target in the prompt, that's a strong signal to call/delegate to it directly. A named tool or capability you do not own is not a reason to decline — it names the specialist: delegate to the agent whose description or capabilities own it (`find_agents_for_capability` when unsure). Never answer that you cannot access a capability a reachable agent has. To join a video meeting/call, route by the link: a `meet.google.com` link → use the `meeting` tool (the voice-participant bot that auto-joins, captures audio, and answers on a wake phrase), NEVER `browser`; the `meeting` tool is Google-Meet-only, so for Zoom/Teams/other links tell the user it isn't supported there. Bouncing the task through another agent only adds latency (each hop is a full LLM round + scope setup) and breaks tool-side session continuity — e.g. headed browser sessions are keyed per `execution_id`, so every delegate/handover hop spawns a fresh Chrome window. **Never create a task the user didn't ask for.** Call `create_task` ONLY when the user EXPLICITLY asks to create, track, schedule, or be reminded of durable work — signals like "create a task", "track this", "remind me", "every morning", "set up a job". A plain question, a lookup, or a one-off "do X now" is NOT a request for a tracked task: answer it directly with your own tools, or with a single `delegate_to_agent` when the capability isn't yours. **Never pair `create_task` with `delegate_to_agent` for the same request** — that leaves an orphaned, never-run card in the user's `/tasks` while the delegate does the real work. One request maps to EXACTLY ONE of: a direct tool call, one `delegate_to_agent` (transient internal run), or one `create_task` (tracked work, only when explicitly requested). For any creative artifact whose voice should sound like yours (written replies you'll quote verbatim, GIF/meme reactions, generated images, songs, decks, comic strips), delegate to a creative specialist in your delegation targets and pass `personality_mode=current`. If no creative specialist is available in this scope, tell the user that creative output isn't wired up here. **When a delegated stage's job is to AUTHOR a written deliverable whose text must survive into the final output** (a comic/storyboard script, a report, a draft, an analysis write-up), declare it on that delegation target via `expected_artifacts` (e.g. `expected_artifacts=[{name:'comic_script.md', content_type:'text/markdown'}]`) — the runtime then guarantees the agent actually emits that exact named text artifact, re-running the stage if it only produced media or a one-line summary, so the written work can't be lost inside another tool's argument (e.g. an image-generation prompt). **When a single request spans capabilities that live on DIFFERENT agents** (e.g. research → explain-like-I'm-5 → comic/illustration, where the research specialist and the comic/image specialist are different agents and each stage feeds the next), do NOT dump the whole ask on one specialist that can only do part of it, and do NOT fire a single `delegate_to_agent` — from chat a delegate is fire-and-forget and runs only ONE stage, so the later stages silently never happen. Instead call **`orchestrate_pipeline`** with the FULL request as `goal`. That spins up an orchestration task owned by you whose loop decomposes the ask, delegates each stage to the agent that owns the needed capability (consult your delegation roster / `find_agents_for_capability`), threads each stage's output into the next, and aggregates into one deliverable — the ordered pipeline a chat turn cannot run itself. Use a single `delegate_to_agent` only for genuinely one-shot, single-capability work; use `orchestrate_pipeline` whenever the ask needs multiple dependent capabilities. Pass `personality_mode=current` ONLY for creative artifacts; do NOT pass it for delegations whose result is a status report or factual deliverable (data analysis, SQL results, executive summaries of numbers, GUI action acknowledgements, file ops, web research lookups, debugging output, scraped data). In those cases, omit `personality_mode` so the worker reports in its own crisp domain voice — your tone is wrong for a query result or an action acknowledgement, and forcing it makes the output read as performative. When a specific playbook would sharpen your work, activate it with `activate_skill(name=...)`. Your available playbooks are listed in your context — pick by relevance to the task; don't memorise names. Only one playbook is active at a time, and its content stays in your context every turn while active. Call `deactivate_skill()` when you've moved past the task that needed it — leaving an irrelevant playbook active can bias unrelated work.
+kind: personal
+default_personality: witty
+invocation_policy:
+  # Empty allowed_direct_surfaces means "every default surface". Plane is
+  # deliberately not a default — a terminal the backend does not control must
+  # not reach every existing agent. A non-empty list is an *exact* allowlist,
+  # so opting Magican into the plane requires restating the defaults: omitting
+  # one would silently drop that product surface (the iOS keyboard is the
+  # sharpest case — Write, Ask, and Act each arrive on a different surface).
+  # See docs/plans/2026-08-23-magician-plane-vertical-slice-plan.md Task 2.
+  allowed_direct_surfaces:
+  - chat
+  - realtime_voice
+  - task
+  - delegation
+  - handover
+  - tutor
+  - app_copilot
+  - contextual_assist
+  - plane
+tools:
+# Personal-assistant (Magican) is a FULLY-FUNCTIONAL agent. The universal
+# substrate (UNIVERSAL_BACKEND_PACKS in native_integration.rs) already
+# auto-injects shell, files, http, grep, glob, web_search, web_fetch,
+# read/write/edit_file — plus memory, introspection and task-mgmt — so
+# those are NOT listed here. This block grants only the work tools that are
+# NOT universal: the browser plus the interpreted CLI data tools. Restores
+# the set wrongly stripped in v0.6.683 so Magican runs them itself instead
+# of mis-delegating (e.g. a headed-browser task no longer bounces to a
+# non-browser agent).
+- awk
+- browser
+# Google-Meet participant bot (compiled tool): join + on-device wake-word + realtime
+# voice. Without this grant a "join the meeting" ask falls back to plain `browser`
+# (passive join — no mic switch, no capture, no voice response).
+- meeting
+# Magican's OWN email + WhatsApp identities (Magican's own external inbox via AgentMail;
+# Magican's own number via Kapso) — peers of the presto-* Google tools.
+- agentmail-read
+- agentmail-send
+- kapso-whatsapp-read
+- kapso-whatsapp-send
+- htmltotext
+- jq
+- document-to-markdown
+- ocr
+# Screen observation (capture + answer) — Magican SEES the screen on explicit
+# ask via shell (screencapture / cua-driver) + ocr/vision CLI.
+# Tutor/App Copilot drawing is surface-conditional and is injected only by the
+# typed feature policy; ordinary Magican chat and voice never receive it.
+- screen-observation
+- pdftotext
+- rg
+- sed
+- treasurer
+- internal_data
+# Magican's OWN Google identity — hard-pinned forks of the gws
+# skills (NO account param; structurally cannot touch the owner's accounts).
+# The owner's multi-account gmail/calendar/sheets stay on Vera (executive-assistant).
+- presto-gmail
+- presto-calendar
+- presto-sheets
+#
+# Memory + read-only introspection + task mgmt on existing tasks +
+# workspace artifacts arrive automatically via the universal
+# substrate (see `extract_direct_capabilities` in
+# `native_integration.rs`). Listing them here would be a no-op (the
+# substrate-injection's duplicate-skip prevents double-add):
+#   Memory:     search_memory, forget_memory, update_memory_tier,
+#               save_preference, list_memory_tiers
+#   Read intro: list_agents, list_artifacts,
+#               list_scheduled_tasks, get_active_executions,
+#               get_execution_history, list_tasks, get_task_details
+#               (get_task_details = minimal compiled read; the rich
+#                chat-only `get_task_details_for_chat`,
+#                `describe_agents_for_chat`, and `list_tools_for_chat`
+#                are auto-surfaced by the chat-runtime tool list, not
+#                opted-in here.)
+#   Task mgmt:  stop_task, update_task, delete_task, refine_task
+#   Workspace:  create_dashboard, unpublish_dashboard
+#
+# Face-coupled task ops — bind new tasks to `__chat_session_id` for
+# progress fan-out + status-card rendering. The bridge hydrates the
+# live chat session via the chat fast-path.
+- create_task
+- run_task
+# Recurring Monitors (Phase 4) — the chat trio for explicit "watch X on a
+# cadence" asks: preview (interpret + review card, never creates) →
+# create (requires the previewed contract's fingerprint) → update (edit an
+# existing monitor). Generic create_task behavior is unchanged; monitoring
+# asks route HERE instead.
+- preview_monitor
+- create_monitor
+- update_monitor
+# Notes. Phase 4 shipped the publishing layer and Phase 5 the tools; without
+# a grant here they are registered and unreachable, which is the state this
+# work existed to end. `create_note` writes a new page, `append_note` adds to
+# an existing one (or the dated Inbox page), `publish_task_to_note` puts a
+# settled task's own record into the space.
+- create_note
+- append_note
+- publish_task_to_note
+- open_note
+- save_selection_to_note
+# `search_notes` reads the notes rather than an index of them, so it is always
+# current and covers a provider fallback. Search before saying something is not
+# written down, and before creating a note that may already exist.
+- search_notes
+# App-platform Phase 5C — owner-facing query and brokered composition. These
+# scope-wide grants are projected only onto direct local chat; autonomous/task,
+# app-workflow, realtime/external, delegated and outward catalogs omit them.
+- app_discover
+- app_data_query
+- app_data_search
+- app_data_compose
+- app_action_invoke
+- app_action_compose
+- app_memory_propose
+# Note: the Android verbs are owned by Pilot (android-operator), the same way
+# macOS automation is owned by Bolt (mac-operator). Driving a phone is a
+# distinct capability with its own risk, and one place to grant it means one
+# answer to "what can touch my phone". Reach it by delegation.
+# Phase 3.5e — Attach the chat session to a task's live event
+# stream (activity card + incremental outputs + status cards).
+# Personal-agent-only; not registered on autonomous agents or
+# delegates. Single-slot per session: subscribing to a new task
+# auto-detaches from the prior one. Auto-detaches on terminal
+# status. Use when the user asks about an existing task's progress.
+# Vision sub-tools. Two provider-pinned alternatives the LLM picks
+# between when the user shares an image and the active chat profile
+# isn't vision-capable (or for an A/B comparison). Both return the
+# same `{description, voice_summary, ...}` envelope so callers can
+# swap providers without reshaping the result.
+- analyze_image_via_openai
+- analyze-image-via-minimax
+# Procedure playbooks (activate via activate_skill, single-active).
+# `activate_skill` / `deactivate_skill` are universal control tools
+# (always present, same tier as `goal_reached`) — no allowlist entry
+# needed.
+- meeting-prep-brief-format
+- presentation-design-principles
+# ELI5 — bounded procedure for writing high-quality "explain like I'm 5"
+# renderings. Activate ONLY at the moment you start writing the
+# explanation (not during research/gathering). Deactivate same turn the
+# explanation is rendered — body re-injects every turn while active.
+- eli5-explainer
+# Note: macos-script-automation is owned by Bolt (mac-operator) and the Android
+# verbs by Pilot (android-operator). Magican reaches both the same way, by NAMING
+# them in `delegation_targets` at the bottom of this file — one machine class,
+# one operator, one place the capability is granted. That list was `['*']` until
+# 2026-08-21; see the block above it for why it is explicit and must stay so.
+- delegate_to_agent
+- handover_to_agent
+excluded_tools: []
+denied_tools: []
+denied_tool_params: {}
+constraints:
+  max_iterations: 4000
+  max_tokens_per_cycle: 20000000
+  max_consecutive_failures: 3
+  requires_approval: []
+  approval_ttl_secs: 86400
+  coordination:
+    max_delegation_depth: 3
+    allow_transitive_delegation: true
+  allow_self_modification: false
+  max_duration_secs: null
+trust_level: local
+memory_tiers:
+- name: entities
+  scope: agent
+  description: Extracted entities (people, places, projects) with attributes and recency tracking
+  schema:
+    entities:
+      type: collection
+      max_items: 1000
+      item_schema:
+        name:
+          type: text
+        last_seen:
+          type: date_time
+        attributes:
+          type: key_value_list
+        type:
+          type: text
+  render:
+    format: compact_summary
+    template: '{entities}'
+  retention: forever
+- name: insights
+  scope: agent
+  description: Distilled insights and patterns with confidence scores and provenance
+  schema:
+    insights:
+      type: collection
+      max_items: 100
+      item_schema:
+        pattern:
+          type: text
+        type:
+          type: text
+        confidence:
+          type: text
+        evidence_count:
+          type: text
+        staleness_risk:
+          type: text
+        source_episodes:
+          type: key_value_list
+        merged_from:
+          type: key_value_list
+        created_at:
+          type: date_time
+  render:
+    format: compact_summary
+    template: '{insights}'
+  retention: forever
+- name: recent_activity
+  scope: agent
+  description: Agent-scoped summary of recent activity, tools used, and outcome
+  schema:
+    summary:
+      type: text
+    period:
+      type: document
+    key_actions:
+      type: collection
+      max_items: 10
+    tools_used:
+      type: collection
+      max_items: 20
+    topics:
+      type: collection
+      max_items: 20
+    outcome_status:
+      type: text
+  render:
+    format: compact_summary
+    template: '{summary}'
+  retention: !days 30
+- name: archive
+  scope: agent
+  description: Long-term archived summaries of past activity periods
+  schema:
+    summaries:
+      type: collection
+      max_items: 500
+      item_schema:
+        key_events:
+          type: key_value_list
+        summary:
+          type: document
+        period:
+          type: text
+        entity_mentions:
+          type: key_value_list
+        source_episode_ids:
+          type: collection
+          max_items: 6
+  render:
+    format: compact_summary
+    template: '{summaries}'
+  retention: forever
+- name: task_progress
+  scope: agent_goal
+  description: Per-goal progress tracking with status, notes, and pending items
+  schema:
+    goal_id:
+      type: text
+    status:
+      type: text
+    first_seen:
+      type: date_time
+    context_summary:
+      type: text
+    items:
+      type: collection
+      max_items: 50
+      item_schema:
+        id:
+          type: text
+        description:
+          type: text
+        status:
+          type: text
+    notes:
+      type: collection
+      max_items: 20
+  render:
+    format: compact_summary
+    template: '{context_summary}'
+  retention: goal_lifetime
+- name: environment_knowledge
+  scope: agent
+  description: Learned knowledge about websites, APIs, CLI tools, and environments
+  schema:
+    environments:
+      type: collection
+      max_items: 500
+      item_schema:
+        name:
+          type: text
+        successful_patterns:
+          type: text
+        layout_notes:
+          type: text
+        environment_key:
+          type: text
+        known_blockers:
+          type: key_value_list
+        auth_required:
+          type: text
+        last_used:
+          type: date_time
+        failure_modes:
+          type: text
+        use_count:
+          type: text
+        kind:
+          type: text
+        page_type:
+          type: text
+  render:
+    format: compact_summary
+    template: '{environments}'
+  retention: forever
+- name: personality_profile
+  scope: agent
+  description: Active personality configuration — tone, expression preferences, suppression rules, and expression triggers
+  schema:
+    voice:
+      type: text
+    expression_bias:
+      type: text
+    suppression_rules:
+      type: text
+    expression_triggers:
+      type: text
+    active_mode:
+      type: text
+  render:
+    format: compact_summary
+    template: 'Voice: {voice} | Expression: {expression_bias} | Triggers: {expression_triggers} | Suppression: {suppression_rules} | Mode: {active_mode}'
+  retention: forever
+# Immutable agent self-identity facts (the agent's OWN external accounts, not the
+# owner's). Deliberately has NO memory_consolidation rule targeting it, so the LLM
+# consolidator can never upsert/overwrite it; retention forever stops expiry. The
+# tier name contains "identity" so the chat memory ranker scores it in the top
+# priority band (base_tier_priority 90) — it stays in the AGENT MEMORY block every
+# turn. Seed/update via the agent's update_memory_tier tool (or a direct write to
+# memory/agents/<agent>/tiers/self_identity.json). Ships empty in a fresh install;
+# the operator seeds the agent's own external accounts here.
+- name: self_identity
+  scope: agent
+  description: Magican's own durable external identities (immutable self-facts; the agent itself, not the owner). Never consolidated, never expires.
+  schema:
+    facts:
+      type: text
+  render:
+    format: compact_summary
+    template: '{facts}'
+  retention: forever
+memory_consolidation:
+- name: extract_entities
+  trigger: step_completed
+  source: episodes(unprocessed=true)
+  target: entities
+  transform:
+    type: llm
+    prompt: $ref:memory_extract_entities:1.2.0
+    system_prompt: $ref:memory_extract_entities_system:1.2.0
+    merge: upsert_by_name
+- name: extract_insights
+  trigger: step_completed
+  source: episodes(unprocessed=true)
+  target: insights
+  transform:
+    type: llm
+    prompt: $ref:memory_extract_insights:1.0.0
+    system_prompt: $ref:memory_extract_insights_system:1.0.0
+    merge: upsert_by_name
+- name: summarize_recent_activity
+  trigger:
+    batch:
+      min_episodes: 10
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: recent_activity
+  transform:
+    type: llm
+    prompt: $ref:memory_summarize_activity:1.0.0
+    system_prompt: $ref:memory_summarize_activity_system:1.0.0
+- name: update_task_progress
+  trigger: step_completed
+  source: episodes(unprocessed=true)
+  target: task_progress
+  transform:
+    type: structured
+    builtin: map_episode_to_task
+# Cycle-end twin of update_task_progress. Its ONLY job is to write a tier on
+# every completed cycle so `updated_targets` is non-empty — which is the gate
+# (memory_consolidator.rs ~755) that arms the task_episode → work-evidence
+# distiller. Without a cycle_completed tier-writing rule that distiller never
+# fires (PA's other rules are step_completed/batch/retention). Structured
+# (map_episode_to_task) so the tier write costs no extra LLM call.
+- name: update_task_progress_on_cycle
+  trigger: cycle_completed
+  source: episodes(unprocessed=true)
+  target: task_progress
+  transform:
+    type: structured
+    builtin: map_episode_to_task
+- name: distill_insights
+  trigger:
+    batch:
+      interval_hours: 24
+      max_staleness_hours: 72
+  source: tiers(insights)
+  target: insights
+  transform:
+    type: llm
+    prompt: $ref:memory_distill_insights:1.1.0
+    system_prompt: $ref:memory_distill_insights_system:1.1.0
+    merge: upsert_by_similarity
+- name: archive_old_episodes
+  trigger:
+    batch:
+      interval_hours: 48
+      max_staleness_hours: 168
+      min_episodes: 20
+      # 2026-05-23 — Staleness fallback. Without this, low-activity
+      # rules never reach `min_episodes` and the backlog of
+      # memory_candidates sits unconsolidated indefinitely.
+      # 24 h gives `>=1 unprocessed episode` a chance to land in
+      # the semantic / agent tiers even when bursts don't happen.
+  source: episodes(unprocessed=true)
+  target: archive
+  transform:
+    type: llm
+    prompt: $ref:memory_archive_episodes:1.0.0
+    system_prompt: $ref:memory_archive_episodes_system:1.0.0
+    merge: append_period
+- name: expire_old_episodes
+  trigger: retention_expiry
+  source: episodes(unprocessed=false)
+  target: archive
+  transform:
+    type: structured
+    builtin: append_archive_summary
+- name: extract_environment_knowledge
+  trigger:
+    batch:
+      min_episodes: 10
+      max_staleness_hours: 24
+  source: episodes(unprocessed=true)
+  target: environment_knowledge
+  transform:
+    type: llm
+    prompt: $ref:memory_extract_environment_knowledge:1.1.0
+    system_prompt: $ref:memory_extract_environment_knowledge_system:1.1.0
+    merge: upsert_by_name
+- name: promote_to_user
+  trigger:
+    batch:
+      interval_hours: 72
+      max_staleness_hours: 168
+  source: tiers(insights)
+  target: user.preferences
+  transform:
+    type: llm
+    prompt: $ref:memory_promote_to_user:1.1.0
+    system_prompt: $ref:memory_promote_to_user_system:1.1.0
+    merge: upsert_by_name
+prompt_pipeline:
+  sections:
+  - name: persona
+    source: definition.persona
+    content: null
+    required: true
+    condition: null
+    format: null
+    filter: null
+  - name: personality
+    source: memory.tier[personality_profile]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: memory_context
+    source: memory.episodes(limit=5)
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: task_progress
+    source: memory.tier[task_progress].context_summary
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: shared_research
+    source: memory.tier[environment_knowledge]
+    content: null
+    required: false
+    condition: null
+    format: null
+    filter: null
+  - name: failure_context
+    source: feedback.failure_context
+    content: null
+    required: false
+    condition: has_recent_failures
+    format: null
+    filter: null
+  - name: success_patterns
+    source: feedback.success_patterns
+    content: null
+    required: false
+    condition: has_recent_successes
+    format: null
+    filter: null
+  output_rules:
+    max_context_tokens: 4000
+    truncation_priority:
+    - task_progress
+    - personality
+    - shared_research
+    - success_patterns
+    - failure_context
+    - memory_context
+circuit_breaker:
+  thresholds:
+  - failures: 1
+    action: inject_failure_context
+    escalation: null
+    notify: []
+  - failures: 3
+    action: open_circuit
+    escalation: null
+    notify:
+    - chat
+  recovery:
+    trigger: user_reset
+  per_goal_override: {}
+  idle_failure_threshold: 3
+  idle_open_duration_minutes: 60
+feedback_loops:
+- name: failure_adaptation
+  trigger: episode.outcome.is_failed
+  extract:
+    source: episodes(goal_id, limit=5)
+    filter: outcome.is_failed
+    fields: []
+  transform: failure_context
+  inject_into: prompt_pipeline.failure_context
+- name: success_reinforcement
+  trigger: episode.outcome.is_succeeded
+  extract:
+    source: episodes(goal_id, limit=10)
+    filter: outcome.is_succeeded
+    fields: []
+  transform: success_patterns
+  inject_into: prompt_pipeline.success_patterns
+- name: strategy_effectiveness
+  trigger: episode.outcome.is_completed
+  extract:
+    source: strategy_summary
+    filter: null
+    fields: []
+  transform: record_strategy
+  inject_into: strategy_context
+notification_rules:
+- match: agent.cycle.failed
+  severity: medium
+  channels:
+  - chat
+  condition: null
+  message: null
+- match: approval.requested
+  severity: high
+  channels:
+  - chat
+  condition: null
+  message: null
+retention:
+  episodes:
+    default_days: 7
+    on_failure: null
+    per_goal_override: {}
+    consolidate_before_delete: true
+  corrections:
+    resolved_days: 30
+    active: forever
+  definition_versions:
+    keep_last: 10
+llm_routing: null
+strategy: !fixed atomic_composition
+state_machines:
+  task_lifecycle:
+    initial_state: idle
+    states:
+    - idle
+    - planning
+    - executing
+    - reviewing
+    - completed
+    - failed
+    transitions:
+    - actions:
+      - persist_state
+      from: idle
+      on: start
+      to: planning
+    - actions:
+      - persist_state
+      from: planning
+      on: plan_ready
+      to: executing
+    - actions:
+      - persist_state
+      from: executing
+      on: done
+      to: reviewing
+    - actions:
+      - persist_state
+      from: reviewing
+      on: accept
+      to: completed
+    - actions:
+      - persist_state
+      from: reviewing
+      on: retry
+      to: executing
+    - actions:
+      - persist_state
+      from: executing
+      on: error
+      to: failed
+    - actions:
+      - persist_state
+      from: failed
+      on: retry
+      to: planning
+autonomous_config:
+  # 2026-06-22 — Intentional off-switch, NOT a bug: `0 0 31 2 *` (Feb 31) never
+  # fires, so the PA's harness cron is parked by design. Leave as-is; the PA still
+  # benefits from the always-running worker-reflection + memory lanes.
+  schedule: 0 0 31 2 *
+  focus_areas:
+  - name: general
+    description: General-purpose autonomous tasks
+    priority: medium
+  max_tasks_per_cycle: 3
+  max_steps_per_plan: 10
+is_primary: true
+user_memory_isolation: shared
+# 2026-08-21 — WAS `['*']`: the last wildcard delegation route on a non-system
+# agent. It is an explicit list now, and it must stay one, for two reasons that
+# are not tidiness.
+#
+# 1. It reached `executive-assistant` — the OWNER's Gmail, Calendar, Sheets,
+#    WhatsApp, Telegram and iMessage — without ever naming it. That is the same
+#    vacuity §5A.1 closed on `creative-mind`: a delegation test that string-
+#    matches a target id cannot see a wildcard. It also reached the entire
+#    COMPANY harness (`ceo`/`cmo`/`cro`/`cpo`/`cto`, `company-assistant`,
+#    `vc-researcher`, `architect` and the engineer squad), and `ceo` owns the
+#    edge to `ambassador`, the company's outward voice. The owner's router has
+#    no business entering the company's roster.
+# 2. It was 23 targets, all injected into every PA prompt. `'*'` expands to
+#    every enabled non-system agent that permits wildcard delegation, and the
+#    2026-07-11 harness log recorded exactly that — "[DELEGATION]
+#    personal-assistant -> 23 targets injected into prompt (ALL agents)" — as
+#    the input to an agentic-loop stack overflow that took the server down.
+#
+# The list below is short because it is EVIDENCED, not because short is safe.
+# Two bands, kept apart on purpose so a later reader knows which entries rest on
+# a shipped artifact and which rest on this file's own word.
+#
+# PROVEN — an artifact in this repo pins the edge:
+#   mac-operator         `narrow_feature_delegation_targets` (chat/service.rs)
+#                        retains exactly this id for `FeatureMode::AppCopilot`,
+#                        and `prepare_tutor_mac_operator_delegation` keys the
+#                        tutor_action envelope on this exact id. Drop it and the
+#                        App Copilot delegation lane resolves to nothing.
+#   web-researcher       the `chat.delegate.status_changed` fixture pins
+#                        `origin_agent_id: personal-assistant` ->
+#                        `target_agent_id: web-researcher`, and the
+#                        `orchestrate_pipeline` decomposition tests use it as
+#                        PA's first stage.
+#   creative-mind        `test_spine_reconcile_resumes_parent_with_comic_child`
+#                        parks a PA-owned root (`DEFAULT_AGENT_ID`) on a
+#                        `creative-mind` child and threads its media back into
+#                        PA's resume prompt. The persona's "creative specialist"
+#                        is this agent: nothing else owns image / video / meme /
+#                        comic / PPTX.
+#   executive-assistant  the tools block above grants PA only the `presto-*`
+#                        identities, on purpose — the OWNER's mail, calendar and
+#                        messaging live on Vera. This edge is the owner's own
+#                        router reaching the owner's own assistant, which is
+#                        what `no_company_officer_may_delegate_to_the_owners_
+#                        assistant` exempts by name. Naming it here makes the
+#                        edge reviewable instead of incidental; it is the one
+#                        entry a reviewer should challenge first.
+#
+# DECLARED by this file and by nothing else — no test, no recorded execution:
+#   android-operator     the tools block above states the Android verbs are
+#                        Pilot's and are "reached by delegation". PA holds no
+#                        android tool, so omitting it would silently delete the
+#                        only route to the owner's phone.
+#   simple-data-analyst  the persona names "data analysis, SQL results" among
+#                        the delegated results PA must not re-voice. This is the
+#                        only agent owning that capability, and PA holds no
+#                        Metabase / workbook tool.
+#
+# CONFIRMED BY THE OWNER, 2026-08-21 — the four the repo could not prove.
+# `'*'` reached them and no prompt, test or charter recorded whether PA used
+# them; the owner states all four are in typical use, which is evidence the
+# repo does not contain and could not have inferred:
+#   writing-assistant, internal-system-analyst, harness-sre, wealth-manager.
+#
+# Two are worth a note for whoever reviews this next:
+#   * `wealth-manager` holds `gmail` and `imessage` — the OWNER's inbox and
+#     messaging. That is the owner's own router reaching the owner's own
+#     finance tool, the same consequence class the owner affirmed for
+#     `executive-assistant` keeping whatsapp/telegram. It is not the §5A.1
+#     shape, because nothing delegates INTO personal-assistant: it is a root
+#     the owner drives, not a hop an autonomous chain can take.
+#   * `harness-sre` holds `delegate_to_agent`, so it is a re-delegation hop.
+#     Bounded today — its own targets are `internal-system-analyst` and `cto`.
+#     If that list ever widens, this edge widens with it.
+#
+# NEVER restore `'*'`, and never add the company harness. The list is enforced,
+# not decorative: `authorize_owner_transition` refuses any owner transition
+# outside `resolve_effective_delegation_target_ids_for_surface`, and
+# `find_agents_for_capability` filters discovery through the same set — so an id
+# missing here is a capability PA reports as unavailable, not one it reaches by
+# another name.
+delegation_targets:
+- mac-operator
+- android-operator
+- web-researcher
+- creative-mind
+- simple-data-analyst
+- executive-assistant
+- writing-assistant
+- internal-system-analyst
+- harness-sre
+- wealth-manager
+
+social_persona:
+  introversion: 0.5
+  daily_tokens: 2000
+  opted_out: false

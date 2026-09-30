@@ -1,0 +1,335 @@
+name: presto-sheets
+version: 0.1.0
+description: Read, create, update, format, and share cloud Google Sheets specifically through Presto's own Google Workspace identity.
+parameters:
+- name: command
+  required: true
+  param_type: string
+  description: Outer-loop fallback command string after `gws sheets`, for example "+read --spreadsheet ID --range Sheet1!A1:D10". Ignored while implementation.type is primitive.
+- name: timeout_secs
+  param_type: integer
+  description: Command timeout in seconds
+  default: '30'
+auth:
+  required: true
+  setup_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth login -s gmail,sheets,drive,docs,calendar
+  check_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth status
+  reauth_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth login -s gmail,sheets,drive,docs,calendar
+  error_patterns:
+  - '401'
+  - authError
+  - No OAuth client configured
+  - Token has been expired or revoked
+native_action_schemas:
+  read:
+    description: |
+      Read values from a range in a cloud Google Sheet through Presto's
+      own Workspace identity. Typed params enforce required `spreadsheet`
+      and `range`.
+    argv:
+    - sheets
+    - +read
+    parameters:
+    - spreadsheet
+    - range
+    - format
+    - extra_args
+    required:
+    - spreadsheet
+    - range
+    parameter_overrides:
+      spreadsheet:
+        type: string
+        description: Spreadsheet ID (the long token in the sheets URL). Maps to `--spreadsheet`.
+      range:
+        type: string
+        description: A1-notation range, e.g. `Sheet1!A1:D10`. Maps to `--range`.
+      format:
+        type: string
+        enum:
+        - json
+        - csv
+        - table
+        description: Output format. Maps to `--format`.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens for flags this schema does not yet surface.
+      args: &id001
+        type: array
+        items:
+          type: string
+        description: |
+          DEPRECATED — use typed parameters plus `extra_args`. Kept so
+          the long-tail args-bag actions in this pack still validate.
+    arg_mappings:
+    - type: flag
+      flag: --spreadsheet
+      param: spreadsheet
+    - type: flag
+      flag: --range
+      param: range
+    - type: flag
+      flag: --format
+      param: format
+    - type: passthrough
+      param: extra_args
+  append:
+    description: |
+      Append row values to a cloud Google Sheet through Presto's own
+      Workspace identity. Typed params enforce required `spreadsheet`
+      and `range`.
+    argv:
+    - sheets
+    - +append
+    parameters:
+    - spreadsheet
+    - range
+    - values
+    - extra_args
+    required:
+    - spreadsheet
+    - range
+    - values
+    parameter_overrides:
+      spreadsheet:
+        type: string
+        description: Target spreadsheet ID. Maps to `--spreadsheet`.
+      range:
+        type: string
+        description: A1-notation range to append into (e.g. `Sheet1!A:D`). Maps to `--range`.
+      values:
+        type: string
+        description: Comma-separated row values (or JSON array, depending on +append helper semantics). Maps to `--values`.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+    - type: flag
+      flag: --spreadsheet
+      param: spreadsheet
+    - type: flag
+      flag: --range
+      param: range
+    - type: flag
+      flag: --values
+      param: values
+    - type: passthrough
+      param: extra_args
+  spreadsheets_get:
+    description: Inspect metadata and tab ids for a cloud Google Sheet through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - get
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  spreadsheets_create:
+    description: Create a new cloud Google Sheet through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - create
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  spreadsheets_batch_update:
+    description: Apply structural, formatting, validation, chart, or tab-level changes through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - batchUpdate
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  values_get:
+    description: Read one cloud Google Sheet range through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - values
+    - get
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  values_update:
+    description: Write values to one cloud Google Sheet range through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - values
+    - update
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  values_batch_get:
+    description: Read multiple cloud Google Sheet ranges through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - values
+    - batchGet
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  values_batch_update:
+    description: Write multiple cloud Google Sheet ranges through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - values
+    - batchUpdate
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  values_clear:
+    description: Clear one cloud Google Sheet range while retaining formatting through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - values
+    - clear
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  values_batch_clear:
+    description: Clear multiple cloud Google Sheet ranges while retaining formatting through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - values
+    - batchClear
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  values_append:
+    description: Append rows to a cloud Google Sheet through Presto's own Workspace identity and the low-level API.
+    argv:
+    - sheets
+    - spreadsheets
+    - values
+    - append
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  copy_to:
+    description: Copy a Google Sheet tab into another cloud spreadsheet through Presto's own Workspace identity.
+    argv:
+    - sheets
+    - spreadsheets
+    - sheets
+    - copyTo
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  raw:
+    description: 'Escape hatch: run exact argv tokens after `gws sheets` for any Sheets CLI command not listed above.'
+    argv:
+    - sheets
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  help:
+    description: 'Run exact gws help argv. Examples: ["--help"], ["sheets","--help"], ["sheets","+read","--help"].'
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    skip_tool_name: true
+  auth_status:
+    description: Run `gws auth status` for Presto's own account (reach.magican@gmail.com).
+    argv:
+    - auth
+    - status
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+  auth_login:
+    description: Run `gws auth login` for Presto's own account (reach.magican@gmail.com) when re-authentication is explicitly needed.
+    argv:
+    - auth
+    - login
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+  auth_setup:
+    description: Run `gws auth setup` for first-time OAuth setup.
+    argv:
+    - auth
+    - setup
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+implementation:
+  type: primitive
+  command:
+  - 'gws'
+  program: 'gws'
+  arg_mappings:
+  - type: split_positional
+    param: command
+  content_type: tool_output
+  timeout_secs: 30
+  env:
+    GOOGLE_WORKSPACE_CLI_CONFIG_DIR: '{scope_capability_auth_root}/gws-presto'
+    CLOUDSDK_CONFIG: '{scope_capability_auth_root}/gws-presto/cloudsdk'
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - spreadsheet
+  - google-sheets
+  - google-workspace
+  - cloud
+  - cloud-data
+  - presto-identity
+  - tabular
+  composition_category: data_operations
+  sandbox: shell

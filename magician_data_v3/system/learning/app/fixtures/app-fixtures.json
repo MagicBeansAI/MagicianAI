@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "one_proposed_memory_candidate",
+      "entity": "learning_candidate",
+      "value": {
+        "candidate_id": "lc_3f9a2c81e4b74d0a",
+        "candidate_type": "memory_fact",
+        "state": "proposed",
+        "title": "Prefers concise replies",
+        "summary": "The owner asked for concise replies in code reviews.",
+        "risk_level": "low",
+        "source_agent_id": "personal-assistant",
+        "review_required": true,
+        "created_at": "2026-08-26T09:07:00Z",
+        "updated_at": "2026-08-26T09:07:00Z",
+        "synced_at": "2026-08-26T09:10:00Z"
+      }
+    },
+    {
+      "name": "one_approve_decision",
+      "entity": "review_decision",
+      "value": {
+        "candidate_id": "lc_3f9a2c81e4b74d0a",
+        "candidate_type": "memory_fact",
+        "decision": "approve",
+        "reason": "Matches the owner's stated preference; promote through the first-party review API.",
+        "decided_at": "2026-08-26T09:12:00Z"
+      }
+    }
+  ],
+  "workflows": [],
+  "views": [
+    { "name": "queue_with_one_record", "view": "queue", "minimum_records": 1 },
+    {
+      "name": "decisions_with_one_record",
+      "view": "decisions",
+      "minimum_records": 1
+    }
+  ]
+}

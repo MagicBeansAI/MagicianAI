@@ -1,0 +1,8 @@
+{
+  "name": "@magician/skill-rg",
+  "private": true,
+  "description": "ripgrep binary, vendored via @vscode/ripgrep so the skill works without a system-installed `rg`. `make setup-skill-bins` symlinks the binary into bin/.",
+  "dependencies": {
+    "@vscode/ripgrep": "^1.17.1"
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "contract_version": 1,
+  "phase": 4,
+  "goal": "connect_model_decisions_to_authoritative_runtime_behavior",
+  "identity": {
+    "required": [
+      "trace_id",
+      "llm_call_id",
+      "model_tool_call_id",
+      "tool_execution_id",
+      "branch_id"
+    ],
+    "tool_execution_id": "llm_call_id:tool:model_tool_call_id",
+    "arguments": "scoped_hmac_sha256_canonical_json_only",
+    "payload_content_in_fact_dataset": false
+  },
+  "stages": [
+    "proposed",
+    "name_validated",
+    "arguments_parsed",
+    "schema_validated",
+    "authorization_resolved",
+    "approval_resolved",
+    "execution_started",
+    "execution_finished",
+    "result_validated",
+    "result_consumed",
+    "branch_materialized",
+    "rollback_started",
+    "rollback_finished",
+    "linkage_gap"
+  ],
+  "independent_classifications": [
+    "name_known",
+    "arguments_parsed",
+    "schema_matched",
+    "policy_allowed",
+    "approval_required",
+    "approval_obtained",
+    "transport_ran",
+    "tool_reported_success",
+    "result_validation_success",
+    "failure_owner",
+    "side_effect_state"
+  ],
+  "semantic_invariants": {
+    "result_validation_requires_actual_result": true,
+    "tool_failure_does_not_imply_result_contract_failure": true,
+    "transport_failure_side_effect_state": "unknown_until_authoritative_rollback",
+    "admission_failure_side_effect_state": "none",
+    "approval_obtained_implies_approval_required": true,
+    "result_consumer_must_differ_from_producing_call": true
+  },
+  "covered_surfaces": [
+    "chat_tools",
+    "agentic_compiled_tools",
+    "mcp_tools",
+    "browser_and_screen_actions",
+    "delegation",
+    "external_coding_engine_boundary"
+  ],
+  "governed_reads": {
+    "stable_relation": "llm_tool_calls",
+    "rest": [
+      "GET /analytics/llm/traces",
+      "GET /analytics/llm/traces/{trace_id}",
+      "GET /analytics/llm/calls/{llm_call_id}"
+    ],
+    "internal_data": [
+      "list_llm_traces",
+      "read_llm_trace",
+      "read_llm_call"
+    ],
+    "content_class": "fact_only"
+  },
+  "exit": "every_covered_execution_has_producing_call_and_authoritative_outcome_or_explicit_gap",
+  "tests": [
+    "multiple_and_parallel_tool_calls",
+    "invalid_arguments",
+    "approval_denied",
+    "external_outage",
+    "cancellation",
+    "rollback",
+    "result_consumed_once_and_multiple_times",
+    "abandoned_branch",
+    "cross_execution_delegation",
+    "cross_scope_read_denial"
+  ]
+}

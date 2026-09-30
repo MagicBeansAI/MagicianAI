@@ -1,0 +1,123 @@
+{
+  "name": "atomic_composition",
+  "version": "1.1.0",
+  "content": [
+    "You are an expert planner that composes complex tasks using ONLY the atomic tools listed below.",
+    "",
+    "**Task**: \"{query}\"",
+    "",
+    "### Available Atomic Tools",
+    "{tools_description}",
+    "",
+    "{{#if has_feedback}}",
+    "### Validation Feedback",
+    "{feedback_text}",
+    "Use this feedback to correct any issues in the next plan.",
+    "",
+    "{{/if}}",
+    "### Planning Priorities",
+    "1. Default to browser-first flows using the Playwright type atomic tools whenever a step can be accomplished in the page.",
+    "2. Use shell or file atomic tools only when they directly support the browser workflow (e.g., inspecting local files, preparing data) and prefer read-only actions unless the user requested a modification.",
+    "3. Never schedule destructive shell commands (rm, mv, chmod, package installs, process control, etc.) without explicit user consent.",
+    "",
+    "### Instructions",
+    "1. Decompose the task into a sequence of atomic tool calls (one tool per step).",
+    "2. Provide clear descriptions, required parameters, and expected outputs for every step. Call out in the description whenever a non-browser tool is used and explain why it is necessary.",
+    "3. Honour dependencies between steps (reference prior step numbers when outputs are required).",
+    "4. Identify any missing information as \"missing_inputs\" entries (these map to elicitation prompts).",
+    "5. Return a JSON object that matches the schema shown below.",
+    "",
+    "### Output JSON Schema",
+    "```json",
+    "{",
+    "  \"plan\": [",
+    "    {",
+    "      \"step\": 1,",
+    "      \"tool\": \"tool_name\",",
+    "      \"description\": \"What this step does\",",
+    "      \"parameters\": { \"param_name\": \"value\" },",
+    "      \"dependencies\": [1],",
+    "      \"expected_output\": \"Describe the result\"",
+    "    }",
+    "  ],",
+    "  \"missing_inputs\": [",
+    "    {",
+    "      \"parameter\": \"param_name\",",
+    "      \"step\": 1,",
+    "      \"prompt\": \"What do we need from the user?\"",
+    "    }",
+    "  ],",
+    "  \"execution_strategy\": \"sequential\" | \"parallel\",",
+    "  \"estimated_duration_ms\": 2000,",
+    "  \"confidence\": 0.9",
+    "}",
+    "```",
+    "",
+    "### Important Notes",
+    "- Use ONLY the atomic tools provided above.",
+    "- Parameters must conform to the tool schemas (names, types, required flags).",
+    "- If a required parameter is missing, do NOT guess: add it to \"missing_inputs\" with a helpful prompt.",
+    "- Dependencies should reference previous step numbers (e.g., step 2 depends on step 1 -> \"dependencies\": [1]).",
+    "- Confidence should reflect overall likelihood of success (0.0 – 1.0).",
+    "- Prefer chaining Playwright/browser automation steps so the browser can complete the workflow end-to-end whenever feasible.",
+    "",
+    "Respond with a single JSON object that adheres to the schema above. Do not include markdown fences in the final output.",
+    ""
+  ],
+  "variables": [
+    {
+      "name": "query",
+      "description": "Original user task/query to solve",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "summarize the latest press release from OpenAI",
+        "check my email for invoices and draft a response",
+        "collect uptime statistics for api.example.com"
+      ]
+    },
+    {
+      "name": "tools_description",
+      "description": "Formatted list of atomic tools and their parameters",
+      "required": true,
+      "default_value": "No atomic tools available",
+      "examples": [
+        "[Category: browser]\n- browser_goto_page: Navigate...\n    - Param: url (REQUIRED)"
+      ]
+    },
+    {
+      "name": "has_feedback",
+      "description": "Flag indicating whether validation feedback should be shown",
+      "required": false,
+      "default_value": "false",
+      "examples": ["true", "false"]
+    },
+    {
+      "name": "feedback_text",
+      "description": "Validation feedback from previous attempt",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "Missing required parameter 'target_host' in step 2. Please add to plan.",
+        "Tool browser_click used without prior browser_goto_page step."
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "AtomicComposition",
+    "description": "Prompt template for generating atomic multi-step execution plans",
+    "author": "MagicianV2",
+    "created_at": "2025-10-09T00:00:00Z",
+    "tags": [
+      "atomic",
+      "planning",
+      "composition",
+      "tools",
+      "execution_plan"
+    ],
+    "estimated_tokens": 820,
+    "breaking_changes": false,
+    "backward_compatible": true,
+    "changelog": "v1.1.0: Bias plan generation toward browser-first flows and reinforce non-destructive shell usage"
+  }
+}

@@ -1,0 +1,52 @@
+# Local generation kitty. Auto-setup still picks one tier from
+# runtime.ollama.local_generation; this file is what the operator reads
+# and what `make setup-local-generation` installs on demand.
+#
+# Scores measured 2026-09-13 on this Magician tree. Channel numbers are
+# golden-eval-channel.py (think:false, format:json). Browser numbers are
+# probe-browser-tools-real.py (real Chrome, local fixtures, think:true).
+# resident_gb is steady-state after load, not the MLX 32k-loop peak.
+
+models:
+  - id: qwen3.8-ud2-mtp
+    label: Qwen 3.8 27B
+    ollama: qwen3.8-ud2-mtp
+    install: create-gguf
+    disk_gb: 9.8
+    resident_gb: 11
+    min_memory_gb: 36
+    classify_agree_pct: 68.0
+    distill_recall_pct: 82.7
+    browser_effect: "4/4"
+    browser_protocol: "3/4"
+    tok_s_channel: 70
+    notes: "Auto-picked on 36 GB+. llama.cpp GGUF + MTP."
+
+  - id: gemma4:12b
+    label: Gemma 4 12B
+    ollama: gemma4:12b
+    install: ollama-pull
+    disk_gb: 7.6
+    resident_gb: 8
+    min_memory_gb: 24
+    classify_agree_pct: 55.0
+    distill_recall_pct: null
+    browser_effect: "4/4"
+    browser_protocol: "2/4"
+    tok_s_channel: null
+    notes: "Auto-picked on 24–35 GB. ollama pull."
+
+  - id: woof-4b
+    label: Underdog Woof 4B
+    ollama: woof-4b
+    install: mlx-safetensors
+    hf_repo: ConwayResearch/Underdog-Woof-4B-1.1
+    disk_gb: 2.4
+    resident_gb: 3
+    min_memory_gb: 16
+    classify_agree_pct: 39.0
+    distill_recall_pct: 82.7
+    browser_effect: "3/4"
+    browser_protocol: "2/4"
+    tok_s_channel: 86
+    notes: "Auto-picked on 16–23 GB. 4-bit MLX Qwen3.5, DOM browser executor. ollama create --experimental. Distill matches Qwen; classify is weaker; real-browser search missed the Search button."

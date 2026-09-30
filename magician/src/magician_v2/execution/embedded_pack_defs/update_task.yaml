@@ -1,0 +1,57 @@
+name: update_task
+description: Replace fields on an existing task — title, description, priority, due_date, tags, schedule. Pass only the fields you want to change.
+version: "1.0.0"
+guide: |
+  Tool name: `update_task`
+
+  Inputs (all optional except `task_id`; at least one mutating field
+  must be present or the call errors):
+  - `task_id` (required) — task to update.
+  - `title` — replacement title.
+  - `description` — replacement description (use `refine_task` if you
+    want to APPEND a clarification instead of replacing).
+  - `priority` — priority label.
+  - `due_date` — ISO-8601 due date.
+  - `tags` — array of tag names. Replaces the existing tag set.
+  - `schedule` — TaskSchedule object (or `null` to clear).
+
+  Returns the updated `{task_id, title, description, priority,
+  due_date, tags}` snapshot on success.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: Task id to update.
+  - name: title
+    param_type: string
+    description: Replacement title. Omit to keep the existing title.
+    default: ""
+  - name: description
+    param_type: string
+    description: Replacement description. Use `refine_task` to append instead.
+    default: ""
+  - name: priority
+    param_type: string
+    description: Priority label.
+    default: ""
+  - name: due_date
+    param_type: string
+    description: ISO-8601 due date.
+    default: ""
+  - name: tags
+    param_type: array
+    description: Replacement tag list (array of strings).
+  - name: schedule
+    param_type: object
+    description: TaskSchedule object. Pass `null` to clear an existing schedule.
+implementation:
+  type: compiled
+  provider_name: update_task
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - tasks
+    - mutation
+  composition_category: action
+  sandbox: none

@@ -1,0 +1,148 @@
+[workspace]
+members = [
+    "magicllm",
+    "magician-app-contract",
+    "magician-api",
+    "magician-apps",
+    "magician-media",
+    "magician-learning",
+    "magician-chunking",
+    "magician-surfaces",
+    "magician-bin",
+    "magician-comms",
+    "magician-components",
+    "magician-setup",
+    "magician-core",
+    "document-to-markdown-cli",
+    "magician-mcp-client",
+    "magician",
+    "magician-event-taxonomy",
+    "magician-pty",
+    "magician-vector-index",
+    "magician-storage",
+    "magician-storage-gate1",
+    "magician-storage-s3",
+    "magician-storage-state",
+    "magician-storage-migration",
+    "runtime-core",
+    "magic-supervisor",
+    "magicutor",
+    "magician-decision",
+    "decision-engine-contract",
+    "decision-engine",
+]
+exclude = [
+    "desktop/src-tauri",
+    "kindle",
+    ".cache/agent-browser-src",
+    ".cache/agent-browser-src-v0.33.1",
+    ".cache/agent-browser-src-v0.33.1-magician",
+    ".cache/agent-browser-src-v0.38.1-magician",
+    ".cache/agent-browser-src-v0.38.1-magician/cli",
+]
+resolver = "2"
+
+# Common deps shared across magician-family crates. Each member opts in
+# with `dep = { workspace = true, features = [...] }`. The magicutor /
+# magicllm / magic-supervisor / runtime-core / tool-runtime-core crates
+# may pin different versions intentionally and are not migrated here.
+[workspace.dependencies]
+# One reviewed source revision per extracted library; no sibling path overrides.
+# Secure-HITL P2/P4 (2026-09-23): every sibling crate pins the tip of its
+# repository's `main`. A `[patch]` pointing at ../MagicVault-secure-hitl and
+# ../MagicRun-secure-hitl stood here while those branches were unpushed; it made
+# the workspace unbuildable anywhere the sibling folders did not exist, so it had
+# to go before this branch merged. Both branches have since landed on main
+# (MagicRun `ea7631df` = tool-runtime-core 0.1.75, the CLI lane's declared login
+# prompts; MagicVault `659da930` = magicvault-core 0.1.5 + primitives 0.1.2, the
+# one-time custody work). MagicRun then moved to `b25d989d` = tool-runtime-core
+# 0.1.76, the brokered-egress process jail (MagicRun PR #1); MagicVault needed
+# no change for it. MagicRun `70ceac91` = tool-runtime-core 0.1.77 (PR #2):
+# interpreter mode for the jail, plus the macOS process-count watchdog fix
+# without which every jailed child sampled after start was killed. MagicVault
+# again needed no change (it never uses the jail). MagicRun `532bdad2` = tool-runtime-core
+# 0.1.78 (PR #3): `stage_input_file`, the per-jail task ceiling and the
+# required in-jail helper on Linux, Linux birth-time directory identity. MagicRun
+# `167bb112` = tool-runtime-core 0.1.79 (PR #5): no host file descriptor leaks
+# into a jail (or an unjailed Linux batch child); PR #4 added the tests. MagicRun
+# `d27efd25` = tool-runtime-core 0.1.80 (PR #6): the macOS descriptor listing
+# uses an 8 KiB stack buffer instead of 32 KiB. MagicRun `c65fbbaa` =
+# tool-runtime-core 0.1.81 (PR #7): declared exec roots (run an installed
+# program in place under read/exec-only roots), `sweep_stale_jail_members`,
+# and the fail-closed `JailTeardownIncomplete` macOS teardown result.
+# MagicVault `5849709` = magicvault-core 0.1.6 (MagicVault PR #1, #2): secret
+# domain scoping takes a host set or all sites (`*`); its own lock selects
+# MagicRun 0.1.81.
+#
+# effect and protocol move to the same MagicVault rev rather than lagging twelve
+# commits behind: one rev per repository means `magicvault-effect`, which depends
+# on tool-runtime-core by version from MagicRun's default branch, resolves the
+# same 0.1.75 magician links instead of an older 0.1.74 beside it.
+tool-runtime-core = { git = "https://github.com/MagicBeansAI/MagicRun.git", rev = "c65fbbaac46a70f8a1247307fc7daa5ded018275" }
+magicvault-core = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "5849709138e1d0ee9f2b7da4ca71b896eedbf3b1" }
+magicvault-effect = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "5849709138e1d0ee9f2b7da4ca71b896eedbf3b1" }
+magicvault-protocol = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "5849709138e1d0ee9f2b7da4ca71b896eedbf3b1" }
+magicvault-primitives = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "5849709138e1d0ee9f2b7da4ca71b896eedbf3b1" }
+tokio = { version = "1.0" }
+serde = { version = "1.0" }
+serde_json = "1.0"
+serde_yaml = "0.9"
+async-trait = "0.1"
+tracing = "0.1"
+anyhow = "1.0"
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = "1.0"
+base64 = "0.22"
+futures-util = "0.3"
+blake3 = "1.0"
+rmcp = { version = "=3.1.0", default-features = false }
+unicode-normalization = "0.1"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+codegen-units = 16
+incremental = true
+# macOS relinks the whole binary on every edit. "unpacked" leaves debug info in
+# the per-object .o files instead of copying it into the executable's debug map
+# on each link, trimming link time for a binary this size. (Already the macOS
+# platform default in recent cargo; pinned here so the intent is explicit.)
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+opt-level = 0
+
+# Force NDEBUG on the bundled DuckDB C++ even in debug builds. Without
+# this, libduckdb-sys's build script (which gates NDEBUG on Cargo's
+# DEBUG env var) leaves DuckDB's `D_ASSERT` macros live — any transient
+# parquet decoder edge case calls abort() and takes down the magician
+# process. Cargo sets DEBUG=false when `debug = 0/false`, so we override
+# both `debug` and `debug-assertions` to be safe across Cargo versions.
+# opt-level = 3 also keeps the bundled C++ performant (DuckDB at
+# opt-level 0 is painfully slow in dev). The Rust code inside
+# libduckdb-sys is just thin FFI bindings — losing the Rust-side
+# debug info costs us nothing.
+[profile.dev.package.libduckdb-sys]
+debug = false
+debug-assertions = false
+opt-level = 3
+
+# MLX's build script selects Debug/Release C++ from its debug_assertions cfg.
+# Unoptimized CPU kernels make Kev's fp32 LoRA merge and Q8 quantization take
+# minutes on every load. Optimize this numerical dependency in dev too; the
+# Decision Engine and Magician Rust code keep the normal debug profile.
+[profile.dev.package.mlx-sys]
+debug-assertions = false
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# kev-rs (magician-decision's optional `mlx` feature) needs this patched
+# mlx-sys (JIT Metal build, deployment-target override); Cargo does not
+# propagate a dependency's [patch], so every consumer repeats it.
+[patch.crates-io]
+mlx-sys = { git = "https://github.com/codesoda/laya-rs.git", rev = "23fff422666fd5039998fd8a55ca57f7e40d224b" }

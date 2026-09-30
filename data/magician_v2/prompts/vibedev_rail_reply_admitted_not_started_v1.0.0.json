@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_admitted_not_started",
+  "version": "1.0.0",
+  "content": [
+    "Your build is recorded but it has not started yet.",
+    "",
+    "Task {task_id} is durably admitted — the whole run, including what to build, is on disk — so nothing is lost and sending the same message again will not create a second run. It gets started by whoever is already holding it, and at the latest the next time the service restarts. Watch the task card for {task_id}."
+  ],
+  "variables": ["task_id"],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply when a `@vibedev` turn durably admitted its run but did not reach dispatch — the claim was lost to another worker, or a retry replayed an intent that has not been started yet. Deliberately distinct from both neighbours: the start-failure reply promises `Nothing was left running`, which is false here, and the started reply says the task is running, which is also false.",
+    "author": "magician",
+    "created_at": "2026-08-11T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` admitted-but-not-started reply.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply"],
+    "estimated_tokens": 70
+  }
+}

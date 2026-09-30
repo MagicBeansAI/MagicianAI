@@ -1,0 +1,38 @@
+[
+  {
+    "cache_creation_tokens": null,
+    "cache_read_tokens": null,
+    "completed_at_ms": 1790542018352,
+    "cost_usd": null,
+    "input_tokens": null,
+    "latency_ms": 0,
+    "llm_call_id": "01M3J9XXSFQB2PA69HQP71CCNW",
+    "model": "jev-1.13.0",
+    "operation": "memory_conflict_review",
+    "output_tokens": null,
+    "principal": "memory-owner-eval",
+    "provider": "decision:systemone:typesafe",
+    "provider_attempt_count": 1,
+    "response_reused": false,
+    "success": false,
+    "workspace": "01M3J9XXATEJF4XA0P18QE5RJA"
+  },
+  {
+    "cache_creation_tokens": null,
+    "cache_read_tokens": null,
+    "completed_at_ms": 1790542022334,
+    "cost_usd": 0.0,
+    "input_tokens": 265,
+    "latency_ms": 3979,
+    "llm_call_id": "01M3J9XXSKVCDEV8N54TKQJXW1",
+    "model": "kev-4b-mlx",
+    "operation": "memory_conflict_review",
+    "output_tokens": 0,
+    "principal": "memory-owner-eval",
+    "provider": "decision:kev-mlx",
+    "provider_attempt_count": 1,
+    "response_reused": false,
+    "success": true,
+    "workspace": "01M3J9XXATEJF4XA0P18QE5RJA"
+  }
+]

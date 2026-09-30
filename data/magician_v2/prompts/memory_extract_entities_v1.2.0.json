@@ -1,0 +1,63 @@
+{
+  "name": "memory_extract_entities",
+  "version": "1.2.0",
+  "content": [
+    "Extract structured entities from the following episodic memory data.",
+    "",
+    "## Source Episodes ({episode_count} episodes)",
+    "{source_json}",
+    "",
+    "## Target Tier Schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Read each episode carefully, prioritizing `memory_candidates`, `memory_updates`, final output excerpts, and the final outcome. Extract only durable entities that are likely to help future work: people, organizations, stable projects, reusable tools, stable preferences, workflows, and recurring patterns.",
+    "2. Normalize entity names to their canonical form and merge references to the same real-world entity across episodes.",
+    "3. Treat the target tier schema above as authoritative. Every entity object must contain only fields declared by its collection `item_schema`; do not copy a field from source data merely because it is available.",
+    "4. Assess evidence strength internally. Emit `confidence`, source/provenance fields, attributes, mention counts, timestamps, relationships, or any other metadata only when that exact field is declared by the target item schema and use the declared value type.",
+    "5. If the schema cannot represent a useful entity without inventing an off-schema field, omit that entity. Prefer an empty result over invalid or low-value output.",
+    "6. Do NOT extract transient trace debris: task IDs, execution IDs, one-off local test page URLs, temporary output filenames, internal helper names, or single-run implementation details unless the user explicitly asked to remember them or they describe a reusable environment/tool pattern.",
+    "7. Prefer fewer high-quality entities over exhaustive extraction. Skip low-value entities even if mentioned many times.",
+    "8. Respect each episode's `memory_quality.extraction_priority`: low-priority/progress-only episodes should contribute only when a durable fact is explicit in `memory_candidates`, `memory_updates`, or final output excerpts.",
+    "",
+    "Return either a JSON object with the target collection field or a bare JSON array of entity objects. The runtime will normalize either shape. Do not add any other wrapper fields.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized array of episodic memory entries to extract entities from",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"id\": \"ep_001\", \"content\": \"User asked to schedule meeting with Alice\", \"timestamp\": \"2026-03-01T10:00:00Z\"}]"
+      ]
+    },
+    {
+      "name": "tier_schema",
+      "description": "Authoritative JSON schema describing the target memory tier and allowed entity item fields",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "{\"entities\":{\"type\":\"collection\",\"item_schema\":{\"name\":{\"type\":\"text\"},\"type\":{\"type\":\"text\"}}}}"
+      ]
+    },
+    {
+      "name": "episode_count",
+      "description": "Number of episodes in the source data",
+      "required": true,
+      "default_value": "0",
+      "examples": ["5", "20", "100"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "Schema-bound user prompt for durable entity extraction from episodic memory data.",
+    "author": "magician",
+    "created_at": "2026-07-16T00:00:00Z",
+    "changelog": "v1.2.0: Makes the target item schema authoritative and makes confidence, provenance, attributes, mentions, timestamps, and relationships conditional on declared fields. v1.1.0: Prioritizes durable memory candidates and rejects transient trace debris.",
+    "tags": ["memory", "consolidation", "entity-extraction", "schema-bound"],
+    "estimated_tokens": 260
+  }
+}

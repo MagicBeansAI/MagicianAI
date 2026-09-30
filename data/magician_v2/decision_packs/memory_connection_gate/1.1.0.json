@@ -1,0 +1,27 @@
+{
+  "id": "memory_connection_gate",
+  "version": "1.1.0",
+  "description": "Bounded memory decisions; qualified heads never bypass existing source and mutation validation.",
+  "questions": [
+    {
+      "id": "worth_surfacing",
+      "kind": "noul",
+      "instructions": "Would connecting the activity with these eligible memories provide useful specific context, an unmet condition, an opportunity, or an unresolved important question now? Respect all exceptions. No routine reassurance, moralizing, or invented concern.",
+      "criteria": {
+        "is_true": "Concrete grounded useful connection now",
+        "is_false": "Only topical similarity, satisfied condition, unsupported inference, or interruption without benefit"
+      }
+    },
+    {
+      "id": "surface",
+      "kind": "choice",
+      "instructions": "Choose one surface from the supplied `sources`. Apply this order: none if there is no concrete useful connection; hitl only if a missing or conflicting fact requires a specific answer from the owner before the connection can be explained; for_you for a known opportunity, unmet condition, or implication tied to an explicit personal goal; otherwise worth_a_look for optional context. A known pending action or unregistered event does not itself create missing information. Never request action authorization.",
+      "criteria": {
+        "none": "No grounded useful connection, mere topic overlap, or an already satisfied condition.",
+        "worth_a_look": "Grounded optional background context without an explicit personal goal, actionable opportunity, or unresolved question.",
+        "for_you": "A concrete implication or opportunity for an explicit owner goal or preference. The relevant facts are known; the owner can decide what to do without answering a factual clarification.",
+        "hitl": "An explicit material contradiction or missing fact prevents resolving the connection. A neutral factual question must be answerable by the owner; pending action alone is not a reason for HITL."
+      }
+    }
+  ]
+}

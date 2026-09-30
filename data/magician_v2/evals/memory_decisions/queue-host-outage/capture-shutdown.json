@@ -1,0 +1,23 @@
+{
+  "activation": {
+    "broadcast_events_lost": 0,
+    "dispatch_events_lost": 0,
+    "dispatch_terminal_events_seen": 0,
+    "external_aggregate_events_ignored": 0,
+    "gap_records_emitted": 0,
+    "records_accepted": 6,
+    "records_rejected": 0,
+    "response_events_seen": 2,
+    "reused_responses_ignored": 0,
+    "tool_lineage_events_seen": 0
+  },
+  "durable_pipeline": {
+    "drained_records": 6,
+    "emitted_gap_records": 0,
+    "flush_error": null,
+    "rejected_after_shutdown": 0,
+    "remaining_buffered_records": 0,
+    "remaining_missing_records": 0,
+    "timed_out": false
+  }
+}

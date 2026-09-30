@@ -1,0 +1,11 @@
+# Swift Package Manager's default scratch dir. The Makefile target
+# (`build-macos-speech-helper-debug`) overrides it with
+# `--scratch-path $(CARGO_TARGET_DIR)/macos-speech-helper`, but Xcode or a
+# bare `swift build` will land artifacts here instead — and a stale binary
+# here shares its name with the staged one. Build only via make.
+.build/
+
+# DerivedData if anyone opens the Package.swift in Xcode
+.swiftpm/
+*.xcuserstate
+xcuserdata/

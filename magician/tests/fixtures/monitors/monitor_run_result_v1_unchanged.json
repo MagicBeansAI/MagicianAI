@@ -1,0 +1,26 @@
+{
+  "monitor_task_id": "task_monitor_fixture_001",
+  "execution_id": "exec_fixture_0004",
+  "monitor_revision": 2,
+  "started_at": "2026-07-23T06:00:00Z",
+  "completed_at": "2026-07-23T06:01:05Z",
+  "status": "unchanged",
+  "complete_scan": true,
+  "source_outcomes": [
+    {
+      "source": "https://acme-robotics.example/pricing",
+      "status": "ok",
+      "complete": true,
+      "items_scanned": 12
+    }
+  ],
+  "counts": {
+    "scanned": 12,
+    "new": 0,
+    "updated": 0,
+    "unchanged": 12,
+    "possibly_removed": 0
+  },
+  "findings": [],
+  "run_fingerprint": "rf_2ab90cd1e57f3346"
+}

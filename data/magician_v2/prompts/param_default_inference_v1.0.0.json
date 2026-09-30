@@ -1,0 +1,89 @@
+{
+  "name": "param_default_inference",
+  "version": "1.0.0",
+  "content": [
+    "Infer a sensible default value for parameter '{parameter_name}' based on context.",
+    "",
+    "Parameter Name: {parameter_name}",
+    "Display Name: {display_name}",
+    "Description: {description}",
+    "User Message: \"{user_message}\"",
+    "",
+    "{context_info}",
+    "",
+    "Task: Analyze the context and determine an appropriate default value for this parameter.",
+    "",
+    "Return JSON only:",
+    "{",
+    "  \"can_infer\": true|false,",
+    "  \"value\": \"default_value\" | null,",
+    "  \"confidence\": 0.0-1.0,",
+    "  \"reasoning\": \"why this default is appropriate or why cannot infer\"",
+    "}",
+    "",
+    "Guidelines:",
+    "- can_infer=true if you can determine a reasonable default from context",
+    "- Consider: tool purpose, user intent, urgency, operation type",
+    "- Examples:",
+    "  - \"quick health check\" → timeout_ms: 2000 (fast)",
+    "  - \"ML training\" → timeout_ms: 120000 (long operation)",
+    "  - \"check server\" + no mentions → use common defaults",
+    "- confidence: 0.6-0.8 for context-based defaults",
+    "- value: the inferred default value",
+    "- reasoning: explain why this default makes sense",
+    "",
+    "If you cannot confidently infer a default, set can_infer=false."
+  ],
+  "variables": [
+    {
+      "name": "parameter_name",
+      "description": "The technical name of the parameter",
+      "required": true,
+      "default_value": null,
+      "examples": ["timeout_ms", "retry_count", "buffer_size"]
+    },
+    {
+      "name": "display_name",
+      "description": "Human-readable name for the parameter",
+      "required": true,
+      "default_value": null,
+      "examples": ["Timeout (ms)", "Retry Count", "Buffer Size"]
+    },
+    {
+      "name": "description",
+      "description": "Description of what this parameter controls",
+      "required": true,
+      "default_value": null,
+      "examples": ["Maximum time to wait for response", "Number of retry attempts"]
+    },
+    {
+      "name": "user_message",
+      "description": "The user's original message or request",
+      "required": true,
+      "default_value": null,
+      "examples": ["quick health check", "run ML training pipeline"]
+    },
+    {
+      "name": "context_info",
+      "description": "Additional context including tool purpose, known parameters, and hints",
+      "required": false,
+      "default_value": "(No additional context available)",
+      "examples": ["Tool: network_diagnostics\nTool Purpose: Check network connectivity\n\nAlready Known Parameters:\n- target: google.com\n\nInference Hints:\n- Use fast timeouts for health checks"]
+    }
+  ],
+  "metadata": {
+    "category": "ParameterElicitation",
+    "description": "Infers context-aware default values for parameters based on tool purpose, user intent, and urgency",
+    "author": "MagicianV2-ProgressiveElicitation",
+    "created_at": "2025-10-22T00:00:00Z",
+    "changelog": "Initial version for Phase 2.1 LLM-based defaults",
+    "tags": [
+      "elicitation",
+      "defaults",
+      "progressive",
+      "inference",
+      "context-aware"
+    ],
+    "estimated_tokens": 320
+  }
+}

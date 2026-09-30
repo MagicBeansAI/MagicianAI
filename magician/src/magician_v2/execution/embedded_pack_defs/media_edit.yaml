@@ -1,0 +1,46 @@
+name: media_edit
+description: Edit audio/video files with ffmpeg. Pick one `operation` (trim, speed, extract_audio, mute_video, convert, merge, concat, overlay_text, thumbnail) and pass its params. Runs in the background — returns a `job_id` immediately; poll with `media_edit_status` until `status` is `completed` or `failed`.
+version: "1.0.0"
+guide: |
+  Tool name: `media_edit`
+
+  Backgrounded ffmpeg-based media editing. This call returns immediately
+  with a `job_id`; the actual ffmpeg run happens asynchronously. Follow up
+  with `media_edit_status(job_id)` until it reports `completed` or `failed`.
+
+  Operations and their `params`:
+  - `trim` — {start_secs, end_secs, fast?}. Cut a time range out of a video.
+  - `speed` — {factor}. Speed up (>1) or slow down (<1) a video, audio pitch-corrected.
+  - `extract_audio` — {} (no params). Pull the audio track out as an mp3.
+  - `mute_video` — {} (no params). Strip the audio track, keep the video.
+  - `convert` — {format, width?, height?}. Transcode container/codec and optionally resize.
+  - `merge` — {sync_offset_ms?}. Combine a video input and an audio input into one file. Requires `input_paths: [video_path, audio_path]`. `sync_offset_ms` shifts audio relative to video to fix drift.
+  - `concat` — {} (no params). Join `input_paths` (2+) into one output, in the given order.
+  - `overlay_text` — {text, position?, font_size?}. Burn in a caption/watermark.
+  - `thumbnail` — {timestamp_secs?}. Grab one still frame as a PNG. Omit `timestamp_secs` for the clip's midpoint.
+
+  `input_paths` are resolved inside the caller's workspace, same rules as
+  `read_file`/`write_file`.
+parameters:
+  - name: operation
+    required: true
+    param_type: string
+    description: One of trim, speed, extract_audio, mute_video, convert, merge, concat, overlay_text, thumbnail.
+  - name: input_paths
+    required: true
+    param_type: array
+    description: "Workspace-relative or absolute paths to the input file(s), in operation-defined order (most ops take one; merge takes [video, audio]; concat takes 2+)."
+  - name: params
+    required: false
+    param_type: object
+    description: Operation-specific parameters — see the guide above for each operation's shape.
+implementation:
+  type: compiled
+  provider_name: media_edit
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 20
+  categories:
+    - media
+  composition_category: action
+  sandbox: none

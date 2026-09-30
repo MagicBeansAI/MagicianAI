@@ -1,0 +1,6 @@
+{
+  "city-correction": {"title":"Delivery address needs review","activity":"A grocery order is being prepared for delivery to the owner's old Delhi home tomorrow. No one else is receiving it there.","expected":"published","allowed_surfaces":["worth_a_look","for_you","hitl"],"must_recall":"Mumbai","must_not_recall":"I live in Delhi."},
+  "trip-exception": {"title":"Anniversary hotel booking","activity":"The anniversary trip hotel being considered costs 250 dollars per night. This is the anniversary trip covered by the owner's temporary hotel budget exception.","expected":"empty","must_recall":"300 dollars","must_not_recall":null},
+  "spending-goal-noncompliance": {"title":"Owner-requested budget check","activity":"Before deciding whether to buy another expensive watch, the owner asks to check this discretionary purchase against their current savings goal.","expected":"published","allowed_surfaces":["worth_a_look","for_you"],"must_recall":"save more money","must_not_recall":null},
+  "availability-exception": {"title":"Launch weekend coordination","activity":"A work meeting is proposed for the launch weekend that the owner explicitly made available. There is no work meeting proposed for any other weekend.","expected":"empty","must_recall":"launch weekend only","must_not_recall":null}
+}

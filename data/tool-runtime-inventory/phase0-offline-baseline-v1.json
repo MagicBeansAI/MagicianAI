@@ -1,0 +1,968 @@
+{
+  "schema_version": "tool-runtime.phase0-offline-baseline.v1",
+  "source_inventory_schema_version": "tool-runtime.source-inventory.v1",
+  "source_classification_schema_version": "tool-runtime.source-classification.v1",
+  "replay_schema_version": "tool-runtime.replay-fixtures.v1",
+  "commerce_boundary_schema_version": "tool-runtime.commerce-boundary.v1",
+  "commerce_policy_schema_version": "tool-runtime.commerce-policy-fixtures.v1",
+  "commerce_handoff_schema_version": "tool-runtime.commerce-handoff.v1",
+  "summary": {
+    "skills": 59,
+    "actions": 412,
+    "representative_tasks": 12,
+    "exceptions": 3,
+    "retained_unknowns": 3,
+    "offline_gate_passed": true,
+    "final_phase0_gate_passed": false
+  },
+  "measurement": {
+    "schema_bytes_method": "runtime_name_description_compact_parameters_v1",
+    "token_estimator": "utf8_bytes_div_4_ceiling",
+    "provider_reported_tokens": "pending_live_agentic_eval"
+  },
+  "catalog": {
+    "schema_bytes": 275007,
+    "estimated_tokens": 68752,
+    "digest": "2f04f0b9436f20139a26ce3923e83b93b9dedfe1abaa887f6783d606781ee0bb",
+    "skills": [
+      {
+        "skill_id": "agentmail-read",
+        "actions": 9,
+        "name_bytes": 236,
+        "description_bytes": 1034,
+        "parameters_bytes": 6955,
+        "schema_bytes": 8225,
+        "estimated_tokens": 2057,
+        "digest": "a318e2238f6127f9b9c13b41912df58d66f9f7f5df2cb4d097421216a166bd86"
+      },
+      {
+        "skill_id": "agentmail-send",
+        "actions": 3,
+        "name_bytes": 64,
+        "description_bytes": 590,
+        "parameters_bytes": 3983,
+        "schema_bytes": 4637,
+        "estimated_tokens": 1160,
+        "digest": "a548abbd596f927aa1da96badb8dfdc50ac5a3fb7b6f76ac97c14b8f15a13162"
+      },
+      {
+        "skill_id": "analyze-image-via-minimax",
+        "actions": 1,
+        "name_bytes": 30,
+        "description_bytes": 399,
+        "parameters_bytes": 551,
+        "schema_bytes": 980,
+        "estimated_tokens": 245,
+        "digest": "91c80842126e64aabf4a66fe773f287a40bb55ba7f540517d4bc0b4cd16ce7ee"
+      },
+      {
+        "skill_id": "arxiv-search",
+        "actions": 1,
+        "name_bytes": 17,
+        "description_bytes": 80,
+        "parameters_bytes": 227,
+        "schema_bytes": 324,
+        "estimated_tokens": 81,
+        "digest": "afaddefe4e828df4d950019f6b33b0480fb1dc9fdc0614e02954a6522a52e454"
+      },
+      {
+        "skill_id": "awk",
+        "actions": 1,
+        "name_bytes": 8,
+        "description_bytes": 206,
+        "parameters_bytes": 507,
+        "schema_bytes": 721,
+        "estimated_tokens": 181,
+        "digest": "b1e308de9bbc695c79d669db9f8088d6cfbad6b3b7453f492dd3bfa60dfff4f1"
+      },
+      {
+        "skill_id": "browser",
+        "actions": 57,
+        "name_bytes": 863,
+        "description_bytes": 5633,
+        "parameters_bytes": 16160,
+        "schema_bytes": 22656,
+        "estimated_tokens": 5664,
+        "digest": "85168e5aa9325030d50026e6f066a07f981bcd6d65eed3cd565354d2d4ddb146"
+      },
+      {
+        "skill_id": "calendar",
+        "actions": 13,
+        "name_bytes": 259,
+        "description_bytes": 631,
+        "parameters_bytes": 7391,
+        "schema_bytes": 8281,
+        "estimated_tokens": 2071,
+        "digest": "8f541240d1de52c1dd1bcc548e61632f1027c51fb4b8222eab4b69cede5bacc8"
+      },
+      {
+        "skill_id": "csvkit",
+        "actions": 15,
+        "name_bytes": 219,
+        "description_bytes": 1694,
+        "parameters_bytes": 5286,
+        "schema_bytes": 7199,
+        "estimated_tokens": 1800,
+        "digest": "552327d3e01f1442ab3980c6cc8892b321db79d9443d4dc71226e4b3aec8a255"
+      },
+      {
+        "skill_id": "deep-research-with-claude",
+        "actions": 1,
+        "name_bytes": 30,
+        "description_bytes": 48,
+        "parameters_bytes": 882,
+        "schema_bytes": 960,
+        "estimated_tokens": 240,
+        "digest": "1b73d0f1c5fae1e8820e86f44cdb6a973d204a2d51c2fb84a4b81362c6f7244c"
+      },
+      {
+        "skill_id": "deep-research-with-openai",
+        "actions": 1,
+        "name_bytes": 30,
+        "description_bytes": 62,
+        "parameters_bytes": 795,
+        "schema_bytes": 887,
+        "estimated_tokens": 222,
+        "digest": "1252531da673cd7d12ec7d4be7c6bf74386975057b569f039efa77b5399d3a30"
+      },
+      {
+        "skill_id": "dugite",
+        "actions": 1,
+        "name_bytes": 11,
+        "description_bytes": 284,
+        "parameters_bytes": 497,
+        "schema_bytes": 792,
+        "estimated_tokens": 198,
+        "digest": "e05710b4cdede67ab57146121be86b1c784ad7b4fe0e08b4d45ce19703ffca73"
+      },
+      {
+        "skill_id": "find-details-by-username",
+        "actions": 4,
+        "name_bytes": 130,
+        "description_bytes": 568,
+        "parameters_bytes": 1784,
+        "schema_bytes": 2482,
+        "estimated_tokens": 621,
+        "digest": "5f75b94afe0f28a979fa6c59ffaadc8bb5160d1f6ca14880e62a760c645fe0d6"
+      },
+      {
+        "skill_id": "gif-search-via-klipy",
+        "actions": 1,
+        "name_bytes": 25,
+        "description_bytes": 49,
+        "parameters_bytes": 512,
+        "schema_bytes": 586,
+        "estimated_tokens": 147,
+        "digest": "d6276430be8b1f42eec228da8ed9afa94ffcac6f47520e44c98e3b9a50639aa3"
+      },
+      {
+        "skill_id": "github-search",
+        "actions": 1,
+        "name_bytes": 18,
+        "description_bytes": 61,
+        "parameters_bytes": 597,
+        "schema_bytes": 676,
+        "estimated_tokens": 169,
+        "digest": "b98ed03a37fed41d7e32f03d4e524a744741ba17e9c00afd27baa462347b664f"
+      },
+      {
+        "skill_id": "gmail",
+        "actions": 18,
+        "name_bytes": 288,
+        "description_bytes": 846,
+        "parameters_bytes": 12148,
+        "schema_bytes": 13282,
+        "estimated_tokens": 3321,
+        "digest": "8453893657550441c75ed76a7a08044f01a88c614a5c76577c01b2663e05ddd7"
+      },
+      {
+        "skill_id": "hackernews-search",
+        "actions": 1,
+        "name_bytes": 22,
+        "description_bytes": 172,
+        "parameters_bytes": 219,
+        "schema_bytes": 413,
+        "estimated_tokens": 104,
+        "digest": "93a34e9e49af4dda3a4982fdccbc210251de8ebccd4539caf58456bf16532ba9"
+      },
+      {
+        "skill_id": "higgsfield",
+        "actions": 1,
+        "name_bytes": 15,
+        "description_bytes": 67,
+        "parameters_bytes": 332,
+        "schema_bytes": 414,
+        "estimated_tokens": 104,
+        "digest": "4cb6307376d9eed1c65fd801f60c754e5288395531857b5ad0a15813241323bf"
+      },
+      {
+        "skill_id": "htmltotext",
+        "actions": 1,
+        "name_bytes": 15,
+        "description_bytes": 119,
+        "parameters_bytes": 685,
+        "schema_bytes": 819,
+        "estimated_tokens": 205,
+        "digest": "7b7e991b51951eb86edeb6d947878b2032e38c8651be59c072e0bf6549d72c3c"
+      },
+      {
+        "skill_id": "image-generation-via-minimax",
+        "actions": 1,
+        "name_bytes": 33,
+        "description_bytes": 605,
+        "parameters_bytes": 1021,
+        "schema_bytes": 1659,
+        "estimated_tokens": 415,
+        "digest": "117a9c8ac5b767a7c12d104308a8aa40aef910e3c4fc746812849aa023c7502c"
+      },
+      {
+        "skill_id": "image-generation",
+        "actions": 1,
+        "name_bytes": 21,
+        "description_bytes": 71,
+        "parameters_bytes": 1517,
+        "schema_bytes": 1609,
+        "estimated_tokens": 403,
+        "digest": "45b06b772388c6ca502ea2ee8c4431f27715933c7934d81e7700810e51608117"
+      },
+      {
+        "skill_id": "jq",
+        "actions": 1,
+        "name_bytes": 7,
+        "description_bytes": 205,
+        "parameters_bytes": 538,
+        "schema_bytes": 750,
+        "estimated_tokens": 188,
+        "digest": "e9b8f832b70510744bdad18ee866f88e97005f7dd047c94a9a73f8fe739382bc"
+      },
+      {
+        "skill_id": "kapso-whatsapp-read",
+        "actions": 8,
+        "name_bytes": 262,
+        "description_bytes": 1385,
+        "parameters_bytes": 3801,
+        "schema_bytes": 5448,
+        "estimated_tokens": 1362,
+        "digest": "206115cb6d328d00d103edc1a04852497b8c351ee0180670979b9505a90ab88c"
+      },
+      {
+        "skill_id": "kapso-whatsapp-send",
+        "actions": 1,
+        "name_bytes": 25,
+        "description_bytes": 350,
+        "parameters_bytes": 692,
+        "schema_bytes": 1067,
+        "estimated_tokens": 267,
+        "digest": "d1223ed9b6e7a5ace66a408aea7a91085f1a142a872f196b4f03e94c996e0317"
+      },
+      {
+        "skill_id": "macos-ui-automation",
+        "actions": 1,
+        "name_bytes": 25,
+        "description_bytes": 675,
+        "parameters_bytes": 640,
+        "schema_bytes": 1340,
+        "estimated_tokens": 335,
+        "digest": "c40d56f4c5779cfe365bf7bf3c1602a0322c41993aff91d70825a9fe522f43a2"
+      },
+      {
+        "skill_id": "marimo",
+        "actions": 20,
+        "name_bytes": 330,
+        "description_bytes": 1400,
+        "parameters_bytes": 5152,
+        "schema_bytes": 6882,
+        "estimated_tokens": 1721,
+        "digest": "4f5bae13b1888c990c00f6aa1d55fb9a0259ad83f09aaba579488d414d7f9d81"
+      },
+      {
+        "skill_id": "meme-generation-via-imgflip",
+        "actions": 1,
+        "name_bytes": 32,
+        "description_bytes": 55,
+        "parameters_bytes": 818,
+        "schema_bytes": 905,
+        "estimated_tokens": 227,
+        "digest": "dd86911868a6fda0a4aaac2f50bf837ef5e1bbf6ffe2b00b0d7e78fec9e1eca9"
+      },
+      {
+        "skill_id": "metabase",
+        "actions": 101,
+        "name_bytes": 2810,
+        "description_bytes": 10737,
+        "parameters_bytes": 66210,
+        "schema_bytes": 79757,
+        "estimated_tokens": 19940,
+        "digest": "d8eedc313d79dd478b172a0ed585fc27d1d704ab2871aec2b6491554695c1b0d"
+      },
+      {
+        "skill_id": "music-generation-via-minimax",
+        "actions": 1,
+        "name_bytes": 33,
+        "description_bytes": 414,
+        "parameters_bytes": 1706,
+        "schema_bytes": 2153,
+        "estimated_tokens": 539,
+        "digest": "e474f00e298445b3f4cd6709a7f638776669c8a4444af5d3c7e062756e5a739b"
+      },
+      {
+        "skill_id": "news-search-via-tavily",
+        "actions": 1,
+        "name_bytes": 27,
+        "description_bytes": 55,
+        "parameters_bytes": 2015,
+        "schema_bytes": 2097,
+        "estimated_tokens": 525,
+        "digest": "7987b0f40686983e74617329f19342a132748bf557a80550cb245e33b8759412"
+      },
+      {
+        "skill_id": "ocr",
+        "actions": 3,
+        "name_bytes": 29,
+        "description_bytes": 1820,
+        "parameters_bytes": 1116,
+        "schema_bytes": 2965,
+        "estimated_tokens": 742,
+        "digest": "622199a063306936bb309e709faeb2012941ac589f0cc1fbd6e2636a681824ae"
+      },
+      {
+        "skill_id": "office-excel",
+        "actions": 14,
+        "name_bytes": 268,
+        "description_bytes": 1246,
+        "parameters_bytes": 8061,
+        "schema_bytes": 9575,
+        "estimated_tokens": 2394,
+        "digest": "65c23a9fec7cbda4f110ace9b5fd12b4bf90f9eedb11588be0d6422e1c0c1e27"
+      },
+      {
+        "skill_id": "office-powerpoint",
+        "actions": 15,
+        "name_bytes": 361,
+        "description_bytes": 1363,
+        "parameters_bytes": 8616,
+        "schema_bytes": 10340,
+        "estimated_tokens": 2585,
+        "digest": "7034dc9300c97e38870a45a5566469c0b25fec4f4f95e51b57186a24563eafda"
+      },
+      {
+        "skill_id": "office-word",
+        "actions": 15,
+        "name_bytes": 274,
+        "description_bytes": 1287,
+        "parameters_bytes": 8453,
+        "schema_bytes": 10014,
+        "estimated_tokens": 2504,
+        "digest": "6ac1f49454adab624cfe68bb5ab8a7c050a258a749cf0a26c996b6ead1e880af"
+      },
+      {
+        "skill_id": "pdftotext",
+        "actions": 1,
+        "name_bytes": 14,
+        "description_bytes": 212,
+        "parameters_bytes": 559,
+        "schema_bytes": 785,
+        "estimated_tokens": 197,
+        "digest": "6f56b7f5593b0ef2a4be40a75e6274b2a43c5429daa4a8858c7c1a0244e02b3f"
+      },
+      {
+        "skill_id": "polymarket-search",
+        "actions": 1,
+        "name_bytes": 22,
+        "description_bytes": 362,
+        "parameters_bytes": 183,
+        "schema_bytes": 567,
+        "estimated_tokens": 142,
+        "digest": "a968f3cdc88236455ef4b07044e218bdac1797ae638496a35e7f3e91612353e5"
+      },
+      {
+        "skill_id": "presto-calendar",
+        "actions": 13,
+        "name_bytes": 350,
+        "description_bytes": 853,
+        "parameters_bytes": 4278,
+        "schema_bytes": 5481,
+        "estimated_tokens": 1371,
+        "digest": "4702d86594f3a257fde94e2f2906c61ae21332dd3a5a3a115de3ef397f9aed06"
+      },
+      {
+        "skill_id": "presto-gmail",
+        "actions": 18,
+        "name_bytes": 414,
+        "description_bytes": 852,
+        "parameters_bytes": 7738,
+        "schema_bytes": 9004,
+        "estimated_tokens": 2251,
+        "digest": "05162e59ad10c234ff13594b41c6ab9beb607806ae6cd894dbc86609d68ca539"
+      },
+      {
+        "skill_id": "presto-sheets",
+        "actions": 18,
+        "name_bytes": 486,
+        "description_bytes": 895,
+        "parameters_bytes": 6026,
+        "schema_bytes": 7407,
+        "estimated_tokens": 1852,
+        "digest": "4a4c3c16965b53c924a6dd46d62772160f5b3c9daac26454c0545ec1cbbd62f2"
+      },
+      {
+        "skill_id": "producthunt-search",
+        "actions": 1,
+        "name_bytes": 23,
+        "description_bytes": 620,
+        "parameters_bytes": 223,
+        "schema_bytes": 866,
+        "estimated_tokens": 217,
+        "digest": "7f28bb2c82279a7ecb29219ef223ecedebf0b9111b9c1f41d9511738cff14c5c"
+      },
+      {
+        "skill_id": "reddit-search",
+        "actions": 1,
+        "name_bytes": 18,
+        "description_bytes": 709,
+        "parameters_bytes": 262,
+        "schema_bytes": 989,
+        "estimated_tokens": 248,
+        "digest": "f8d7fd26da733951ea70222c8e5ff3de4af6916d0145fbb0bdaf46042a597bc4"
+      },
+      {
+        "skill_id": "rg",
+        "actions": 1,
+        "name_bytes": 7,
+        "description_bytes": 205,
+        "parameters_bytes": 559,
+        "schema_bytes": 771,
+        "estimated_tokens": 193,
+        "digest": "104e6114df4ef494e72ceafa8bae398a3f6de223fd2aa1f5afba1f254ff93cd3"
+      },
+      {
+        "skill_id": "screen-draw",
+        "actions": 1,
+        "name_bytes": 17,
+        "description_bytes": 43,
+        "parameters_bytes": 1479,
+        "schema_bytes": 1539,
+        "estimated_tokens": 385,
+        "digest": "c0d749a604f338f4cddf427f760a270ac5facb2d85ac67473da06f32b5b04fc7"
+      },
+      {
+        "skill_id": "sed",
+        "actions": 1,
+        "name_bytes": 8,
+        "description_bytes": 206,
+        "parameters_bytes": 505,
+        "schema_bytes": 719,
+        "estimated_tokens": 180,
+        "digest": "4c1c663d9ae2797b28598a5ff39c008d44dd928701231fde806c5d571d46a867"
+      },
+      {
+        "skill_id": "semantic-websearch-via-exa",
+        "actions": 1,
+        "name_bytes": 31,
+        "description_bytes": 38,
+        "parameters_bytes": 1448,
+        "schema_bytes": 1517,
+        "estimated_tokens": 380,
+        "digest": "c47ffb5ac6709839f3b2e9a922d2f3b49e6710b57f5a4f45c0355cdcd9c0530a"
+      },
+      {
+        "skill_id": "sheets",
+        "actions": 18,
+        "name_bytes": 360,
+        "description_bytes": 889,
+        "parameters_bytes": 10436,
+        "schema_bytes": 11685,
+        "estimated_tokens": 2922,
+        "digest": "071efb9485debe562d0278e6ea80560213c7167e6db84b24be193bc911843bb9"
+      },
+      {
+        "skill_id": "structured-web-data",
+        "actions": 1,
+        "name_bytes": 24,
+        "description_bytes": 51,
+        "parameters_bytes": 212,
+        "schema_bytes": 287,
+        "estimated_tokens": 72,
+        "digest": "279de5e17039503462cd6a0e9e5232ebfc578d2f026203864ffe0bb9c8a490ca"
+      },
+      {
+        "skill_id": "swiggy-mcp",
+        "actions": 5,
+        "name_bytes": 105,
+        "description_bytes": 946,
+        "parameters_bytes": 2886,
+        "schema_bytes": 3937,
+        "estimated_tokens": 985,
+        "digest": "2bb7f3c785c54c18fdc5f5818d68d63dae35593b310c834570da6bb592bbf510"
+      },
+      {
+        "skill_id": "telegram-self",
+        "actions": 1,
+        "name_bytes": 18,
+        "description_bytes": 216,
+        "parameters_bytes": 300,
+        "schema_bytes": 534,
+        "estimated_tokens": 134,
+        "digest": "78d076ea38f476d2b77ec11fab311c25ab4527ee1d0d3c1047c74c891be68fdf"
+      },
+      {
+        "skill_id": "telegram",
+        "actions": 1,
+        "name_bytes": 13,
+        "description_bytes": 211,
+        "parameters_bytes": 278,
+        "schema_bytes": 502,
+        "estimated_tokens": 126,
+        "digest": "ffc4737c0ca840296173f7783ec89e0856cccacbc8f6db16d938545aa539b031"
+      },
+      {
+        "skill_id": "video-generation-via-minimax",
+        "actions": 1,
+        "name_bytes": 33,
+        "description_bytes": 792,
+        "parameters_bytes": 960,
+        "schema_bytes": 1785,
+        "estimated_tokens": 447,
+        "digest": "8f334ec2aab37063d9b8906929d533fe31ec9f5a5f75cab137526b3fef939b14"
+      },
+      {
+        "skill_id": "video-generation-via-veo",
+        "actions": 1,
+        "name_bytes": 29,
+        "description_bytes": 53,
+        "parameters_bytes": 2069,
+        "schema_bytes": 2151,
+        "estimated_tokens": 538,
+        "digest": "5c79dd2afa030eb4a5bd9b48d4b2a607adf0cdb7c1cf2579be5207059aad3be8"
+      },
+      {
+        "skill_id": "web-search-via-minimax",
+        "actions": 1,
+        "name_bytes": 27,
+        "description_bytes": 660,
+        "parameters_bytes": 379,
+        "schema_bytes": 1066,
+        "estimated_tokens": 267,
+        "digest": "d5d77ad1275fbcc1cd5a3eb0ce9e29ad5eb1c35fa54d134a6e616c13aa7b7309"
+      },
+      {
+        "skill_id": "websearch-via-claude",
+        "actions": 1,
+        "name_bytes": 25,
+        "description_bytes": 45,
+        "parameters_bytes": 663,
+        "schema_bytes": 733,
+        "estimated_tokens": 184,
+        "digest": "583b94e626f224e6fa29d3369498285e729b9cd440d4085ba8020041ccd9fff9"
+      },
+      {
+        "skill_id": "websearch-via-openai",
+        "actions": 1,
+        "name_bytes": 25,
+        "description_bytes": 46,
+        "parameters_bytes": 578,
+        "schema_bytes": 649,
+        "estimated_tokens": 163,
+        "digest": "93e36c29a278d04670cab75c12fc58206401f2e87322ef8be3c3330519f7ddb8"
+      },
+      {
+        "skill_id": "websearch",
+        "actions": 1,
+        "name_bytes": 14,
+        "description_bytes": 212,
+        "parameters_bytes": 376,
+        "schema_bytes": 602,
+        "estimated_tokens": 151,
+        "digest": "ca4d6e97fc86dc361c8b259e6a694100c60a99175f5d312f1e1c1125ef020b2c"
+      },
+      {
+        "skill_id": "whatsapp",
+        "actions": 2,
+        "name_bytes": 28,
+        "description_bytes": 758,
+        "parameters_bytes": 916,
+        "schema_bytes": 1702,
+        "estimated_tokens": 426,
+        "digest": "ce45fd4d1c982a2667af7a1acfaa182f77f824b27d211d8b336d7ea8a6884cc7"
+      },
+      {
+        "skill_id": "whatsgoingon2",
+        "actions": 1,
+        "name_bytes": 18,
+        "description_bytes": 1492,
+        "parameters_bytes": 670,
+        "schema_bytes": 2180,
+        "estimated_tokens": 545,
+        "digest": "d0472b5db0202ae2b664cb4e11c2fa9ede43fc2d052672e71f8038a6dadd2c49"
+      },
+      {
+        "skill_id": "youtube-search",
+        "actions": 1,
+        "name_bytes": 19,
+        "description_bytes": 369,
+        "parameters_bytes": 220,
+        "schema_bytes": 608,
+        "estimated_tokens": 152,
+        "digest": "0777c88ab7f69d9fc35fccb4de1fa3573cc1544729e6bca90564653e053ac070"
+      },
+      {
+        "skill_id": "zepto-mcp",
+        "actions": 5,
+        "name_bytes": 100,
+        "description_bytes": 818,
+        "parameters_bytes": 2571,
+        "schema_bytes": 3489,
+        "estimated_tokens": 873,
+        "digest": "60da6a0cc21bd477421a596455cd35fdbcf93f382500b04a06263cb63b590d0d"
+      }
+    ]
+  },
+  "representative_tasks": [
+    {
+      "id": "browser-profile-session",
+      "skill_id": "browser",
+      "action_ids": [
+        "browser::open",
+        "browser::read"
+      ],
+      "auth_strategies": [
+        "browser_profile",
+        "delegated_credential"
+      ],
+      "auth_requirement": "optional",
+      "profile_policy": "selectable",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "compiled_provider"
+    },
+    {
+      "id": "commerce-oauth-and-checkout",
+      "skill_id": "swiggy-mcp",
+      "action_ids": [
+        "swiggy-mcp::call_tool",
+        "swiggy-mcp::list_tools"
+      ],
+      "auth_strategies": [
+        "oauth_session"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "approval_class": "commerce_checkout",
+      "runtime_owner": "legacy_mcp_wrapper"
+    },
+    {
+      "id": "conditional-cli-ocr",
+      "skill_id": "ocr",
+      "action_ids": [
+        "ocr::extract"
+      ],
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "conditional",
+      "profile_policy": "implicit",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "delegated-coding-session",
+      "skill_id": "higgsfield",
+      "action_ids": [
+        "higgsfield::run"
+      ],
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "implicit",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "fixed-profile-message-send",
+      "skill_id": "kapso-whatsapp-send",
+      "action_ids": [
+        "kapso-whatsapp-send::send"
+      ],
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "fixed",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "google-profile-read-and-send",
+      "skill_id": "gmail",
+      "action_ids": [
+        "gmail::send",
+        "gmail::triage"
+      ],
+      "auth_strategies": [
+        "cli_profile"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "selectable",
+      "approval_class": "conditional_external_side_effect",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "host-screen-drawing",
+      "skill_id": "screen-draw",
+      "action_ids": [
+        "screen-draw::call"
+      ],
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "host_gateway"
+    },
+    {
+      "id": "local-document-authoring",
+      "skill_id": "office-word",
+      "action_ids": [
+        "office-word::create",
+        "office-word::set"
+      ],
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "external_cli"
+    },
+    {
+      "id": "native-ui-control",
+      "skill_id": "macos-ui-automation",
+      "action_ids": [
+        "macos-ui-automation::call"
+      ],
+      "auth_strategies": [
+        "native_permission"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "approval_class": "native_ui_control",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "public-paper-research",
+      "skill_id": "arxiv-search",
+      "action_ids": [
+        "arxiv-search::run"
+      ],
+      "auth_strategies": [
+        "none"
+      ],
+      "auth_requirement": "none",
+      "profile_policy": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "secret-backed-image-generation",
+      "skill_id": "image-generation",
+      "action_ids": [
+        "image-generation::run"
+      ],
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    },
+    {
+      "id": "secret-backed-news-research",
+      "skill_id": "news-search-via-tavily",
+      "action_ids": [
+        "news-search-via-tavily::run"
+      ],
+      "auth_strategies": [
+        "secrets"
+      ],
+      "auth_requirement": "required",
+      "profile_policy": "none",
+      "approval_class": "ordinary",
+      "runtime_owner": "skill_adapter"
+    }
+  ],
+  "coverage": {
+    "auth_strategies": {
+      "browser_profile": 1,
+      "cli_profile": 3,
+      "delegated_credential": 1,
+      "native_permission": 1,
+      "none": 3,
+      "oauth_session": 1,
+      "secrets": 4
+    },
+    "auth_requirements": {
+      "conditional": 1,
+      "none": 3,
+      "optional": 1,
+      "required": 7
+    },
+    "profile_policies": {
+      "fixed": 1,
+      "implicit": 3,
+      "none": 6,
+      "selectable": 2
+    },
+    "approval_classes": {
+      "commerce_checkout": 1,
+      "conditional_external_side_effect": 3,
+      "delegated_workspace_write": 1,
+      "native_ui_control": 1,
+      "ordinary": 6
+    },
+    "runtime_owners": {
+      "compiled_provider": 1,
+      "external_cli": 3,
+      "host_gateway": 1,
+      "legacy_mcp_wrapper": 1,
+      "skill_adapter": 6
+    }
+  },
+  "completion_checks": [
+    {
+      "id": "adapter_classification_complete",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "all_auth_strategies_represented",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "catalog_baseline_recorded",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "commerce_contract_chain_complete",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "finding_dispositions_complete",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "live_agentic_evidence_recorded",
+      "scope": "final",
+      "passed": false
+    },
+    {
+      "id": "replay_fixture_coverage_complete",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "representative_contract_coverage_complete",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "retained_unknowns_assigned_to_future_phases",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "skill_classification_complete",
+      "scope": "offline",
+      "passed": true
+    },
+    {
+      "id": "source_inventory_complete",
+      "scope": "offline",
+      "passed": true
+    }
+  ],
+  "deferred_unknowns": [
+    {
+      "id": "browser-profile-alias-contract",
+      "skills": [
+        "browser"
+      ],
+      "kind": "profile_alias_contract_not_machine_declared",
+      "resolve_by": "phase1_contract"
+    },
+    {
+      "id": "cli-session-scope-contract",
+      "skills": [
+        "ocr",
+        "telegram-self"
+      ],
+      "kind": "session_scope_not_machine_declared",
+      "resolve_by": "phase1_contract"
+    },
+    {
+      "id": "secret-identity-probe-contract",
+      "skills": [
+        "agentmail-read",
+        "agentmail-send",
+        "analyze-image-via-minimax",
+        "claude",
+        "codex",
+        "deep-research-with-claude",
+        "deep-research-with-openai",
+        "gif-search-via-klipy",
+        "github-search",
+        "image-generation",
+        "image-generation-via-minimax",
+        "kapso-whatsapp-read",
+        "kapso-whatsapp-send",
+        "meme-generation-via-imgflip",
+        "metabase",
+        "music-generation-via-minimax",
+        "news-search-via-tavily",
+        "opencode",
+        "semantic-websearch-via-exa",
+        "telegram",
+        "video-generation-via-minimax",
+        "video-generation-via-veo",
+        "web-search-via-minimax",
+        "websearch-via-claude",
+        "websearch-via-openai"
+      ],
+      "kind": "identity_probe_not_machine_declared",
+      "resolve_by": "phase2_auth_broker"
+    }
+  ],
+  "commerce_migration_blockers": [
+    "auth_broker_runtime",
+    "dispatch_phase_evidence",
+    "input_required_resume",
+    "task_resume",
+    "refund_design"
+  ],
+  "live_agentic_evidence": {
+    "status": "pending",
+    "minimum_runs_per_task": 5,
+    "required_metrics": [
+      "task_success",
+      "exact_action_selection",
+      "schema_validity",
+      "auth_profile_correctness",
+      "approval_correctness",
+      "latency_ms",
+      "retries",
+      "input_tokens",
+      "cached_tokens",
+      "output_tokens",
+      "cost_usd"
+    ],
+    "production_migration": "disabled"
+  },
+  "final_blockers": [
+    "live_agentic_evidence"
+  ]
+}

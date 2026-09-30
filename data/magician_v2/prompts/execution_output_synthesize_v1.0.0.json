@@ -1,0 +1,46 @@
+{
+  "name": "execution_output_synthesize",
+  "version": "1.0.0",
+  "content": [
+    "Synthesize the execution-scoped agent output from the following structured bundle.",
+    "",
+    "## Execution Output Bundle",
+    "{bundle_section}",
+    "",
+    "## Instructions",
+    "1. Choose exactly one `media_type` from `allowed_media_types` in the bundle. Prefer `preferred_media_type` unless another allowed type is clearly better.",
+    "2. Summarize the execution result for agent/runtime consumption.",
+    "3. Identify the most important outputs or child results that shaped the outcome.",
+    "4. Note any important remaining caveats or follow-up hooks when they exist in the bundle.",
+    "5. Keep the output concise, factual, and reusable by another agent.",
+    "",
+    "Respond with ONLY valid JSON using this shape:",
+    "{",
+    "  \"media_type\": \"one of allowed_media_types\",",
+    "  \"body_text\": \"text body for markdown/html/plain text outputs\",",
+    "  \"body_json\": null",
+    "}",
+    "",
+    "If you choose `application/json`, set `body_json` instead of `body_text`."
+  ],
+  "variables": [
+    {
+      "name": "bundle_section",
+      "description": "Structured execution synthesis bundle wrapped in <synthesis_bundle> tags",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "<synthesis_bundle format=\\\"json\\\">\\n{\\n  \\\"manifest\\\": {\\\"title\\\": \\\"Collect invoices\\\"},\\n  \\\"outcome\\\": {\\\"outcome_summary\\\": \\\"Downloaded 6 invoices\\\"}\\n}\\n</synthesis_bundle>"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "ResponseGeneration",
+    "description": "User prompt for Magician V3 execution-scoped agent output synthesis.",
+    "author": "magician",
+    "created_at": "2026-03-28T00:00:00Z",
+    "changelog": "v1.0.0: Initial execution output synthesis user prompt for V3 finalizer cutover. Updated to return a media-type envelope.",
+    "tags": ["artifact-v2", "execution-output", "synthesis"],
+    "estimated_tokens": 260
+  }
+}

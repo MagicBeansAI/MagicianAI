@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_no_project",
+  "version": "1.0.0",
+  "content": [
+    "I can't start a build: this workspace has no VibeDev project to build into.",
+    "",
+    "`@vibedev` only ever *finds* a project — it will not create one, because putting a repo somewhere you did not choose is worse than refusing. Open the VibeDev cockpit, create or pick a project there, then come back and try `@vibedev` again."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply when a `@vibedev` chat turn resolves to no VibeDev project. No task is created. Deliberately does not offer to create one: project creation is a cockpit act, and a silently-minted repo is the failure this refusal exists to prevent.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` no-project refusal.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply", "refusal"],
+    "estimated_tokens": 70
+  }
+}

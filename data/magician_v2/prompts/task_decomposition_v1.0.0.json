@@ -1,0 +1,161 @@
+{
+  "name": "task_decomposition",
+  "version": "1.0.0",
+  "content": [
+    "You are an expert task decomposition analyst. Break down the following task into logical subtasks WITH category hints.",
+    "",
+    "TASK TO DECOMPOSE: {task}",
+    "",
+    "{context_section}",
+    "{categories_section}",
+    "STRATEGY: {strategy}",
+    "TARGET SUBTASKS: {estimated_subtasks}",
+    "",
+    "REQUIREMENTS:",
+    "- Break the task into clear, actionable subtasks",
+    "- Each subtask should be specific and executable",
+    "{category_requirement}",
+    "- Consider dependencies between subtasks",
+    "- Estimate complexity for each subtask (0.1-1.0)",
+    "",
+    "FORMAT YOUR RESPONSE AS:",
+    "{format_line_1}",
+    "{format_line_2}",
+    "etc.",
+    "",
+    "EXAMPLE:",
+    "{example_line_1}",
+    "{example_line_2}",
+    "{example_line_3}"
+  ],
+  "variables": [
+    {
+      "name": "task",
+      "description": "The task to decompose into subtasks",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Is google up and running",
+        "Deploy my app to production",
+        "Find all security vulnerabilities"
+      ]
+    },
+    {
+      "name": "context_section",
+      "description": "Parent context from previous decomposition levels",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "CONTEXT: Parent task was checking server health\n"
+      ]
+    },
+    {
+      "name": "categories_section",
+      "description": "Available tool categories for narrowing search space (reduces 8000 tools to 15-50 per category)",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "AVAILABLE TOOL CATEGORIES:\n(Suggest ONE category per subtask to narrow tool search space)\n- network\n- browser\n- http\n- monitoring\n- diagnostics\n\n"
+      ]
+    },
+    {
+      "name": "strategy",
+      "description": "Decomposition strategy (Sequential, Parallel, Hierarchical, Single)",
+      "required": true,
+      "default_value": "Sequential",
+      "examples": [
+        "Sequential",
+        "Parallel",
+        "Hierarchical"
+      ]
+    },
+    {
+      "name": "estimated_subtasks",
+      "description": "Target number of subtasks to generate",
+      "required": true,
+      "default_value": "3",
+      "examples": [
+        "3",
+        "5",
+        "2"
+      ]
+    },
+    {
+      "name": "category_requirement",
+      "description": "Additional requirement line about category specification",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "- For EACH subtask, specify which CATEGORY has tools for it\n"
+      ]
+    },
+    {
+      "name": "format_line_1",
+      "description": "First line of format example showing response structure",
+      "required": false,
+      "default_value": "1. [SUBTASK NAME] (complexity: X.X, dependencies: [list])",
+      "examples": [
+        "1. [SUBTASK NAME] | Category: [category] | Complexity: X.X | Dependencies: [list]",
+        "1. [SUBTASK NAME] (complexity: X.X, dependencies: [list])"
+      ]
+    },
+    {
+      "name": "format_line_2",
+      "description": "Second line of format example",
+      "required": false,
+      "default_value": "2. [SUBTASK NAME] (complexity: X.X, dependencies: [list])",
+      "examples": [
+        "2. [SUBTASK NAME] | Category: [category] | Complexity: X.X | Dependencies: [list]",
+        "2. [SUBTASK NAME] (complexity: X.X, dependencies: [list])"
+      ]
+    },
+    {
+      "name": "example_line_1",
+      "description": "First concrete example line",
+      "required": false,
+      "default_value": "1. Retrieve customer data from database (complexity: 0.4, dependencies: [])",
+      "examples": [
+        "1. Resolve DNS for target | Category: network | Complexity: 0.3 | Dependencies: []",
+        "1. Retrieve customer data from database (complexity: 0.4, dependencies: [])"
+      ]
+    },
+    {
+      "name": "example_line_2",
+      "description": "Second concrete example line",
+      "required": false,
+      "default_value": "2. Clean and validate data (complexity: 0.3, dependencies: [1])",
+      "examples": [
+        "2. Test TCP connection | Category: network | Complexity: 0.4 | Dependencies: [1]",
+        "2. Clean and validate data (complexity: 0.3, dependencies: [1])"
+      ]
+    },
+    {
+      "name": "example_line_3",
+      "description": "Third concrete example line",
+      "required": false,
+      "default_value": "3. Analyze patterns (complexity: 0.7, dependencies: [2])",
+      "examples": [
+        "3. Verify response status | Category: diagnostics | Complexity: 0.3 | Dependencies: [2]",
+        "3. Analyze patterns (complexity: 0.7, dependencies: [2])"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "TaskDecomposition",
+    "description": "Intelligent task decomposition with category-guided tool discovery support. Breaks down complex tasks into executable subtasks with optional category hints to narrow tool search space from 8000 to 15-50 tools.",
+    "author": "MagicianV2",
+    "created_at": "2025-01-30T00:00:00Z",
+    "changelog": "v1.0.0: Initial version with category-guided decomposition support. Supports both category-aware and legacy decomposition modes.",
+    "tags": [
+      "decomposition",
+      "subtasks",
+      "categories",
+      "tool_discovery",
+      "planning",
+      "hierarchical",
+      "sequential",
+      "parallel"
+    ],
+    "estimated_tokens": 420
+  }
+}

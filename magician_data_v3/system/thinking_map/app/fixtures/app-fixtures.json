@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "one_active_map_summary",
+      "entity": "thinking_map_summary",
+      "value": {
+        "map_id": "map_alpha",
+        "title": "Pricing brainstorm",
+        "lifecycle": "active",
+        "latest_revision": 3,
+        "updated_at": "2026-08-26T09:26:00Z",
+        "synced_at": "2026-08-26T09:30:00Z"
+      }
+    },
+    {
+      "name": "one_archived_map_summary",
+      "entity": "thinking_map_summary",
+      "value": {
+        "map_id": "map_beta",
+        "title": "Design review",
+        "lifecycle": "archived",
+        "latest_revision": 1,
+        "updated_at": "2026-08-25T18:00:00Z",
+        "synced_at": "2026-08-26T09:30:00Z"
+      }
+    },
+    {
+      "name": "one_synced_map_snapshot",
+      "entity": "thinking_map_snapshot",
+      "value": {
+        "map_id": "map_alpha",
+        "title": "Pricing brainstorm",
+        "lifecycle": "active",
+        "revision": 3,
+        "snapshot": "{\"schema_version\":1,\"map_id\":\"map_alpha\",\"principal\":\"owner\",\"workspace\":\"default\",\"title\":\"Pricing brainstorm\",\"source\":{\"solo\":{}},\"lifecycle\":\"active\",\"revision\":3,\"nodes\":{\"n_question\":{\"node_id\":\"n_question\",\"kind\":\"question\",\"label\":\"What is the free tier for?\",\"detail_markdown\":\"Framing question from the first session.\",\"epistemic_state\":\"resolved\",\"assertion_origin\":\"owner_spoken\",\"confidence\":1.0,\"source_refs\":[],\"position\":{\"x\":60,\"y\":60},\"position_locked\":false,\"promoted_refs\":[],\"tombstoned\":false,\"created_at\":\"2026-08-26T09:00:00Z\",\"updated_at\":\"2026-08-26T09:05:00Z\"},\"n_decision\":{\"node_id\":\"n_decision\",\"kind\":\"decision\",\"label\":\"Keep the free tier\",\"detail_markdown\":\"Decided after the usage review.\",\"epistemic_state\":\"confirmed\",\"assertion_origin\":\"owner_edited\",\"confidence\":0.9,\"source_refs\":[],\"position\":{\"x\":300,\"y\":80},\"position_locked\":false,\"promoted_refs\":[],\"tombstoned\":false,\"created_at\":\"2026-08-26T09:10:00Z\",\"updated_at\":\"2026-08-26T09:20:00Z\"},\"n_fact\":{\"node_id\":\"n_fact\",\"kind\":\"fact\",\"label\":\"Free tier drives 70% of signups\",\"epistemic_state\":\"asserted\",\"assertion_origin\":\"imported_source\",\"confidence\":0.7,\"source_refs\":[],\"position_locked\":false,\"promoted_refs\":[],\"tombstoned\":false,\"created_at\":\"2026-08-26T09:15:00Z\",\"updated_at\":\"2026-08-26T09:15:00Z\"},\"n_risk\":{\"node_id\":\"n_risk\",\"kind\":\"risk\",\"label\":\"Support cost scales with free seats\",\"epistemic_state\":\"provisional\",\"assertion_origin\":\"model_inferred\",\"confidence\":0.5,\"source_refs\":[],\"position\":{\"x\":160,\"y\":280},\"position_locked\":false,\"promoted_refs\":[],\"tombstoned\":false,\"created_at\":\"2026-08-26T09:25:00Z\",\"updated_at\":\"2026-08-26T09:25:00Z\"}},\"edges\":{\"e_answers\":{\"edge_id\":\"e_answers\",\"from_node\":\"n_question\",\"to_node\":\"n_decision\",\"kind\":\"answers\",\"assertion_origin\":\"owner_spoken\",\"tombstoned\":false,\"created_at\":\"2026-08-26T09:20:00Z\",\"updated_at\":\"2026-08-26T09:20:00Z\"},\"e_supports\":{\"edge_id\":\"e_supports\",\"from_node\":\"n_fact\",\"to_node\":\"n_decision\",\"kind\":\"supports\",\"assertion_origin\":\"imported_source\",\"tombstoned\":false,\"created_at\":\"2026-08-26T09:16:00Z\",\"updated_at\":\"2026-08-26T09:16:00Z\"},\"e_contradicts\":{\"edge_id\":\"e_contradicts\",\"from_node\":\"n_risk\",\"to_node\":\"n_decision\",\"kind\":\"contradicts\",\"assertion_origin\":\"model_inferred\",\"tombstoned\":false,\"created_at\":\"2026-08-26T09:26:00Z\",\"updated_at\":\"2026-08-26T09:26:00Z\"}},\"clarifications\":{},\"proposals\":{},\"created_at\":\"2026-08-26T09:00:00Z\",\"updated_at\":\"2026-08-26T09:26:00Z\"}",
+        "synced_at": "2026-08-26T09:31:00Z"
+      }
+    }
+  ],
+  "workflows": [],
+  "views": [
+    {
+      "name": "library_with_records",
+      "view": "library",
+      "minimum_records": 1
+    }
+  ]
+}

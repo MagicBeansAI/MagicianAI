@@ -1,0 +1,306 @@
+[
+  {
+    "variant": "jev_then_kev_forced_uncertainty",
+    "case_id": "H05",
+    "elapsed_ms": 1300,
+    "request": {
+      "contract_version": 4,
+      "operation": "memory_utility_review",
+      "state": "",
+      "locality": "cloud",
+      "mode": "gate",
+      "request_id": "a3dec4d28372425481f5fd3cb18b6188",
+      "reference_version": "memory-human-review-v1",
+      "expected_policy_revision": "a8988d992709ceb67d8b3011e49ef66ea5153f8444df8f9cf16910a9f677ef9f",
+      "projection_version": "human-review-api-v1",
+      "execution_budget_ms": 60000,
+      "context": null,
+      "items": [
+        {
+          "item_id": "H05",
+          "state": {
+            "evidence": "Memory says the verified invoice reference is INV-583. The completed task asked for that exact reference; the final answer quoted INV-583 from the memory and matched the source."
+          }
+        }
+      ]
+    },
+    "reply": {
+      "request_id": "a3dec4d28372425481f5fd3cb18b6188",
+      "engine_instance": "01M3JSVCGG2MK3VJQM9K9FD33E",
+      "policy_revision": "a8988d992709ceb67d8b3011e49ef66ea5153f8444df8f9cf16910a9f677ef9f",
+      "items": [
+        {
+          "eligible_answers": {
+            "utility": "operator-enabled:72e05523531f9c8bd640f073b3cd53e1fca27e76d4699bd7db7eb9a3ca85555c"
+          },
+          "item_id": "H05",
+          "status": "answered",
+          "response": {
+            "model": {
+              "adapter": "kev-mlx",
+              "model": "kev-4b-mlx"
+            },
+            "pack_id": "memory_utility_review",
+            "pack_version": "1.0.0",
+            "answers": {
+              "utility": {
+                "type": "choice",
+                "choice": "load_bearing",
+                "probabilities": {
+                  "harmful": 0.0131,
+                  "irrelevant": 0.0148,
+                  "load_bearing": 0.7973,
+                  "referenced": 0.0279,
+                  "stale": 0.0102,
+                  "unknown": 0.0691,
+                  "useful": 0.0678
+                },
+                "confidence": 0.7635
+              }
+            },
+            "usage": {
+              "input_tokens": 228,
+              "output_tokens": 0
+            }
+          },
+          "thresholds": {
+            "utility": 0.75
+          },
+          "error": null,
+          "latency_ms": 1282
+        }
+      ],
+      "model_health": {
+        "jev": null,
+        "kev-4b": null
+      },
+      "model_calls": [
+        {
+          "batch_id": "a3dec4d28372425481f5fd3cb18b6188",
+          "item_ids": [
+            "H05"
+          ],
+          "call_id": "01M3JSVES12WGDV63RMK32R64F",
+          "retry_group_id": "01M3JSVERZ0QW4CYDC5ZAS9X67",
+          "attempt": 1,
+          "operation": "memory_utility_review",
+          "adapter": "typesafe",
+          "provider": "decision:typesafe",
+          "requested_model": "jev-1.13.0",
+          "model": "jev-1.13.0",
+          "local": false,
+          "started_at_ms": 1790558714657,
+          "completed_at_ms": 1790558715200,
+          "latency_ms": 542,
+          "queue_wait_ms": 0,
+          "status": "succeeded",
+          "error_class": null,
+          "input_tokens": 565,
+          "output_tokens": 79,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        },
+        {
+          "batch_id": "a3dec4d28372425481f5fd3cb18b6188",
+          "item_ids": [
+            "H05"
+          ],
+          "call_id": "01M3JSVFA049S03MQ6R03JZ6MC",
+          "retry_group_id": "01M3JSVFA0G36QY2G2Z5JBA3R2",
+          "attempt": 1,
+          "operation": "memory_utility_review",
+          "adapter": "kev-mlx",
+          "provider": "decision:kev-mlx",
+          "requested_model": "kev-4b-mlx",
+          "model": "kev-4b-mlx",
+          "local": true,
+          "started_at_ms": 1790558715200,
+          "completed_at_ms": 1790558715933,
+          "latency_ms": 732,
+          "queue_wait_ms": 0,
+          "status": "succeeded",
+          "error_class": null,
+          "input_tokens": 228,
+          "output_tokens": 0,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      ],
+      "contract_version": 4,
+      "status": "answered",
+      "response": null,
+      "thresholds": null,
+      "error": null,
+      "latency_ms": 1282
+    },
+    "grade": {
+      "id": "H05",
+      "operation": "memory_utility_review",
+      "actual": {
+        "utility": "load_bearing"
+      },
+      "expected": {
+        "utility": "load_bearing"
+      },
+      "wrong": [],
+      "missing": [],
+      "deferred": [],
+      "accepted_wrong": [],
+      "correct": true,
+      "fully_eligible": true,
+      "status": "answered"
+    }
+  },
+  {
+    "variant": "jev_then_kev_forced_uncertainty",
+    "case_id": "H06",
+    "elapsed_ms": 972,
+    "request": {
+      "contract_version": 4,
+      "operation": "memory_utility_review",
+      "state": "",
+      "locality": "cloud",
+      "mode": "gate",
+      "request_id": "8b9e7a6e9e9f47199484c4e7a375e0dd",
+      "reference_version": "memory-human-review-v1",
+      "expected_policy_revision": "a8988d992709ceb67d8b3011e49ef66ea5153f8444df8f9cf16910a9f677ef9f",
+      "projection_version": "human-review-api-v1",
+      "execution_budget_ms": 60000,
+      "context": null,
+      "items": [
+        {
+          "item_id": "H06",
+          "state": {
+            "evidence": "The run failed because a remote server was unavailable. A vegetarian dining preference was retrieved but neither used nor mentioned. The task was to download a build artifact."
+          }
+        }
+      ]
+    },
+    "reply": {
+      "request_id": "8b9e7a6e9e9f47199484c4e7a375e0dd",
+      "engine_instance": "01M3JSVCGG2MK3VJQM9K9FD33E",
+      "policy_revision": "a8988d992709ceb67d8b3011e49ef66ea5153f8444df8f9cf16910a9f677ef9f",
+      "items": [
+        {
+          "eligible_answers": {},
+          "item_id": "H06",
+          "status": "answered",
+          "response": {
+            "model": {
+              "adapter": "kev-mlx",
+              "model": "kev-4b-mlx"
+            },
+            "pack_id": "memory_utility_review",
+            "pack_version": "1.0.0",
+            "answers": {
+              "utility": {
+                "type": "choice",
+                "choice": "irrelevant",
+                "probabilities": {
+                  "harmful": 0.0887,
+                  "irrelevant": 0.407,
+                  "load_bearing": 0.0445,
+                  "referenced": 0.0823,
+                  "stale": 0.0448,
+                  "unknown": 0.2872,
+                  "useful": 0.0455
+                },
+                "confidence": 0.3081
+              }
+            },
+            "usage": {
+              "input_tokens": 220,
+              "output_tokens": 0
+            }
+          },
+          "thresholds": {
+            "utility": 0.75
+          },
+          "error": null,
+          "latency_ms": 960
+        }
+      ],
+      "model_health": {
+        "jev": null,
+        "kev-4b": null
+      },
+      "model_calls": [
+        {
+          "batch_id": "8b9e7a6e9e9f47199484c4e7a375e0dd",
+          "item_ids": [
+            "H06"
+          ],
+          "call_id": "01M3JSVG19QQ5G0HWDB9101A5G",
+          "retry_group_id": "01M3JSVG19768S81QD8SS99GKN",
+          "attempt": 1,
+          "operation": "memory_utility_review",
+          "adapter": "typesafe",
+          "provider": "decision:typesafe",
+          "requested_model": "jev-1.13.0",
+          "model": "jev-1.13.0",
+          "local": false,
+          "started_at_ms": 1790558715945,
+          "completed_at_ms": 1790558716441,
+          "latency_ms": 495,
+          "queue_wait_ms": 0,
+          "status": "succeeded",
+          "error_class": null,
+          "input_tokens": 557,
+          "output_tokens": 78,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        },
+        {
+          "batch_id": "8b9e7a6e9e9f47199484c4e7a375e0dd",
+          "item_ids": [
+            "H06"
+          ],
+          "call_id": "01M3JSVGGSER0M52G2WGZ836AD",
+          "retry_group_id": "01M3JSVGGS3C49FDGVPDYG0CG1",
+          "attempt": 1,
+          "operation": "memory_utility_review",
+          "adapter": "kev-mlx",
+          "provider": "decision:kev-mlx",
+          "requested_model": "kev-4b-mlx",
+          "model": "kev-4b-mlx",
+          "local": true,
+          "started_at_ms": 1790558716441,
+          "completed_at_ms": 1790558716906,
+          "latency_ms": 464,
+          "queue_wait_ms": 0,
+          "status": "succeeded",
+          "error_class": null,
+          "input_tokens": 220,
+          "output_tokens": 0,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      ],
+      "contract_version": 4,
+      "status": "answered",
+      "response": null,
+      "thresholds": null,
+      "error": null,
+      "latency_ms": 960
+    },
+    "grade": {
+      "id": "H06",
+      "operation": "memory_utility_review",
+      "actual": {
+        "utility": "irrelevant"
+      },
+      "expected": {
+        "utility": "irrelevant"
+      },
+      "wrong": [],
+      "missing": [],
+      "deferred": [
+        "utility"
+      ],
+      "accepted_wrong": [],
+      "correct": true,
+      "fully_eligible": false,
+      "status": "answered"
+    }
+  }
+]

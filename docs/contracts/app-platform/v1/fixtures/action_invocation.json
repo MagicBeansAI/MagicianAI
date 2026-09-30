@@ -1,0 +1,38 @@
+{
+  "action_id": "shorten_video",
+  "action_revision": 2,
+  "caller_surface_or_execution_ref": "surface:library:session_9",
+  "idempotency_key": "action-key:fixture:shorten-video",
+  "input": {
+    "content_digest": "blake3:ac97680718d449e87fd041ca0e1103b2995574a28366fb28cab7c95c0a5ccd06",
+    "expires_at": "2026-08-14T07:30:00Z",
+    "grant_revision": 2,
+    "handling_labels": {
+      "classification": "personal",
+      "model_processing": "local_only",
+      "policy_digest": "blake3:f98f30111fa85c533ff074620814a853afa1e7b6715a55df740ab987affa4996",
+      "provenance_digest": "blake3:62403b576e4a52499024b60e62fc1e3bedb2ed48dbbcdaac5e12854cecb9ef65"
+    },
+    "installation_id": "install_reading_room",
+    "package_revision_ref": "package:reading_room:1.0.0",
+    "produced_at": "2026-08-14T06:30:00Z",
+    "protocol_version": "1",
+    "schema_revision": 3,
+    "scope_binding_ref": "scope_binding_owner_default",
+    "source": "user_input",
+    "source_refs": [
+      {
+        "kind": "entity_record",
+        "reference": "record:saved_video:video_01",
+        "revision": 7
+      }
+    ],
+    "value": {
+      "source_url": "https://example.test/watch/42",
+      "target_minutes": 8
+    },
+    "value_schema_ref": "schema:shorten_video_input:v2"
+  },
+  "protocol_version": "1",
+  "requested_result_schema_ref": "schema:shorten_video_result:v2"
+}

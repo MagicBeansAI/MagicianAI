@@ -1,0 +1,12 @@
+{
+  "entity": "research_topic",
+  "recordId": "topic_1",
+  "revision": 3,
+  "fields": {
+    "title": "Battery recycling policy",
+    "query": "current battery recycling requirements",
+    "status": "active",
+    "priority": 2,
+    "updated_at": "2026-08-23T09:00:00Z"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "type": "callout",
+  "version": 2,
+  "draw": [
+    {
+      "op": "rect",
+      "x": "x-8",
+      "y": "y-text_rise-6",
+      "w": "text_w+16",
+      "h": "text_h+12",
+      "radius": 9,
+      "fill": true,
+      "stroke": false,
+      "color": "#000000",
+      "opacity": 0.78,
+      "threshold": 0
+    },
+    {
+      "op": "label",
+      "at": ["x", "y"],
+      "text": "text",
+      "anchor": "leading"
+    }
+  ]
+}

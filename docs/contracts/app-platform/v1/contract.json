@@ -1,0 +1,21 @@
+{
+  "contract_version": "1.5.0",
+  "data_plane_component_contract_version": "1.0.0",
+  "fixture_digest": "blake3:677eaf621bd6b5a47150ec6ad0f4e49fb36f5558c2adccbc610a4b5c11e3a78a",
+  "generated_clients": [
+    "typescript_fixture_contract",
+    "typescript_supported_public_sdk",
+    "swift_fixture_contract"
+  ],
+  "operation_inventory_digest": "blake3:4de33a2c5a1637e6d54c57ab9b0de814f0c27bfc0b3e9250f184fa8f2c498d16",
+  "protocol_version": "1",
+  "public_contract_source": "magician-app-contract/src/lib.rs",
+  "runtime_routes_enabled": true,
+  "schema_digest": "blake3:d82ada41bfe2205a0f1bac83bd9b43874d1b0670cc2988057d02b43ea632d819",
+  "schema_version": 1,
+  "source_of_truth": "magician/src/magician_v2/apps/models.rs",
+  "supported_protocol_versions": [
+    "1"
+  ],
+  "supported_public_operation_count": 8
+}

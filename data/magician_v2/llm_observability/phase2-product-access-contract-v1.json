@@ -1,0 +1,102 @@
+{
+  "contract_version": 1,
+  "phase": "2E",
+  "activation": "product_reads_and_canonical_recorder_active",
+  "shared_read_owner": "LlmAnalyticsReadService",
+  "scope": {
+    "rest_authority": "workspace_bound_bearer_claims_only",
+    "internal_data_authority": "runtime_injected___principal_and___workspace",
+    "public_scope_fields": "matching_assertions_only",
+    "cross_scope_override": "reject_before_path_or_partition_discovery"
+  },
+  "rest_routes": [
+    "GET /analytics/llm/overview",
+    "GET /analytics/llm/catalog",
+    "GET /analytics/llm/schema",
+    "GET /analytics/llm/calls",
+    "GET /analytics/llm/calls/{llm_call_id}",
+    "GET /analytics/llm/provider-attempts",
+    "GET /analytics/llm/provider-attempts/{provider_attempt_id}",
+    "POST /analytics/llm/facts/query"
+  ],
+  "internal_data_actions": [
+    "llm_observability_overview",
+    "list_llm_calls",
+    "read_llm_call",
+    "list_llm_provider_attempts",
+    "read_llm_provider_attempt",
+    "query_llm_facts"
+  ],
+  "common_envelope": [
+    "schema_version",
+    "scope",
+    "generated_at_ms",
+    "requested_range",
+    "effective_range",
+    "filters",
+    "freshness",
+    "coverage",
+    "pagination",
+    "warnings",
+    "data"
+  ],
+  "overview": {
+    "logical_calls_and_provider_attempts_are_distinct": true,
+    "timing_decomposition": [
+      "queue_wait_ms",
+      "local_prep_ms",
+      "provider_execution_ms",
+      "ttft_ms",
+      "validation_ms",
+      "latency_ms"
+    ],
+    "validation_denominator": "contract_validation_attempted",
+    "telemetry_observed": "canonical_call_and_provider_attempt_revision_count",
+    "telemetry_missingness": "explicit_capture_gap_missing_record_count",
+    "usage_coverage": "usage_observed_calls_preserves_missing_versus_reported_zero",
+    "cost_coverage": "cost_observed_calls_preserves_unknown_versus_legitimate_zero",
+    "cost_metadata": "known_subset_total_in_USD_plus_observed_call_count_pricing_versions_and_cost_sources",
+    "numeric_integrity": "finite_nonnegative_overview_aggregates_and_nonfinite_fact_SQL_outputs_fail_closed"
+  },
+  "crew_health_cost_coverage": "cost_observed_calls_is_exposed_beside_seven_day_spend",
+  "fact_sql": {
+    "statement_count": 1,
+    "statement_kind": "SELECT_or_WITH_query",
+    "query_body_gate": "side_effect_free_SELECT_only_reject_SELECT_INTO_VALUES_TABLE_and_mutation_set_expressions",
+    "bounded_relation_namespace": "server_reserved_and_CTE_shadowing_rejected_before_relation_rewrite",
+    "validation": "sqlparser_AST_plus_registry_relation_visitor",
+    "relation_allowlist": [
+      "llm_calls",
+      "llm_provider_attempts",
+      "llm_capture_gaps",
+      "llm_call_revisions",
+      "llm_provider_attempt_revisions"
+    ],
+    "table_functions": "denied",
+    "qualified_relations": "denied",
+    "external_access_after_view_install": "disabled",
+    "cte_scope": "lexical_sequential_nonrecursive_self_forward_reference_and_fact_shadowing_rejected",
+    "maximum_window_days": 31,
+    "maximum_rows": 1000,
+    "maximum_serialized_bytes": 4194304,
+    "maximum_serialized_bytes_scope": "entire_common_envelope",
+    "unknown_total": "pagination_omitted_and_truncation_reported_as_censoring"
+  },
+  "compatibility": {
+    "legacy_query_llm_calls_retained": true,
+    "legacy_query_storage_boundary": "safe_scope_components_real_scope_directories_and_regular_parquet_files_only",
+    "legacy_query_statement_gate": "exactly_one_sqlparser_SELECT_or_WITH_query_before_DuckDB_prepare",
+    "legacy_query_body_gate": "side_effect_free_SELECT_only_reject_SELECT_INTO_VALUES_TABLE_and_mutation_set_expressions",
+    "legacy_query_relation_gate": "AST_allowlist_llm_calls_chat_session_cache_summary_and_lexically_scoped_CTEs_only",
+    "legacy_query_content_boundary": "raw_view_absent_reasoning_summary_omitted_free_form_error_reduced_to_fixed_presence_marker_and_malformed_response_kind_redacted",
+    "shared_fact_legacy_content_boundary": "free_form_error_reduced_to_fixed_presence_marker_malformed_response_kind_redacted_and_blank_call_identity_normalized_to_null",
+    "legacy_direct_parquet_policy": "analyst_instructions_forbid_direct_llm_calls_scans_because_historical_partitions_can_precede_the_content_boundary",
+    "legacy_query_external_access": "disabled_after_server_owned_view_install_before_caller_sql",
+    "legacy_rest_execution": "bounded_guard_connection_interrupt_before_outer_timeout_and_four_megabyte_single_or_batch_response_limit",
+    "generic_analytics_rest_execution": "single_side_effect_free_SELECT_AST_gate_bounded_guard_external_access_disabled_interrupt_and_four_megabyte_result_limit",
+    "adjacent_memory_analytics_execution": "single_side_effect_free_SELECT_AST_gate_and_external_access_disabled_after_server_owned_view_install",
+    "legacy_query_decode_failure": "fail_closed_never_coerce_to_null",
+    "canonical_recorder_activation_owner": "phase_2f",
+    "restricted_content_actions": "not_exposed"
+  }
+}

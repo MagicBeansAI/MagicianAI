@@ -1,0 +1,813 @@
+{
+  "frames": 366,
+  "width": 1280,
+  "height": 720,
+  "pattern": "f%03d.webp",
+  "fps": 12,
+  "version": 32,
+  "scenes": [
+    {
+      "id": "lake",
+      "start": 1,
+      "end": 61,
+      "device": "laptop",
+      "screenQuad": [
+        [
+          715,
+          325
+        ],
+        [
+          1220,
+          325
+        ],
+        [
+          1220,
+          655
+        ],
+        [
+          715,
+          655
+        ]
+      ],
+      "lightSample": [
+        202,
+        206,
+        198
+      ],
+      "drift": 0.0,
+      "title": "Pricing \u2014 Q4",
+      "branch": "Tuesday",
+      "caption": {
+        "you": "Three hours on the water.",
+        "it": "The pricing model was rewritten."
+      },
+      "lines": [
+        {
+          "k": "",
+          "t": "tier   Starter    $19"
+        },
+        {
+          "k": "-",
+          "t": "tier   Team       $49"
+        },
+        {
+          "k": "+",
+          "t": "tier   Team       $39"
+        },
+        {
+          "k": "",
+          "t": "seats  3 included"
+        },
+        {
+          "k": "+",
+          "t": "annual 2 months free"
+        },
+        {
+          "k": "",
+          "t": "churn  modelled -1.4%"
+        },
+        {
+          "k": "+",
+          "t": "net    +$8.2k / mo"
+        }
+      ],
+      "rail": [
+        "pulled 14 months of billing",
+        "modelled 3 price points",
+        "checked it against churn",
+        "writing up the recommendation"
+      ],
+      "ask": "Rework the pricing model \u2014 hold margin, cut the Team tier.",
+      "screen": "today",
+      "also": [
+        {
+          "ask": "And flag anything over the new Team price.",
+          "step": "checked 214 accounts",
+          "from": "Also, as you approved \u2014 pricing alerts"
+        },
+        {
+          "ask": "Draft the note to the three biggest.",
+          "step": "3 drafts waiting for you",
+          "from": "And the drafts you asked me to keep ready"
+        }
+      ],
+      "feed": [
+        {
+          "title": "Follow-ups picked up",
+          "body": "The pricing rework closed, so I took the three things it left behind.",
+          "meta": "from: rework the pricing model \u00b7 3 follow-ups"
+        },
+        {
+          "title": "Flagged 14 accounts",
+          "body": "Over the new Team price. Notes drafted to the three biggest.",
+          "meta": "standing approval \u00b7 no spend"
+        },
+        {
+          "title": "Renewal needs you",
+          "body": "Meridian's terms changed since last year.",
+          "meta": "waiting since 09:12",
+          "ask": true
+        }
+      ],
+      "cases": [
+        "today",
+        "chat",
+        "tasks"
+      ],
+      "queued": [
+        "model the annual discount",
+        "check churn against the new tier"
+      ],
+      "origin": "From your note last Thursday",
+      "spend": 0.412,
+      "calls": 96,
+      "minutes": 41.0,
+      "models": 3,
+      "chart": {
+        "label": "Margin by tier",
+        "note": "Team at \u20b939 holds 62%",
+        "bars": [
+          {
+            "v": 0.42
+          },
+          {
+            "v": 0.55
+          },
+          {
+            "v": 0.62,
+            "hi": true
+          },
+          {
+            "v": 0.58
+          },
+          {
+            "v": 0.36
+          },
+          {
+            "v": 0.3
+          }
+        ],
+        "kind": "bars"
+      }
+    },
+    {
+      "id": "park",
+      "start": 62,
+      "end": 122,
+      "device": "laptop",
+      "screenQuad": [
+        [
+          715,
+          325
+        ],
+        [
+          1220,
+          325
+        ],
+        [
+          1220,
+          655
+        ],
+        [
+          715,
+          655
+        ]
+      ],
+      "lightSample": [
+        199,
+        197,
+        169
+      ],
+      "drift": 0.0,
+      "title": "Inbox",
+      "branch": "triage",
+      "caption": {
+        "you": "A morning in the park.",
+        "it": "212 emails triaged. Four left for you."
+      },
+      "lines": [
+        {
+          "k": "",
+          "t": "inbox  212 unread"
+        },
+        {
+          "k": "-",
+          "t": "        84 newsletters"
+        },
+        {
+          "k": "-",
+          "t": "        61 notifications"
+        },
+        {
+          "k": "+",
+          "t": "reply  4 need you"
+        },
+        {
+          "k": "+",
+          "t": "today  2 are time-bound"
+        },
+        {
+          "k": "",
+          "t": "held   9 until Monday"
+        },
+        {
+          "k": "+",
+          "t": "left   4 for you"
+        }
+      ],
+      "rail": [
+        "read 212 messages",
+        "archived what was noise",
+        "drafted 6 replies",
+        "holding 2 back for Monday"
+      ],
+      "ask": "Clear my inbox. Only bring me what actually needs me.",
+      "screen": "tasks",
+      "cases": [
+        "tasks",
+        "today"
+      ],
+      "feed": [
+        {
+          "title": "Follow-ups picked up",
+          "body": "The inbox triage closed, so I took the four things it left behind.",
+          "meta": "from: clear my inbox \u00b7 4 follow-ups"
+        },
+        {
+          "title": "Two replies sent",
+          "body": "Both were confirmations. I used your usual wording.",
+          "meta": "standing approval"
+        },
+        {
+          "title": "Timesheet needs you",
+          "body": "Two entries I could not infer from your calendar.",
+          "meta": "due today",
+          "ask": true
+        }
+      ],
+      "queued": [
+        "draft the two replies you owe",
+        "file this week's receipts",
+        "chase the vendor form"
+      ],
+      "spend": 0.104,
+      "calls": 212,
+      "minutes": 18.4,
+      "models": 2,
+      "chart": {
+        "label": "Inbox, by kind",
+        "note": "4 of 212 need you",
+        "bars": [
+          {
+            "v": 0.86
+          },
+          {
+            "v": 0.64
+          },
+          {
+            "v": 0.41
+          },
+          {
+            "v": 0.22
+          },
+          {
+            "v": 0.09,
+            "hi": true
+          }
+        ],
+        "kind": "stack"
+      }
+    },
+    {
+      "id": "court",
+      "start": 123,
+      "end": 183,
+      "device": "laptop",
+      "screenQuad": [
+        [
+          715,
+          325
+        ],
+        [
+          1220,
+          325
+        ],
+        [
+          1220,
+          655
+        ],
+        [
+          715,
+          655
+        ]
+      ],
+      "lightSample": [
+        133,
+        143,
+        136
+      ],
+      "drift": 0.0,
+      "title": "Q3 close",
+      "branch": "reconcile",
+      "caption": {
+        "you": "An hour on court.",
+        "it": "The quarter closed."
+      },
+      "lines": [
+        {
+          "k": "",
+          "t": "period  Q3 FY26"
+        },
+        {
+          "k": "-",
+          "t": "unmatched   41 rows"
+        },
+        {
+          "k": "+",
+          "t": "matched     38 rows"
+        },
+        {
+          "k": "+",
+          "t": "flagged      3 rows"
+        },
+        {
+          "k": "",
+          "t": "variance  \u20b912,450"
+        },
+        {
+          "k": "+",
+          "t": "cause     Pune freight"
+        },
+        {
+          "k": "",
+          "t": "close     ready to sign"
+        }
+      ],
+      "rail": [
+        "pulled the ledger",
+        "matched 38 of 41",
+        "traced the variance",
+        "flagging 3 for you"
+      ],
+      "ask": "Close out Q3 and tell me what does not reconcile.",
+      "screen": "chat",
+      "also": [
+        {
+          "ask": "Also \u2014 chasing the Pune invoice, as you approved.",
+          "step": "emailed, receipt filed",
+          "from": "Also, chasing this \u2014 you approved it in March"
+        },
+        {
+          "ask": "And I booked the auditor for Thursday.",
+          "step": "10:00 confirmed",
+          "from": "Found in your email \u2014 the auditor's reminder"
+        }
+      ],
+      "cases": [
+        "chat",
+        "tasks",
+        "today"
+      ],
+      "feed": [
+        {
+          "title": "Quarter closed",
+          "body": "38 of 41 matched. Three flagged with the Pune freight note attached.",
+          "meta": "from: close out Q3 \u00b7 3 follow-ups"
+        },
+        {
+          "title": "Auditor booked",
+          "body": "Thursday 10:00, and the ledger is shared with them.",
+          "meta": "standing approval"
+        },
+        {
+          "title": "Sign-off needs you",
+          "body": "The three flagged rows are ready to accept or query.",
+          "meta": "waiting since 11:04",
+          "ask": true
+        }
+      ],
+      "queued": [
+        "reconcile the vendor ledger",
+        "watch the Kyoto fare"
+      ],
+      "origin": "From your ask on Monday",
+      "spend": 0.268,
+      "calls": 74,
+      "minutes": 26.5,
+      "models": 3,
+      "chart": {
+        "label": "Reconciled by day",
+        "note": "38 of 41 matched",
+        "bars": [
+          {
+            "v": 0.926829268292683,
+            "hi": true
+          }
+        ],
+        "kind": "ring"
+      }
+    },
+    {
+      "id": "kitchen",
+      "start": 184,
+      "end": 244,
+      "device": "laptop",
+      "screenQuad": [
+        [
+          715,
+          325
+        ],
+        [
+          1220,
+          325
+        ],
+        [
+          1220,
+          655
+        ],
+        [
+          715,
+          655
+        ]
+      ],
+      "lightSample": [
+        169,
+        153,
+        135
+      ],
+      "drift": 0.0,
+      "title": "Kyoto trip",
+      "branch": "Saturday",
+      "caption": {
+        "you": "An afternoon making bread.",
+        "it": "Kyoto is booked."
+      },
+      "lines": [
+        {
+          "k": "",
+          "t": "depart 10:40  NRT"
+        },
+        {
+          "k": "-",
+          "t": "seat   unassigned"
+        },
+        {
+          "k": "+",
+          "t": "seat   14A \u00b7 aisle"
+        },
+        {
+          "k": "",
+          "t": "fare   held 20 min"
+        },
+        {
+          "k": "+",
+          "t": "hotel  4 nights, Gion"
+        },
+        {
+          "k": "",
+          "t": "transfer  Haruka express"
+        },
+        {
+          "k": "+",
+          "t": "dinner Wed \u00b7 booked"
+        }
+      ],
+      "rail": [
+        "read the fare table",
+        "compared 3 carriers",
+        "held 14A",
+        "drafting the itinerary"
+      ],
+      "ask": "Book the Kyoto leg \u2014 aisle seat if you can get one.",
+      "screen": "today",
+      "also": [
+        {
+          "ask": "Hotel too \u2014 near Gion, walkable.",
+          "step": "4 nights held",
+          "from": "Also booking this \u2014 your usual rule for trips"
+        },
+        {
+          "ask": "Tell Ana's mum we land Tuesday.",
+          "step": "message sent",
+          "from": "Found in your messages \u2014 your mum asked"
+        }
+      ],
+      "feed": [
+        {
+          "title": "Joined your 11:00",
+          "body": "You were out. I listened, took the decisions and the two things you were asked for.",
+          "meta": "auto-join \u00b7 42 min \u00b7 transcript kept"
+        },
+        {
+          "title": "Owed to you",
+          "body": "Revised quote by Friday, and Pune held until Q3.",
+          "meta": "2 commitments tracked"
+        },
+        {
+          "title": "Kyoto is booked",
+          "body": "Flight, hotel near Gion, and your mum knows you land Tuesday.",
+          "meta": "from: book the Kyoto leg \u00b7 3 follow-ups"
+        }
+      ],
+      "cases": [
+        "today",
+        "chat"
+      ],
+      "origin": "Found unanswered \u2014 WhatsApp, Priya, Tuesday",
+      "spend": 0.087,
+      "calls": 38,
+      "minutes": 52.0,
+      "models": 2,
+      "chart": {
+        "label": "Fare, last 30 days",
+        "note": "Held at the dip",
+        "bars": [
+          {
+            "v": 0.78
+          },
+          {
+            "v": 0.72
+          },
+          {
+            "v": 0.84
+          },
+          {
+            "v": 0.61
+          },
+          {
+            "v": 0.44,
+            "hi": true
+          },
+          {
+            "v": 0.58
+          },
+          {
+            "v": 0.66
+          }
+        ],
+        "kind": "line"
+      }
+    },
+    {
+      "id": "climb",
+      "start": 245,
+      "end": 305,
+      "device": "laptop",
+      "screenQuad": [
+        [
+          715,
+          325
+        ],
+        [
+          1220,
+          325
+        ],
+        [
+          1220,
+          655
+        ],
+        [
+          715,
+          655
+        ]
+      ],
+      "lightSample": [
+        167,
+        173,
+        169
+      ],
+      "drift": 0.0,
+      "title": "Board deck",
+      "branch": "q3-review",
+      "caption": {
+        "you": "Two hours on the wall.",
+        "it": "The board deck is ready."
+      },
+      "lines": [
+        {
+          "k": "",
+          "t": "deck   Q3 review"
+        },
+        {
+          "k": "+",
+          "t": "01  where we landed"
+        },
+        {
+          "k": "+",
+          "t": "02  what moved the number"
+        },
+        {
+          "k": "-",
+          "t": "03  competitive landscape"
+        },
+        {
+          "k": "+",
+          "t": "03  what we are cutting"
+        },
+        {
+          "k": "",
+          "t": "04  the ask"
+        },
+        {
+          "k": "+",
+          "t": "charts  6 from live data"
+        }
+      ],
+      "rail": [
+        "read last quarter's deck",
+        "pulled the live numbers",
+        "rebuilt 6 charts",
+        "rewriting slide 3"
+      ],
+      "ask": "Rebuild the board deck off the live numbers.",
+      "screen": "tasks",
+      "cases": [
+        "tasks",
+        "vibe",
+        "today"
+      ],
+      "feed": [
+        {
+          "title": "Deck rebuilt",
+          "body": "Six charts off the live numbers. Slide 3 rewritten to what you are cutting.",
+          "meta": "from: rebuild the board deck \u00b7 2 follow-ups"
+        },
+        {
+          "title": "Sent for review",
+          "body": "To Ye Miao and the two board observers, as you asked last quarter.",
+          "meta": "standing approval"
+        },
+        {
+          "title": "One number needs you",
+          "body": "Headcount for Q4 is not in any system I can read.",
+          "meta": "blocks slide 5",
+          "ask": true
+        }
+      ],
+      "queued": [
+        "export the deck to PDF",
+        "book the board room"
+      ],
+      "spend": 0.64,
+      "calls": 128,
+      "minutes": 63.0,
+      "models": 4,
+      "chart": {
+        "label": "Spend by cost centre",
+        "note": "Freight is the variance",
+        "bars": [
+          {
+            "v": 0.34
+          },
+          {
+            "v": 0.48
+          },
+          {
+            "v": 0.9,
+            "hi": true
+          },
+          {
+            "v": 0.4
+          },
+          {
+            "v": 0.28
+          },
+          {
+            "v": 0.52
+          }
+        ],
+        "kind": "bars"
+      }
+    },
+    {
+      "id": "hill",
+      "start": 306,
+      "end": 366,
+      "device": "laptop",
+      "screenQuad": [
+        [
+          715,
+          325
+        ],
+        [
+          1220,
+          325
+        ],
+        [
+          1220,
+          655
+        ],
+        [
+          715,
+          655
+        ]
+      ],
+      "lightSample": [
+        174,
+        143,
+        122
+      ],
+      "drift": 0.0,
+      "title": "portfolio",
+      "branch": "add-clients",
+      "caption": {
+        "you": "An evening playing.",
+        "it": "Your portfolio has this year's clients on it."
+      },
+      "lines": [
+        {
+          "k": "",
+          "t": "portfolio / work"
+        },
+        {
+          "k": "+",
+          "t": "Meridian \u2014 ops platform"
+        },
+        {
+          "k": "+",
+          "t": "Pune Logistics \u2014 freight"
+        },
+        {
+          "k": "+",
+          "t": "Kale & Sons \u2014 rebrand"
+        },
+        {
+          "k": "-",
+          "t": "placeholder card"
+        },
+        {
+          "k": "",
+          "t": "images  9 optimised"
+        },
+        {
+          "k": "+",
+          "t": "preview  ready"
+        }
+      ],
+      "rail": [
+        "read the existing site",
+        "matched the case-study layout",
+        "wrote three new entries",
+        "checking it builds"
+      ],
+      "ask": "Update my portfolio \u2014 add the three clients from this year.",
+      "screen": "vibe",
+      "files": [
+        "main",
+        "work.astro",
+        "case-studies",
+        "images"
+      ],
+      "cases": [
+        "vibe",
+        "today"
+      ],
+      "feed": [
+        {
+          "title": "Portfolio is live",
+          "body": "Three client entries, nine images optimised, preview deployed.",
+          "meta": "from: update my portfolio \u00b7 2 follow-ups"
+        },
+        {
+          "title": "Case studies drafted",
+          "body": "One per client, in the voice of the existing three.",
+          "meta": "waiting for your read"
+        },
+        {
+          "title": "A photo needs you",
+          "body": "Kale & Sons have not sent one. I drafted the ask.",
+          "meta": "draft ready",
+          "ask": true
+        }
+      ],
+      "origin": "From your ask last week",
+      "spend": 0.196,
+      "calls": 61,
+      "minutes": 34.0,
+      "models": 3,
+      "chart": {
+        "label": "Page weight",
+        "note": "9 images, 61% lighter",
+        "bars": [
+          {
+            "v": 0.95
+          },
+          {
+            "v": 0.88
+          },
+          {
+            "v": 0.7
+          },
+          {
+            "v": 0.52
+          },
+          {
+            "v": 0.37,
+            "hi": true
+          }
+        ],
+        "kind": "line"
+      }
+    }
+  ]
+}

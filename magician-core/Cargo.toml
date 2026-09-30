@@ -1,0 +1,36 @@
+[package]
+name = "magician-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["MagicBeansAI"]
+description = "Pure-logic foundation extracted from the magician monolith"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+# Lets a DOWNSTREAM crate's test binary fall back to the on-disk prompt store
+# when the process-global PromptManager was never installed — which is every
+# test binary, because the startup builder that installs it does not run there.
+#
+# `#[cfg(test)]` cannot do this: it is true only while magician-core compiles
+# its OWN tests, so downstream tests got a runtime error instead of the
+# graceful fallback the code appeared to promise. Enabled through
+# `[dev-dependencies]` only, so a release build never carries it.
+test-support = []
+
+[dependencies]
+magicvault-primitives = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3.8"
+dashmap = "5.5"
+async-trait = { workspace = true }
+runtime-core = { path = "../runtime-core" }
+semver = "1.0"
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "time", "sync", "macros"] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

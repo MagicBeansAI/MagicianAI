@@ -1,0 +1,26 @@
+name: deploy_app
+description: Deploy the project to Vercel or Cloudflare.
+version: "1.0.0"
+guide: |
+  Tool name: `deploy_app`
+
+  Builds and deploys the current working tree to a remote host (Vercel or Cloudflare 
+  Pages, automatically selected based on the project framework).
+
+  You MUST ensure you have already called `apply_code_proposal` before calling this 
+  tool, otherwise the deploy will not contain your changes.
+parameters:
+  - name: project_id
+    required: false
+    param_type: string
+    description: The project ID.
+implementation:
+  type: compiled
+  provider_name: deploy_app
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 300
+  categories:
+    - deployment
+  composition_category: action
+  sandbox: none

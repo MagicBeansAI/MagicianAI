@@ -1,0 +1,19 @@
+{
+  "fixture_id": "attention-bandit-ope-frozen-v1",
+  "settings": {
+    "bootstrap_unit": "session_id",
+    "estimand": "position_level",
+    "bootstrap_samples": 200,
+    "bootstrap_seed": 41,
+    "switch_threshold": 5.0,
+    "minimum_effective_sample_size": 3.0
+  },
+  "rows": [
+    {"decision_id":"d1","session_id":"s1","position":1,"logged_propensity":0.50,"target_propensity":0.60,"target_supported_mass":1.0,"reward":1.0,"q_logged":0.60,"q_target":0.65},
+    {"decision_id":"d2","session_id":"s1","position":1,"logged_propensity":0.50,"target_propensity":0.40,"target_supported_mass":1.0,"reward":0.0,"q_logged":0.40,"q_target":0.35},
+    {"decision_id":"d3","session_id":"s2","position":1,"logged_propensity":0.25,"target_propensity":0.30,"target_supported_mass":1.0,"reward":1.0,"q_logged":0.55,"q_target":0.60},
+    {"decision_id":"d4","session_id":"s2","position":1,"logged_propensity":0.75,"target_propensity":0.70,"target_supported_mass":1.0,"reward":1.0,"q_logged":0.70,"q_target":0.72},
+    {"decision_id":"d5","session_id":"s3","position":1,"logged_propensity":0.40,"target_propensity":0.50,"target_supported_mass":1.0,"reward":0.0,"q_logged":0.35,"q_target":0.40},
+    {"decision_id":"d6","session_id":"s3","position":1,"logged_propensity":0.60,"target_propensity":0.50,"target_supported_mass":1.0,"reward":1.0,"q_logged":0.65,"q_target":0.62}
+  ]
+}

@@ -1,0 +1,39 @@
+name: web_search
+description: Search the web for up-to-date information via DuckDuckGo. Returns up to 10 ranked hits as `{title, url, snippet}`. Use for current events, recent documentation, and anything past the model's knowledge cutoff. Optional `allowed_domains` / `blocked_domains` filter result URLs by host (matches exact host or any subdomain). Pair with `web_fetch` to read the body of a promising result.
+version: "1.0.0"
+guide: |
+  Tool name: `web_search`
+
+  Scrapes DuckDuckGo's HTML endpoint (the same source the legacy
+  `websearch` skill used) and returns up to 10 ranked hits as
+  `{title, url, snippet}` records. Pair with `web_fetch` to read
+  the body of a promising result.
+
+  Domain filters:
+  - `allowed_domains: ["example.com", "docs.rs"]` restricts to those
+    hosts (exact or any subdomain)
+  - `blocked_domains: ["reddit.com"]` excludes those hosts
+parameters:
+  - name: query
+    required: true
+    param_type: string
+    description: Search query (≥ 2 chars).
+  - name: allowed_domains
+    required: false
+    param_type: array
+    description: Optional allow-list of domains to restrict results to (exact host or any subdomain).
+  - name: blocked_domains
+    required: false
+    param_type: array
+    description: Optional block-list of domains to exclude from results (exact host or any subdomain).
+implementation:
+  type: compiled
+  provider_name: web_search
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 20
+  categories:
+    - web
+    - search
+  composition_category: action
+  sandbox: none

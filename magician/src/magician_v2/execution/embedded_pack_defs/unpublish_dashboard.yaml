@@ -1,0 +1,36 @@
+name: unpublish_dashboard
+description: Retire a previously published Today dashboard / briefing surface. Reverses `create_dashboard`. Identifies the surface by `surface_id` returned at publication time; the surface is marked `unpublished` and removed from the workspace's pinned feed.
+version: "1.0.0"
+guide: |
+  Tool name: `unpublish_dashboard`
+
+  Use this when the user asks to remove or delete a previously published
+  dashboard / briefing card. Typical phrasings: "unpublish that dashboard",
+  "remove the briefing", "delete that pinned card".
+
+  Guidelines:
+  - `surface_id` is required — the `pubsurf_*` id returned by `create_dashboard`
+    at publication time, also visible in the dashboard's URL / API list.
+  - The surface is retired, not deleted: it can be re-published later via
+    `create_dashboard` against the same task, or restored via the V3
+    republish endpoint by an admin.
+  - When the user says "remove the latest dashboard" without naming an id,
+    list dashboards first (via `/published-surfaces/projections`) to confirm
+    which one before unpublishing.
+parameters:
+  - name: surface_id
+    required: true
+    param_type: string
+    description: The `pubsurf_*` id of the dashboard surface to unpublish.
+implementation:
+  type: compiled
+  provider_name: unpublish_dashboard
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - publish
+    - ui
+    - dashboard
+  composition_category: action
+  sandbox: none

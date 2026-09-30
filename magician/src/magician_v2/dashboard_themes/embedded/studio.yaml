@@ -1,0 +1,56 @@
+id: studio
+name: Studio
+description: Warm watercolor atmosphere, hand-drawn-feel serif display, soft cream palette, gentle motion. Studio Ghibli adjacent.
+best_for: Onboarding dashboards, welcome surfaces, anywhere a softer, more human aesthetic fits — internal team-vibe dashboards, retrospectives.
+
+fonts:
+  display:
+    family: "'Calistoga', 'Georgia', serif"
+    url: "https://fonts.googleapis.com/css2?family=Calistoga&display=swap"
+    weights: [400]
+  body:
+    family: "'Nunito', system-ui, sans-serif"
+    url: "https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600&display=swap"
+    weights: [400, 500, 600]
+  mono:
+    family: "'JetBrains Mono', ui-monospace, monospace"
+    url: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400&display=swap"
+    weights: [400]
+
+palette:
+  background: "#FBF6EC"
+  surface: "#FFFCF6"
+  foreground: "#3E2C1A"
+  foreground_muted: "#8B7355"
+  accent: "#D17A47"
+  accent_alt: "#6A8B69"
+  chart_colors:
+    - "#D17A47"
+    - "#6A8B69"
+    - "#9A6B4E"
+    - "#A57E5B"
+    - "#7D9B6E"
+    - "#C49467"
+    - "#5F8068"
+    - "#D9A37A"
+  border: "rgba(62, 44, 26, 0.12)"
+  shadow: "rgba(62, 44, 26, 0.08)"
+
+spacing:
+  container_max_width_px: 920
+  container_padding_x_px: 36
+  container_padding_y_px: 52
+  block_gap_px: 36
+  prose_line_height: 1.7
+  heading_scale: 1.28
+
+atmosphere:
+  kind: watercolor
+  intensity: 0.10
+
+motion:
+  load_stagger_ms: 70
+  load_duration_ms: 520
+  load_easing: cubic-bezier(0.34, 1.56, 0.64, 1)
+  hover_lift_px: 2
+  scroll_reveal: true

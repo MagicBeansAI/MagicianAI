@@ -1,0 +1,179 @@
+{
+  "semantic_passed": 7,
+  "attempted": 7,
+  "operations": [
+    {
+      "error": null,
+      "latency_ms": 2614,
+      "operation": "memory_utility_review",
+      "passed": true
+    },
+    {
+      "error": null,
+      "latency_ms": 4392,
+      "operation": "memory_lifecycle_relation",
+      "passed": true
+    },
+    {
+      "error": null,
+      "latency_ms": 4206,
+      "operation": "evidence_promote",
+      "passed": true
+    },
+    {
+      "error": null,
+      "latency_ms": 4739,
+      "operation": "memory_connection_gate",
+      "passed": true
+    },
+    {
+      "error": null,
+      "latency_ms": 3151,
+      "operation": "procedure_feedback",
+      "passed": true
+    },
+    {
+      "error": null,
+      "latency_ms": 6516,
+      "operation": "memory_episode_quality",
+      "passed": true
+    },
+    {
+      "error": null,
+      "latency_ms": 519,
+      "operation": "memory_conflict_review",
+      "passed": true
+    }
+  ],
+  "models": {
+    "decision:kev-mlx/kev-4b-mlx": {
+      "calls": 1,
+      "retries": 0,
+      "cost_usd": {
+        "sum": 0.0,
+        "known_calls": 1,
+        "total_calls": 1,
+        "complete": true
+      },
+      "input_tokens": {
+        "sum": 448,
+        "known_calls": 1,
+        "total_calls": 1,
+        "complete": true
+      },
+      "output_tokens": {
+        "sum": 0,
+        "known_calls": 1,
+        "total_calls": 1,
+        "complete": true
+      },
+      "cache_read_tokens": {
+        "sum": null,
+        "known_calls": 0,
+        "total_calls": 1,
+        "complete": false
+      },
+      "cache_creation_tokens": {
+        "sum": null,
+        "known_calls": 0,
+        "total_calls": 1,
+        "complete": false
+      }
+    },
+    "decision:typesafe/jev-1.13.0": {
+      "calls": 7,
+      "retries": 0,
+      "cost_usd": {
+        "sum": 0.00024108000000000002,
+        "known_calls": 7,
+        "total_calls": 7,
+        "complete": true
+      },
+      "input_tokens": {
+        "sum": 5740,
+        "known_calls": 7,
+        "total_calls": 7,
+        "complete": true
+      },
+      "output_tokens": {
+        "sum": 641,
+        "known_calls": 7,
+        "total_calls": 7,
+        "complete": true
+      },
+      "cache_read_tokens": {
+        "sum": null,
+        "known_calls": 0,
+        "total_calls": 7,
+        "complete": false
+      },
+      "cache_creation_tokens": {
+        "sum": null,
+        "known_calls": 0,
+        "total_calls": 7,
+        "complete": false
+      }
+    },
+    "openai/gpt-6-luna": {
+      "calls": 6,
+      "retries": 0,
+      "cost_usd": {
+        "sum": 0.001307405,
+        "known_calls": 6,
+        "total_calls": 6,
+        "complete": true
+      },
+      "input_tokens": {
+        "sum": 9691,
+        "known_calls": 6,
+        "total_calls": 6,
+        "complete": true
+      },
+      "output_tokens": {
+        "sum": 1074,
+        "known_calls": 6,
+        "total_calls": 6,
+        "complete": true
+      },
+      "cache_read_tokens": {
+        "sum": 3318,
+        "known_calls": 6,
+        "total_calls": 6,
+        "complete": true
+      },
+      "cache_creation_tokens": {
+        "sum": 3997,
+        "known_calls": 6,
+        "total_calls": 6,
+        "complete": true
+      }
+    }
+  },
+  "capture": {
+    "activation": {
+      "broadcast_events_lost": 0,
+      "dispatch_events_lost": 0,
+      "dispatch_terminal_events_seen": 0,
+      "external_aggregate_events_ignored": 0,
+      "gap_records_emitted": 0,
+      "records_accepted": 42,
+      "records_rejected": 0,
+      "response_events_seen": 14,
+      "reused_responses_ignored": 0,
+      "tool_lineage_events_seen": 0
+    },
+    "durable_pipeline": {
+      "drained_records": 42,
+      "emitted_gap_records": 0,
+      "flush_error": null,
+      "rejected_after_shutdown": 0,
+      "remaining_buffered_records": 0,
+      "remaining_missing_records": 0,
+      "timed_out": false
+    }
+  },
+  "qualification": "INCOMPLETE: synthetic owner smoke, no held-out human review or paired economic qualification",
+  "wall_seconds": 31.26,
+  "receipt_reconciliation": "14 physical calls, each recorded exactly once; zero capture gaps",
+  "gated_llm_classification_fallbacks": 0
+}

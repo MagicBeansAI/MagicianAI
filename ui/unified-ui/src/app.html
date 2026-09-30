@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en" data-theme="longhand" class="%sveltekit.theme%">
+	<head>
+		<!--
+			A service-worker retirement script used to run here, as a second
+			recovery path for the 0.0.774 marketing deploy: it called
+			getRegistrations() on every marketing-host load and, where it found
+			one, unregistered it, emptied CacheStorage and forced a whole second
+			navigation. That cost was paid by every visitor for thirteen days to
+			serve the shrinking few who still carried a stale registration.
+
+			The worker tombstones in `scripts/marketing-site-headers` remain and
+			retire those registrations on their own, without costing anything to
+			anyone who does not have one. This shell is not the place for a
+			migration.
+		-->
+		<!-- Synchronous theme initialization to prevent flash of wrong theme -->
+		<script>
+			(function() {
+				try {
+					var validThemes = [
+						'longhand',
+						'longhand-dark',
+						'soft-machine-dark',
+						'soft-machine',
+						'arcane-terminal',
+						'arcane-terminal-light',
+						'retro-16bit',
+						'retro-16bit-light',
+						'mario-8bit',
+						'mario-8bit-dark',
+						'risograph',
+						'risograph-dark',
+						'mixtape',
+						'mixtape-dark',
+						'mono',
+						'mono-dark',
+						'cartoon',
+						'cartoon-dark',
+						'bubbly',
+						'bubbly-dark',
+						'jarvis',
+						'jarvis-light'
+					];
+					var storedTheme = localStorage.getItem('magican-theme');
+					var legacyTheme = localStorage.getItem('magician-theme');
+					var initialTheme = validThemes.indexOf(storedTheme) !== -1
+						? storedTheme
+						: validThemes.indexOf(legacyTheme) !== -1
+							? legacyTheme
+							: 'longhand';
+					document.documentElement.setAttribute('data-theme', initialTheme);
+					// One-shot migration: always persist the resolved
+					// theme (which is guaranteed valid from the list
+					// above) and clear the legacy key. Earlier code
+					// guarded this behind a hasStoredTheme check that
+					// left invalid legacy values in place and caused
+					// the migration to repeat on every reload.
+					localStorage.setItem('magican-theme', initialTheme);
+					localStorage.removeItem('magician-theme');
+				} catch (e) {}
+			})();
+		</script>
+		<meta charset="utf-8" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<meta name="description" content="Ask once. It's handled." />
+		<meta name="keywords" content="AI, task automation, productivity, orchestration" />
+		<meta name="author" content="Magican" />
+
+		<!-- Open Graph / Facebook -->
+		<meta property="og:type" content="website" />
+		<meta property="og:title" content="Magican — Utterly Useless AI Agents" />
+		<meta property="og:description" content="Ask once. It's handled." />
+
+		<!-- Twitter -->
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content="Magican — Utterly Useless AI Agents" />
+		<meta name="twitter:description" content="Ask once. It's handled." />
+
+		<!-- Theme - Magican coral -->
+		<meta name="theme-color" content="#ff6b6b" />
+		<meta name="msapplication-TileColor" content="#ff6b6b" />
+
+		<!--
+			Theme fonts are optional paint, not an opening-page dependency. The
+			old shell emitted twelve render-blocking Google Fonts stylesheets on
+			every route; one asynchronous catalog replaced them and kept live
+			theme switching intact.
+
+			That catalog then carried all twenty-two families — 16KB of CSS and
+			311 @font-face rules on every load of every route, measured against
+			a landing page that renders exactly three of them. What stays here
+			is the nine that `:root` and the default `longhand` themes resolve
+			to. The other thirteen belong to costume themes and are fetched by
+			`$lib/shared/themeFonts` the moment such a theme is applied.
+
+			The two halves are one set: if you add a family here, check whether
+			it belongs in that module instead, and keep the axis and weight
+			specs identical across both.
+		-->
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fredoka:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@200..800&family=Outfit:wght@100..900&family=Quicksand:wght@400;500;600;700&display=swap"
+			rel="stylesheet"
+			media="print"
+			onload="this.media='all'"
+		/>
+
+		<!-- Title -->
+		<title>Magican</title>
+
+		%sveltekit.head%
+
+		<!-- Microsoft Clarity -->
+		<script type="text/javascript">
+			// Analytics is observational, never part of application readiness.
+			// Loading the third-party tag in the document head made its variable
+			// network latency dominate `load` (and, on cold Chrome runs, first
+			// paint). Start it only after the page has loaded and the main thread is
+			// idle; the bounded timeout still records ordinary browsing sessions.
+			(function(c,l,a,r,i){
+				// Local development sessions must not load the remote recording tag.
+				var host = c.location.hostname;
+				if (host === 'localhost' || host.endsWith('.localhost') ||
+					/^127\./.test(host) || host === '[::1]' || host === '::1') return;
+				c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+				function start(){
+					function inject(){
+						var t=l.createElement(r), y=l.getElementsByTagName(r)[0];
+						t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+						y.parentNode.insertBefore(t,y);
+					}
+					if ('requestIdleCallback' in c) c.requestIdleCallback(inject, { timeout: 2500 });
+					else c.setTimeout(inject, 1500);
+				}
+				if (l.readyState === 'complete') start();
+				else c.addEventListener('load', start, { once: true });
+			})(window, document, "clarity", "script", "vvj2b1qbs0");
+		</script>
+	</head>
+	<body data-sveltekit-preload-data="hover" class="antialiased">
+		<div style="display: contents">%sveltekit.body%</div>
+
+		<!-- Minimal global styles - Multi-theme support -->
+		<style>
+			/* Essential resets only */
+			*, *::before, *::after {
+				box-sizing: border-box;
+			}
+
+			/* Theme-adaptive font (uses CSS variable from app.css) */
+			body, html {
+				font-family: var(--font-primary, 'Quicksand', -apple-system, BlinkMacSystemFont, sans-serif);
+				background: var(--bg-base, #fdfcf8);
+				color: var(--text-primary, #2d3436);
+				transition: background 0.3s ease, color 0.3s ease;
+			}
+
+			/* (Note: html-level scrollbar-gutter was tested and reverted —
+			   the document itself doesn't typically scroll because the
+			   v5 .layout-v5 owns viewport overflow. Reserving page-level
+			   gutter caused a worse mismatch. Gutter is now reserved on
+			   the actually-scrolling .v5-main container only.) */
+
+			/* Focus styles for accessibility - theme-adaptive */
+			:focus-visible {
+				outline: 2px solid var(--accent-primary, #ff6b6b);
+				outline-offset: 2px;
+			}
+
+			/* Reduced motion support */
+			@media (prefers-reduced-motion: reduce) {
+				*,
+				*::before,
+				*::after {
+					animation-duration: 0.01ms !important;
+					animation-iteration-count: 1 !important;
+					transition-duration: 0.01ms !important;
+				}
+			}
+		</style>
+	</body>
+</html>

@@ -1,0 +1,55 @@
+name: save_preference
+description: Save a single user preference as a `{key, value, confidence, source_type, rationale, updated_at}` record into the user `preferences` tier (or another user-scope / personality tier when explicitly chosen).
+version: "1.0.0"
+guide: |
+  Tool name: `save_preference`
+
+  Use when the user explicitly states a preference you should remember
+  ("I prefer dark mode", "always use celsius", "call me Alex"). For
+  bulk / multi-field merges prefer `update_memory_tier`.
+
+  Inputs:
+  - `key` (required) — preference key (e.g. `theme`, `units.temperature`,
+    `preferred_name`).
+  - `value` (required) — preference value. Strings, numbers, booleans,
+    objects, or arrays are all valid. Empty string clears.
+  - `tier` (optional) — target tier name. Defaults to the user
+    `preferences` tier. Pass `personality_profile` (or another defined
+    agent tier) to save into an agent-scope tier instead.
+
+  Output:
+  - `status: "ok"` plus the merged tier snapshot.
+  - `status: "error"` with `reason` if no suitable tier exists or the
+    write fails.
+
+  Side effects:
+  - The saved record is shaped as
+    `{key, value, confidence: 1.0, source_type: "explicit_user_statement",
+       rationale: "Saved through the chat save_preference tool.",
+       updated_at: <utc iso8601>}`.
+  - Subsequent reads via `search_memory` will return it indexed by key.
+parameters:
+  - name: key
+    required: true
+    param_type: string
+    description: Preference key (dot-separated paths allowed, e.g. `units.temperature`).
+  - name: value
+    required: true
+    param_type: string
+    description: Preference value. Strings, numbers, booleans, objects, and arrays are all accepted.
+  - name: tier
+    param_type: string
+    description: Optional target tier name. Defaults to the user `preferences` tier. Use `personality_profile` to write into an agent-scope tier.
+    default: ""
+implementation:
+  type: compiled
+  provider_name: save_preference
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - memory
+    - write
+    - preference
+  composition_category: action
+  sandbox: none

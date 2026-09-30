@@ -1,0 +1,42 @@
+<!--
+  Magdroid Notification Icon - Neural Wave
+  Monochrome vector drawable for status bar / notification shade.
+
+  Design: Single wave arc + 3 neural nodes (left, center, right).
+  All elements are white with transparent background — Android tints
+  the alpha channel automatically on the status bar.
+
+  Android spec: notification icons must be white/transparent only.
+  Size: 24×24dp safe zone, transparent background.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="@android:color/white">
+
+    <!-- Wave arc connecting the three neural nodes -->
+    <path
+        android:pathData="M3,12 C7,8 11,10 12,12 C13,14 17,16 21,12"
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"/>
+
+    <!-- Left node -->
+    <path
+        android:pathData="M7.5,10.5m-1.8,0a1.8,1.8 0,1 1,3.6 0a1.8,1.8 0,1 1,-3.6 0"
+        android:fillColor="#FFFFFFFF"/>
+
+    <!-- Center node -->
+    <path
+        android:pathData="M12,12m-1.8,0a1.8,1.8 0,1 1,3.6 0a1.8,1.8 0,1 1,-3.6 0"
+        android:fillColor="#FFFFFFFF"/>
+
+    <!-- Right node -->
+    <path
+        android:pathData="M16.5,11m-1.8,0a1.8,1.8 0,1 1,3.6 0a1.8,1.8 0,1 1,-3.6 0"
+        android:fillColor="#FFFFFFFF"/>
+
+</vector>

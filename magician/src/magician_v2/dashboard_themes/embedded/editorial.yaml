@@ -1,0 +1,56 @@
+id: editorial
+name: Editorial
+description: Magazine-style typography. Serif display, refined sans body, generous whitespace, color-accent rules under headings, subtle paper texture.
+best_for: Long-form analyst write-ups, weekly digests, narrative dashboards, executive briefings — content that reads as much as it informs.
+
+fonts:
+  display:
+    family: "'Fraunces', 'Georgia', serif"
+    url: "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&display=swap"
+    weights: [400, 500, 600, 700]
+  body:
+    family: "'Inter Tight', system-ui, sans-serif"
+    url: "https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&display=swap"
+    weights: [400, 500, 600]
+  mono:
+    family: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace"
+    url: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+    weights: [400, 500]
+
+palette:
+  background: "#FAF8F4"
+  surface: "#FFFFFF"
+  foreground: "#1A1814"
+  foreground_muted: "#5B5650"
+  accent: "#C24E1B"
+  accent_alt: "#1F4F4A"
+  chart_colors:
+    - "#C24E1B"
+    - "#1F4F4A"
+    - "#7B5B2E"
+    - "#3D5A6C"
+    - "#A0834A"
+    - "#56716E"
+    - "#8D3E2B"
+    - "#2F4F4F"
+  border: "rgba(26, 24, 20, 0.08)"
+  shadow: "rgba(26, 24, 20, 0.06)"
+
+spacing:
+  container_max_width_px: 960
+  container_padding_x_px: 32
+  container_padding_y_px: 48
+  block_gap_px: 32
+  prose_line_height: 1.65
+  heading_scale: 1.25
+
+atmosphere:
+  kind: paper_texture
+  intensity: 0.04
+
+motion:
+  load_stagger_ms: 60
+  load_duration_ms: 480
+  load_easing: cubic-bezier(0.2, 0.65, 0.3, 1)
+  hover_lift_px: 1
+  scroll_reveal: true

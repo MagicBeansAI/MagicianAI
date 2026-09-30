@@ -1,0 +1,119 @@
+{
+  "contract_version": 1,
+  "phase": "2F",
+  "activation": "active_by_default_without_feature_switch",
+  "authoritative_sink": "journal_backed_canonical_llm_facts",
+  "producer_adapter": "scoped_physical_LLMResponseReceived_to_call_start_final_attempt_call_complete",
+  "migration": {
+    "llm_calls": "compatibility_mirror_only",
+    "compatibility_content_boundary": "new_rows_omit_reasoning_summary_replace_free_form_error_with_a_fixed_presence_marker_and_redact_malformed_response_categories",
+    "llm_dispatch": "scoped_auxiliary_queue_timing_enrichment_by_dispatch_job_and_call_id",
+    "stable_read_deduplication": "legacy_llm_call_id_hidden_when_canonical_call_exists",
+    "historical_no_id_rows": "retained_with_typed_legacy_defaults"
+  },
+  "non_invention": {
+    "earlier_provider_attempts": "explicit_capture_gap_count",
+    "failed_provider_attempts": "materialize_the_known_terminal_attempt_and_gap_only_earlier_or_incomplete_attempts",
+    "tombstoned_or_incomplete_provider_attempts": "exact_logical_terminal_fact_plus_explicit_unavailable_attempt_gap_count",
+    "missing_correlation": "explicit_mapping_gap",
+    "missing_attempt_identity_or_successful_zero_attempt_count": "explicit_mapping_gap_without_synthesis",
+    "pre_provider_failure": "logical_terminal_fact_with_zero_attempts_and_unknown_usage_pricing",
+    "successful_response_missing_effective_route": "logical_terminal_fact_and_usage_preserved_with_call_owned_unavailable_attempt_gap_and_unknown_pricing",
+    "response_contract_failure": "successful_provider_attempt_plus_failed_immediate_validation_without_transport_reclassification_or_raw_error_content",
+    "categorical_content_boundary": "response_validation_and_gap_categories_are_bounded_machine_tokens_and_arbitrary_diagnostic_prose_collapses_to_a_fixed_reason_code",
+    "transport_only_response": "validation_attempted_remains_false_until_an_authoritative_caller_parser_reports_an_outcome",
+    "missing_or_invalid_start_timestamp": "explicit_mapping_gap_without_latency_based_derivation",
+    "idempotent_reused_response": "ignored_as_duplicate_delivery_not_a_new_model_call",
+    "idempotent_reuse_lineage": "owner_receipt_identity_is_validated_without_requiring_subscriber_execution_task_or_session_lineage_to_match",
+    "opaque_external_ai_run": "compatibility_aggregate_ignored_by_canonical_call_and_attempt_capture",
+    "invalid_ttft": "omit_invalid_value_and_emit_gap",
+    "invalid_cost": "ignore_invalid_producer_assertion_recompute_from_valid_usage_and_emit_gap",
+    "producer_cost_mismatch": "effective_dated_canonical_recompute_wins_and_explicit_diagnostic_gap_is_emitted",
+    "pricing_version": "content_free_blake3_fingerprint_of_the_exact_effective_rate_row_including_rates_date_prefix_and_long_context_rule",
+    "pricing_provider_identity": "one_shared_finite_explicit_adapter_alias_map_for_live_capture_and_historical_repricing_and_realtime_rates_require_openai_provider_plus_model",
+    "invalid_provider_usage": "omit_usage_and_pricing_without_saturating_inconsistent_buckets_and_emit_gap",
+    "missing_provider_usage": "null_usage_and_cost_with_explicit_gap_never_fabricated_zero",
+    "logical_chunk_parent": "zero_attempt_non_billing_summary_with_physical_children_captured_individually",
+    "provider_attempt_timing": "exact_for_direct_single_attempt_only_otherwise_terminal_completion_without_invented_start_or_latency",
+    "broadcast_lag": "explicit_unclassified_transport_or_dispatch_envelope_gap_under_default_diagnostic_scope_excluded_from_llm_fact_coverage",
+    "activation_gap_metrics": "every_mapper_attempt_and_transport_or_dispatch_lag_gap_submission_is_counted_once",
+    "buffer_saturation": "exact_grouped_pipeline_gap"
+  },
+  "coverage_accounting": {
+    "known_missing_fact_revisions": [
+      "critical_buffer_saturated",
+      "critical_worker_unavailable",
+      "earlier_provider_attempt_lifecycle_unavailable",
+      "terminal_provider_attempt_lifecycle_unavailable"
+    ],
+    "diagnostic_gap_units": "visible_but_excluded_from_fact_revision_denominator",
+    "unclassified_transport_loss": "separate_and_strict_audit_failing"
+  },
+  "recovery": {
+    "scope_discovery": "existing_scoped_journal_roots",
+    "startup": "canonical_and_compatibility_receivers_subscribe_before_recovery_then_replay_uncommitted_before_new_scope_commit",
+    "duplicate_delivery": "stable_revision_checksum_deduplication",
+    "shutdown": "quiesce_and_join_producers_then_drain_event_bridge_and_bounded_pipeline_then_flush_compatibility_mirror",
+    "filesystem_boundary": "scope_directories_and_durable_objects_reject_symlink_or_special_file_redirection"
+  },
+  "retention": {
+    "days": 90,
+    "utc_partition_streams": [
+      "llm_calls",
+      "llm_provider_attempts",
+      "llm_capture_gaps",
+      "events"
+    ],
+    "journal": "excluded_from_date_partition_sweep"
+  },
+  "reconciliation": {
+    "stable_join": [
+      "principal",
+      "workspace",
+      "llm_call_id"
+    ],
+    "minimum_canonical_to_mirror_match_rate": 0.99,
+    "compatibility_rows_without_canonical_lifecycle": "zero_except_explicit_external_ai_run_exclusion",
+    "unknown_usage_and_logical_summary": "mirror_existence_required_but_numeric_parity_not_asserted_against_legacy_zero_placeholders",
+    "minimum_queued_dispatch_timing_join_rate": 0.99,
+    "integer_fields": "exact",
+    "cost_tolerance": {
+      "relative": 1e-7,
+      "absolute_usd": 1e-9
+    },
+    "attempt_equation": "for_each_llm_call_captured_terminal_attempts_plus_call_owned_explicit_unavailable_attempts_equals_provider_attempt_count",
+    "embedded_scope": "every_selected_fact_must_match_the_requested_scope_except_process_lag_diagnostics_in_anonymous_default",
+    "provider_attempt_identity": "llm_call_id_colon_a_one_based_provider_attempt_index_with_no_orphans_or_duplicates",
+    "terminal_call_identity": "nonempty_and_unique_in_canonical_and_compatibility_mirror_cohorts",
+    "content_fields_read": []
+  },
+  "coverage": [
+    "direct_and_queued_calls",
+    "success_failure_cancellation_timeout",
+    "restart_replay",
+    "duplicate_delivery",
+    "partial_batch_and_bounded_shutdown",
+    "midnight_utc_partition",
+    "old_and_new_schemas",
+    "queue_saturation_gap_accounting",
+    "pricing_version_and_source",
+    "exact_effective_pricing_row_fingerprint",
+    "canonical_cost_recomputed_from_usage_and_effective_dated_pricing",
+    "realtime_cached_and_uncached_modalities_billed_exactly_once",
+    "live_and_historical_pricing_provider_identity_parity",
+    "usage_presence_and_unknown_economics",
+    "logical_chunk_parent_child_non_double_counting",
+    "retention",
+    "compatibility_mirror_deduplication",
+    "governed_dispatch_timing_enrichment",
+    "effective_fallback_profile_provider_and_model_on_success_and_failure",
+    "requested_route_never_substituted_for_missing_effective_attempt_route",
+    "known_failed_terminal_attempt_materialization",
+    "post_response_contract_rejection_without_raw_content",
+    "unclassified_transport_lag_separation",
+    "activation_gap_metric_parity_across_both_broadcast_rails",
+    "exact_fact_revision_coverage_denominator",
+    "raw_fact_scope_and_provider_attempt_identity",
+    "governed_overview_api"
+  ]
+}

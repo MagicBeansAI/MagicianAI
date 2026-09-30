@@ -1,0 +1,64 @@
+name: create_dashboard
+description: Publish a completed task's user-facing output as a Today dashboard / briefing card via the V3 published-surface API.
+version: "1.0.0"
+guide: |
+  Tool name: `create_dashboard`
+
+  Use this when the user asks to turn a completed task or report into a Today
+  dashboard or briefing card on the workspace. Typical phrasings: "publish
+  this as a briefing", "make a dashboard out of this task", "pin the
+  results to my home page".
+
+  Guidelines:
+  - `task_id` is required — the task whose primary user output should be
+    published as the dashboard surface.
+  - `source_output_id` is optional; omit to use the task's primary user
+    output (most cases).
+  - `route` defaults to `/briefing`. Pass an absolute path (`/foo/bar`)
+    when you want to pin the surface to a specific route.
+  - `title` and `summary` override the published surface's defaults — leave
+    them off to inherit from the task manifest.
+  - `placement_kind` controls where the surface lives. `workspace` is the
+    default; `thread` pins to the active chat thread; `task` keeps it
+    co-located with the task; `global` is for cross-workspace dashboards.
+  - If the task isn't terminal yet, ask the user to confirm — usually you
+    want to publish a finished output, not a half-done one.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: The task whose user-facing output should be published as a dashboard surface.
+  - name: source_output_id
+    param_type: string
+    description: Optional specific task user-output ID to publish. Omit to use the task's primary user output.
+  - name: route
+    param_type: string
+    description: Absolute route for the dashboard. Default is `/briefing`.
+    default: "/briefing"
+  - name: title
+    param_type: string
+    description: Optional publication title override. Inherits from task manifest if omitted.
+  - name: summary
+    param_type: string
+    description: Optional publication summary override.
+  - name: placement_kind
+    param_type: string
+    description: Where this dashboard should be pinned. Default is `workspace`.
+    default: "workspace"
+    enum_values: [workspace, thread, task, global]
+  - name: pinned
+    param_type: boolean
+    description: Whether to pin the dashboard in top-of-feed style surfaces.
+    default: "true"
+implementation:
+  type: compiled
+  provider_name: create_dashboard
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - publish
+    - ui
+    - dashboard
+  composition_category: action
+  sandbox: none

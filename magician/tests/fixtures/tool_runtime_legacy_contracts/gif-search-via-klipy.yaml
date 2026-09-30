@@ -1,0 +1,68 @@
+name: gif-search-via-klipy
+version: 0.1.0
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: Search keywords for GIF lookup (e.g., 'celebration', 'slow clap sarcastic', 'mind blown')
+- name: limit
+  param_type: string
+  description: Max number of GIFs to return (1-20, default 5)
+  default: '5'
+- name: content_filter
+  param_type: string
+  description: Content safety filter level
+  default: pg
+  enum_values:
+  - 'off'
+  - pg
+  - pg-13
+  - r
+native_action_schemas:
+  run:
+    description: Run the direct gif_search_klipy capability with the arguments selected from this guide. Pick a concise query that captures the reaction/emotion. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after useful GIF URLs are present.
+    parameters:
+    - query
+    - limit
+    - content_filter
+    required:
+    - query
+    parameter_overrides:
+      query:
+        type: string
+        description: Search keywords for GIF lookup (e.g., 'celebration', 'slow clap sarcastic', 'mind blown')
+      limit:
+        type: string
+        description: Max number of GIFs to return (1-20, default 5)
+        default: '5'
+      content_filter:
+        type: string
+        description: Content safety filter level
+        enum:
+        - 'off'
+        - pg
+        - pg-13
+        - r
+        default: pg
+    skip_tool_name: true
+    timeout_secs: 20
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_QUERY: '{query}'
+    _TOOL_LIMIT: '{limit}'
+    _TOOL_CONTENT_FILTER: '{content_filter}'
+  timeout_secs: 20
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 20
+  categories:
+  - gif
+  - search
+  - expression
+  - creative
+  composition_category: media_operations
+  sandbox: shell

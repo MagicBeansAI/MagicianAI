@@ -1,0 +1,28 @@
+{
+  "name": "channel_ingest_distill_repair_user",
+  "version": "1.0.0",
+  "content": [
+    "The previous response did not satisfy the required JSON contract.",
+    "Validation error: {validation_error}",
+    "",
+    "Re-evaluate the original request and respond again with ONLY the corrected JSON object. Do not add prose, markdown, or code fences."
+  ],
+  "variables": [
+    {
+      "name": "validation_error",
+      "description": "Bounded parser or semantic-contract error. It contains field and contract names, never source content or model output.",
+      "required": true,
+      "default_value": null,
+      "examples": ["information brief is required by contract v2"]
+    }
+  ],
+  "metadata": {
+    "category": "ChannelAssist",
+    "description": "Targeted repair instruction for one invalid local channel-distillation response. Appended to the original managed user prompt before the single retry.",
+    "author": "magician",
+    "created_at": "2026-07-12T00:00:00Z",
+    "changelog": "v1.0.0: Moves the response-repair instruction out of Rust and into managed prompt storage.",
+    "tags": ["channel-assist", "distillation", "repair", "local-only"],
+    "estimated_tokens": 55
+  }
+}

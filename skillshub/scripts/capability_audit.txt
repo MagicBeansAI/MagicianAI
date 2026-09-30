@@ -1,0 +1,67 @@
+PACK                               CLASS               NOTES
+--------------------------------   -----------------   ------------------------------------------------------------
+awk                                already_migrated    skillshub/awk/ exists
+browser                            already_migrated    skillshub/browser/ exists
+calendar                           already_migrated    skillshub/calendar/ exists
+code_generate_claude_cli           retired             skillshub/claude/ deleted; agents use run_coding_task
+code_generate_codex_cli            retired             skillshub/codex/ deleted; agents use run_coding_task
+code_generate_agy_cli              retired             skillshub/agy/ deleted; agents use run_coding_task
+code_generate_opencode_cli         retired             skillshub/opencode/ deleted; agents use run_coding_task
+create_agent                       runtime_primitive   magician-internal state operation
+create_dashboard                   runtime_primitive   magician-internal state operation
+create_proposal                    runtime_primitive   magician-internal state operation
+create_task                        runtime_primitive   magician-internal state operation
+csvkit                             already_migrated    skillshub/csvkit/ exists
+deep-research-with-claude          already_migrated    skillshub/deep-research-with-claude/ exists
+deep-research-with-openai          already_migrated    skillshub/deep-research-with-openai/ exists
+delegation_files                   runtime_primitive   magician-internal state operation
+duckdb                             already_migrated    skillshub/duckdb/ exists
+evaluate_harness                   runtime_primitive   magician-internal state operation
+files                              already_migrated    skillshub/files/ exists
+gif-search-via-klipy               already_migrated    skillshub/gif-search-via-klipy/ exists
+gmail                              already_migrated    skillshub/gmail/ exists
+grep                               already_migrated    skillshub/grep/ exists
+htmltotext                         already_migrated    skillshub/htmltotext/ exists
+http                               already_migrated    skillshub/http/ exists
+image-generation   already_migrated    skillshub/image-generation/ exists
+imessage                           already_migrated    skillshub/imessage/ exists
+inspect_agent                      runtime_primitive   magician-internal state operation
+jq                                 already_migrated    skillshub/jq/ exists
+list_agents                        runtime_primitive   magician-internal state operation
+list_episodes                      runtime_primitive   magician-internal state operation
+list_proposals                     runtime_primitive   magician-internal state operation
+macos_file_dialog                  already_migrated    skillshub/macos-file-dialog/ exists
+marimo                             already_migrated    skillshub/marimo/ exists
+meme-generation-via-imgflip        already_migrated    skillshub/meme-generation-via-imgflip/ exists
+metabase                           already_migrated    skillshub/metabase/ exists
+news-search-via-tavily             already_migrated    skillshub/news-search-via-tavily/ exists
+notify_owner                       runtime_primitive   magician-internal state operation
+ocr                                already_migrated    skillshub/ocr/ exists
+pdftotext                          already_migrated    skillshub/pdftotext/ exists
+read_trace                         runtime_primitive   magician-internal state operation
+reassign_task                      runtime_primitive   magician-internal state operation
+retire_agent                       runtime_primitive   magician-internal state operation
+rg                                 already_migrated    skillshub/rg/ exists
+search                             already_migrated    skillshub/search/ exists
+sed                                already_migrated    skillshub/sed/ exists
+semantic-websearch-via-exa         already_migrated    skillshub/semantic-websearch-via-exa/ exists
+sheets                             already_migrated    skillshub/sheets/ exists
+shell                              already_migrated    skillshub/shell/ exists
+system_status                      runtime_primitive   magician-internal state operation
+task_state                         runtime_primitive   magician-internal state operation
+telegram-self                      already_migrated    skillshub/telegram-self/ exists
+telegram                           already_migrated    skillshub/telegram/ exists
+time_math                          already_migrated    skillshub/time-math/ exists
+treasurer                          runtime_primitive   magician-internal state operation
+unpublish_dashboard                runtime_primitive   magician-internal state operation
+update_agent                       runtime_primitive   magician-internal state operation
+update_delegation                  runtime_primitive   magician-internal state operation
+video-generation-via-veo           already_migrated    skillshub/video-generation-via-veo/ exists
+websearch                          already_migrated    skillshub/websearch/ exists
+websearch-via-claude               already_migrated    skillshub/websearch-via-claude/ exists
+websearch-via-openai               already_migrated    skillshub/websearch-via-openai/ exists
+whatsapp                           already_migrated    skillshub/whatsapp/ exists
+
+TOTAL: 61 packs
+  already_migrated         41
+  runtime_primitive        20

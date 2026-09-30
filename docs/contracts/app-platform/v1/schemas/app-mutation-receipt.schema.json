@@ -1,0 +1,206 @@
+{
+  "$defs": {
+    "AppChangeSequenceRange": {
+      "additionalProperties": false,
+      "properties": {
+        "first": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "first",
+        "last"
+      ],
+      "type": "object"
+    },
+    "AppCommittedRecordRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "entity": {
+          "$ref": "#/$defs/AppName"
+        },
+        "record_id": {
+          "$ref": "#/$defs/AppRecordId"
+        },
+        "revision": {
+          "$ref": "#/$defs/AppRevision"
+        }
+      },
+      "required": [
+        "entity",
+        "record_id",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "AppDigest": {
+      "type": "string"
+    },
+    "AppInstallationId": {
+      "type": "string"
+    },
+    "AppMutationOrigin": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "owner_api",
+              "type": "string"
+            },
+            "request_ref": {
+              "$ref": "#/$defs/AppReference"
+            },
+            "session_ref": {
+              "$ref": "#/$defs/AppReference"
+            }
+          },
+          "required": [
+            "kind",
+            "session_ref",
+            "request_ref"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "execution_id": {
+              "$ref": "#/$defs/AppReference"
+            },
+            "kind": {
+              "const": "workflow",
+              "type": "string"
+            },
+            "output_revision": {
+              "$ref": "#/$defs/AppRevision"
+            },
+            "source_artifact_refs": {
+              "items": {
+                "$ref": "#/$defs/AppReference"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "execution_id",
+            "output_revision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "client_mutation_id": {
+              "$ref": "#/$defs/AppReference"
+            },
+            "kind": {
+              "const": "surface",
+              "type": "string"
+            },
+            "surface_session_id": {
+              "$ref": "#/$defs/AppReference"
+            }
+          },
+          "required": [
+            "kind",
+            "surface_session_id",
+            "client_mutation_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "migration",
+              "type": "string"
+            },
+            "migration_batch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "migration_run_id": {
+              "$ref": "#/$defs/AppReference"
+            }
+          },
+          "required": [
+            "kind",
+            "migration_run_id",
+            "migration_batch"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AppName": {
+      "type": "string"
+    },
+    "AppRecordId": {
+      "type": "string"
+    },
+    "AppReference": {
+      "type": "string"
+    },
+    "AppRevision": {
+      "description": "A positive, monotonically increasing contract revision.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-mutation-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "batch_digest": {
+      "$ref": "#/$defs/AppDigest"
+    },
+    "change_seq_range": {
+      "$ref": "#/$defs/AppChangeSequenceRange"
+    },
+    "committed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "committed_record_revisions": {
+      "items": {
+        "$ref": "#/$defs/AppCommittedRecordRevision"
+      },
+      "type": "array"
+    },
+    "installation_id": {
+      "$ref": "#/$defs/AppInstallationId"
+    },
+    "mutation_key": {
+      "$ref": "#/$defs/AppDigest"
+    },
+    "origin": {
+      "$ref": "#/$defs/AppMutationOrigin"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/AppReference"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "installation_id",
+    "origin",
+    "mutation_key",
+    "batch_digest",
+    "committed_record_revisions",
+    "change_seq_range",
+    "committed_at"
+  ],
+  "title": "AppMutationReceipt",
+  "type": "object"
+}

@@ -1,0 +1,184 @@
+/* Offline copies of every family used by the Web theme table. Tauri receives
+   the resolved font token names from unified-ui, but its private webviews have
+   a separate origin and cannot use that page's Google Fonts stylesheet. */
+@font-face { font-family: "Outfit"; src: url("/fonts/Outfit.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Manrope"; src: url("/fonts/Manrope.ttf") format("truetype"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("/fonts/GeistMono.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Quicksand"; src: url("/fonts/Quicksand.ttf") format("truetype"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "Fredoka"; src: url("/fonts/Fredoka.ttf") format("truetype"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/JetBrainsMono.ttf") format("truetype"); font-weight: 100 800; font-display: swap; }
+@font-face { font-family: "Space Grotesk"; src: url("/fonts/SpaceGrotesk.ttf") format("truetype"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/fonts/IBMPlexMono-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Fira Code"; src: url("/fonts/FiraCode.ttf") format("truetype"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "Press Start 2P"; src: url("/fonts/PressStart2P-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Pixelify Sans"; src: url("/fonts/PixelifySans.ttf") format("truetype"); font-weight: 400 700; font-display: swap; }
+@font-face { font-family: "Bricolage Grotesque"; src: url("/fonts/BricolageGrotesque.ttf") format("truetype"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Special Elite"; src: url("/fonts/SpecialElite-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Permanent Marker"; src: url("/fonts/PermanentMarker-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/Inter.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Lilita One"; src: url("/fonts/LilitaOne-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Rajdhani"; src: url("/fonts/Rajdhani-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+
+:root {
+  /* Themed by the Tauri broker (theme.rs): the unified-ui publishes the active
+     theme's resolved tokens (--bg-base, --text-primary, --accent-primary, …),
+     which App.svelte applies inline on <html>. These map the desktop's own
+     semantic vars onto that contract, falling back to the original dark palette
+     when running outside the themed shell (raw browser / pre-publish).
+     --bg-card and --text-muted share names with the contract, so the synced
+     inline values override them directly (hence plain fallbacks below). */
+  --bg: var(--bg-base, #1a1a2e);
+  --bg-secondary: var(--bg-surface, #16213e);
+  --bg-card: #0f3460;
+  --surface: var(--bg-surface, #16213e);
+  --surface-muted: var(--bg-soft, #12203a);
+  --card: var(--bg-elevated, #0f3460);
+  --bg-subtle: var(--bg-soft, #12203a);
+  --text: var(--text-primary, #e2e8f0);
+  --text-muted: #94a3b8;
+  --accent: var(--accent-primary, #533483);
+  --accent-light: var(--accent-primary-hover, #7c5cbf);
+  --accent-hover: var(--accent-primary-hover, #7c5cbf);
+  --success: var(--color-success, #22c55e);
+  --warning: var(--color-warning, #eab308);
+  --error: var(--color-error, #ef4444);
+  --danger: var(--color-error, #ef4444);
+  --danger-hover: var(--accent-primary-hover, #dc2626);
+  --info: #3b82f6;
+  --border: var(--border-soft, #334155);
+  --radius: 8px;
+  --font-body-local: var(--font-primary, "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  --font-display-local: var(--font-display, "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  --font-brand-local: var(--font-brand, "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  --font-mono-local: var(--font-mono, "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-body-local);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius);
+  padding: 8px 16px;
+  font-size: 14px;
+  font-family: var(--font-body-local);
+  transition: background 0.2s, opacity 0.2s;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  color: white;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-light);
+}
+
+button.secondary {
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--bg-card);
+}
+
+button.danger {
+  background: var(--error);
+  color: white;
+}
+
+button.danger:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+input, select, textarea {
+  font-family: var(--font-body-local);
+  font-size: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  color: var(--text);
+  width: 100%;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+textarea { resize: vertical; }
+
+label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display-local);
+}
+
+code, pre, kbd, samp {
+  font-family: var(--font-mono-local);
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar .fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot.running { background: var(--success); }
+.status-dot.starting { background: var(--warning); }
+.status-dot.stopped { background: var(--error); }
+.status-dot.updating { background: var(--info); }

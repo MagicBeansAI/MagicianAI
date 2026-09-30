@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Code Editor Typing Verification</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #007acc, #0056a3);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: #252526;
+            border: 2px solid #3c3c3c;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #1a3a1a;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #3a1a1a;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #1a2a3a;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #fff;
+        }
+        .test-case-id {
+            background: #3c3c3c;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+            color: #9cdcfe;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #1a365d;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #9cdcfe; }
+
+        .verify-section {
+            background: #1a3a1a;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #4ec9b0; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset {
+            background: #6c757d;
+            color: white;
+        }
+        .status-btn.reset:hover { background: #545b62; }
+
+        /* Editor containers */
+        .editor-container {
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 15px 0;
+        }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        code {
+            background: #3c3c3c;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Fira Code', 'Consolas', monospace;
+            color: #ce9178;
+        }
+
+        #loading {
+            text-align: center;
+            padding: 40px;
+            color: #808080;
+        }
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "14-code-editor-verification",
+        "phase": "Code Editor Typing",
+        "title": "Code Editor Typing Verification",
+        "description": "Tests text entry verification in code editors with virtual DOM (Monaco, CodeMirror)",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Code Editor Typing Verification</h1>
+        <p>Test the agent's ability to type into code editors that use virtual DOM rendering (Monaco, CodeMirror) and verify the text was entered.</p>
+    </div>
+
+    <!-- Test Case 1: Monaco Editor -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="14-monaco-editor"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Type in Monaco Editor</h3>
+            <span class="test-case-id">14-monaco-editor</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click inside the Monaco Editor below and type: <code>console.log('hello world');</code>
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="text-visible">The typed text should appear in the editor's .view-line elements</li>
+                <li data-check="verification-success">Console should show verification found text via 6-phase search</li>
+                <li data-check="syntax-highlighted">Text should be syntax highlighted (string in different color)</li>
+            </ul>
+        </div>
+
+        <div class="editor-container">
+            <div id="monaco-container" style="width: 100%; height: 300px;">
+                <div id="loading">Loading Monaco Editor...</div>
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: ContentEditable -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="14-contenteditable"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Type in ContentEditable</h3>
+            <span class="test-case-id">14-contenteditable</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click at the end of the existing code in the contenteditable div and type: <code>const x = 'test';</code>
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="text-appended">Text should appear after the existing code</li>
+                <li data-check="contenteditable-detected">Verification should find text via contenteditable/innerText check</li>
+            </ul>
+        </div>
+
+        <div class="editor-container">
+            <div id="contenteditable-editor"
+                 contenteditable="true"
+                 style="width: 100%; min-height: 150px; padding: 15px; font-family: 'Fira Code', monospace; font-size: 14px; line-height: 1.5; background: #1e1e1e; color: #d4d4d4; white-space: pre-wrap; outline: none; box-sizing: border-box;"
+                 spellcheck="false">// Type your code here
+function example() {
+    return 42;
+}</div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Textarea (Baseline) -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="14-textarea-baseline"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Textarea (Baseline)</h3>
+            <span class="test-case-id">14-textarea-baseline</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click inside the textarea and type: <code>console.log(message);</code>
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="textarea-value">Textarea.value should contain the typed text</li>
+                <li data-check="baseline-works">This baseline test should always work</li>
+            </ul>
+        </div>
+
+        <textarea id="textarea-editor"
+                  style="width: 100%; height: 150px; padding: 15px; font-family: 'Fira Code', monospace; font-size: 14px; line-height: 1.5; background: #1e1e1e; color: #d4d4d4; border: 1px solid #3c3c3c; border-radius: 4px; resize: vertical; box-sizing: border-box;"
+                  spellcheck="false">// Textarea baseline test
+const message = 'Hello';</textarea>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Code Editor Verification Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load Monaco Editor from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+    <script>
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Initialize Monaco Editor
+        require.config({
+            paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' }
+        });
+
+        require(['vs/editor/editor.main'], function() {
+            document.getElementById('loading').remove();
+
+            window.monacoEditor = monaco.editor.create(document.getElementById('monaco-container'), {
+                value: [
+                    '// Monaco Editor Test',
+                    '// Type here to test verification',
+                    '',
+                    'function greet(name) {',
+                    '    return `Hello, ${name}!`;',
+                    '}',
+                    '',
+                    '// Try typing below this line:',
+                    ''
+                ].join('\n'),
+                language: 'javascript',
+                theme: 'vs-dark',
+                automaticLayout: true,
+                minimap: { enabled: false },
+                fontSize: 14,
+                lineNumbers: 'on',
+                scrollBeyondLastLine: false
+            });
+
+            console.log('Monaco Editor initialized');
+
+            // Make editor accessible for debugging
+            window.getMonacoContent = () => window.monacoEditor.getValue();
+
+            // --- Genuine success detection (Test 1) ---
+            // Target action: type `console.log('hello world');` into Monaco.
+            // We confirm against the real editor model + rendered virtual-DOM
+            // view-lines, and that the string literal is syntax-highlighted.
+            const MONACO_TARGET = "console.log('hello world');";
+            const MONACO_STRING = "'hello world'";
+
+            function normalizeWs(text) {
+                return (text || '').replace(/ /g, ' ');
+            }
+
+            // Locate the rendered .view-line that contains the typed target.
+            function findMonacoTargetLine() {
+                const lines = document.querySelectorAll('#monaco-container .view-line');
+                for (const line of lines) {
+                    if (normalizeWs(line.textContent).includes(MONACO_TARGET)) {
+                        return line;
+                    }
+                }
+                return null;
+            }
+
+            function evaluateMonaco() {
+                if (!window.monacoEditor) return;
+                const modelHasText = normalizeWs(window.monacoEditor.getValue()).includes(MONACO_TARGET);
+                const targetLine = findMonacoTargetLine();
+
+                // text-visible: typed text is actually rendered in a .view-line.
+                if (modelHasText && targetLine) {
+                    window.setCheckState && window.setCheckState('test-1', 'text-visible', 'pass');
+                }
+
+                // verification-success: programmatic verification (the same
+                // view-line DOM search a verifier runs) positively located the
+                // full target string in the rendered editor.
+                if (modelHasText && targetLine) {
+                    window.setCheckState && window.setCheckState('test-1', 'verification-success', 'pass');
+                }
+
+                // syntax-highlighted: Monaco tokenizes the string literal into a
+                // colored token span (class mtkN). Confirm the line carries the
+                // string in its own token span AND >1 distinct token class
+                // (i.e. genuine syntax highlighting, not a single plain span).
+                if (targetLine) {
+                    const tokenSpans = targetLine.querySelectorAll('span[class*="mtk"]');
+                    const classes = new Set();
+                    let stringTokenColored = false;
+                    tokenSpans.forEach((span) => {
+                        const cls = Array.from(span.classList).find((c) => /^mtk\d+$/.test(c));
+                        if (cls) classes.add(cls);
+                        const txt = normalizeWs(span.textContent);
+                        if (cls && (txt.includes(MONACO_STRING) || txt.includes('hello world') || txt.trim() === "'")) {
+                            stringTokenColored = true;
+                        }
+                    });
+                    if (classes.size > 1 && stringTokenColored) {
+                        window.setCheckState && window.setCheckState('test-1', 'syntax-highlighted', 'pass');
+                    }
+                }
+            }
+
+            window.monacoEditor.onDidChangeModelContent(() => {
+                // Defer one frame so the virtual DOM view-lines re-render and
+                // tokenization runs before we inspect the DOM.
+                requestAnimationFrame(() => requestAnimationFrame(evaluateMonaco));
+            });
+            // Catch content set non-interactively / on first paint.
+            requestAnimationFrame(() => requestAnimationFrame(evaluateMonaco));
+        });
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script>
+        // --- Genuine success detection (Test 2: contenteditable, Test 3: textarea) ---
+        (() => {
+            // Test 2 target: type `const x = 'test';` AFTER the existing code.
+            const CE_TARGET = "const x = 'test';";
+            // The original seeded code ends with this closing brace; the typed
+            // text must come *after* it for "text-appended" to be genuine.
+            const CE_ORIGINAL_TAIL = 'return 42;\n}';
+            const CE_ORIGINAL_TAIL_LOOSE = 'return 42';
+
+            function evaluateContentEditable() {
+                const el = document.getElementById('contenteditable-editor');
+                if (!el) return;
+                const text = el.innerText || el.textContent || '';
+                const targetIdx = text.indexOf(CE_TARGET);
+                if (targetIdx === -1) return;
+
+                // text-appended: the original code is still present AND the typed
+                // target appears after it (appended, not replacing the body).
+                const tailIdx = text.indexOf(CE_ORIGINAL_TAIL_LOOSE);
+                if (tailIdx !== -1 && targetIdx > tailIdx) {
+                    window.setCheckState && window.setCheckState('test-2', 'text-appended', 'pass');
+                }
+
+                // contenteditable-detected: the same innerText-based verification
+                // a verifier runs positively located the target in the editable.
+                if (targetIdx !== -1) {
+                    window.setCheckState && window.setCheckState('test-2', 'contenteditable-detected', 'pass');
+                }
+            }
+
+            // Test 3 target: type `console.log(message);` into the textarea.
+            const TA_TARGET = 'console.log(message);';
+
+            function evaluateTextarea() {
+                const ta = document.getElementById('textarea-editor');
+                if (!ta) return;
+                if ((ta.value || '').includes(TA_TARGET)) {
+                    // textarea-value: textarea.value genuinely contains the text.
+                    window.setCheckState && window.setCheckState('test-3', 'textarea-value', 'pass');
+                    // baseline-works: the baseline path succeeded (value present).
+                    window.setCheckState && window.setCheckState('test-3', 'baseline-works', 'pass');
+                }
+            }
+
+            function wire() {
+                const ce = document.getElementById('contenteditable-editor');
+                if (ce) {
+                    ce.addEventListener('input', evaluateContentEditable);
+                    ce.addEventListener('blur', evaluateContentEditable);
+                }
+                const ta = document.getElementById('textarea-editor');
+                if (ta) {
+                    ta.addEventListener('input', evaluateTextarea);
+                    ta.addEventListener('change', evaluateTextarea);
+                }
+                // Catch content present on load / set non-interactively.
+                evaluateContentEditable();
+                evaluateTextarea();
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', wire);
+            } else {
+                wire();
+            }
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

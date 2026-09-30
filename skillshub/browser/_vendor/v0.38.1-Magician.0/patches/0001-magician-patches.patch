@@ -1,0 +1,1740 @@
+diff --git a/README.md b/README.md
+index 63f5829..13b5018 100644
+--- a/README.md
++++ b/README.md
+@@ -136,6 +136,8 @@ agent-browser scroll <dir> [px]       # Scroll (up/down/left/right, --selector <
+ agent-browser scrollintoview <sel>    # Scroll element into view (alias: scrollinto)
+ agent-browser drag <src> <tgt>        # Drag and drop
+ agent-browser upload <sel> <files>    # Upload files
++agent-browser download <sel> <path>   # Click and save a download reliably
++agent-browser awaitfilechooser <path> --click <sel>  # Handle custom/native chooser controls
+ agent-browser screenshot [path]       # Take screenshot (--full for full page, saves to a temporary directory if no path)
+ agent-browser screenshot --annotate   # Annotated screenshot with numbered element labels
+ agent-browser screenshot --if-changed # Recommended: skip unchanged images to save tokens
+@@ -153,6 +155,7 @@ agent-browser stream status           # Show runtime streaming state and bound p
+ agent-browser stream disable          # Stop runtime WebSocket streaming
+ agent-browser close                   # Close browser (aliases: quit, exit)
+ agent-browser close --all             # Close all active sessions
++agent-browser close --keep-browser    # Detach and leave a local browser window open
+ agent-browser chat "<instruction>"    # AI chat: natural language browser control (single-shot)
+ agent-browser chat                    # AI chat: interactive REPL mode
+ ```
+diff --git a/cli/Cargo.lock b/cli/Cargo.lock
+index 37cc5b7..e3e9979 100644
+--- a/cli/Cargo.lock
++++ b/cli/Cargo.lock
+@@ -45,7 +45,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "agent-browser"
+-version = "0.38.1"
++version = "0.38.1-Magician.0"
+ dependencies = [
+  "aes-gcm",
+  "async-trait",
+diff --git a/cli/Cargo.toml b/cli/Cargo.toml
+index 6d5a274..a73d1ef 100644
+--- a/cli/Cargo.toml
++++ b/cli/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "agent-browser"
+-version = "0.38.1"
++version = "0.38.1-Magician.0"
+ edition = "2021"
+ description = "Fast browser automation CLI for AI agents"
+ license = "Apache-2.0"
+diff --git a/cli/src/commands.rs b/cli/src/commands.rs
+index db5154a..d2a07a0 100644
+--- a/cli/src/commands.rs
++++ b/cli/src/commands.rs
+@@ -111,6 +111,8 @@ pub fn is_top_level_command(value: &str) -> bool {
+             | "drag"
+             | "upload"
+             | "download"
++            | "setinterceptfilechooser"
++            | "awaitfilechooser"
+             | "press"
+             | "key"
+             | "keydown"
+@@ -582,6 +584,58 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
+             })?;
+             Ok(json!({ "id": id, "action": "download", "selector": sel, "path": path }))
+         }
++        "setinterceptfilechooser" => {
++            let enabled = match rest.first().map(|value| value.to_ascii_lowercase()) {
++                None => true,
++                Some(value) if matches!(value.as_str(), "on" | "true" | "1" | "enable") => true,
++                Some(value) if matches!(value.as_str(), "off" | "false" | "0" | "disable") => false,
++                Some(value) => return Err(ParseError::InvalidValue {
++                    message: format!("Unrecognized file chooser interception value: {value}"),
++                    usage: "setinterceptfilechooser [on|off]",
++                }),
++            };
++            Ok(json!({ "id": id, "action": "setinterceptfilechooser", "enabled": enabled }))
++        }
++        "awaitfilechooser" => {
++            let path = rest.first().ok_or_else(|| ParseError::MissingArguments {
++                context: "awaitfilechooser".to_string(),
++                usage: "awaitfilechooser <path> [--click <selector>] [--timeout-ms N]",
++            })?;
++            let mut timeout_ms = 30_000_u64;
++            let mut click_selector: Option<&str> = None;
++            let mut index = 1;
++            while index < rest.len() {
++                match rest[index] {
++                    "--click" => {
++                        click_selector = Some(rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
++                            context: "awaitfilechooser --click".to_string(),
++                            usage: "awaitfilechooser <path> --click <selector> [--timeout-ms N]",
++                        })?);
++                        index += 2;
++                    }
++                    "--timeout-ms" => {
++                        let raw = rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
++                            context: "awaitfilechooser --timeout-ms".to_string(),
++                            usage: "awaitfilechooser <path> [--click <selector>] --timeout-ms N",
++                        })?;
++                        timeout_ms = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
++                            message: format!("Invalid file chooser timeout: {raw}"),
++                            usage: "awaitfilechooser <path> [--click <selector>] [--timeout-ms N]",
++                        })?;
++                        index += 2;
++                    }
++                    value => return Err(ParseError::InvalidValue {
++                        message: format!("Unknown awaitfilechooser option: {value}"),
++                        usage: "awaitfilechooser <path> [--click <selector>] [--timeout-ms N]",
++                    }),
++                }
++            }
++            let mut payload = json!({ "id": id, "action": "awaitfilechooser", "path": path, "timeout_ms": timeout_ms });
++            if let Some(selector) = click_selector {
++                payload["click_selector"] = json!(selector);
++            }
++            Ok(payload)
++        }
+ 
+         // === Keyboard ===
+         "press" | "key" => {
+@@ -1000,7 +1054,10 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
+         }
+ 
+         // === Close ===
+-        "close" | "quit" | "exit" => Ok(json!({ "id": id, "action": "close" })),
++        "close" | "quit" | "exit" => {
++            let keep_browser = rest.iter().any(|arg| *arg == "--keep-browser");
++            Ok(json!({ "id": id, "action": "close", "keep_browser": keep_browser }))
++        }
+ 
+         // === Inspect ===
+         "inspect" => Ok(json!({ "id": id, "action": "inspect" })),
+@@ -5693,6 +5750,42 @@ mod tests {
+         ));
+     }
+ 
++    #[test]
++    fn test_set_file_chooser_interception_defaults_on() {
++        let cmd = parse_command(&args("setinterceptfilechooser"), &default_flags()).unwrap();
++        assert_eq!(cmd["enabled"], true);
++    }
++
++    #[test]
++    fn test_set_file_chooser_interception_off() {
++        let cmd = parse_command(&args("setinterceptfilechooser off"), &default_flags()).unwrap();
++        assert_eq!(cmd["enabled"], false);
++    }
++
++    #[test]
++    fn test_set_file_chooser_interception_rejects_unknown_value() {
++        assert!(matches!(parse_command(&args("setinterceptfilechooser maybe"), &default_flags()), Err(ParseError::InvalidValue { .. })));
++    }
++
++    #[test]
++    fn test_await_file_chooser_combines_subscription_and_click() {
++        let cmd = parse_command(&args("awaitfilechooser ./photo.png --click #browse --timeout-ms 42000"), &default_flags()).unwrap();
++        assert_eq!(cmd["action"], "awaitfilechooser");
++        assert_eq!(cmd["click_selector"], "#browse");
++        assert_eq!(cmd["timeout_ms"], 42_000);
++    }
++
++    #[test]
++    fn test_await_file_chooser_rejects_invalid_timeout() {
++        assert!(matches!(parse_command(&args("awaitfilechooser ./photo.png --timeout-ms soon"), &default_flags()), Err(ParseError::InvalidValue { .. })));
++    }
++
++    #[test]
++    fn test_close_keep_browser_flag() {
++        let cmd = parse_command(&args("close --keep-browser"), &default_flags()).unwrap();
++        assert_eq!(cmd["keep_browser"], true);
++    }
++
+     // === Wait for Download Tests ===
+ 
+     #[test]
+diff --git a/cli/src/connection.rs b/cli/src/connection.rs
+index 8d5f66a..5cfe4b1 100644
+--- a/cli/src/connection.rs
++++ b/cli/src/connection.rs
+@@ -6,11 +6,19 @@ use std::fs;
+ use std::hash::{Hash, Hasher};
+ use std::io::{BufRead, BufReader, Read, Write};
+ use std::net::TcpStream;
+-use std::path::PathBuf;
++use std::path::{Path, PathBuf};
+ use std::process::{Command, Stdio};
+ use std::thread;
+ use std::time::{Duration, Instant};
+ 
++#[cfg(unix)]
++pub const MAX_UNIX_SOCKET_PATH_BYTES: usize = 103;
++
++#[cfg(unix)]
++pub fn max_session_name_bytes_for_socket_dir(socket_dir: &Path) -> usize {
++    MAX_UNIX_SOCKET_PATH_BYTES.saturating_sub(socket_dir.join(".sock").as_os_str().len())
++}
++
+ #[cfg(unix)]
+ use std::os::unix::net::UnixStream;
+ 
+@@ -838,7 +846,7 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
+     {
+         let socket_path = get_socket_path(session);
+         let path_len = socket_path.as_os_str().len();
+-        if path_len > 103 {
++        if path_len > MAX_UNIX_SOCKET_PATH_BYTES {
+             return Err(format!(
+                 "Session name '{}' is too long. Socket path would be {} bytes (max 103).\n\
+                  Use a shorter session name or set AGENT_BROWSER_SOCKET_DIR to a shorter path.",
+@@ -1082,7 +1090,7 @@ fn has_os_error(error: &str, code: u32) -> bool {
+     error.contains(&format!("(os error {})", code))
+ }
+ 
+-/// Socket read timeout for one request. Ordinary commands get a 30s floor.
++/// Socket read timeout for one request. Ordinary commands get a 60s floor.
+ /// Commands carrying an operation timeout (the wait family, which
+ /// parse_command stamps with AGENT_BROWSER_DEFAULT_TIMEOUT when no explicit
+ /// --timeout is given) get that timeout plus margin, so the daemon can report
+@@ -1092,7 +1100,7 @@ fn has_os_error(error: &str, code: u32) -> bool {
+ /// The env var is deliberately NOT consulted here. Reading it would apply a
+ /// long wait budget to every command, so a genuinely hung daemon on a simple
+ /// `url`/`title`/`snapshot` call would take the full budget to surface
+-/// instead of 30s. Only commands that actually carry a `timeout` field get
++/// instead of 60s. Only commands that actually carry a `timeout` field get
+ /// the extended budget, and that field is set client-side per invocation,
+ /// avoiding the daemon's spawn-time env snapshot drifting from the client.
+ fn read_timeout_for(cmd: &Value) -> Duration {
+@@ -1100,10 +1108,14 @@ fn read_timeout_for(cmd: &Value) -> Duration {
+     if cmd.get("action").and_then(Value::as_str) == Some("mousemove") {
+         op_ms = op_ms.max(cmd.get("duration").and_then(Value::as_u64).unwrap_or(0));
+     }
+-    Duration::from_millis(op_ms.saturating_add(10_000).max(30_000))
++    // Download handling can spend 30 seconds waiting for the browser-side
++    // event, and Magicutor's CDP hop needs a 60s floor so the client does
++    // not retry a command the daemon is still finishing.
++    Duration::from_millis(op_ms.saturating_add(10_000).max(60_000))
+ }
+ 
+ fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
++    let owner_pid = fs::read_to_string(get_pid_path(session)).ok();
+     let mut stream = connect(session)?;
+ 
+     stream.set_read_timeout(Some(read_timeout_for(cmd))).ok();
+@@ -1122,7 +1134,38 @@ fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
+         .read_line(&mut response_line)
+         .map_err(|e| format!("Failed to read: {}", e))?;
+ 
+-    serde_json::from_str(&response_line).map_err(|e| format!("Invalid response: {}", e))
++    let response: Response = serde_json::from_str(&response_line)
++        .map_err(|e| format!("Invalid response: {}", e))?;
++    if response.success
++        && matches!(cmd.get("action").and_then(Value::as_str), Some("close" | "confirm" | INTERNAL_DAEMON_SHUTDOWN_ACTION))
++        && response.data.as_ref().is_some_and(|data| {
++            data.get("closed").and_then(Value::as_bool) == Some(true)
++                || (data.pointer("/result/success").and_then(Value::as_bool) == Some(true)
++                    && data.pointer("/result/data/closed").and_then(Value::as_bool) == Some(true))
++        })
++    {
++        wait_for_closed_daemon(session, owner_pid.as_deref(), Duration::from_secs(5))?;
++    }
++    Ok(response)
++}
++
++/// A close acknowledgement precedes daemon cleanup. Reconnecting immediately
++/// can reuse that doomed daemon, then silently lose the new snapshot refs.
++/// Wait only after an actual close, pin the old owner, and never kill anything.
++fn wait_for_closed_daemon(session: &str, owner_pid: Option<&str>, timeout: Duration) -> Result<(), String> {
++    let started = Instant::now();
++    loop {
++        let current = fs::read_to_string(get_pid_path(session)).ok();
++        let finished = match owner_pid {
++            Some(owner) => current.as_deref() != Some(owner),
++            None => !daemon_ready(session),
++        };
++        if finished { return Ok(()); }
++        if started.elapsed() >= timeout {
++            return Err("Browser closed, but its daemon has not finished shutting down".into());
++        }
++        thread::sleep(Duration::from_millis(10));
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -1134,7 +1177,49 @@ mod tests {
+     fn long_mouse_movement_gets_its_requested_time_budget() {
+         assert_eq!(
+             read_timeout_for(&json!({"action":"mousemove", "duration": 35_000})),
+-            Duration::from_secs(45)
++            Duration::from_secs(60)
++        );
++    }
++
++    #[test]
++    fn test_close_wait_observes_old_owner_cleanup() {
++        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_NAMESPACE"]);
++        let directory = tempfile::tempdir().unwrap();
++        guard.set("AGENT_BROWSER_SOCKET_DIR", directory.path().to_str().unwrap());
++        guard.remove("AGENT_BROWSER_NAMESPACE");
++        let path = get_pid_path("close-wait");
++        fs::write(&path, "old-owner").unwrap();
++        assert!(wait_for_closed_daemon("close-wait", Some("old-owner"), Duration::ZERO).is_err());
++        let cleanup = thread::spawn(move || {
++            thread::sleep(Duration::from_millis(30));
++            fs::remove_file(path).unwrap();
++        });
++        wait_for_closed_daemon("close-wait", Some("old-owner"), Duration::from_secs(1)).unwrap();
++        cleanup.join().unwrap();
++    }
++
++    #[test]
++    fn test_close_wait_does_not_touch_a_replacement_owner() {
++        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_NAMESPACE"]);
++        let directory = tempfile::tempdir().unwrap();
++        guard.set("AGENT_BROWSER_SOCKET_DIR", directory.path().to_str().unwrap());
++        guard.remove("AGENT_BROWSER_NAMESPACE");
++        let path = get_pid_path("close-wait");
++        fs::write(&path, "new-owner").unwrap();
++        wait_for_closed_daemon("close-wait", Some("old-owner"), Duration::ZERO).unwrap();
++        assert_eq!(fs::read_to_string(path).unwrap(), "new-owner");
++    }
++
++    #[test]
++    fn test_read_timeout_has_sixty_second_floor() {
++        assert_eq!(read_timeout_for(&json!({ "action": "url" })), Duration::from_secs(60));
++    }
++
++    #[test]
++    fn test_read_timeout_adds_margin_to_operation_timeout() {
++        assert_eq!(
++            read_timeout_for(&json!({ "action": "wait", "timeout": 75_000 })),
++            Duration::from_secs(85)
+         );
+     }
+ 
+diff --git a/cli/src/main.rs b/cli/src/main.rs
+index 9878fc1..23584fb 100644
+--- a/cli/src/main.rs
++++ b/cli/src/main.rs
+@@ -590,6 +590,64 @@ fn resolve_session_id_scope(scope: &str) -> Result<(String, PathBuf), String> {
+     }
+ }
+ 
++fn truncate_session_component_to_bytes(value: &str, max_bytes: usize) -> String {
++    let mut truncated = String::new();
++    for c in value.chars() {
++        if truncated.len() + c.len_utf8() > max_bytes {
++            break;
++        }
++        truncated.push(c);
++    }
++    while truncated.ends_with(['-', '_']) {
++        truncated.pop();
++    }
++    truncated
++}
++
++fn build_scoped_session_id(
++    prefix: Option<&str>,
++    suffix: &str,
++    socket_dir: &std::path::Path,
++) -> Result<(String, bool), String> {
++    let desired = match prefix {
++        Some(prefix) => format!("{}-{}", prefix, suffix),
++        None => suffix.to_string(),
++    };
++
++    #[cfg(not(unix))]
++    {
++        let _ = socket_dir;
++        return Ok((desired, false));
++    }
++
++    #[cfg(unix)]
++    {
++        let max_session_bytes = connection::max_session_name_bytes_for_socket_dir(socket_dir);
++        if desired.len() <= max_session_bytes {
++            return Ok((desired, false));
++        }
++        if suffix.len() > max_session_bytes {
++            return Err(format!(
++                "Socket directory '{}' leaves only {} bytes for a session name, but the stable session suffix requires {}. Shorten --namespace or set AGENT_BROWSER_SOCKET_DIR to a shorter path.",
++                socket_dir.display(),
++                max_session_bytes,
++                suffix.len()
++            ));
++        }
++
++        let Some(prefix) = prefix else {
++            return Ok((suffix.to_string(), false));
++        };
++        let max_prefix_bytes = max_session_bytes.saturating_sub(suffix.len() + 1);
++        let prefix = truncate_session_component_to_bytes(prefix, max_prefix_bytes);
++        if prefix.is_empty() {
++            Ok((suffix.to_string(), true))
++        } else {
++            Ok((format!("{}-{}", prefix, suffix), true))
++        }
++    }
++}
++
+ fn run_session_id(args: &[String], json_mode: bool) {
+     let mut scope = "worktree".to_string();
+     let mut prefix: Option<String> = None;
+@@ -638,9 +696,21 @@ fn run_session_id(args: &[String], json_mode: bool) {
+         .as_deref()
+         .map(validation::sanitize_session_component)
+         .filter(|s| !s.is_empty());
+-    let session = match prefix {
+-        Some(prefix) => format!("{}-{}", prefix, suffix),
+-        None => suffix.to_string(),
++    let socket_dir = get_socket_dir();
++    let (session, prefix_truncated) = match build_scoped_session_id(
++        prefix.as_deref(),
++        suffix,
++        &socket_dir,
++    ) {
++        Ok(result) => result,
++        Err(e) => {
++            if json_output {
++                print_json_error(e);
++            } else {
++                eprintln!("{} {}", color::error_indicator(), e);
++            }
++            exit(1);
++        }
+     };
+ 
+     if json_output {
+@@ -650,7 +720,9 @@ fn run_session_id(args: &[String], json_mode: bool) {
+                 "session": session,
+                 "scope": resolved_scope,
+                 "path": path_str,
+-                "hash": suffix
++                "hash": suffix,
++                "prefixTruncated": prefix_truncated,
++                "socketDir": socket_dir
+             }
+         }));
+     } else {
+@@ -2957,6 +3029,48 @@ mod tests {
+         assert!(resolve_session_id_scope("branch").is_err());
+     }
+ 
++    #[test]
++    fn scoped_session_id_preserves_prefix_when_socket_path_fits() {
++        let socket_dir = std::path::Path::new("/tmp/ab");
++        let (session, truncated) =
++            build_scoped_session_id(Some("next-dev-loop"), "0123456789ab", socket_dir).unwrap();
++
++        assert_eq!(session, "next-dev-loop-0123456789ab");
++        assert!(!truncated);
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn scoped_session_id_truncates_prefix_to_fit_namespaced_unix_socket() {
++        let socket_dir = std::path::Path::new(
++            "/Users/owner/.agent-browser/namespaces/magician-v0331-smoke/run",
++        );
++        let suffix = "23dae59c77df";
++        let (session, truncated) =
++            build_scoped_session_id(Some("magician-v0331-smoke"), suffix, socket_dir).unwrap();
++
++        assert!(truncated);
++        assert!(session.ends_with(suffix));
++        assert!(validation::is_valid_session_name(&session));
++        assert!(
++            socket_dir.join(format!("{session}.sock")).as_os_str().len()
++                <= connection::MAX_UNIX_SOCKET_PATH_BYTES
++        );
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn scoped_session_id_fails_when_socket_directory_cannot_fit_stable_suffix() {
++        let socket_dir = std::path::PathBuf::from(format!(
++            "/tmp/{}",
++            "x".repeat(connection::MAX_UNIX_SOCKET_PATH_BYTES)
++        ));
++        let error = build_scoped_session_id(Some("prefix"), "0123456789ab", &socket_dir)
++            .unwrap_err();
++
++        assert!(error.contains("Shorten --namespace"));
++    }
++
+     #[test]
+     fn test_confirmation_prompt_from_response_finds_nested_confirm_result() {
+         let resp = Response {
+diff --git a/cli/src/mcp.rs b/cli/src/mcp.rs
+index 88e7931..2bb7698 100644
+--- a/cli/src/mcp.rs
++++ b/cli/src/mcp.rs
+@@ -45,6 +45,8 @@ const TOOL_SELECT: &str = "agent_browser_select";
+ const TOOL_DRAG: &str = "agent_browser_drag";
+ const TOOL_UPLOAD: &str = "agent_browser_upload";
+ const TOOL_DOWNLOAD: &str = "agent_browser_download";
++const TOOL_SET_FILE_CHOOSER_INTERCEPTION: &str = "agent_browser_set_file_chooser_interception";
++const TOOL_AWAIT_FILE_CHOOSER: &str = "agent_browser_await_file_chooser";
+ const TOOL_SCROLL: &str = "agent_browser_scroll";
+ const TOOL_SCROLL_INTO_VIEW: &str = "agent_browser_scroll_into_view";
+ const TOOL_WAIT_MS: &str = "agent_browser_wait_ms";
+@@ -422,6 +424,8 @@ const DEBUG_PROFILE_TOOLS: &[&str] = &[
+     TOOL_PDF,
+     TOOL_UPLOAD,
+     TOOL_DOWNLOAD,
++    TOOL_SET_FILE_CHOOSER_INTERCEPTION,
++    TOOL_AWAIT_FILE_CHOOSER,
+     TOOL_TRACE_START,
+     TOOL_TRACE_STOP,
+     TOOL_PROFILER_START,
+@@ -964,7 +968,8 @@ fn tools() -> Vec<Value> {
+             "Close browser",
+             "Close the current browser session.",
+             json!({
+-                "all": { "type": "boolean", "default": false, "description": "Close all active sessions." }
++                "all": { "type": "boolean", "default": false, "description": "Close all active sessions." },
++                "keepBrowser": { "type": "boolean", "default": false, "description": "Detach and leave a locally launched browser window open." }
+             }),
+             &[],
+         ),
+@@ -1006,6 +1011,24 @@ fn parity_tools() -> Vec<Value> {
+             json!({ "selector": selector_schema(), "path": { "type": "string" } }),
+             &["selector", "path"],
+         ),
++        tool(
++            TOOL_SET_FILE_CHOOSER_INTERCEPTION,
++            "Set file chooser interception",
++            "Enable or disable CDP file chooser interception, including attached iframe sessions.",
++            json!({ "enabled": { "type": "boolean", "default": true } }),
++            &[],
++        ),
++        tool(
++            TOOL_AWAIT_FILE_CHOOSER,
++            "Await file chooser",
++            "Subscribe before an optional click, then populate the chooser without a native OS dialog.",
++            json!({
++                "path": { "type": "string" },
++                "clickSelector": { "type": "string" },
++                "waitTimeoutMs": wait_timeout_schema()
++            }),
++            &["path"],
++        ),
+         tool(
+             TOOL_KEYDOWN,
+             "Key down",
+@@ -1764,10 +1787,10 @@ fn parity_tools() -> Vec<Value> {
+         tool(
+             TOOL_SESSION_ID,
+             "Session id",
+-            "Generate a stable session id from the current working tree, cwd, or Git root.",
++            "Generate a stable, socket-safe session id from the current working tree, cwd, or Git root.",
+             json!({
+                 "scope": { "type": "string", "enum": ["worktree", "cwd", "git-root"], "default": "worktree" },
+-                "prefix": { "type": "string", "description": "Optional readable prefix for the generated id." }
++                "prefix": { "type": "string", "description": "Optional readable prefix. On Unix it may be shortened to fit the effective namespaced socket path; the stable hash suffix is preserved." }
+             }),
+             &[],
+         ),
+@@ -2231,6 +2254,8 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
+         TOOL_DRAG => call_drag(arguments),
+         TOOL_UPLOAD => call_upload(arguments),
+         TOOL_DOWNLOAD => call_download(arguments),
++        TOOL_SET_FILE_CHOOSER_INTERCEPTION => call_set_file_chooser_interception(arguments),
++        TOOL_AWAIT_FILE_CHOOSER => call_await_file_chooser(arguments),
+         TOOL_SCROLL => call_scroll(arguments),
+         TOOL_SCROLL_INTO_VIEW => call_simple_selector(arguments, "scrollintoview"),
+         TOOL_WAIT_MS => call_wait_ms(arguments),
+@@ -2731,6 +2756,23 @@ fn call_download(arguments: &Value) -> Result<Value, ProtocolError> {
+     )
+ }
+ 
++fn call_set_file_chooser_interception(arguments: &Value) -> Result<Value, ProtocolError> {
++    let enabled = optional_bool(arguments, "enabled")?.unwrap_or(true);
++    call_cli_tool(arguments, vec!["setinterceptfilechooser".to_string(), if enabled { "on" } else { "off" }.to_string()], None)
++}
++
++fn call_await_file_chooser(arguments: &Value) -> Result<Value, ProtocolError> {
++    let path = required_string(arguments, "path")?;
++    let mut args = vec!["awaitfilechooser".to_string(), path];
++    if let Some(selector) = optional_string(arguments, "clickSelector")? {
++        args.extend(["--click".to_string(), selector]);
++    }
++    if let Some(timeout) = optional_u64(arguments, "waitTimeoutMs")? {
++        args.extend(["--timeout-ms".to_string(), timeout.to_string()]);
++    }
++    call_cli_tool(arguments, args, None)
++}
++
+ fn call_select(arguments: &Value) -> Result<Value, ProtocolError> {
+     let selector = required_string(arguments, "selector")?;
+     let values = required_string_array(arguments, "values")?;
+@@ -3652,10 +3694,16 @@ fn call_eval(arguments: &Value) -> Result<Value, ProtocolError> {
+ }
+ 
+ fn call_close(arguments: &Value) -> Result<Value, ProtocolError> {
++    let all = optional_bool(arguments, "all")?.unwrap_or(false);
++    let keep_browser = optional_bool(arguments, "keepBrowser")?.unwrap_or(false);
++    if all && keep_browser {
++        return Err(ProtocolError::invalid_params("all and keepBrowser cannot be combined"));
++    }
+     let mut args = vec!["close".to_string()];
+-    if optional_bool(arguments, "all")?.unwrap_or(false) {
++    if all {
+         args.push("--all".to_string());
+     }
++    if keep_browser { args.push("--keep-browser".to_string()); }
+     call_cli_tool(arguments, args, None)
+ }
+ 
+@@ -4834,6 +4882,17 @@ mod tests {
+             open["inputSchema"]["properties"]["idleTimeout"]["type"],
+             "string"
+         );
++        let close = tools.iter().find(|tool| tool["name"].as_str() == Some(TOOL_CLOSE)).unwrap();
++        assert_eq!(close["inputSchema"]["properties"]["keepBrowser"]["type"], "boolean");
++        let chooser = tools.iter().find(|tool| tool["name"].as_str() == Some(TOOL_AWAIT_FILE_CHOOSER)).unwrap();
++        assert_eq!(chooser["inputSchema"]["properties"]["clickSelector"]["type"], "string");
++        assert!(McpConfig::from_profiles(vec![ToolProfile::Debug]).allows(TOOL_AWAIT_FILE_CHOOSER));
++    }
++
++    #[test]
++    fn close_rejects_all_with_keep_browser() {
++        let error = call_close(&json!({ "all": true, "keepBrowser": true })).unwrap_err();
++        assert_eq!(error.code, -32602);
+     }
+ 
+     #[test]
+diff --git a/cli/src/native/actions.rs b/cli/src/native/actions.rs
+index 7342a11..a02d8f8 100644
+--- a/cli/src/native/actions.rs
++++ b/cli/src/native/actions.rs
+@@ -2412,8 +2412,12 @@ async fn close_active_provider_session(state: &mut DaemonState) {
+ }
+ 
+ pub(crate) async fn close_current_browser(state: &mut DaemonState) -> Result<(), String> {
++    close_current_browser_with(state, false).await
++}
++
++pub(crate) async fn close_current_browser_with(state: &mut DaemonState, keep_browser: bool) -> Result<(), String> {
+     let close_error = if let Some(mut mgr) = state.browser.take() {
+-        mgr.close().await.err()
++        mgr.close_with_options(keep_browser).await.err()
+     } else {
+         None
+     };
+@@ -2440,7 +2444,11 @@ pub(crate) async fn close_current_browser(state: &mut DaemonState) -> Result<(),
+ /// Lifecycle shutdown paths use this instead of `close_current_browser`
+ /// because Safari and iOS sessions live outside `state.browser`.
+ pub(crate) async fn close_all_browser_backends(state: &mut DaemonState) -> Result<(), String> {
+-    let close_result = close_current_browser(state).await;
++    close_all_browser_backends_with(state, false).await
++}
++
++async fn close_all_browser_backends_with(state: &mut DaemonState, keep_browser: bool) -> Result<(), String> {
++    let close_result = close_current_browser_with(state, keep_browser).await;
+ 
+     if let Some(ref mut webdriver) = state.webdriver_backend {
+         let _ = webdriver.close().await;
+@@ -2611,7 +2619,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
+     }
+ 
+     if action == INTERNAL_DAEMON_SHUTDOWN_ACTION {
+-        let mut resp = match handle_close(state).await {
++        let mut resp = match handle_close(state, false).await {
+             Ok(data) => success_response(&id, data),
+             Err(e) => error_response(&id, &super::browser::to_ai_friendly_error(&e)),
+         };
+@@ -2921,7 +2929,10 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
+         "title" => handle_title(state).await,
+         "content" => handle_content(state).await,
+         "evaluate" => handle_evaluate(cmd, state).await,
+-        "close" => handle_close(state).await,
++        "close" => {
++            let keep_browser = cmd.get("keep_browser").and_then(Value::as_bool).unwrap_or(false);
++            handle_close(state, keep_browser).await
++        }
+         "snapshot" => handle_snapshot(cmd, state).await,
+         "screenshot" => handle_screenshot(cmd, state).await,
+         "click" => handle_click(cmd, state).await,
+@@ -3006,6 +3017,8 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
+         "permissions" => handle_permissions(cmd, state).await,
+         "dialog" => handle_dialog(cmd, state).await,
+         "upload" => handle_upload(cmd, state).await,
++        "setinterceptfilechooser" => handle_setinterceptfilechooser(cmd, state).await,
++        "awaitfilechooser" => handle_awaitfilechooser(cmd, state).await,
+         "addscript" => handle_addscript(cmd, state).await,
+         "addinitscript" => handle_addinitscript(cmd, state).await,
+         "removeinitscript" => handle_removeinitscript(cmd, state).await,
+@@ -3103,6 +3116,17 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
+     } else {
+         None
+     };
++    let result = match result {
++        Ok(data) => Ok(data),
++        Err(error) if is_cdp_transport_failure(&error) => {
++            let enriched = match state.browser.as_mut() {
++                Some(manager) => manager.enrich_local_process_exit(error).await,
++                None => error,
++            };
++            Err(enriched)
++        }
++        Err(error) => Err(error),
++    };
+ 
+     let mut resp = match result {
+         Ok(data) => success_response(&id, data),
+@@ -3334,6 +3358,12 @@ async fn apply_tab_binding_on_attach_or_rollback(state: &mut DaemonState) -> Res
+     }
+ }
+ 
++fn is_cdp_transport_failure(error: &str) -> bool {
++    error.contains("CDP response channel closed")
++        || error.contains("Failed to send CDP command")
++        || error.contains("CDP WebSocket connect failed")
++}
++
+ // ---------------------------------------------------------------------------
+ // Auto-launch
+ // ---------------------------------------------------------------------------
+@@ -5500,9 +5530,9 @@ async fn handle_evaluate(cmd: &Value, state: &DaemonState) -> Result<Value, Stri
+     Ok(json!({ "result": result, "origin": url }))
+ }
+ 
+-async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
++async fn handle_close(state: &mut DaemonState, keep_browser: bool) -> Result<Value, String> {
+     let save_result = auto_save_restore_state(state).await;
+-    close_all_browser_backends(state).await?;
++    close_all_browser_backends_with(state, keep_browser).await?;
+ 
+     // Stop background Fetch handler
+     if let Some(task) = state.fetch_handler_task.take() {
+@@ -7600,33 +7630,54 @@ async fn handle_download(cmd: &Value, state: &mut DaemonState) -> Result<Value,
+     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+     let session_id = mgr.active_session_id()?.to_string();
+ 
++    // Extension-backed Chrome cannot execute Browser/Page download settings.
++    // For a concrete download link, fetch in its existing authenticated page
++    // context and transfer bounded bytes to the CLI filesystem. This also
++    // works when Chrome and this CLI run on different machines.
++    let version = mgr.client.send_command_no_params("Browser.getVersion", None).await?;
++    if version.get("product").and_then(Value::as_str) == Some("Chrome/magicutor-bridge") {
++        return download_extension_link(mgr, &session_id, selector, state, &dest).await;
++    }
++
+     // Set download behavior to save to the parent directory
+     mgr.set_download_behavior(download_dir_str).await?;
+ 
++    let pre_existing: HashSet<std::ffi::OsString> = fs::read_dir(&download_dir)
++        .map(|entries| entries.filter_map(|entry| entry.ok().map(|entry| entry.file_name())).collect())
++        .unwrap_or_default();
++
+     // Subscribe to CDP events before clicking so we don't miss the download event
+     let mut rx = mgr.client.subscribe();
+ 
+-    // Click the element to trigger the download
+-    let result = interaction::click(
++    let (object_id, effective_session_id) = super::element::resolve_element_object_id(
+         &mgr.client,
+         &session_id,
+         &state.ref_map,
+         selector,
+-        "left",
+-        1,
+         &state.iframe_sessions,
+     )
+     .await?;
+-    record_click_animation(
+-        &result,
+-        &mut state.mouse_state,
+-        &state.recording_state.shared_cursor,
+-    );
++    mgr.client
++        .send_command(
++            "Runtime.callFunctionOn",
++            Some(json!({
++                "objectId": object_id,
++                "functionDeclaration": "function() { this.click(); }",
++                "userGesture": true,
++                "awaitPromise": false,
++                "returnByValue": true,
++            })),
++            Some(&effective_session_id),
++        )
++        .await?;
+ 
+     // Wait for download to complete
+     const DOWNLOAD_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(30);
++    const DOWNLOAD_POLL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_millis(250);
+     let deadline = tokio::time::Instant::now() + DOWNLOAD_TIMEOUT;
+     let mut downloaded_guid: Option<String> = None;
++    let mut observed_sizes = HashMap::<PathBuf, u64>::new();
++    let mut events_open = true;
+ 
+     loop {
+         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+@@ -7634,8 +7685,15 @@ async fn handle_download(cmd: &Value, state: &mut DaemonState) -> Result<Value,
+             return Err("Timeout waiting for download to complete".to_string());
+         }
+ 
+-        match tokio::time::timeout(remaining, rx.recv()).await {
+-            Ok(Ok(event)) => {
++        let event_window = remaining.min(DOWNLOAD_POLL_INTERVAL);
++        let event_result = if events_open {
++            Some(tokio::time::timeout(event_window, rx.recv()).await)
++        } else {
++            tokio::time::sleep(event_window).await;
++            None
++        };
++        match event_result {
++            Some(Ok(Ok(event))) => {
+                 // Browser-domain download events may arrive without a sessionId
+                 // or with a different sessionId than the page session, so we
+                 // accept them regardless. Page-domain events are matched by
+@@ -7670,9 +7728,16 @@ async fn handle_download(cmd: &Value, state: &mut DaemonState) -> Result<Value,
+                     }
+                 }
+             }
+-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+-            Ok(Err(_)) => return Err("Event stream closed".to_string()),
+-            Err(_) => return Err("Timeout waiting for download to complete".to_string()),
++            Some(Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))) => {}
++            Some(Ok(Err(_))) => events_open = false,
++            Some(Err(_)) | None => {}
++        }
++
++        if let Some((landed, size)) = find_new_stable_download(&download_dir, &pre_existing, &mut observed_sizes) {
++            if landed != dest {
++                fs::rename(&landed, &dest).map_err(|error| format!("Failed to move downloaded file: {error}"))?;
++            }
++            return Ok(json!({ "path": dest.to_string_lossy(), "size": size, "via": "filesystem_poll" }));
+         }
+     }
+ 
+@@ -7680,15 +7745,7 @@ async fn handle_download(cmd: &Value, state: &mut DaemonState) -> Result<Value,
+     // Rename it to the user-requested filename.
+     if let Some(guid) = downloaded_guid {
+         let guid_path = download_dir.join(&guid);
+-        // Chrome may still be flushing the file to disk after signalling
+-        // completion; wait briefly for it to appear.
+-        for _ in 0..10 {
+-            if guid_path.exists() {
+-                break;
+-            }
+-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+-        }
+-        if guid_path.exists() {
++        if wait_for_stable_file(&guid_path, deadline).await.is_some() {
+             std::fs::rename(&guid_path, &dest)
+                 .map_err(|e| format!("Failed to rename downloaded file: {}", e))?;
+         } else {
+@@ -7713,7 +7770,103 @@ async fn handle_download(cmd: &Value, state: &mut DaemonState) -> Result<Value,
+     }
+ 
+     let dest_str = dest.to_string_lossy().to_string();
+-    Ok(json!({ "path": dest_str }))
++    Ok(json!({ "path": dest_str, "via": "event" }))
++}
++
++async fn download_extension_link(
++    mgr: &super::browser::BrowserManager,
++    session_id: &str,
++    selector: &str,
++    state: &DaemonState,
++    destination: &std::path::Path,
++) -> Result<Value, String> {
++    use base64::Engine;
++    const LIMIT: usize = 16 * 1024 * 1024;
++    let (object_id, target_session) = super::element::resolve_element_object_id(
++        &mgr.client, session_id, &state.ref_map, selector, &state.iframe_sessions,
++    ).await?;
++    let response = mgr.client.send_command("Runtime.callFunctionOn", Some(json!({
++        "objectId": object_id,
++        "functionDeclaration": r#"async function() {
++            if (!(this instanceof HTMLAnchorElement) || !this.hasAttribute('href'))
++                throw new Error('Extension downloads require a concrete link; script-triggered buttons are unsupported');
++            const url = new URL(this.href, location.href);
++            if (!['http:', 'https:', 'blob:', 'data:'].includes(url.protocol))
++                throw new Error('Unsupported download URL scheme');
++            const controller = new AbortController();
++            const timer = setTimeout(() => controller.abort(), 25000);
++            const limit = 16777216;
++            try {
++                const response = await fetch(url.href, {credentials: 'include', signal: controller.signal});
++                if (!response.ok || !response.body) throw new Error('Download HTTP status ' + response.status);
++                if (Number(response.headers.get('content-length')) > limit) throw new Error('Extension download exceeds 16 MiB');
++                const reader = response.body.getReader();
++                const chunks = []; let size = 0;
++                while (true) {
++                    const part = await reader.read(); if (part.done) break;
++                    size += part.value.length;
++                    if (size > limit) { await reader.cancel(); throw new Error('Extension download exceeds 16 MiB'); }
++                    for (let offset = 0; offset < part.value.length; offset += 8192)
++                        chunks.push(String.fromCharCode(...part.value.subarray(offset, offset + 8192)));
++                }
++                return {body: btoa(chunks.join('')), size};
++            } finally {clearTimeout(timer); controller.abort();}
++        }"#,
++        "awaitPromise": true,
++        "returnByValue": true,
++    })), Some(&target_session)).await?;
++    if response.get("exceptionDetails").is_some() {
++        return Err("Extension link download failed in the page context".into());
++    }
++    let value = response.get("result").and_then(|r| r.get("value"))
++        .ok_or("Extension download returned no byte payload")?;
++    let encoded = value.get("body").and_then(Value::as_str).ok_or("Download body missing")?;
++    if encoded.len() > (LIMIT + 2) / 3 * 4 { return Err("Extension download exceeds 16 MiB".into()); }
++    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
++        .map_err(|_| "Download body is not valid base64")?;
++    if bytes.len() > LIMIT || value.get("size").and_then(Value::as_u64) != Some(bytes.len() as u64) {
++        return Err("Download size mismatch".into());
++    }
++    // Publish only a complete payload; errors must not truncate the requested
++    // destination. The temporary file is owned solely by this invocation.
++    let temporary = destination.with_file_name(format!(".magician-download-{}.part", uuid::Uuid::new_v4()));
++    let written = std::fs::write(&temporary, &bytes).and_then(|_| std::fs::rename(&temporary, destination));
++    if let Err(error) = written {
++        let _ = std::fs::remove_file(&temporary);
++        return Err(format!("Failed to write extension download: {error}"));
++    }
++    Ok(json!({"path": destination.to_string_lossy(), "size": bytes.len(), "via": "extension_page_fetch"}))
++}
++
++fn find_new_stable_download(
++    directory: &std::path::Path,
++    pre_existing: &HashSet<std::ffi::OsString>,
++    observed_sizes: &mut HashMap<PathBuf, u64>,
++) -> Option<(PathBuf, u64)> {
++    for entry in fs::read_dir(directory).ok()?.flatten() {
++        let name = entry.file_name();
++        if pre_existing.contains(&name) { continue; }
++        let name_string = name.to_string_lossy();
++        if name_string.ends_with(".crdownload") || name_string.ends_with(".tmp") { continue; }
++        let path = entry.path();
++        let size = match entry.metadata() { Ok(metadata) => metadata.len(), Err(_) => continue };
++        if size == 0 { observed_sizes.insert(path, size); continue; }
++        if observed_sizes.insert(path.clone(), size) == Some(size) { return Some((path, size)); }
++    }
++    None
++}
++
++async fn wait_for_stable_file(path: &std::path::Path, deadline: tokio::time::Instant) -> Option<u64> {
++    let mut previous_size = None;
++    while tokio::time::Instant::now() < deadline {
++        if let Ok(metadata) = fs::metadata(path) {
++            let size = metadata.len();
++            if size > 0 && previous_size == Some(size) { return Some(size); }
++            previous_size = Some(size);
++        }
++        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
++    }
++    None
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -8414,6 +8567,57 @@ async fn handle_upload(cmd: &Value, state: &DaemonState) -> Result<Value, String
+     Ok(json!({ "uploaded": files.len(), "selector": selector }))
+ }
+ 
++async fn handle_setinterceptfilechooser(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
++    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
++    let session_id = mgr.active_session_id()?.to_string();
++    let enabled = cmd.get("enabled").and_then(Value::as_bool).unwrap_or(true);
++    mgr.client.send_command("Page.setInterceptFileChooserDialog", Some(json!({ "enabled": enabled })), Some(&session_id)).await?;
++    for iframe_session in state.iframe_sessions.values() {
++        mgr.client.send_command("Page.setInterceptFileChooserDialog", Some(json!({ "enabled": enabled })), Some(iframe_session)).await?;
++    }
++    Ok(json!({ "intercept": enabled }))
++}
++
++async fn handle_awaitfilechooser(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
++    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
++    let session_id = mgr.active_session_id()?.to_string();
++    let path = cmd.get("path").and_then(Value::as_str).ok_or("Missing 'path' parameter")?.to_string();
++    let timeout_ms = cmd.get("timeout_ms").and_then(Value::as_u64).unwrap_or(30_000);
++    let mut rx = mgr.client.subscribe();
++    mgr.client.send_command("Page.setInterceptFileChooserDialog", Some(json!({ "enabled": true })), Some(&session_id)).await?;
++    for iframe_session in state.iframe_sessions.values() {
++        mgr.client.send_command("Page.setInterceptFileChooserDialog", Some(json!({ "enabled": true })), Some(iframe_session)).await?;
++    }
++    if let Some(selector) = cmd.get("click_selector").and_then(Value::as_str) {
++        interaction::click(&mgr.client, &session_id, &state.ref_map, selector, "left", 1, &state.iframe_sessions).await?;
++    }
++    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
++    loop {
++        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
++        if remaining.is_zero() { return Err("Timeout waiting for file chooser dialog to open".to_string()); }
++        match tokio::time::timeout(remaining, rx.recv()).await {
++            Ok(Ok(event)) if event.method == "Page.fileChooserOpened" => {
++                let backend_node_id = event.params.get("backendNodeId").and_then(Value::as_i64).ok_or("File chooser opened without a backendNodeId")?;
++                mgr.client.send_command(
++                    "DOM.setFileInputFiles",
++                    Some(json!({ "files": [path.clone()], "backendNodeId": backend_node_id })),
++                    event.session_id.as_deref().or(Some(&session_id)),
++                ).await?;
++                return Ok(json!({
++                    "frameId": event.params.get("frameId").cloned().unwrap_or(Value::Null),
++                    "backendNodeId": backend_node_id,
++                    "mode": event.params.get("mode").cloned().unwrap_or(Value::Null),
++                    "files": [path], "via": "file_chooser_intercept",
++                }));
++            }
++            Ok(Ok(_)) => continue,
++            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
++            Ok(Err(_)) => return Err("Event stream closed".to_string()),
++            Err(_) => return Err("Timeout waiting for file chooser dialog to open".to_string()),
++        }
++    }
++}
++
+ async fn handle_addscript(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+     let content = cmd
+@@ -9715,24 +9919,35 @@ async fn handle_frame(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
+             return Ok(json!({ "frame": label }));
+         }
+ 
+-        // CSS selector path
++        // Resolve the selected iframe element to its actual CDP frameId.
+         let js = format!(
+             r#"(() => {{
+                 const el = document.querySelector({});
+                 if (!el) return null;
+-                if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {{
+-                    return el.name || el.id || el.src || null;
+-                }}
+-                return null;
++                if (el.tagName !== 'IFRAME' && el.tagName !== 'FRAME') return null;
++                return el;
+             }})()"#,
+             serde_json::to_string(sel).unwrap_or_default()
+         );
+-        let result = mgr.evaluate(&js, None).await?;
+-        let frame_name = result.as_str().ok_or("Could not find frame for selector")?;
+-        if let Some(frame_id) = find_frame(frame_tree, Some(frame_name), None) {
+-            state.active_frame_id = Some(frame_id);
+-            return Ok(json!({ "frame": frame_name }));
+-        }
++        let evaluate_result = mgr.client.send_command(
++            "Runtime.evaluate",
++            Some(json!({ "expression": js, "returnByValue": false, "awaitPromise": false })),
++            Some(&session_id),
++        ).await?;
++        let object_id = evaluate_result.get("result").and_then(|result| result.get("objectId")).and_then(Value::as_str).ok_or("Could not find iframe matching selector")?;
++        let describe = mgr.client.send_command(
++            "DOM.describeNode",
++            Some(json!({ "objectId": object_id, "depth": 1 })),
++            Some(&session_id),
++        ).await?;
++        let frame_id = describe.get("node")
++            .and_then(|node| node.get("contentDocument"))
++            .and_then(|document| document.get("frameId"))
++            .and_then(Value::as_str)
++            .or_else(|| describe.get("node").and_then(|node| node.get("frameId")).and_then(Value::as_str))
++            .ok_or("Could not resolve frame ID for iframe element")?;
++        state.active_frame_id = Some(frame_id.to_string());
++        return Ok(json!({ "frame": sel }));
+     }
+ 
+     if let Some(frame_id) = find_frame(frame_tree, name, url) {
+@@ -17705,4 +17920,28 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"browser":{"cd
+             assert!(!auto_handled, "{dialog_type} should NOT be auto-handled");
+         }
+     }
++
++    #[test]
++    fn test_cdp_transport_failure_detection_is_narrow() {
++        assert!(is_cdp_transport_failure("CDP response channel closed"));
++        assert!(is_cdp_transport_failure("Failed to send CDP command: connection reset"));
++        assert!(is_cdp_transport_failure("CDP WebSocket connect failed: Handshake not finished"));
++        assert!(!is_cdp_transport_failure("CDP error (Runtime.evaluate): expression failed"));
++        assert!(!is_cdp_transport_failure("Element not found"));
++    }
++
++    #[test]
++    fn test_download_filesystem_evidence_requires_new_stable_nonzero_file() {
++        let temp = tempfile::tempdir().unwrap();
++        let old = temp.path().join("old.pdf");
++        fs::write(&old, b"old").unwrap();
++        let pre_existing = HashSet::from([old.file_name().unwrap().to_os_string()]);
++        let new = temp.path().join("new.pdf");
++        fs::write(&new, b"complete").unwrap();
++        let mut observed = HashMap::new();
++        assert!(find_new_stable_download(temp.path(), &pre_existing, &mut observed).is_none());
++        let (path, size) = find_new_stable_download(temp.path(), &pre_existing, &mut observed).unwrap();
++        assert_eq!(path, new);
++        assert_eq!(size, 8);
++    }
+ }
+diff --git a/cli/src/native/browser.rs b/cli/src/native/browser.rs
+index 5952b19..337d6b4 100644
+--- a/cli/src/native/browser.rs
++++ b/cli/src/native/browser.rs
+@@ -448,6 +448,8 @@ const LIGHTPANDA_CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+ const LIGHTPANDA_CDP_CONNECT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+ const LIGHTPANDA_TARGET_INIT_TIMEOUT: Duration = Duration::from_secs(10);
+ const FAILED_INITIALIZATION_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
++const CHROME_STARTUP_EXIT_GRACE: Duration = Duration::from_millis(750);
++const CHROME_STARTUP_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+ 
+ impl BrowserManager {
+     /// True when a *default* idle timeout must not close this browser:
+@@ -498,7 +500,7 @@ impl BrowserManager {
+         let download_path = options.download_path.clone();
+         let headless = options.effectively_headless();
+ 
+-        let (ws_url, process) = match engine {
++        let (ws_url, mut process) = match engine {
+             "lightpanda" => {
+                 let lp_options = LightpandaLaunchOptions {
+                     executable_path: options.executable_path.clone(),
+@@ -521,7 +523,10 @@ impl BrowserManager {
+         let mut manager = if engine == "lightpanda" {
+             initialize_lightpanda_manager(ws_url, process).await?
+         } else {
+-            let client = Arc::new(CdpClient::connect(&ws_url).await?);
++            let client = match CdpClient::connect(&ws_url).await {
++                Ok(client) => Arc::new(client),
++                Err(error) => return Err(browser_process_exit_error(&mut process, error).await),
++            };
+             let mut manager = Self {
+                 client,
+                 browser_process: Some(process),
+@@ -540,6 +545,11 @@ impl BrowserManager {
+                 headless,
+             };
+             if let Err(error) = manager.discover_and_attach_targets().await {
++                let error = if let Some(process) = manager.browser_process.as_mut() {
++                    browser_process_exit_error(process, error).await
++                } else {
++                    error
++                };
+                 let _ = manager
+                     .close_with_timeout(Some(FAILED_INITIALIZATION_CLOSE_TIMEOUT))
+                     .await;
+@@ -596,7 +606,7 @@ impl BrowserManager {
+                 .client
+                 .send_command(
+                     "Browser.setDownloadBehavior",
+-                    Some(json!({ "behavior": "allow", "downloadPath": path })),
++                    Some(json!({ "behavior": "allowAndName", "downloadPath": path, "eventsEnabled": true })),
+                     None,
+                 )
+                 .await;
+@@ -1304,14 +1314,26 @@ impl BrowserManager {
+     }
+ 
+     pub async fn close(&mut self) -> Result<(), String> {
+-        self.close_with_timeout(None).await
++        self.close_with_options(false).await
++    }
++
++    pub async fn close_with_options(&mut self, keep_browser: bool) -> Result<(), String> {
++        self.close_inner(keep_browser, None).await
+     }
+ 
+     async fn close_with_timeout(
+         &mut self,
+         browser_close_timeout: Option<Duration>,
+     ) -> Result<(), String> {
+-        if self.browser_process.is_some() {
++        self.close_inner(false, browser_close_timeout).await
++    }
++
++    async fn close_inner(
++        &mut self,
++        keep_browser: bool,
++        browser_close_timeout: Option<Duration>,
++    ) -> Result<(), String> {
++        if !keep_browser && self.browser_process.is_some() {
+             // Only send Browser.close when we launched the browser ourselves.
+             // For external connections (--auto-connect, --cdp) we just disconnect
+             // without shutting down the user's browser.
+@@ -1325,12 +1347,14 @@ impl BrowserManager {
+ 
+         self.client.close().await;
+ 
+-        if let Some(mut process) = self.browser_process.take() {
+-            let timeout = std::time::Duration::from_secs(5);
+-            let _ = tokio::task::spawn_blocking(move || {
+-                process.wait_or_kill(timeout);
+-            })
+-            .await;
++        if let Some(process) = self.browser_process.take() {
++            if keep_browser {
++                std::mem::forget(process);
++            } else {
++                let mut process = process;
++                let timeout = std::time::Duration::from_secs(5);
++                let _ = tokio::task::spawn_blocking(move || process.wait_or_kill(timeout)).await;
++            }
+         }
+ 
+         Ok(())
+@@ -1372,6 +1396,13 @@ impl BrowserManager {
+         }
+     }
+ 
++    pub async fn enrich_local_process_exit(&mut self, error: String) -> String {
++        match self.browser_process.as_mut() {
++            Some(process) => browser_process_exit_error(process, error).await,
++            None => error,
++        }
++    }
++
+     pub fn get_cdp_url(&self) -> &str {
+         &self.ws_url
+     }
+@@ -2205,7 +2236,6 @@ impl BrowserManager {
+     }
+ 
+     pub async fn set_download_behavior(&self, download_path: &str) -> Result<(), String> {
+-        let session_id = self.active_session_id()?;
+         self.client
+             .send_command(
+                 "Browser.setDownloadBehavior",
+@@ -2214,13 +2244,28 @@ impl BrowserManager {
+                     "downloadPath": download_path,
+                     "eventsEnabled": true,
+                 })),
+-                Some(session_id),
++                None,
+             )
+             .await?;
+         Ok(())
+     }
+ }
+ 
++async fn browser_process_exit_error(process: &mut BrowserProcess, transport_error: String) -> String {
++    let deadline = Instant::now() + CHROME_STARTUP_EXIT_GRACE;
++    loop {
++        if let BrowserProcess::Chrome(chrome) = process {
++            if let Some(diagnostic) = chrome.exit_diagnostic() {
++                return format!("{diagnostic}\nCDP transport error: {transport_error}");
++            }
++        }
++        if Instant::now() >= deadline {
++            return transport_error;
++        }
++        tokio::time::sleep(CHROME_STARTUP_EXIT_POLL_INTERVAL).await;
++    }
++}
++
+ /// Core network-idle polling loop, extracted so it can be unit-tested without a
+ /// full `BrowserManager` / CDP connection.
+ ///
+diff --git a/cli/src/native/cdp/chrome.rs b/cli/src/native/cdp/chrome.rs
+index 6e1b9ec..c69a5cd 100644
+--- a/cli/src/native/cdp/chrome.rs
++++ b/cli/src/native/cdp/chrome.rs
+@@ -15,6 +15,8 @@ pub struct ChromeProcess {
+     pub ws_url: String,
+     temp_user_data_dir: Option<PathBuf>,
+     temp_nss_home: Option<PreparedNssHome>,
++    is_cloak_browser: bool,
++    exit_diagnostic: Option<String>,
+     /// On Unix, the process group ID used to kill the entire Chrome process tree.
+     #[cfg(unix)]
+     pgid: Option<i32>,
+@@ -82,7 +84,27 @@ impl ChromeProcess {
+     /// Non-blocking check whether Chrome has exited.
+     /// Returns `true` if the process has exited (and reaps it), `false` if still running.
+     pub fn has_exited(&mut self) -> bool {
+-        matches!(self.child.try_wait(), Ok(Some(_)) | Err(_))
++        if self.exit_diagnostic.is_some() { return true; }
++        match self.child.try_wait() {
++            Ok(Some(status)) => {
++                self.exit_diagnostic = Some(format_browser_process_exit(status.code(), self.is_cloak_browser));
++                true
++            }
++            Ok(None) => false,
++            Err(_) => true,
++        }
++    }
++
++    pub fn exit_diagnostic(&mut self) -> Option<String> {
++        if let Some(diagnostic) = self.exit_diagnostic.as_ref() { return Some(diagnostic.clone()); }
++        match self.child.try_wait() {
++            Ok(Some(status)) => {
++                let diagnostic = format_browser_process_exit(status.code(), self.is_cloak_browser);
++                self.exit_diagnostic = Some(diagnostic.clone());
++                Some(diagnostic)
++            }
++            Ok(None) | Err(_) => None,
++        }
+     }
+ 
+     /// Wait for Chrome to exit on its own (after Browser.close CDP command),
+@@ -872,6 +894,7 @@ fn try_launch_chrome(chrome_path: &Path, options: &LaunchOptions) -> Result<Chro
+         cleanup_temp_dir(&temp_user_data_dir);
+         format!("Failed to launch Chrome at {:?}: {}", chrome_path, e)
+     })?;
++    let is_cloak_browser = is_cloak_browser_path(chrome_path);
+ 
+     // Shared overall deadline so we don't double-wait (poll + stderr fallback).
+     let deadline = std::time::Instant::now() + Duration::from_secs(30);
+@@ -879,7 +902,7 @@ fn try_launch_chrome(chrome_path: &Path, options: &LaunchOptions) -> Result<Chro
+     // Primary path: use DevToolsActivePort written into user-data-dir.
+     // This is more reliable on Windows than scraping stderr for "DevTools listening on ...",
+     // which can be missing/empty depending on how Chrome is launched.
+-    let ws_url = match wait_for_devtools_active_port(&mut child, &user_data_dir, deadline) {
++    let ws_url = match wait_for_devtools_active_port(&mut child, &user_data_dir, deadline, is_cloak_browser) {
+         Ok(url) => url,
+         Err(primary_err) => {
+             // Fallback: scrape stderr (legacy behavior) for better diagnostics.
+@@ -916,6 +939,8 @@ fn try_launch_chrome(chrome_path: &Path, options: &LaunchOptions) -> Result<Chro
+         ws_url,
+         temp_user_data_dir,
+         temp_nss_home,
++        is_cloak_browser,
++        exit_diagnostic: None,
+         #[cfg(unix)]
+         pgid,
+         #[cfg(target_os = "linux")]
+@@ -923,10 +948,30 @@ fn try_launch_chrome(chrome_path: &Path, options: &LaunchOptions) -> Result<Chro
+     })
+ }
+ 
++fn is_cloak_browser_path(path: &Path) -> bool {
++    let normalized = path.to_string_lossy().to_ascii_lowercase();
++    normalized.contains("cloakbrowser") || normalized.contains("cloak-browser")
++}
++
++fn format_browser_process_exit(code: Option<i32>, is_cloak_browser: bool) -> String {
++    let label = code.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string());
++    let base = format!("Browser process exited (exit code: {label})");
++    if !is_cloak_browser { return base; }
++    let explanation = match code {
++        Some(76) => "CloakBrowser concurrent-session limit reached; close the active session or use another browser engine",
++        Some(77) => "CloakBrowser license key is missing, invalid, or expired; set a valid CLOAKBROWSER_LICENSE_KEY",
++        Some(78) => "CloakBrowser could not reach its license server; check network access and retry",
++        Some(79) => "CloakBrowser local license configuration is invalid; inspect the local CloakBrowser installation and configuration",
++        _ => "CloakBrowser terminated before its CDP endpoint became usable",
++    };
++    format!("{base}: {explanation}")
++}
++
+ fn wait_for_devtools_active_port(
+     child: &mut Child,
+     user_data_dir: &Path,
+     deadline: std::time::Instant,
++    is_cloak_browser: bool,
+ ) -> Result<String, String> {
+     let poll_interval = Duration::from_millis(50);
+ 
+@@ -934,13 +979,9 @@ fn wait_for_devtools_active_port(
+         if let Ok(Some(status)) = child.try_wait() {
+             // Chrome exited before writing DevToolsActivePort -- report the
+             // exit code so the caller can surface it alongside stderr output.
+-            let code = status
+-                .code()
+-                .map(|c| format!("{}", c))
+-                .unwrap_or_else(|| "unknown".to_string());
+             return Err(format!(
+-                "Chrome exited early (exit code: {}) without writing DevToolsActivePort",
+-                code
++                "{} without writing DevToolsActivePort",
++                format_browser_process_exit(status.code(), is_cloak_browser)
+             ));
+         }
+ 
+@@ -2335,6 +2376,8 @@ mod tests {
+                 ws_url: String::new(),
+                 temp_user_data_dir: Some(dir.clone()),
+                 temp_nss_home: None,
++                is_cloak_browser: false,
++                exit_diagnostic: None,
+                 #[cfg(unix)]
+                 pgid: None,
+                 #[cfg(target_os = "linux")]
+@@ -2346,6 +2389,44 @@ mod tests {
+         assert!(!dir.exists(), "Temp dir should be cleaned up on drop");
+     }
+ 
++    #[test]
++    fn test_cloak_browser_path_detection() {
++        assert!(is_cloak_browser_path(Path::new("/Users/test/.cloakbrowser/current/CloakBrowser")));
++        assert!(is_cloak_browser_path(Path::new("/opt/cloak-browser/chromium")));
++        assert!(!is_cloak_browser_path(Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")));
++    }
++
++    #[test]
++    fn test_cloak_browser_startup_exit_diagnostics() {
++        for (code, expected) in [(76, "concurrent-session limit"), (77, "license key is missing, invalid, or expired"), (78, "could not reach its license server"), (79, "local license configuration is invalid")] {
++            let diagnostic = format_browser_process_exit(Some(code), true);
++            assert!(diagnostic.contains(&format!("exit code: {code}")));
++            assert!(diagnostic.contains(expected));
++        }
++        assert_eq!(format_browser_process_exit(Some(77), false), "Browser process exited (exit code: 77)");
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn test_exit_diagnostic_survives_process_health_check() {
++        let child = Command::new("/bin/sh").args(["-c", "exit 77"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
++        let mut process = ChromeProcess {
++            child,
++            ws_url: String::new(),
++            temp_user_data_dir: None,
++            temp_nss_home: None,
++            is_cloak_browser: true,
++            exit_diagnostic: None,
++            pgid: None,
++            #[cfg(target_os = "linux")]
++            xvfb: None,
++        };
++        std::thread::sleep(Duration::from_millis(50));
++        assert!(process.has_exited());
++        let diagnostic = process.exit_diagnostic().unwrap();
++        assert!(diagnostic.contains("exit code: 77"));
++    }
++
+     #[cfg(target_os = "linux")]
+     #[test]
+     fn test_write_xauth_file_wildcard_cookie_record() {
+diff --git a/cli/src/native/daemon.rs b/cli/src/native/daemon.rs
+index 28689d2..11d9fd6 100644
+--- a/cli/src/native/daemon.rs
++++ b/cli/src/native/daemon.rs
+@@ -151,12 +151,14 @@ pub async fn run_daemon(session: &str) {
+     {
+         let _ = fs::remove_file(socket_dir.join(format!("{}.port", session)));
+     }
+-    let _ = fs::remove_file(&pid_path);
+     let _ = fs::remove_file(&version_path);
+     let _ = fs::remove_file(&stream_path);
+     let _ = fs::remove_file(socket_dir.join(format!("{}.engine", session)));
+     let _ = fs::remove_file(socket_dir.join(format!("{}.provider", session)));
+     let _ = fs::remove_file(socket_dir.join(format!("{}.extensions", session)));
++    // Close callers use disappearance of this owner marker as the handoff.
++    // Remove it last so old cleanup cannot erase a subsequent daemon's files.
++    let _ = fs::remove_file(&pid_path);
+ 
+     if let Err(e) = result {
+         let _ = writeln!(std::io::stderr(), "Daemon error: {}", e);
+diff --git a/cli/src/native/stream/http.rs b/cli/src/native/stream/http.rs
+index 394677d..a3d990c 100644
+--- a/cli/src/native/stream/http.rs
++++ b/cli/src/native/stream/http.rs
+@@ -540,13 +540,9 @@ mod tests {
+     #[cfg(unix)]
+     #[tokio::test(flavor = "current_thread")]
+     async fn cross_origin_command_post_is_rejected_without_relaying_to_daemon() {
+-        let temp_parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+-            .join("target")
+-            .join("t");
+-        std::fs::create_dir_all(&temp_parent).unwrap();
+         let socket_dir = tempfile::Builder::new()
+             .prefix("ab-")
+-            .tempdir_in(temp_parent)
++            .tempdir()
+             .unwrap();
+         let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "XDG_RUNTIME_DIR"]);
+         guard.set(
+@@ -667,13 +663,9 @@ mod tests {
+     #[cfg(unix)]
+     #[tokio::test(flavor = "current_thread")]
+     async fn same_origin_command_post_relays_without_wildcard_cors() {
+-        let temp_parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+-            .join("target")
+-            .join("t");
+-        std::fs::create_dir_all(&temp_parent).unwrap();
+         let socket_dir = tempfile::Builder::new()
+             .prefix("ab-")
+-            .tempdir_in(temp_parent)
++            .tempdir()
+             .unwrap();
+         let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "XDG_RUNTIME_DIR"]);
+         guard.set(
+diff --git a/cli/src/output.rs b/cli/src/output.rs
+index 421216d..5a66e4c 100644
+--- a/cli/src/output.rs
++++ b/cli/src/output.rs
+@@ -1959,6 +1959,24 @@ Examples:
+   agent-browser download "#download-btn" ./file.pdf
+   agent-browser download @e5 ./report.xlsx
+   agent-browser download "a[href$='.zip']" ./archive.zip
++"##
++        }
++        "setinterceptfilechooser" => {
++            r##"
++agent-browser setinterceptfilechooser - Control native file chooser interception
++
++Usage: agent-browser setinterceptfilechooser [on|off]
++
++Intercepts file choosers through CDP on the active page and attached iframes.
++"##
++        }
++        "awaitfilechooser" => {
++            r##"
++agent-browser awaitfilechooser - Populate the next file chooser
++
++Usage: agent-browser awaitfilechooser <path> [--click <selector>] [--timeout-ms N]
++
++Subscribes before the optional click and supplies the file without an OS dialog.
+ "##
+         }
+ 
+@@ -2303,6 +2321,7 @@ Aliases: quit, exit
+ 
+ Options:
+   --all                Close all active sessions
++  --keep-browser       Detach and leave a locally launched browser window open
+ 
+ Global Options:
+   --json               Output as JSON
+@@ -2312,6 +2331,7 @@ Examples:
+   agent-browser close
+   agent-browser close --session mysession
+   agent-browser close --all
++  agent-browser close --keep-browser
+ "##
+         }
+ 
+@@ -3128,10 +3148,13 @@ instance with separate cookies, storage, and state.
+ 
+ Operations:
+   (none)               Show current session name
+-  id                   Generate stable session id (--scope worktree|cwd|git-root, --prefix)
++  id                   Generate stable socket-safe id (--scope worktree|cwd|git-root, --prefix)
+   info                 Show daemon, launch, and restore diagnostics
+   list                 List all active sessions
+ 
++On Unix, `session id` shortens only the readable prefix when needed to fit the
++effective namespace/socket directory. The stable hash suffix is preserved.
++
+ Environment:
+   AGENT_BROWSER_SESSION    Default session name
+   AGENT_BROWSER_NAMESPACE  Namespace for daemon sockets and restore state
+@@ -3828,6 +3851,8 @@ Core Commands:
+   drag <src> <dst>           Drag and drop
+   upload <sel> <files...>    Upload files
+   download <sel> <path>      Download file by clicking element
++  setinterceptfilechooser    Toggle native file chooser interception
++  awaitfilechooser <path>    Populate a chooser (optionally --click <selector>)
+   scroll <dir> [px]          Scroll (up/down/left/right)
+   scrollintoview <sel>       Scroll element into view
+   wait <sel|ms>              Wait for element or time
+@@ -3836,7 +3861,7 @@ Core Commands:
+   snapshot                   Accessibility tree with refs (for AI)
+   eval <js>                  Run JavaScript
+   connect <port|url>         Connect to browser via CDP
+-  close [--all]              Close browser (--all closes every session)
++  close [--all|--keep-browser] Close browser, all sessions, or detach window
+ 
+ Navigation:
+   back                       Go back
+diff --git a/cli/src/skills.rs b/cli/src/skills.rs
+index b342569..ba8b2e5 100644
+--- a/cli/src/skills.rs
++++ b/cli/src/skills.rs
+@@ -34,35 +34,45 @@ const SKILL_DIRS: &[&str] = &["skills", "skill-data"];
+ /// Resolution order:
+ /// 1. AGENT_BROWSER_SKILLS_DIR env var (points directly at a single directory)
+ /// 2. ../  relative to the executable (npm installs: binary is in bin/)
+-/// 3. Walk up from the executable to find a project root with skills/
++/// 3. ../node_modules/agent-browser relative to the executable (runtime mirror)
++/// 4. Walk up from the executable to find a project root with skill content
+ ///    (dev builds where binary is in target/debug/ or target/release/)
+-fn find_package_root() -> Option<PathBuf> {
+-    if let Ok(exe) = env::current_exe() {
+-        let exe = exe.canonicalize().unwrap_or(exe);
+-        if let Some(parent) = exe.parent() {
+-            // npm install layout: bin/agent-browser-* -> ../
+-            let candidate = parent.join("..");
+-            if candidate.join("skills").is_dir() {
+-                return Some(candidate.canonicalize().unwrap_or(candidate));
+-            }
++fn contains_skill_dirs(root: &Path) -> bool {
++    SKILL_DIRS.iter().any(|dir| root.join(dir).is_dir())
++}
+ 
+-            // dev build layout: walk up from target/debug/ or target/release/
+-            let mut dir = parent;
+-            loop {
+-                if dir.join("skills").is_dir() {
+-                    return Some(dir.to_path_buf());
+-                }
+-                match dir.parent() {
+-                    Some(p) => dir = p,
+-                    None => break,
+-                }
+-            }
++fn canonicalize_or_original(path: PathBuf) -> PathBuf {
++    path.canonicalize().unwrap_or(path)
++}
++
++fn find_package_root_from_executable(exe: &Path) -> Option<PathBuf> {
++    let exe = canonicalize_or_original(exe.to_path_buf());
++    let parent = exe.parent()?;
++    let package_root = parent.join("..");
++    if contains_skill_dirs(&package_root) {
++        return Some(canonicalize_or_original(package_root));
++    }
++    let mirrored_package = package_root.join("node_modules/agent-browser");
++    if contains_skill_dirs(&mirrored_package) {
++        return Some(canonicalize_or_original(mirrored_package));
++    }
++    let mut dir = parent;
++    loop {
++        if contains_skill_dirs(dir) {
++            return Some(dir.to_path_buf());
++        }
++        match dir.parent() {
++            Some(parent) => dir = parent,
++            None => break,
+         }
+     }
+-
+     None
+ }
+ 
++fn find_package_root() -> Option<PathBuf> {
++    env::current_exe().ok().and_then(|exe| find_package_root_from_executable(&exe))
++}
++
+ /// Collect all skill directories to search, respecting the env var override.
+ fn find_skills_dirs() -> Vec<PathBuf> {
+     // Env var override: single directory, used as-is
+@@ -551,6 +561,29 @@ mod tests {
+         assert!(parse_frontmatter(content).is_none());
+     }
+ 
++    #[test]
++    fn test_find_package_root_from_npm_binary() {
++        let tmp = tempfile::tempdir().unwrap();
++        let package_root = tmp.path().join("agent-browser");
++        let executable = package_root.join("bin/agent-browser");
++        fs::create_dir_all(package_root.join("skills")).unwrap();
++        fs::create_dir_all(executable.parent().unwrap()).unwrap();
++        fs::write(&executable, []).unwrap();
++        assert_eq!(find_package_root_from_executable(&executable), Some(package_root.canonicalize().unwrap()));
++    }
++
++    #[test]
++    fn test_find_package_root_from_runtime_mirror() {
++        let tmp = tempfile::tempdir().unwrap();
++        let skill_root = tmp.path().join("browser");
++        let executable = skill_root.join("bin/agent-browser");
++        let package_root = skill_root.join("node_modules/agent-browser");
++        fs::create_dir_all(package_root.join("skill-data")).unwrap();
++        fs::create_dir_all(executable.parent().unwrap()).unwrap();
++        fs::write(&executable, []).unwrap();
++        assert_eq!(find_package_root_from_executable(&executable), Some(package_root.canonicalize().unwrap()));
++    }
++
+     #[test]
+     fn test_discover_skills_single_dir() {
+         let tmp = tempfile::tempdir().unwrap();
+diff --git a/docs/src/app/commands/page.mdx b/docs/src/app/commands/page.mdx
+index 618a402..c2d6a80 100644
+--- a/docs/src/app/commands/page.mdx
++++ b/docs/src/app/commands/page.mdx
+@@ -24,6 +24,7 @@ agent-browser scroll <dir> [px]       # Scroll (up/down/left/right, --selector <
+ agent-browser scrollintoview <sel>    # Scroll element into view
+ agent-browser drag <src> <dst>        # Drag and drop
+ agent-browser upload <sel> <files>    # Upload files
++agent-browser awaitfilechooser <path> --click <sel>  # Intercept a custom/native picker
+ agent-browser screenshot [path]       # Screenshot (--full for full page)
+ agent-browser screenshot --annotate   # Annotated screenshot with numbered element labels
+ agent-browser screenshot --if-changed # Recommended: skip unchanged images to save tokens
+@@ -41,6 +42,7 @@ agent-browser stream status           # Show runtime streaming state and bound p
+ agent-browser stream disable          # Stop runtime WebSocket streaming
+ agent-browser close                   # Close browser (aliases: quit, exit)
+ agent-browser close --all             # Close all active sessions
++agent-browser close --keep-browser    # Detach and leave local window open
+ agent-browser mcp                     # Start an MCP stdio server
+ ```
+ 
+@@ -147,6 +149,7 @@ After a page change, prefer a selector, text, URL, or JavaScript condition that
+ ```bash
+ agent-browser download <sel> <path>   # Click element to trigger download
+ agent-browser wait --download [path]  # Wait for any download to complete
++agent-browser awaitfilechooser <path> --click <sel>  # Subscribe, click, and populate chooser
+ ```
+ 
+ Use `--download-path <dir>` (or `AGENT_BROWSER_DOWNLOAD_PATH` env) to set a default download directory. Without it, downloads go to a temporary directory that is deleted when the browser closes.
+diff --git a/skill-data/core/SKILL.md b/skill-data/core/SKILL.md
+index 9bfc44c..f087c36 100644
+--- a/skill-data/core/SKILL.md
++++ b/skill-data/core/SKILL.md
+@@ -155,12 +155,18 @@ agent-browser uncheck @e3                 # uncheck
+ agent-browser select @e4 "option-value"   # select by value or visible label
+ agent-browser select @e4 "a" "b"          # select multiple
+ agent-browser upload @e5 file1.pdf        # upload file(s)
++agent-browser download @e6 ./report.pdf   # trigger and save a download
++agent-browser awaitfilechooser ./photo.png --click @e7  # custom/native picker
+ agent-browser scroll down 500             # scroll page (up/down/left/right)
+ agent-browser scrollintoview @e1          # scroll element into view
+ agent-browser drag @e1 @e2                # drag and drop
+ agent-browser drag @e1 @e2 --human        # drag with curved, eased movement
+ ```
+ 
++For a custom upload button that opens a native chooser, prefer
++`awaitfilechooser <path> --click <selector>`. It subscribes before clicking and
++handles page or attached-iframe chooser events without an OS dialog.
++
+ ### When refs don't work or you don't want to snapshot
+ 
+ Use semantic locators:
+@@ -279,6 +285,10 @@ SESSION="$(agent-browser session id --scope worktree --prefix my-app)"
+ agent-browser --session "$SESSION" --restore open https://app.example.com
+ ```
+ 
++Reuse the generated ID unchanged. On Unix, the readable prefix is shortened
++when necessary to fit the effective namespaced socket path; the stable hash
++suffix is preserved.
++
+ `--restore` with no value uses the current `--session` as the persistence key. Agent skills should prefer this over hand-built state file paths. Use `--restore-save auto` by default so a failed restore does not overwrite the previous known-good state. State is saved on close and also periodically while the browser is open (at most once per `AGENT_BROWSER_AUTOSAVE_INTERVAL_MS`, default 30000), so state survives even if the user closes the browser window by hand.
+ 
+ ```bash
+diff --git a/skill-data/core/references/commands.md b/skill-data/core/references/commands.md
+index af18ba2..eff60d6 100644
+--- a/skill-data/core/references/commands.md
++++ b/skill-data/core/references/commands.md
+@@ -76,6 +76,8 @@ agent-browser scroll down 500     # Scroll page (default: down 300px)
+ agent-browser scrollintoview @e1  # Scroll element into view (alias: scrollinto)
+ agent-browser drag @e1 @e2        # Drag and drop
+ agent-browser upload @e1 file.pdf # Upload files
++agent-browser download @e2 ./report.pdf # Click and save download
++agent-browser awaitfilechooser ./photo.png --click @e3 # Intercept custom picker
+ ```
+ 
+ Visible-label matching treats non-breaking and ordinary spaces equivalently.
+diff --git a/skill-data/core/references/session-management.md b/skill-data/core/references/session-management.md
+index 6049792..7e907f7 100644
+--- a/skill-data/core/references/session-management.md
++++ b/skill-data/core/references/session-management.md
+@@ -24,6 +24,13 @@ SESSION="$(agent-browser session id --scope worktree --prefix my-skill)"
+ agent-browser --session "$SESSION" --restore open https://app.example.com/login
+ ```
+ 
++Treat the generated value as opaque and reuse it unchanged. On Unix,
++`session id` measures the effective socket directory (including
++`--namespace`) and shortens only the readable prefix when necessary; the stable
++hash suffix remains intact. If the directory itself cannot accommodate that
++suffix, the command fails with guidance to shorten the namespace or configure a
++shorter `AGENT_BROWSER_SOCKET_DIR` instead of emitting an unusable ID.
++
+ `--scope worktree` uses the Git worktree root when available, then the Git root, then the canonical current directory. This is the recommended default for agents because worktrees are commonly used for parallel agent runs.
+ 
+ ```bash

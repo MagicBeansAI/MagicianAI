@@ -1,0 +1,396 @@
+name: Magios
+options:
+  bundleIdPrefix: ai.magicbeans
+  deploymentTarget:
+    iOS: "17.0"
+# Signing team comes from the UNTRACKED Signing.local.xcconfig (see
+# Signing.local.xcconfig.example) via the tracked Signing.xcconfig overlay —
+# it survives `xcodegen generate` and no Team-ID literal ever enters the repo
+# (operator identity layer; the public-mirror gate scans for it). All targets
+# inherit the project-level configFiles.
+configFiles:
+  Debug: Signing.xcconfig
+  Release: Signing.xcconfig
+settings:
+  base:
+    # App version — kept here (not in Info.plist) because xcodegen regenerates the
+    # Info.plist from this file. Bump on release; also add a CHANGELOG entry.
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "202"
+packages:
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: "2.4.0"
+targets:
+  Magios:
+    type: application
+    platform: iOS
+    # XcodeGen's scheme writer does not infer the buildable filename from the
+    # PRODUCT_NAME build setting. Keep the target product explicit so routine
+    # version regeneration continues to reference Magican.app, not Magios.app.
+    productName: Magican
+    sources:
+      # The LTM canonical Thinking Map wire fixtures (JSON) are dev/test-only
+      # contract references; the XCTests decode from the generated
+      # MagiosTests/LTMWireFixtures.swift constants instead, so the raw JSON must
+      # NOT be bundled into the shipped app.
+      - path: Magios
+        excludes:
+          - ThinkingMapCanonical/Fixtures
+          # Excluded from the recursive glob and re-added below as a FOLDER
+          # REFERENCE. Swept up as ordinary resources the model is destroyed:
+          # Xcode flattens a resource build phase, so `am/final.mdl` and
+          # `ivector/final.mat` would land beside each other at the bundle root,
+          # several basenames would collide outright, and Vosk — which opens the
+          # directory by relative path — would find none of it.
+          - Resources/vosk-model
+      - MagiosIntents
+      - path: Shared
+        # Contract fixtures are compiled by their standalone parity harness;
+        # they are not runtime code and must not enter the app or extensions.
+        excludes:
+          - AppContractFixtures.generated.swift
+      # Bundled tutor-primitive recipe set (offline fallback for the registry).
+      # Added as a group so the JSON lands at the bundle root (looked up by name).
+      # Regenerate from the seed via scripts/magios-bundle-tutor-primitives.sh.
+      - path: Magios/Resources/tutor_primitives.json
+      # On-device wake model for ambient mode (~68 MB unpacked), fetched by
+      # scripts/setup-magios-vosk.sh and gitignored. `type: folder` keeps the
+      # directory tree intact at `Magican.app/vosk-model`, which is what
+      # `VoskWakeSpotter.bundledModelURL` resolves. App target ONLY — see the
+      # framework dependency below.
+      - path: Magios/Resources/vosk-model
+        type: folder
+    info:
+      path: Magios/Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # Home-screen name = Magican (the product/brand). Must live here in the
+        # Info.plist, NOT as INFOPLIST_KEY_CFBundleDisplayName — that build setting
+        # is ignored when the target uses an explicit (xcodegen-generated) plist.
+        CFBundleDisplayName: Magican
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIBackgroundModes:
+          - audio
+          - remote-notification
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
+        NSCameraUsageDescription: "Magican uses the camera to attach photos and scan a one-time connection QR you choose."
+        NSLocalNetworkUsageDescription: "Magican connects directly to your Magician computer when you choose the Same Wi-Fi connection."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSPhotoLibraryUsageDescription: "Magican attaches images from your photo library to your chat."
+        NSMicrophoneUsageDescription: "Magican uses the microphone to dictate your messages and, when you start a Listen session, to record and transcribe the meeting or conversation around you."
+        NSSpeechRecognitionUsageDescription: "Magican transcribes your dictation on-device (kept private, no server) unless you choose cloud."
+        NSRemindersFullAccessUsageDescription: "Magican creates Apple Reminders only when you choose Create reminder on a card."
+        CFBundleURLTypes:
+          - CFBundleURLName: com.magicbeans100x.magican
+            CFBundleURLSchemes:
+              - magican
+        # Per-theme fonts (bundled TTFs in Magios/Fonts) — mirror the web themes.
+        UIAppFonts:
+          - Caveat.ttf
+          - FiraCode.ttf
+          - Fredoka.ttf
+          - IBMPlexMono-Regular.ttf
+          - Inter.ttf
+          - JetBrainsMono.ttf
+          - Newsreader.ttf
+          - PressStart2P-Regular.ttf
+          - Quicksand.ttf
+          - Rajdhani-Regular.ttf
+          - SpaceGrotesk.ttf
+          - SpecialElite-Regular.ttf
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # Product name = Magican → the built bundle is Magican.app / executable Magican.
+        # (Xcode project/target names stay "Magios"; that's internal only.)
+        PRODUCT_NAME: Magican
+        PRODUCT_BUNDLE_IDENTIFIER: com.magicbeans100x.magican
+        PRODUCT_MODULE_NAME: Magician
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Makes the vendored Vosk C API importable as `CVosk`, from this target
+        # only. A module map rather than a bridging header precisely so the scope
+        # is one `import` in VoskWakeSpotter.swift rather than a target-wide
+        # setting — `Shared/` compiles into six targets including the widget
+        # extension, and none of them can reach this.
+        SWIFT_INCLUDE_PATHS: $(inherited) $(SRCROOT)/Vendor/vosk/include
+        # libvosk.a is a C++ static library.
+        OTHER_LDFLAGS: $(inherited) -lc++
+      # The default Debug/device lane is deliberately push-free so Xcode's
+      # seven-day Personal Team profile remains installable. Release uses the
+      # paid-team entitlement below; `make ios-debug-build-push` overrides the
+      # same settings for sandbox APNs testing.
+      configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: Magios/Magican.entitlements
+        Release:
+          APS_ENVIRONMENT: production
+          CODE_SIGN_ENTITLEMENTS: Magios/MagicanPush.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) MAGIOS_REMOTE_PUSH
+    dependencies:
+      - target: MagiosWidgets
+      - target: MagiosShare
+      - target: MagiosAction
+      - target: MagiosBroadcast
+      - target: MagiosKeyboard
+      - package: MarkdownUI
+      # On-device wake spotting for ambient mode. Fetched + checksummed by
+      # scripts/setup-magios-vosk.sh (gitignored, ~164 MB of static archive).
+      #
+      # `embed: false` because the xcframework holds a static `libvosk.a`, not a
+      # dynamic framework — there is nothing to copy into Frameworks/, and asking
+      # to embed a static library fails the build.
+      #
+      # Declared HERE and nowhere else on purpose. A speech model and a Kaldi
+      # decoder linked into the widget extension would be a serious mistake: the
+      # extension has a hard memory ceiling and renders an archived view, and
+      # `magios/Shared/` — which it does compile — must therefore never reach
+      # this. That is also why VoskWakeSpotter.swift lives in `Magios/`.
+      - framework: Vendor/vosk/libvosk.xcframework
+        embed: false
+      - sdk: Accelerate.framework
+
+  MagiosWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MagiosWidgets
+      # OpenIntent launch controls must have target membership in both the
+      # containing app (via MagiosIntents above) and widget extension.
+      - MagiosIntents/StartVoiceIntent.swift
+      - MagiosIntents/ArmAmbientIntent.swift
+      - path: Shared
+        excludes:
+          - AppContractFixtures.generated.swift
+      # Shared/ compiles the TutorPrimitiveRegistry into this extension; bundle the
+      # recipe set so its synchronous fallback is never an empty registry.
+      - path: Magios/Resources/tutor_primitives.json
+    info:
+      path: MagiosWidgets/Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.magicbeans100x.magican.Widgets
+      CODE_SIGN_STYLE: Automatic
+    entitlements:
+      path: MagiosWidgets/MagiosWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ai.magicbeans.magician.shared
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)ai.magicbeans.magician.shared
+
+  # Share Extension — accepts images / text / URLs / files shared from other apps,
+  # writes them to the App Group SharedInbox, and opens the host app (magican://share).
+  MagiosShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MagiosShare
+      - path: Shared
+        excludes:
+          - AppContractFixtures.generated.swift
+      # See MagiosWidgets: bundle the recipe set for the Shared-compiled registry.
+      - path: Magios/Resources/tutor_primitives.json
+    info:
+      path: MagiosShare/Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleDisplayName: Magican
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsFileWithMaxCount: 10
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.magicbeans100x.magican.Share
+      CODE_SIGN_STYLE: Automatic
+    entitlements:
+      path: MagiosShare/MagiosShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ai.magicbeans.magician.shared
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)ai.magicbeans.magician.shared
+
+  # Context-adaptive Action Extension — selected text gets Writing Help, a
+  # screenshot/photo gets Tutor or local-OCR Writing Help, and every supported
+  # item can be handed durably to the main Chat surface.
+  MagiosAction:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MagiosAction
+      - path: Shared
+        excludes:
+          - AppContractFixtures.generated.swift
+    info:
+      path: MagiosAction/Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleDisplayName: Magican Assist
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.ui-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ActionViewController
+          NSExtensionAttributes:
+            NSExtensionActionWantsFullScreenPresentation: true
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 1
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.magicbeans100x.magican.Action
+      CODE_SIGN_STYLE: Automatic
+      ENABLE_USER_SCRIPT_SANDBOXING: NO
+    entitlements:
+      path: MagiosAction/MagiosAction.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ai.magicbeans.magician.shared
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)ai.magicbeans.magician.shared
+
+  # Broadcast Upload Extension — during an iOS system broadcast it receives the
+  # device's app audio (the meeting you hear) and microphone as separate sample
+  # streams, and pushes them to the backend capture:"client" session on the
+  # `primary` and `mic` channels respectively. Device-only (broadcast can't run
+  # in the simulator).
+  MagiosBroadcast:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MagiosBroadcast
+      - path: Shared
+        excludes:
+          - AppContractFixtures.generated.swift
+    info:
+      path: MagiosBroadcast/Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleDisplayName: Magican
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: BroadcastUpload
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.magicbeans100x.magican.Broadcast
+      CODE_SIGN_STYLE: Automatic
+    entitlements:
+      path: MagiosBroadcast/MagiosBroadcast.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ai.magicbeans.magician.shared
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)ai.magicbeans.magician.shared
+
+  # Custom Keyboard Extension — "Magican Keyboard": a DIY typing core (zero external
+  # deps) plus agentic lanes (Write / Ask / Act) that reach the backend when Full
+  # Access is granted. Pure logic lives in Shared/ (app-host testable); rendering
+  # in this target.
+  MagiosKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MagiosKeyboard
+      - path: Shared
+        excludes:
+          - AppContractFixtures.generated.swift
+    info:
+      path: MagiosKeyboard/Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleDisplayName: Magican Keyboard
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+          NSExtensionAttributes:
+            IsASCIICapable: false
+            PrefersRightToLeft: false
+            PrimaryLanguage: en-IN
+            # Full Access — required for the agentic lanes (network + App Group
+            # session reuse). Typing works fully with it OFF.
+            RequestsOpenAccess: true
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.magicbeans100x.magican.Keyboard
+      CODE_SIGN_STYLE: Automatic
+      ENABLE_USER_SCRIPT_SANDBOXING: NO
+    entitlements:
+      path: MagiosKeyboard/MagiosKeyboard.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ai.magicbeans.magician.shared
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)ai.magicbeans.magician.shared
+
+  MagiosTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - MagiosTests
+    dependencies:
+      - target: Magios
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Magican.app/Magican"
+      PRODUCT_BUNDLE_IDENTIFIER: com.magicbeans100x.magicanTests
+      BUNDLE_LOADER: "$(TEST_HOST)"
+      # `@testable import Magician` loads the app's .swiftmodule, which names
+      # every module the app imports — including CVosk, from VoskWakeSpotter.swift
+      # — so the test target has to be able to RESOLVE that module even though it
+      # never imports it itself. This is module resolution only: libvosk.a is
+      # linked into the app, and the tests reach those symbols through
+      # BUNDLE_LOADER above, so the archive is not linked twice.
+      SWIFT_INCLUDE_PATHS: $(inherited) $(SRCROOT)/Vendor/vosk/include
+
+  MagiosUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - MagiosUITests
+    dependencies:
+      - target: Magios
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      PRODUCT_BUNDLE_IDENTIFIER: com.magicbeans100x.magicanUITests
+
+schemes:
+  Magios:
+    build:
+      targets:
+        Magios: all
+        MagiosTests: [test]
+        MagiosUITests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - name: MagiosTests
+          parallelizable: false
+        - name: MagiosUITests
+          parallelizable: false

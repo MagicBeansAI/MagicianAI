@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Active Probing / Hover Menus (Phase 7)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #17a2b8, #138496);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset {
+            background: #6c757d;
+            color: white;
+        }
+        .status-btn.reset:hover { background: #545b62; }
+
+        /* Navigation bar */
+        .navbar {
+            background: #343a40;
+            padding: 0;
+            display: flex;
+            border-radius: 4px;
+            overflow: visible;
+            margin: 15px 0;
+        }
+        .nav-item {
+            position: relative;
+            color: white;
+            padding: 15px 20px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .nav-item:hover {
+            background: #495057;
+        }
+        .dropdown-menu {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: white;
+            min-width: 200px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            border-radius: 4px;
+            z-index: 100;
+        }
+        .nav-item:hover .dropdown-menu {
+            display: block;
+        }
+        .dropdown-item {
+            display: block;
+            padding: 12px 20px;
+            color: #333;
+            text-decoration: none;
+            transition: background 0.2s;
+        }
+        .dropdown-item:hover {
+            background: #f8f9fa;
+        }
+
+        /* Tooltip */
+        .tooltip-trigger {
+            position: relative;
+            display: inline-block;
+            padding: 10px 20px;
+            background: #6c757d;
+            color: white;
+            border-radius: 4px;
+            cursor: help;
+            margin: 20px 0;
+        }
+        .tooltip-content {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 4px;
+            white-space: nowrap;
+            margin-bottom: 10px;
+            z-index: 100;
+        }
+        .tooltip-content::after {
+            content: '';
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            border: 8px solid transparent;
+            border-top-color: #333;
+        }
+        .tooltip-trigger:hover .tooltip-content {
+            display: block;
+        }
+
+        /* Context menu */
+        .context-area {
+            background: white;
+            padding: 40px;
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            text-align: center;
+            color: #666;
+            margin: 15px 0;
+        }
+        .context-menu {
+            display: none;
+            position: fixed;
+            background: white;
+            min-width: 180px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            border-radius: 4px;
+            z-index: 1000;
+        }
+        .context-menu-item {
+            padding: 10px 15px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .context-menu-item:hover {
+            background: #f8f9fa;
+        }
+        .context-menu-divider {
+            height: 1px;
+            background: #e0e0e0;
+            margin: 5px 0;
+        }
+
+        /* Accordion */
+        .accordion-item {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 5px 0;
+        }
+        .accordion-header {
+            padding: 15px;
+            background: #f8f9fa;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .accordion-header:hover {
+            background: #e9ecef;
+        }
+        .accordion-content {
+            display: none;
+            padding: 15px;
+            border-top: 1px solid #ddd;
+        }
+        .accordion-item.active .accordion-content {
+            display: block;
+        }
+        .accordion-arrow {
+            transition: transform 0.2s;
+        }
+        .accordion-item.active .accordion-arrow {
+            transform: rotate(180deg);
+        }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+        .status-radio {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #f8fafc;
+            color: #334155;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .status-radio input {
+            margin: 0;
+        }
+
+        .status-radio.pass:has(input:checked) {
+            border-color: #16a34a;
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-radio.fail:has(input:checked) {
+            border-color: #dc2626;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "09-hover-menus",
+        "phase": "Phase 7",
+        "title": "Active Probing / Hover Menus",
+        "description": "Tests the agent's ability to discover hidden elements via hover interactions",
+        "totalTests": 5
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 7: Active Probing / Hover Menus</h1>
+        <p>Test the agent's ability to discover hidden elements via hover interactions.</p>
+    </div>
+
+    <!-- Test Case 1: Dropdown Navigation -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="09-dropdown-menu"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Click Hidden Dropdown Item</h3>
+            <span class="test-case-id">09-dropdown-menu</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Enterprise Solutions" link in the Products menu. The dropdown is hidden until you hover over "Products".
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="menu-identified">Agent identifies "Products" as a hover target (has ▼)</li>
+                <li data-check="hover-performed">Agent performs probing hover on "Products"</li>
+                <li data-check="dropdown-revealed">Dropdown appears, agent discovers "Enterprise Solutions"</li>
+                <li data-check="click-success">Agent clicks the link successfully (alert shown)</li>
+            </ul>
+        </div>
+
+        <nav class="navbar">
+            <div class="nav-item" data-testid="nav-home">Home</div>
+            <div class="nav-item" data-testid="nav-products">
+                Products ▼
+                <div class="dropdown-menu">
+                    <a href="#" class="dropdown-item" data-testid="product-electronics" onclick="alert('Electronics clicked!'); return false;">Electronics</a>
+                    <a href="#" class="dropdown-item" data-testid="product-clothing" onclick="alert('Clothing clicked!'); return false;">Clothing</a>
+                    <a href="#" class="dropdown-item" data-testid="product-enterprise" onclick="alert('Enterprise Solutions clicked!'); return false;">Enterprise Solutions</a>
+                    <a href="#" class="dropdown-item" data-testid="product-api" onclick="alert('API clicked!'); return false;">API Access</a>
+                </div>
+            </div>
+            <div class="nav-item" data-testid="nav-services">
+                Services ▼
+                <div class="dropdown-menu">
+                    <a href="#" class="dropdown-item" data-testid="service-consulting" onclick="alert('Consulting clicked!'); return false;">Consulting</a>
+                    <a href="#" class="dropdown-item" data-testid="service-training" onclick="alert('Training clicked!'); return false;">Training</a>
+                    <a href="#" class="dropdown-item" data-testid="service-support" onclick="alert('24/7 Support clicked!'); return false;">24/7 Support</a>
+                </div>
+            </div>
+            <div class="nav-item" data-testid="nav-about">About</div>
+            <div class="nav-item" data-testid="nav-contact">Contact</div>
+        </nav>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Tooltip Content -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="09-tooltip-content"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Read Tooltip Content</h3>
+            <span class="test-case-id">09-tooltip-content</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> What is the secret code hidden in the tooltip? Hover over the element to reveal it.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="tooltip-target-found">Agent identifies element as hover target (tooltip trigger)</li>
+                <li data-check="hover-to-reveal">Agent hovers to reveal tooltip</li>
+                <li data-check="code-extracted">Agent reads and reports: "The secret code is: HOVER-42"</li>
+            </ul>
+        </div>
+
+        <div style="padding: 20px;">
+            <span class="tooltip-trigger" data-testid="tooltip-trigger">
+                Hover for Secret Code
+                <span class="tooltip-content" data-testid="tooltip-content">The secret code is: <strong>HOVER-42</strong></span>
+            </span>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-2" value="pass" data-status-radio="test-2"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-2" value="fail" data-status-radio="test-2"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Context Menu -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="09-context-menu"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Access Context Menu Item</h3>
+            <span class="test-case-id">09-context-menu</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Right-click the dashed area below and click "Properties" from the context menu that appears.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="right-click-performed">Agent performs right-click action</li>
+                <li data-check="context-menu-shown">Context menu appears</li>
+                <li data-check="properties-clicked">Agent clicks "Properties" option (alert shown)</li>
+            </ul>
+        </div>
+
+        <div class="context-area" id="context-area" data-testid="context-area">
+            Right-click here to see options
+        </div>
+
+        <div class="context-menu" id="context-menu">
+            <div class="context-menu-item" data-testid="ctx-copy" onclick="alert('Copy clicked!')">📋 Copy</div>
+            <div class="context-menu-item" data-testid="ctx-paste" onclick="alert('Paste clicked!')">📌 Paste</div>
+            <div class="context-menu-divider"></div>
+            <div class="context-menu-item" data-testid="ctx-delete" onclick="alert('Delete clicked!')">🗑️ Delete</div>
+            <div class="context-menu-item" data-testid="ctx-properties" onclick="alert('Properties clicked!')">⚙️ Properties</div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 4: Accordion Content -->
+    <div class="test-case"
+         id="test-4"
+         data-test-id="09-accordion-expand"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 4: Expand and Read Hidden Content</h3>
+            <span class="test-case-id">09-accordion-expand</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> What is the hidden answer in the accordion? Click to expand "Hidden Information" and read the answer.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="accordion-identified">Agent identifies accordions need to be expanded</li>
+                <li data-check="correct-section-clicked">Agent clicks "Hidden Information" header</li>
+                <li data-check="accordion-expands">Accordion expands to show content</li>
+                <li data-check="answer-extracted">Agent reads and reports: "EXPAND-99"</li>
+            </ul>
+        </div>
+
+        <div style="max-width: 600px; margin: 15px 0;">
+            <div class="accordion-item" data-testid="accordion-1">
+                <div class="accordion-header" onclick="toggleAccordion(this.parentElement)">
+                    <span>Frequently Asked Questions</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <p><strong>Q: What is this?</strong></p>
+                    <p>A: This is a test accordion.</p>
+                </div>
+            </div>
+
+            <div class="accordion-item" data-testid="accordion-2">
+                <div class="accordion-header" onclick="toggleAccordion(this.parentElement)">
+                    <span>Hidden Information</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <p>The answer to the hidden question is: <strong>EXPAND-99</strong></p>
+                </div>
+            </div>
+
+            <div class="accordion-item" data-testid="accordion-3">
+                <div class="accordion-header" onclick="toggleAccordion(this.parentElement)">
+                    <span>Contact Information</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <p>Email: contact@example.com</p>
+                    <p>Phone: 555-1234</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-4">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-4" value="pass" data-status-radio="test-4"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-4" value="fail" data-status-radio="test-4"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 5: Hover-Reveal Buttons -->
+    <div class="test-case"
+         id="test-5"
+         data-test-id="09-hover-reveal-buttons"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 5: Click Hover-Reveal Button</h3>
+            <span class="test-case-id">09-hover-reveal-buttons</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Delete Item 2. The delete button only appears when you hover over the item card.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="item-identified">Agent identifies Item 2 card as hover target</li>
+                <li data-check="hover-on-card">Agent hovers over Item 2 card</li>
+                <li data-check="buttons-revealed">Delete button becomes visible</li>
+                <li data-check="delete-clicked">Agent clicks Delete button (alert shown)</li>
+            </ul>
+        </div>
+
+        <div style="padding: 20px; background: white; border-radius: 4px; margin: 15px 0;">
+            <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                <div class="hover-card" data-testid="hover-card-1" style="position:relative; padding:20px; background:#f8f9fa; border-radius:4px; width:200px;">
+                    <h4 style="margin:0;">Item 1</h4>
+                    <p style="color:#666; font-size:14px;">Hover to see actions</p>
+                    <div class="hover-actions" style="display:none; position:absolute; top:10px; right:10px;">
+                        <button data-testid="edit-1" onclick="alert('Edit 1!')" style="padding:5px 10px; cursor:pointer;">Edit</button>
+                        <button data-testid="delete-1" onclick="alert('Delete 1!')" style="padding:5px 10px; cursor:pointer; background:#dc3545; color:white; border:none; border-radius:3px;">Delete</button>
+                    </div>
+                </div>
+
+                <div class="hover-card" data-testid="hover-card-2" style="position:relative; padding:20px; background:#f8f9fa; border-radius:4px; width:200px;">
+                    <h4 style="margin:0;">Item 2</h4>
+                    <p style="color:#666; font-size:14px;">Hover to see actions</p>
+                    <div class="hover-actions" style="display:none; position:absolute; top:10px; right:10px;">
+                        <button data-testid="edit-2" onclick="alert('Edit 2!')" style="padding:5px 10px; cursor:pointer;">Edit</button>
+                        <button data-testid="delete-2" onclick="alert('Delete 2!')" style="padding:5px 10px; cursor:pointer; background:#dc3545; color:white; border:none; border-radius:3px;">Delete</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-5">
+            <button class="status-btn reset" type="button" data-status-reset="test-5">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Hover Menu Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">5</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Context menu handling
+        const contextArea = document.getElementById('context-area');
+        const contextMenu = document.getElementById('context-menu');
+
+        contextArea.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+            contextMenu.style.display = 'block';
+            contextMenu.style.left = e.pageX + 'px';
+            contextMenu.style.top = e.pageY + 'px';
+        });
+
+        document.addEventListener('click', function() {
+            contextMenu.style.display = 'none';
+        });
+
+        // Accordion toggle
+        function toggleAccordion(item) {
+            item.classList.toggle('active');
+        }
+
+        // Hover card actions
+        document.querySelectorAll('.hover-card').forEach(card => {
+            const actions = card.querySelector('.hover-actions');
+            card.addEventListener('mouseenter', () => actions.style.display = 'block');
+            card.addEventListener('mouseleave', () => actions.style.display = 'none');
+        });
+
+        // ── Genuine-success auto-detection (Phase 2 instrumentation) ──
+        // Only action-based tests are detectable here. Test 2 (tooltip read)
+        // and Test 4 (accordion answer report) are detect-and-report tests
+        // whose success is the agent's verbal report, which the page cannot
+        // observe; those keep their manual radios.
+        function mark(testId, checkName) {
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState(testId, checkName, 'pass');
+            }
+        }
+
+        // Test 1: clicking the "Enterprise Solutions" dropdown link.
+        // The link lives inside a CSS :hover-revealed dropdown, so a real
+        // click on it necessarily means the menu was identified, hovered,
+        // and revealed first.
+        const enterpriseLink = document.querySelector('[data-testid="product-enterprise"]');
+        if (enterpriseLink) {
+            enterpriseLink.addEventListener('click', () => {
+                mark('test-1', 'menu-identified');
+                mark('test-1', 'hover-performed');
+                mark('test-1', 'dropdown-revealed');
+                mark('test-1', 'click-success');
+            });
+        }
+
+        // Test 3: right-click reveals the context menu, then clicking the
+        // "Properties" item is the genuine target action.
+        contextArea.addEventListener('contextmenu', () => {
+            mark('test-3', 'right-click-performed');
+            mark('test-3', 'context-menu-shown');
+        });
+        const ctxProperties = document.querySelector('[data-testid="ctx-properties"]');
+        if (ctxProperties) {
+            ctxProperties.addEventListener('click', () => {
+                // A click on Properties only happens while the menu is open,
+                // which only happens after a right-click on the area.
+                mark('test-3', 'right-click-performed');
+                mark('test-3', 'context-menu-shown');
+                mark('test-3', 'properties-clicked');
+            });
+        }
+
+        // Test 5: deleting Item 2 via its hover-revealed Delete button.
+        // The button is display:none until the card is hovered (mouseenter),
+        // so a real click on delete-2 implies the card was identified,
+        // hovered, and the buttons revealed.
+        const deleteItem2 = document.querySelector('[data-testid="delete-2"]');
+        if (deleteItem2) {
+            deleteItem2.addEventListener('click', () => {
+                mark('test-5', 'item-identified');
+                mark('test-5', 'hover-on-card');
+                mark('test-5', 'buttons-revealed');
+                mark('test-5', 'delete-clicked');
+            });
+        }
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

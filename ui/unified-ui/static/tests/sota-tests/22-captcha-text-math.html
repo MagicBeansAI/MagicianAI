@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: CAPTCHA - Text & Math (Distorted Text + Equations)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #6c5ce7, #0984e3);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .test-case[data-status="pass"] { border-color: #28a745; background: #f0fff4; }
+        .test-case[data-status="fail"] { border-color: #dc3545; background: #fff5f5; }
+        .test-case-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id { background: #e9ecef; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-family: monospace; }
+        .goal-section { background: #cce5ff; border-left: 4px solid #007bff; padding: 12px 15px; margin: 10px 0; border-radius: 0 4px 4px 0; }
+        .goal-section strong { color: #004085; }
+        .verify-section { background: #d4edda; border-left: 4px solid #28a745; padding: 12px 15px; margin: 10px 0; border-radius: 0 4px 4px 0; }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+        .status-controls { display: flex; gap: 10px; margin-top: 15px; }
+        .status-btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
+        .status-btn.reset { background: #6c757d; color: white; }
+
+        /* Distorted text display */
+        .captcha-text-widget {
+            border: 1px solid #ccc; border-radius: 8px;
+            padding: 20px; max-width: 400px; background: #fafafa;
+        }
+        .distorted-text-container {
+            background: linear-gradient(135deg, #f0f0f0, #e0e0e0);
+            border: 1px solid #bbb; border-radius: 4px;
+            padding: 20px; text-align: center;
+            margin-bottom: 15px; position: relative; overflow: hidden;
+        }
+        .distorted-text {
+            font-size: 36px; font-weight: 700; letter-spacing: 8px;
+            user-select: none; position: relative; z-index: 2;
+        }
+        .distorted-text span { display: inline-block; }
+        .distorted-text-container::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(45deg, transparent, transparent 8px, rgba(0,0,0,0.05) 8px, rgba(0,0,0,0.05) 9px);
+            z-index: 1;
+        }
+        .captcha-input-row { display: flex; gap: 10px; align-items: center; }
+        .captcha-text-input {
+            flex: 1; padding: 10px 14px; border: 2px solid #ddd;
+            border-radius: 6px; font-size: 16px; font-family: monospace; letter-spacing: 3px;
+        }
+        .captcha-text-input:focus { border-color: #6c5ce7; outline: none; }
+        .captcha-submit-btn {
+            padding: 10px 20px; background: #6c5ce7; color: white;
+            border: none; border-radius: 6px; cursor: pointer; font-weight: 600;
+        }
+        .captcha-result {
+            margin-top: 10px; padding: 8px 14px; border-radius: 4px;
+            display: none; font-weight: 500;
+        }
+        .captcha-result.success { display: block; background: #d4edda; color: #155724; }
+        .captcha-result.error { display: block; background: #f8d7da; color: #721c24; }
+
+        /* Math CAPTCHA */
+        .math-captcha {
+            border: 1px solid #ccc; border-radius: 8px;
+            padding: 20px; max-width: 400px; background: #fafafa;
+        }
+        .math-captcha-title { font-size: 14px; color: #555; margin-bottom: 15px; }
+        .math-equation-display {
+            background: linear-gradient(135deg, #2d3436, #636e72);
+            border-radius: 6px; padding: 24px; text-align: center; margin-bottom: 15px;
+        }
+        .math-equation {
+            font-size: 42px; font-weight: 700; color: white;
+            font-family: 'Georgia', serif; user-select: none;
+        }
+        .math-equation .operator { color: #fdcb6e; margin: 0 8px; }
+        .math-equation .equals { color: #74b9ff; margin: 0 8px; }
+        .math-equation .question-mark { color: #ff7675; font-style: italic; }
+        .math-input-row { display: flex; gap: 10px; align-items: center; }
+        .math-input {
+            flex: 1; padding: 12px 16px; border: 2px solid #ddd;
+            border-radius: 6px; font-size: 20px; font-family: monospace; text-align: center;
+        }
+        .math-input:focus { border-color: #0984e3; outline: none; }
+        .math-submit-btn {
+            padding: 12px 24px; background: #0984e3; color: white;
+            border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 16px;
+        }
+        .math-result {
+            margin-top: 10px; padding: 8px 14px; border-radius: 4px;
+            display: none; font-weight: 500;
+        }
+        .math-result.success { display: block; background: #d4edda; color: #155724; }
+        .math-result.error { display: block; background: #f8d7da; color: #721c24; }
+        .visual-digit {
+            display: inline-block; width: 36px; height: 50px; line-height: 50px;
+            text-align: center; font-size: 36px; font-weight: 700; color: white;
+            background: rgba(255,255,255,0.1); border-radius: 4px;
+        }
+        .visual-number { display: inline-flex; gap: 6px; }
+
+        .section-divider {
+            border-top: 3px solid #e9ecef; margin: 40px 0 20px; padding-top: 20px;
+        }
+        .section-divider h2 { color: #555; font-size: 16px; margin: 0 0 5px; }
+    </style>
+</head>
+<body>
+    <div class="test-header">
+        <h1>Test: CAPTCHA - Text & Math</h1>
+        <p>Tests distorted text reading and math equation solving CAPTCHAs</p>
+        <div class="results-summary" style="margin-top: 15px; display: flex; gap: 20px;">
+            <span>&#10003; Passed: <strong id="passed-count">0</strong></span>
+            <span>&#10007; Failed: <strong id="failed-count">0</strong></span>
+            <span>&#9675; Pending: <strong id="pending-count">3</strong></span>
+        </div>
+    </div>
+
+    <!-- ==================== DISTORTED TEXT SECTION ==================== -->
+
+    <!-- Test 1: Rotated letters with noise -->
+    <div class="test-case" id="test-1" data-test-id="22-text-rotated">
+        <div class="test-case-header">
+            <h2 class="test-case-title">1. Distorted Text - Rotated Letters</h2>
+            <span class="test-case-id">text-rotated</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Read the heavily rotated text in the CAPTCHA box (the text is "X9KM2P") and type it into the input field. Then click "Submit". The answer is case-insensitive.
+        </div>
+        <div style="margin: 20px 0;">
+            <div class="captcha-text-widget" data-testid="captcha-text-1">
+                <div class="distorted-text-container" style="background: linear-gradient(135deg, #2c3e50, #34495e);">
+                    <div class="distorted-text" id="text-1" data-answer="X9KM2P" style="font-family: 'Courier New', monospace;">
+                        <span style="color:#e74c3c; transform:rotate(-12deg); font-size:40px">X</span><span style="color:#ecf0f1; transform:rotate(8deg); font-size:30px">9</span><span style="color:#f1c40f; transform:rotate(-6deg); font-size:38px">K</span><span style="color:#2ecc71; transform:rotate(15deg); font-size:32px">M</span><span style="color:#e67e22; transform:rotate(-10deg); font-size:36px">2</span><span style="color:#3498db; transform:rotate(5deg); font-size:34px">P</span>
+                    </div>
+                </div>
+                <div class="captcha-input-row">
+                    <input type="text" class="captcha-text-input" id="input-1" data-testid="captcha-input-1" placeholder="Type the text above" autocomplete="off">
+                    <button class="captcha-submit-btn" id="submit-text-1" data-testid="captcha-submit-1">Submit</button>
+                </div>
+                <div class="captcha-result" id="result-text-1"></div>
+            </div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="rotated-read">The distorted text "X9KM2P" should be correctly read</li>
+                <li data-check="rotated-typed">The correct text should be typed despite rotation and varying sizes</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- ==================== MATH SECTION ==================== -->
+    <div class="section-divider"><h2>Math Equations</h2></div>
+
+    <!-- Test 2: Addition -->
+    <div class="test-case" id="test-2" data-test-id="22-math-addition">
+        <div class="test-case-header">
+            <h2 class="test-case-title">2. Math - Addition</h2>
+            <span class="test-case-id">math-addition</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Read the math equation displayed visually (7 + 15 = ?), compute the answer (22), type it into the input field, and click "Submit".
+        </div>
+        <div style="margin: 20px 0;">
+            <div class="math-captcha" data-testid="math-captcha-1">
+                <div class="math-captcha-title">Solve the equation to verify you are human</div>
+                <div class="math-equation-display">
+                    <div class="math-equation" id="equation-1" data-answer="22">
+                        <span class="visual-number"><span class="visual-digit">7</span></span>
+                        <span class="operator">+</span>
+                        <span class="visual-number"><span class="visual-digit">1</span><span class="visual-digit">5</span></span>
+                        <span class="equals">=</span>
+                        <span class="question-mark">?</span>
+                    </div>
+                </div>
+                <div class="math-input-row">
+                    <input type="text" class="math-input" id="math-input-1" data-testid="math-input-1" placeholder="Answer" autocomplete="off">
+                    <button class="math-submit-btn" id="math-submit-1" data-testid="math-submit-1">Submit</button>
+                </div>
+                <div class="math-result" id="math-result-1"></div>
+            </div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="addition-read">Equation "7 + 15 = ?" should be read from the visual display</li>
+                <li data-check="addition-solved">Answer "22" should be typed and submitted</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 3: Subtraction with visual noise -->
+    <div class="test-case" id="test-3" data-test-id="22-math-subtraction">
+        <div class="test-case-header">
+            <h2 class="test-case-title">3. Math - Subtraction with Visual Noise</h2>
+            <span class="test-case-id">math-subtraction</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Read the math equation displayed with visual noise (42 - 17 = ?), compute the answer (25), type it into the input field, and click "Submit".
+        </div>
+        <div style="margin: 20px 0;">
+            <div class="math-captcha" data-testid="math-captcha-2">
+                <div class="math-captcha-title">One more equation - with some visual noise!</div>
+                <div class="math-equation-display" style="background: linear-gradient(135deg, #e17055, #d63031); position: relative;">
+                    <div style="position:absolute;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(45deg,transparent,transparent 12px,rgba(255,255,255,0.06) 12px,rgba(255,255,255,0.06) 13px);z-index:1;pointer-events:none;"></div>
+                    <div style="position:absolute;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(-45deg,transparent,transparent 18px,rgba(0,0,0,0.05) 18px,rgba(0,0,0,0.05) 19px);z-index:1;pointer-events:none;"></div>
+                    <div class="math-equation" id="equation-2" data-answer="25" style="position:relative;z-index:2;">
+                        <span class="visual-number"><span class="visual-digit" style="transform:rotate(-3deg)">4</span><span class="visual-digit" style="transform:rotate(2deg)">2</span></span>
+                        <span class="operator">&minus;</span>
+                        <span class="visual-number"><span class="visual-digit" style="transform:rotate(4deg)">1</span><span class="visual-digit" style="transform:rotate(-2deg)">7</span></span>
+                        <span class="equals">=</span>
+                        <span class="question-mark">?</span>
+                    </div>
+                </div>
+                <div class="math-input-row">
+                    <input type="text" class="math-input" id="math-input-2" data-testid="math-input-2" placeholder="Answer" autocomplete="off">
+                    <button class="math-submit-btn" id="math-submit-2" data-testid="math-submit-2" style="background: #e17055;">Submit</button>
+                </div>
+                <div class="math-result" id="math-result-2"></div>
+            </div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="sub-read">Equation "42 - 17 = ?" should be read despite visual noise</li>
+                <li data-check="sub-solved">Answer "25" should be typed and submitted</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // === Distorted Text ===
+        function initTextCaptcha(submitId, inputId, textId, resultId, testId, readCheck, typedCheck) {
+            document.getElementById(submitId).addEventListener('click', function() {
+                const answer = document.getElementById(textId).dataset.answer;
+                const input = document.getElementById(inputId).value.trim();
+                const result = document.getElementById(resultId);
+                const correct = input.toUpperCase() === answer.toUpperCase();
+                result.className = 'captcha-result ' + (correct ? 'success' : 'error');
+                result.textContent = correct ? 'SUCCESS: Text correctly identified!' : 'INCORRECT: Expected "' + answer + '", got "' + input + '". Try again.';
+                result.style.display = 'block';
+                if (correct && typeof window.setCheckState === 'function') {
+                    // Typing the exact distorted string (case-insensitive) proves it was
+                    // both read from the rotated/noisy display and entered correctly.
+                    window.setCheckState(testId, readCheck, 'pass');
+                    window.setCheckState(testId, typedCheck, 'pass');
+                }
+            });
+        }
+
+        // === Math ===
+        function initMathCaptcha(submitId, inputId, equationId, resultId, testId, readCheck, solvedCheck) {
+            document.getElementById(submitId).addEventListener('click', function() {
+                const answer = parseInt(document.getElementById(equationId).dataset.answer);
+                const input = document.getElementById(inputId).value.trim();
+                const result = document.getElementById(resultId);
+                const correct = parseInt(input) === answer;
+                result.className = 'math-result ' + (correct ? 'success' : 'error');
+                result.textContent = correct ? 'SUCCESS: Correct answer!' : 'INCORRECT: Expected ' + answer + ', got "' + input + '". Try again.';
+                result.style.display = 'block';
+                if (correct && typeof window.setCheckState === 'function') {
+                    // The correct numeric answer can only be produced by reading the
+                    // visual equation and computing it, so both checks are met now.
+                    window.setCheckState(testId, readCheck, 'pass');
+                    window.setCheckState(testId, solvedCheck, 'pass');
+                }
+            });
+        }
+
+        // === Status helpers ===
+        function setTestStatus(testId, status) {
+            const tc = document.getElementById(testId);
+            if (tc) { if (status) { tc.dataset.status = status; } else { delete tc.dataset.status; } updateResultsSummary(); }
+        }
+        function updateResultsSummary() {
+            const tcs = document.querySelectorAll('.test-case');
+            let p=0,f=0,pe=0;
+            tcs.forEach(tc => { switch(tc.dataset.status){case 'pass':p++;break;case 'fail':f++;break;default:pe++;} });
+            document.getElementById('passed-count').textContent = p;
+            document.getElementById('failed-count').textContent = f;
+            document.getElementById('pending-count').textContent = pe;
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            initTextCaptcha('submit-text-1', 'input-1', 'text-1', 'result-text-1', 'test-1', 'rotated-read', 'rotated-typed');
+            initMathCaptcha('math-submit-1', 'math-input-1', 'equation-1', 'math-result-1', 'test-2', 'addition-read', 'addition-solved');
+            initMathCaptcha('math-submit-2', 'math-input-2', 'equation-2', 'math-result-2', 'test-3', 'sub-read', 'sub-solved');
+            updateResultsSummary();
+        });
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

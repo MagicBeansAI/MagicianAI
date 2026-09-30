@@ -1,0 +1,52 @@
+{
+  "name": "channel_ingest_distill_user",
+  "version": "1.1.0",
+  "content": [
+    "Distill this {channel} thread update using information-brief contract v2. Respond with ONLY the JSON object.",
+    "",
+    "## Message header",
+    "{header_document}",
+    "",
+    "## Message content{truncation_note}",
+    "{content}"
+  ],
+  "variables": [
+    {
+      "name": "channel",
+      "description": "Provider-neutral channel word for the message ('email' | 'chat' | 'message').",
+      "required": true,
+      "default_value": null,
+      "examples": ["email"]
+    },
+    {
+      "name": "header_document",
+      "description": "Persisted metadata header built by channel_assist::assist::content::build_header_document; it never contains a raw body.",
+      "required": true,
+      "default_value": null,
+      "examples": ["Subject: Rewards policy update\nFrom: Example Bank <notices@example.test>\nDate: 2026-07-01T09:00:00+00:00\nDirection: inbound"]
+    },
+    {
+      "name": "content",
+      "description": "Synthetic or live new message content, or a bounded same-thread newest-first batch. It exists in process memory only and is discarded after local distillation.",
+      "required": true,
+      "default_value": null,
+      "examples": ["From July 1, reward points on brand vouchers are capped at 5,000 points per month."]
+    },
+    {
+      "name": "truncation_note",
+      "description": "Empty for complete content; a parenthetical disclosure when only the beginning is available.",
+      "required": false,
+      "default_value": "",
+      "examples": [" (only the beginning is shown; the remainder was truncated)"]
+    }
+  ],
+  "metadata": {
+    "category": "ChannelAssist",
+    "description": "User prompt paired with channel_ingest_distill_system v1.1.0 for provider-neutral information-brief v2 extraction.",
+    "author": "magician",
+    "created_at": "2026-07-11T00:00:00Z",
+    "changelog": "v1.1.0: Requests information-brief contract v2 while retaining the existing metadata/content input boundary.",
+    "tags": ["channel-assist", "distillation", "information-brief", "local-only", "privacy"],
+    "estimated_tokens": 125
+  }
+}

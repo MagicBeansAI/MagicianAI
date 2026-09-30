@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_ambiguous_project",
+  "version": "1.0.0",
+  "content": [
+    "I didn't start a build: this workspace has {project_count} VibeDev projects — {project_list} — and nothing here says which one you meant.",
+    "",
+    "Open the VibeDev cockpit and pick the project you want, then send the same message again and the build will land there. I won't guess: a build in the wrong repository is worse than a question."
+  ],
+  "variables": ["project_count", "project_list"],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply when a `@vibedev` chat turn could mean several VibeDev projects — more than one live project, and no cockpit session open on any of them, so 'the active project' would only mean 'whichever row was touched last'. No task is created. Must name the candidates AND the single move that answers the question: picking a project in the cockpit activates its session, which is the pointer the next turn resolves on.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` ambiguous-project question.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply", "ambiguity"],
+    "estimated_tokens": 85
+  }
+}

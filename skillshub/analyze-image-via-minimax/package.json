@@ -1,0 +1,8 @@
+{
+  "name": "@magician/skill-analyze-image-via-minimax",
+  "private": true,
+  "description": "MiniMax CLI (mmx) wrapper — vision-analyze an image via `mmx vision describe`. Bundles `mmx-cli` so the `mmx` bin lands in skillshub/node_modules/.bin/ for the dispatcher's PATH prepend.",
+  "dependencies": {
+    "mmx-cli": "^1.0.0"
+  }
+}

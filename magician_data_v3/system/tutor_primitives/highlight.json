@@ -1,0 +1,15 @@
+{
+  "type": "highlight",
+  "version": 1,
+  "draw": [
+    {
+      "op": "rect",
+      "x": "x",
+      "y": "y",
+      "w": "w|width",
+      "h": "h|height",
+      "radius": 8,
+      "fill": true
+    }
+  ]
+}

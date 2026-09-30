@@ -1,0 +1,19 @@
+{
+  "name": "circle — two-point geometry [ [cx,cy], [cx+r,cy] ]",
+  "recipe": {
+    "type": "circle",
+    "draw": [{ "op": "circle", "cx": "cx", "cy": "cy", "r": "r" }]
+  },
+  "shape": { "type": "circle", "cx": 150, "cy": 150, "r": 40 },
+  "space": { "width": 2048, "height": 1152 },
+  "expected": [
+    {
+      "op": "circle",
+      "closed": true,
+      "points": [
+        [150, 150],
+        [190, 150]
+      ]
+    }
+  ]
+}

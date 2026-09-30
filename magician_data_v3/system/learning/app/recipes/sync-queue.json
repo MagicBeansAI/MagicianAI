@@ -1,0 +1,296 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "limit": {
+              "value_type": 1,
+              "required": false
+            },
+            "state": {
+              "value_type": 2,
+              "required": false
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "enum",
+          "values": [
+            "approved",
+            "archived",
+            "evaluated",
+            "implemented",
+            "observed",
+            "promoted",
+            "proposed",
+            "rejected",
+            "superseded",
+            "triaged"
+          ]
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:3e7ed7a917ad328121478b264ede194241738170bcb294fef6d5722a0af81a77",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:3e7ed7a917ad328121478b264ede194241738170bcb294fef6d5722a0af81a77",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "reconcile",
+          "declaration": {
+            "tool": "internal_data",
+            "action": "list_learning_candidates",
+            "parameters": {
+              "limit": 25
+            },
+            "input_parameters": {
+              "limit": "limit",
+              "state": "state"
+            },
+            "rows_field": "candidates",
+            "next_cursor_field": "next_cursor",
+            "truncated_field": "scan_truncated",
+            "max_source_rows": 25,
+            "max_existing_rows": 5000,
+            "targets": [
+              {
+                "entity": "learning_candidate",
+                "key_field": "candidate_id",
+                "source_key": "id",
+                "fields": {
+                  "candidate_type": {
+                    "kind": "source",
+                    "field": "candidate_type",
+                    "fallback": null
+                  },
+                  "state": {
+                    "kind": "source",
+                    "field": "state",
+                    "fallback": null
+                  },
+                  "title": {
+                    "kind": "source",
+                    "field": "title",
+                    "fallback": null
+                  },
+                  "summary": {
+                    "kind": "source",
+                    "field": "summary",
+                    "fallback": null
+                  },
+                  "risk_level": {
+                    "kind": "source",
+                    "field": "risk_level",
+                    "fallback": null
+                  },
+                  "source_agent_id": {
+                    "kind": "source",
+                    "field": "source_agent_id",
+                    "fallback": null,
+                    "allow_null": true
+                  },
+                  "review_required": {
+                    "kind": "source",
+                    "field": "review_required",
+                    "fallback": null
+                  },
+                  "created_at": {
+                    "kind": "source",
+                    "field": "created_at",
+                    "fallback": null
+                  },
+                  "updated_at": {
+                    "kind": "source",
+                    "field": "updated_at",
+                    "fallback": null
+                  },
+                  "synced_at": {
+                    "kind": "timestamp"
+                  }
+                },
+                "update_fields": [
+                  "candidate_type",
+                  "state",
+                  "title",
+                  "summary",
+                  "risk_level",
+                  "source_agent_id",
+                  "review_required",
+                  "created_at",
+                  "updated_at",
+                  "synced_at"
+                ],
+                "seeds": [],
+                "retirement": null
+              }
+            ]
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "primitive_ref": "primitive:platform:d694c53b628f36ebbc2545d4e70e91b727f57edb287be763c8c6b5e0127be11d",
+          "action_ref": "primitive-action:platform:0916fabe0b1f4ccc6deed007a4bc5f9357779612ac9e4aa5bf68560355b523c4",
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 1,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 1
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

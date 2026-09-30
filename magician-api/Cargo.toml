@@ -1,0 +1,71 @@
+[package]
+name = "magician-api"
+version = "0.3.31"
+edition = "2021"
+authors = ["MagicBeansAI"]
+description = "HTTP/WS surface of the Magician service, extracted from the magician monolith"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+decision-engine-contract = { path = "../decision-engine-contract", features = ["client"] }
+magician-app-contract = { path = "../magician-app-contract" }
+magician = { path = "../magician" }
+magician-apps = { path = "../magician-apps" }
+magician-surfaces = { path = "../magician-surfaces" }
+magician-media = { path = "../magician-media" }
+magician-learning = { path = "../magician-learning" }
+magician-comms = { path = "../magician-comms" }
+magician-mcp-client = { path = "../magician-mcp-client" }
+runtime-core = { path = "../runtime-core" }
+tool-runtime-core = { workspace = true }
+magician-components = { path = "../magician-components", features = ["probe"] }
+magicllm = { path = "../magicllm" }
+magician-vector-index = { path = "../magician-vector-index" }
+
+actix = "0.13"
+actix-files = "0.6"
+actix-multipart = "0.6"
+actix-web = { version = "4.4", features = ["rustls"] }
+actix-web-actors = "4.3"
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = "1"
+blake3 = { workspace = true }
+chrono = { workspace = true }
+dashmap = "5.5"
+dirs = "5"
+dotenvy = "0.15"
+hex = "0.4"
+jsonwebtoken = "9"
+libc = "0.2"
+duckdb = { version = "=1.10502.0", features = ["bundled", "json", "parquet"] }
+zip = { version = "6", default-features = false, features = ["deflate"] }
+futures-util = { workspace = true }
+parking_lot = "0.12"
+reqwest = { version = "0.12.28", features = ["json", "stream", "rustls-tls", "multipart", "system-proxy"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+rand = "0.8"
+regex = "1.10"
+openssl = "0.10"
+rust_decimal = { version = "1.36", features = ["serde-with-str"] }
+url = "2.4"
+urlencoding = "2.1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["raw_value"] }
+serde_yaml = "0.9"
+sha2 = "0.10"
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+tokio-util = "0.7"
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
+zeroize = { version = "1.7", features = ["derive"] }
+
+[dev-dependencies]
+magician = { path = "../magician", features = ["test-fixtures"] }
+tempfile = "3.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+actix-rt = "2.9"

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test: Live Concept Tutor Math Graph</title>
+  <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+  <style>
+    .test-header {
+      background: linear-gradient(135deg, #0f766e, #2563eb);
+    }
+
+    .concept-stage {
+      position: relative;
+      min-height: 460px;
+      border-radius: 20px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #f8fbff 0%, #edf7f5 100%);
+    }
+
+    .concept-stage svg {
+      display: block;
+      width: 100%;
+      height: 460px;
+    }
+
+    .grid-line {
+      stroke: rgba(60, 80, 110, 0.16);
+      stroke-width: 1;
+    }
+
+    .axis {
+      stroke: #334155;
+      stroke-width: 3;
+      stroke-linecap: round;
+    }
+
+    .slope-line {
+      stroke: #0f766e;
+      stroke-width: 6;
+      stroke-linecap: round;
+      filter: drop-shadow(0 2px 4px rgba(15, 118, 110, 0.22));
+    }
+
+    .point {
+      fill: #ffffff;
+      stroke: #0f766e;
+      stroke-width: 5;
+    }
+
+    .run-rise {
+      stroke: #ea580c;
+      stroke-width: 4;
+      stroke-dasharray: 10 7;
+      stroke-linecap: round;
+    }
+
+    .label {
+      fill: #1e293b;
+      font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .formula-card {
+      position: absolute;
+      right: 28px;
+      top: 28px;
+      width: 260px;
+      padding: 18px 20px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid rgba(37, 99, 235, 0.18);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+    }
+
+    .formula-card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #0f766e;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .formula-card code {
+      color: #172554;
+      font-size: 22px;
+      font-weight: 800;
+    }
+
+    .fixture-result {
+      min-height: 28px;
+    }
+  </style>
+</head>
+<body>
+  <script type="application/json" id="test-metadata">
+  {
+    "testId": "36-live-concept-tutor-math",
+    "phase": "Live Concept Tutor",
+    "title": "Live Concept Tutor Math Graph",
+    "description": "Static graph fixture for slope tutoring overlays.",
+    "totalTests": 1
+  }
+  </script>
+  <script type="application/json" id="tutor-ground-truth">
+  {
+    "fixture_id": "36-live-concept-tutor-math",
+    "subject": "mathematics",
+    "expected_entities": [
+      {"id": "axis-x", "kind": "axis", "bounds": [92, 374, 732, 374]},
+      {"id": "axis-y", "kind": "axis", "bounds": [108, 420, 108, 68]},
+      {"id": "line-main", "kind": "line_segment", "bounds": [174, 330, 674, 126]},
+      {"id": "run-segment", "kind": "line_segment", "bounds": [174, 330, 674, 330]},
+      {"id": "rise-segment", "kind": "line_segment", "bounds": [674, 330, 674, 126]},
+      {"id": "formula-main", "kind": "formula_region", "text": "slope = rise / run"}
+    ],
+    "expected_overlay_primitives": ["axis", "line", "measurement_tick", "side_label", "formula"],
+    "acceptance": [
+      "Overlay marks the x/y axes or the plotted line.",
+      "Overlay distinguishes run and rise with labels or ticks.",
+      "Overlay connects the visual relationship to slope = rise / run.",
+      "Explanation is stepwise and clears or leaves only relevant marks."
+    ]
+  }
+  </script>
+
+  <div class="page-shell">
+    <div class="test-header">
+      <h1>Live Concept Tutor: Slope From A Graph</h1>
+      <p>Ask the tutor to explain the visible slope relationship using overlays. This fixture is deterministic so grounding can be scored against known graph entities.</p>
+      <div class="results-summary">
+        <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+        <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+        <div class="summary-pill">Pending<strong id="pending-count">1</strong></div>
+      </div>
+    </div>
+
+    <div class="fixture-grid">
+      <section class="test-case" id="test-1" data-test-id="36-math-slope" data-status="pending">
+        <div class="test-case-header">
+          <h2 class="test-case-title">Explain slope using visible rise and run</h2>
+          <span class="test-case-id">36-math-slope</span>
+        </div>
+        <div class="goal-section" data-goal>
+          <strong>Goal:</strong> Use <code>@tutor</code> to explain the slope relationship in this graph with a stepwise overlay.
+        </div>
+        <div class="workspace-card">
+          <div class="workspace-toolbar">
+            <div>
+              <h3>Coordinate Graph</h3>
+              <p class="caption">The line passes through two marked points. The orange guide shows the rise/run relationship the tutor should explain.</p>
+            </div>
+          </div>
+          <div class="workspace-surface concept-stage" aria-label="Coordinate graph showing slope as rise over run">
+            <span class="surface-label">Math Fixture</span>
+            <svg viewBox="0 0 820 460" role="img" aria-label="Line graph with rise and run annotations">
+              <line class="grid-line" x1="108" y1="92" x2="724" y2="92"></line>
+              <line class="grid-line" x1="108" y1="150" x2="724" y2="150"></line>
+              <line class="grid-line" x1="108" y1="208" x2="724" y2="208"></line>
+              <line class="grid-line" x1="108" y1="266" x2="724" y2="266"></line>
+              <line class="grid-line" x1="108" y1="324" x2="724" y2="324"></line>
+              <line class="grid-line" x1="188" y1="62" x2="188" y2="394"></line>
+              <line class="grid-line" x1="268" y1="62" x2="268" y2="394"></line>
+              <line class="grid-line" x1="348" y1="62" x2="348" y2="394"></line>
+              <line class="grid-line" x1="428" y1="62" x2="428" y2="394"></line>
+              <line class="grid-line" x1="508" y1="62" x2="508" y2="394"></line>
+              <line class="grid-line" x1="588" y1="62" x2="588" y2="394"></line>
+              <line class="axis" x1="92" y1="374" x2="744" y2="374"></line>
+              <line class="axis" x1="108" y1="420" x2="108" y2="64"></line>
+              <path class="slope-line" d="M 174 330 L 674 126"></path>
+              <circle class="point" cx="174" cy="330" r="11"></circle>
+              <circle class="point" cx="674" cy="126" r="11"></circle>
+              <line class="run-rise" x1="174" y1="330" x2="674" y2="330"></line>
+              <line class="run-rise" x1="674" y1="330" x2="674" y2="126"></line>
+              <text class="label" x="394" y="354">run = 5</text>
+              <text class="label" x="686" y="235">rise = 2</text>
+              <text class="label" x="735" y="398">x</text>
+              <text class="label" x="82" y="76">y</text>
+              <text class="label" x="143" y="310">(1, 2)</text>
+              <text class="label" x="636" y="106">(6, 4)</text>
+            </svg>
+            <div class="formula-card">
+              <strong>Target idea</strong>
+              <code>slope = rise / run</code>
+              <p class="caption">Here the visual ratio is 2 / 5.</p>
+            </div>
+          </div>
+        </div>
+        <div class="verify-section">
+          <strong>Expected tutor evidence:</strong>
+          <ul>
+            <li data-check="axes" data-check-state="pending">Axes or plotted line are grounded.</li>
+            <li data-check="rise-run" data-check-state="pending">Rise/run are marked separately.</li>
+            <li data-check="formula" data-check-state="pending">Formula is tied back to the visible graph.</li>
+          </ul>
+        </div>
+        <div class="fixture-result" aria-live="polite"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="./sota-test-harness.js"></script>
+</body>
+</html>

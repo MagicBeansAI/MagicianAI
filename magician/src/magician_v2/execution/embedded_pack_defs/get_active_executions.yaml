@@ -1,0 +1,26 @@
+name: get_active_executions
+description: List tasks currently active (running / planning / paused / pending) in the scope, with their root execution ids.
+version: "1.0.0"
+guide: |
+  Tool name: `get_active_executions`
+
+  Returns every task in the scope whose status is `running`, `planning`,
+  `paused`, or `pending`, with `{task_id, title, status, agent_id,
+  active_execution_id}`. Use when the user asks "what's running right
+  now?" or before deciding to `stop_task` something.
+
+  Completed / failed tasks are excluded — pair with `list_tasks` if you
+  need the terminal-state view.
+parameters: []
+implementation:
+  type: compiled
+  provider_name: get_active_executions
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - executions
+    - tasks
+    - introspection
+  composition_category: action
+  sandbox: none

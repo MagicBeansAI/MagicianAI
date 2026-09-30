@@ -1,0 +1,584 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "gesture_expires_at_ms": {
+              "value_type": 1,
+              "required": true
+            },
+            "gesture_id": {
+              "value_type": 2,
+              "required": true
+            },
+            "gesture_observed_at_ms": {
+              "value_type": 3,
+              "required": true
+            },
+            "meeting_date": {
+              "value_type": 4,
+              "required": false
+            },
+            "request_id": {
+              "value_type": 5,
+              "required": true
+            },
+            "surface_session_id": {
+              "value_type": 6,
+              "required": true
+            },
+            "title": {
+              "value_type": 7,
+              "required": false
+            },
+            "url": {
+              "value_type": 8,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:7f4be180a0559671e74967b532b8a40e060d18eddee2f8a9b14b9d23d746aafe",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:7f4be180a0559671e74967b532b8a40e060d18eddee2f8a9b14b9d23d746aafe",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {},
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/request_id"
+                },
+                {
+                  "kind": "literal",
+                  "value": "join"
+                },
+                {
+                  "kind": "literal",
+                  "value": "new_capture"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/url"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/gesture_id"
+                },
+                {
+                  "kind": "literal",
+                  "value": "recorded"
+                },
+                {
+                  "kind": "literal",
+                  "value": false
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/meeting_date"
+                },
+                {
+                  "kind": "present",
+                  "value": 10
+                },
+                {
+                  "kind": "if",
+                  "condition": 11,
+                  "then_value": 10,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/title"
+                },
+                {
+                  "kind": "present",
+                  "value": 13
+                },
+                {
+                  "kind": "if",
+                  "condition": 14,
+                  "then_value": 13,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/gesture_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/surface_session_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/gesture_observed_at_ms"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/gesture_expires_at_ms"
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "trim",
+                  "value": 6
+                },
+                {
+                  "kind": "length",
+                  "value": 21
+                },
+                {
+                  "kind": "less_than",
+                  "left": 20,
+                  "right": 22
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "request_id": 3,
+                    "verb": 4,
+                    "capture_mic": 9,
+                    "date": 12,
+                    "title": 15,
+                    "url": 6,
+                    "gesture_id": 16,
+                    "surface_session_id": 17,
+                    "gesture_observed_at_ms": 18,
+                    "gesture_expires_at_ms": 19
+                  }
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 24
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "request",
+                  "parts": [
+                    3
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 27
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/request_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 29,
+                  "right": 3
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/verb"
+                },
+                {
+                  "kind": "equal",
+                  "left": 31,
+                  "right": 4
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/target_kind"
+                },
+                {
+                  "kind": "equal",
+                  "left": 33,
+                  "right": 5
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/target_ref"
+                },
+                {
+                  "kind": "equal",
+                  "left": 35,
+                  "right": 6
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/gesture_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 37,
+                  "right": 7
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/actor_ref"
+                },
+                {
+                  "kind": "equal",
+                  "left": 39,
+                  "right": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/note"
+                },
+                {
+                  "kind": "equal",
+                  "left": 41,
+                  "right": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/apply_state"
+                },
+                {
+                  "kind": "equal",
+                  "left": 43,
+                  "right": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/payload_json"
+                },
+                {
+                  "kind": "equal",
+                  "left": 45,
+                  "right": 25
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    30,
+                    32,
+                    34,
+                    36,
+                    38,
+                    40,
+                    42,
+                    44,
+                    46
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 28
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    48,
+                    47
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 28
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "existing",
+                "entity": "control_request",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "request_id",
+                    "verb",
+                    "target_kind",
+                    "target_ref",
+                    "gesture_id",
+                    "actor_ref",
+                    "note",
+                    "payload_json",
+                    "apply_state",
+                    "requested_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "request_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 3
+                }
+              }
+            ],
+            "query_when": {},
+            "guards": [
+              {
+                "require": 23,
+                "reason": "join_url_required"
+              },
+              {
+                "require": 49,
+                "reason": "request_identity_conflict"
+              }
+            ],
+            "mutations": [
+              {
+                "entity": "control_request",
+                "for_each": null,
+                "when": 50,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 26,
+                  "fields": {
+                    "request_id": 3,
+                    "verb": 4,
+                    "target_kind": 5,
+                    "target_ref": 6,
+                    "gesture_id": 7,
+                    "actor_ref": 0,
+                    "note": 0,
+                    "apply_state": 8,
+                    "requested_at": 1,
+                    "payload_json": 25
+                  }
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

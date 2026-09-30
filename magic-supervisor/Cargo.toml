@@ -1,0 +1,21 @@
+[package]
+name = "magic-supervisor"
+version = "0.1.8"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio = { version = "1.42", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12.28", features = ["json", "system-proxy"] }
+chrono = "0.4"
+strip-ansi-escapes = "0.2"
+libc = "0.2"
+
+[[bin]]
+name = "magic-supervisor"
+path = "src/main.rs"

@@ -1,0 +1,195 @@
+{
+  "name": "transient_failure_then_recovery",
+  "description": "Transient timeout then recovery: the degraded scan sees only one of two tracked items — the missing item must NOT read as removed (§7.3), the failure streak opens at 1, and the ok+complete recovery run reads `unchanged` with the streak cleared.",
+  "notification_policy": "material_changes",
+  "notify_initial_baseline": false,
+  "steps": [
+    {
+      "label": "baseline scan",
+      "execution_id": "exec_tf_1",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_tf_1",
+        "monitor_revision": 3,
+        "started_at": "2026-07-22T10:00:00Z",
+        "completed_at": "2026-07-22T10:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://registry.example/listings",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 2
+          }
+        ],
+        "counts": { "scanned": 2, "new": 0, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:listing-alpha",
+            "title": "Listing Alpha",
+            "canonical_url": "https://registry.example/listings/alpha",
+            "source": "https://registry.example/listings",
+            "observed_at": "2026-07-22T10:00:30Z",
+            "published_at": null,
+            "summary": "Listing Alpha present.",
+            "why_it_matters": "Tracked listing.",
+            "entities": ["Alpha"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_4001",
+            "classification": "unchanged"
+          },
+          {
+            "stable_key": "native:listing-beta",
+            "title": "Listing Beta",
+            "canonical_url": "https://registry.example/listings/beta",
+            "source": "https://registry.example/listings",
+            "observed_at": "2026-07-22T10:00:30Z",
+            "published_at": null,
+            "summary": "Listing Beta present.",
+            "why_it_matters": "Tracked listing.",
+            "entities": ["Beta"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_4002",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_4001",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "baseline",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": true,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 2, "updated": 0, "unchanged": 0, "possibly_removed": 0 },
+        "retained_ledger_keys": 2
+      }
+    },
+    {
+      "label": "timeout: only Alpha observed — Beta must not read removed",
+      "execution_id": "exec_tf_2",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_tf_2",
+        "monitor_revision": 3,
+        "started_at": "2026-07-23T10:00:00Z",
+        "completed_at": "2026-07-23T10:01:00Z",
+        "status": "degraded",
+        "complete_scan": false,
+        "source_outcomes": [
+          {
+            "source": "https://registry.example/listings",
+            "status": "timeout",
+            "complete": false,
+            "items_scanned": 1,
+            "note": "Pagination timed out after page 1."
+          }
+        ],
+        "counts": { "scanned": 1, "new": 0, "updated": 0, "unchanged": 1, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:listing-alpha",
+            "title": "Listing Alpha",
+            "canonical_url": "https://registry.example/listings/alpha",
+            "source": "https://registry.example/listings",
+            "observed_at": "2026-07-23T10:00:30Z",
+            "published_at": null,
+            "summary": "Listing Alpha present.",
+            "why_it_matters": "Tracked listing.",
+            "entities": ["Alpha"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_4001",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_4002",
+        "change_fingerprint": null,
+        "access_problem": {
+          "source": "https://registry.example/listings",
+          "kind": "timeout",
+          "message": "The listings source timed out before the scan completed.",
+          "since": "2026-07-23T10:00:10Z"
+        }
+      },
+      "expect": {
+        "status": "degraded",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": false,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 0, "updated": 0, "unchanged": 1, "possibly_removed": 0 },
+        "retained_ledger_keys": 2,
+        "source_failure_streaks": { "https://registry.example/listings": 1 }
+      }
+    },
+    {
+      "label": "recovery: both items back, ok+complete — streak clears",
+      "execution_id": "exec_tf_3",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_tf_3",
+        "monitor_revision": 3,
+        "started_at": "2026-07-24T10:00:00Z",
+        "completed_at": "2026-07-24T10:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://registry.example/listings",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 2
+          }
+        ],
+        "counts": { "scanned": 2, "new": 0, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:listing-alpha",
+            "title": "Listing Alpha",
+            "canonical_url": "https://registry.example/listings/alpha",
+            "source": "https://registry.example/listings",
+            "observed_at": "2026-07-24T10:00:30Z",
+            "published_at": null,
+            "summary": "Listing Alpha present.",
+            "why_it_matters": "Tracked listing.",
+            "entities": ["Alpha"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_4001",
+            "classification": "unchanged"
+          },
+          {
+            "stable_key": "native:listing-beta",
+            "title": "Listing Beta",
+            "canonical_url": "https://registry.example/listings/beta",
+            "source": "https://registry.example/listings",
+            "observed_at": "2026-07-24T10:00:30Z",
+            "published_at": null,
+            "summary": "Listing Beta present.",
+            "why_it_matters": "Tracked listing.",
+            "entities": ["Beta"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_4002",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_4003",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "unchanged",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": false,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 0, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "retained_ledger_keys": 2,
+        "source_failures_cleared": true
+      }
+    }
+  ]
+}

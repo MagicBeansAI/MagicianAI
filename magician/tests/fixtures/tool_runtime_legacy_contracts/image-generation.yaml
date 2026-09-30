@@ -1,0 +1,143 @@
+name: image-generation
+version: 0.1.0
+parameters:
+- name: prompt
+  required: true
+  param_type: string
+  description: Text prompt describing the image to generate or the edit to apply
+- name: input_images
+  param_type: string
+  description: Comma-separated file paths to input images for editing or composition. Omit for text-to-image generation. The current family supports up to 14 references, with fidelity limits varying by tier.
+- name: output_path
+  param_type: string
+  description: Output file path for the generated image (use .jpg extension). Defaults to a temp file.
+- name: aspect_ratio
+  param_type: string
+  description: 'Image aspect ratio: 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, 1:4, 4:1, 1:8, 8:1'
+  default: ''
+- name: resolution
+  param_type: string
+  description: 'Image resolution: 512 (balanced only), 1K (default and the only fast-tier size), 2K or 4K (balanced/pro)'
+  default: 1K
+  enum_values:
+  - '512'
+  - 1K
+  - 2K
+  - 4K
+- name: quality_tier
+  param_type: string
+  description: 'Routing tier: auto (neutral fallback to balanced), fast (Nano Banana 2 Lite; 1K without Search), balanced (Nano Banana 2; recommended default), or pro (Nano Banana Pro; highest fidelity and complex composition)'
+  default: auto
+  enum_values:
+  - auto
+  - fast
+  - balanced
+  - pro
+- name: thinking
+  param_type: string
+  description: 'Thinking level: minimal (fast, default) or high (better for complex compositions and precise text)'
+  default: ''
+  enum_values:
+  - minimal
+  - high
+- name: use_search
+  param_type: boolean
+  description: Enable Google Search grounding for real-time accuracy on real subjects, places, and current events. Supported by balanced and pro, not fast.
+  default: 'false'
+- name: model
+  param_type: string
+  description: 'Optional explicit model override. When set, this wins over quality_tier. Current family: gemini-3.1-flash-lite-image, gemini-3.1-flash-image, gemini-3-pro-image'
+  default: ''
+native_action_schemas:
+  run:
+    description: Run the direct image_generator_nanobanana2 capability with the arguments selected from this guide. Use output_path when the user requested a save location. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after the requested image artifact is present.
+    parameters:
+    - prompt
+    - input_images
+    - output_path
+    - aspect_ratio
+    - resolution
+    - quality_tier
+    - thinking
+    - use_search
+    - model
+    required:
+    - prompt
+    parameter_overrides:
+      prompt:
+        type: string
+        description: Text prompt describing the image to generate or the edit to apply
+      input_images:
+        type: string
+        description: Comma-separated file paths to input images for editing or composition. Omit for text-to-image generation. The current family supports up to 14 references, with fidelity limits varying by tier.
+      output_path:
+        type: string
+        description: Output file path for the generated image (use .jpg extension). Defaults to a temp file.
+      aspect_ratio:
+        type: string
+        description: 'Image aspect ratio: 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, 1:4, 4:1, 1:8, 8:1'
+        default: ''
+      resolution:
+        type: string
+        description: 'Image resolution: 512 (balanced only), 1K (default and the only fast-tier size), 2K or 4K (balanced/pro)'
+        enum:
+        - '512'
+        - 1K
+        - 2K
+        - 4K
+        default: 1K
+      quality_tier:
+        type: string
+        description: 'Routing tier: auto (neutral fallback to balanced), fast (Nano Banana 2 Lite; 1K without Search), balanced (Nano Banana 2; recommended default), or pro (Nano Banana Pro; highest fidelity and complex composition)'
+        enum:
+        - auto
+        - fast
+        - balanced
+        - pro
+        default: auto
+      thinking:
+        type: string
+        description: 'Thinking level: minimal (fast, default) or high (better for complex compositions and precise text)'
+        enum:
+        - minimal
+        - high
+        default: ''
+      use_search:
+        type: boolean
+        description: Enable Google Search grounding for real-time accuracy on real subjects, places, and current events. Supported by balanced and pro, not fast.
+        default: 'false'
+      model:
+        type: string
+        description: 'Optional explicit model override. When set, this wins over quality_tier. Current family: gemini-3.1-flash-lite-image, gemini-3.1-flash-image, gemini-3-pro-image'
+        default: ''
+    skip_tool_name: true
+    timeout_secs: 1200
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_PROMPT: '{prompt}'
+    _TOOL_INPUT_IMAGES: '{input_images}'
+    _TOOL_OUTPUT_PATH: '{output_path}'
+    _TOOL_ASPECT_RATIO: '{aspect_ratio}'
+    _TOOL_RESOLUTION: '{resolution}'
+    _TOOL_QUALITY_TIER: '{quality_tier}'
+    _TOOL_THINKING: '{thinking}'
+    _TOOL_USE_SEARCH: '{use_search}'
+    _TOOL_MODEL: '{model}'
+    _TOOL_API_TIMEOUT_SECS: '1170'
+  timeout_secs: 1200
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 1200
+  categories:
+  - image
+  - generation
+  - editing
+  - creative
+  - design
+  - marketing
+  composition_category: media_operations
+  sandbox: shell

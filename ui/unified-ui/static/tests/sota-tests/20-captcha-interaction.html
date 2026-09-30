@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: CAPTCHA - Interaction (Press & Hold + Checkbox)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #ff6b6b, #4834d4);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] { border-color: #28a745; background: #f0fff4; }
+        .test-case[data-status="fail"] { border-color: #dc3545; background: #fff5f5; }
+        .test-case-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id { background: #e9ecef; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-family: monospace; }
+        .goal-section { background: #cce5ff; border-left: 4px solid #007bff; padding: 12px 15px; margin: 10px 0; border-radius: 0 4px 4px 0; }
+        .goal-section strong { color: #004085; }
+        .verify-section { background: #d4edda; border-left: 4px solid #28a745; padding: 12px 15px; margin: 10px 0; border-radius: 0 4px 4px 0; }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+        .status-controls { display: flex; gap: 10px; margin-top: 15px; }
+        .status-btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; transition: all 0.2s; }
+        .status-btn.reset { background: #6c757d; color: white; }
+
+        /* Press & Hold Button */
+        .hold-btn {
+            display: inline-block;
+            padding: 20px 40px;
+            font-size: 18px;
+            font-weight: 700;
+            color: white;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.1s;
+        }
+        .hold-btn:active { transform: scale(0.97); }
+        .hold-btn .progress-bar {
+            position: absolute;
+            left: 0; bottom: 0;
+            height: 6px;
+            background: #2ecc71;
+            width: 0%;
+            transition: none;
+        }
+        .hold-btn.success-state { background: linear-gradient(135deg, #2ecc71, #27ae60); }
+        .hold-timer { margin-top: 12px; font-size: 14px; color: #555; font-family: monospace; }
+
+        /* CAPTCHA checkbox widget */
+        .captcha-widget {
+            border: 1px solid #d3d3d3;
+            border-radius: 4px;
+            padding: 16px 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 14px;
+            background: #fafafa;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            cursor: pointer;
+            user-select: none;
+            transition: box-shadow 0.2s;
+        }
+        .captcha-widget:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+        .captcha-checkbox {
+            width: 28px; height: 28px;
+            border: 2px solid #c1c1c1;
+            border-radius: 4px;
+            display: flex; align-items: center; justify-content: center;
+            background: white;
+            transition: all 0.2s;
+        }
+        .captcha-checkbox.checked { background: #4caf50; border-color: #4caf50; }
+        .captcha-checkbox .checkmark { display: none; color: white; font-size: 18px; font-weight: bold; }
+        .captcha-checkbox.checked .checkmark { display: block; }
+        .captcha-label { font-size: 15px; color: #555; }
+        .captcha-brand { margin-left: auto; text-align: right; font-size: 11px; color: #999; line-height: 1.3; }
+        .captcha-spinner {
+            width: 24px; height: 24px;
+            border: 3px solid #ddd; border-top-color: #4834d4;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .captcha-success-msg {
+            margin-top: 10px; padding: 8px 14px;
+            background: #d4edda; border: 1px solid #28a745;
+            border-radius: 4px; color: #155724; display: none;
+        }
+        .multi-captcha {
+            border: 1px solid #d3d3d3; border-radius: 6px;
+            padding: 20px; background: #fafafa; max-width: 350px;
+        }
+        .multi-captcha .step { display: none; }
+        .multi-captcha .step.active { display: block; }
+        .multi-captcha .step-indicator { font-size: 12px; color: #888; margin-bottom: 12px; }
+
+        .section-divider {
+            border-top: 3px solid #e9ecef;
+            margin: 40px 0 20px;
+            padding-top: 20px;
+        }
+        .section-divider h2 {
+            color: #555;
+            font-size: 16px;
+            margin: 0 0 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-header">
+        <h1>Test: CAPTCHA - Interaction</h1>
+        <p>Tests interaction-based CAPTCHAs: press-and-hold verification and checkbox-based challenges</p>
+        <div class="results-summary" style="margin-top: 15px; display: flex; gap: 20px;">
+            <span>&#10003; Passed: <strong id="passed-count">0</strong></span>
+            <span>&#10007; Failed: <strong id="failed-count">0</strong></span>
+            <span>&#9675; Pending: <strong id="pending-count">3</strong></span>
+        </div>
+    </div>
+
+    <!-- ==================== PRESS & HOLD SECTION ==================== -->
+
+    <!-- Test 1: Press & Hold (2 seconds) -->
+    <div class="test-case" id="test-1" data-test-id="20-hold-standard">
+        <div class="test-case-header">
+            <h2 class="test-case-title">1. Press & Hold (2 seconds)</h2>
+            <span class="test-case-id">hold-standard</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Press and hold the "Hold to Verify" button for at least 2 seconds, then release. The progress bar should fill and the button should turn green.
+        </div>
+        <div style="text-align: center; margin: 20px 0;">
+            <button class="hold-btn" id="hold-btn-1" data-testid="hold-verify-btn">
+                Hold to Verify
+                <div class="progress-bar" id="progress-1"></div>
+            </button>
+            <div class="hold-timer" id="timer-1">Hold time: 0.0s / 2.0s required</div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="hold-duration">Button must be held for at least 2.0 seconds</li>
+                <li data-check="progress-fill">Progress bar should fill to 100%</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- ==================== CHECKBOX SECTION ==================== -->
+    <div class="section-divider"><h2>Checkbox Verification</h2></div>
+
+    <!-- Test 2: Delayed checkbox with spinner -->
+    <div class="test-case" id="test-2" data-test-id="20-checkbox-delayed">
+        <div class="test-case-header">
+            <h2 class="test-case-title">2. Delayed Checkbox Verification</h2>
+            <span class="test-case-id">checkbox-delayed</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the checkbox. It will show a spinner for 2 seconds before confirming verification. Wait for the success message to appear.
+        </div>
+        <div style="margin: 20px 0;">
+            <div class="captcha-widget" id="captcha-2" data-testid="captcha-checkbox-2">
+                <div class="captcha-checkbox" id="checkbox-2">
+                    <span class="checkmark">&#10003;</span>
+                </div>
+                <div class="captcha-spinner" id="spinner-2"></div>
+                <span class="captcha-label">Verify you are human</span>
+                <div class="captcha-brand">SecurCheck<br>Privacy - Terms</div>
+            </div>
+            <div class="captcha-success-msg" id="success-2">Human verified successfully.</div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="delayed-spinner">Spinner should appear for ~2 seconds after click</li>
+                <li data-check="delayed-success">Success message should appear after spinner completes</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 3: Multi-step checkbox -->
+    <div class="test-case" id="test-3" data-test-id="20-checkbox-multistep">
+        <div class="test-case-header">
+            <h2 class="test-case-title">3. Multi-Step Checkbox Verification</h2>
+            <span class="test-case-id">checkbox-multistep</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Complete a 3-step checkbox verification: (1) check the first checkbox, (2) after it resolves, check the second checkbox that appears, (3) click the "Complete Verification" button.
+        </div>
+        <div style="margin: 20px 0;">
+            <div class="multi-captcha" id="multi-captcha-3" data-testid="captcha-multistep">
+                <div class="step active" id="step-1" data-testid="step-1">
+                    <div class="step-indicator">Step 1 of 3</div>
+                    <div class="captcha-widget" id="captcha-3a" style="width: 100%; box-sizing: border-box;">
+                        <div class="captcha-checkbox" id="checkbox-3a"><span class="checkmark">&#10003;</span></div>
+                        <span class="captcha-label">I agree to verification</span>
+                    </div>
+                </div>
+                <div class="step" id="step-2" data-testid="step-2">
+                    <div class="step-indicator">Step 2 of 3</div>
+                    <div class="captcha-widget" id="captcha-3b" style="width: 100%; box-sizing: border-box;">
+                        <div class="captcha-checkbox" id="checkbox-3b"><span class="checkmark">&#10003;</span></div>
+                        <span class="captcha-label">Confirm identity</span>
+                    </div>
+                </div>
+                <div class="step" id="step-3" data-testid="step-3">
+                    <div class="step-indicator">Step 3 of 3</div>
+                    <button id="complete-btn" data-testid="complete-verification-btn" style="padding: 12px 24px; background: #4834d4; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 15px; width: 100%;">Complete Verification</button>
+                </div>
+            </div>
+            <div class="captcha-success-msg" id="success-3">All steps complete. Verification successful!</div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="step1-done">First checkbox should be checked</li>
+                <li data-check="step2-done">Second checkbox should appear and be checked</li>
+                <li data-check="step3-done">Complete button should be clicked and success shown</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // === Press & Hold ===
+        function initHoldButton(btnId, progressId, timerId, requiredSeconds) {
+            const btn = document.getElementById(btnId);
+            const progress = document.getElementById(progressId);
+            const timer = document.getElementById(timerId);
+            let startTime = null, animFrame = null, completed = false;
+
+            function update() {
+                if (!startTime || completed) return;
+                const elapsed = (Date.now() - startTime) / 1000;
+                const pct = Math.min(100, (elapsed / requiredSeconds) * 100);
+                progress.style.width = pct + '%';
+                timer.textContent = 'Hold time: ' + elapsed.toFixed(1) + 's / ' + requiredSeconds.toFixed(1) + 's required';
+                if (elapsed >= requiredSeconds) {
+                    completed = true;
+                    progress.style.width = '100%';
+                    btn.classList.add('success-state');
+                    btn.textContent = 'Verified!';
+                    timer.textContent = 'SUCCESS: Held for ' + elapsed.toFixed(1) + 's';
+                    // Genuine success: button held for the full required duration and
+                    // progress bar reached 100%. Mark both checks for this hold test.
+                    if (typeof window.setCheckState === 'function') {
+                        window.setCheckState('test-1', 'hold-duration', 'pass');
+                        window.setCheckState('test-1', 'progress-fill', 'pass');
+                    }
+                    return;
+                }
+                animFrame = requestAnimationFrame(update);
+            }
+
+            btn.addEventListener('mousedown', function() {
+                if (completed) return;
+                startTime = Date.now();
+                progress.style.width = '0%';
+                animFrame = requestAnimationFrame(update);
+            });
+            btn.addEventListener('mouseup', function() {
+                if (completed) return;
+                cancelAnimationFrame(animFrame);
+                const elapsed = startTime ? (Date.now() - startTime) / 1000 : 0;
+                if (elapsed < requiredSeconds) {
+                    progress.style.width = '0%';
+                    timer.textContent = 'Released too early (' + elapsed.toFixed(1) + 's). Need ' + requiredSeconds.toFixed(1) + 's. Try again.';
+                    startTime = null;
+                }
+            });
+            btn.addEventListener('mouseleave', function() {
+                if (completed || !startTime) return;
+                cancelAnimationFrame(animFrame);
+                progress.style.width = '0%';
+                timer.textContent = 'Mouse left button. Hold time: 0.0s / ' + requiredSeconds.toFixed(1) + 's required';
+                startTime = null;
+            });
+        }
+
+        // === Checkbox CAPTCHAs ===
+        // Test 2: Delayed checkbox
+        document.getElementById('captcha-2').addEventListener('click', function() {
+            const cb = document.getElementById('checkbox-2');
+            if (cb.classList.contains('checked')) return;
+            const spinner = document.getElementById('spinner-2');
+            spinner.style.display = 'block';
+            cb.style.display = 'none';
+            // Genuine sub-condition: spinner is now showing after the checkbox click.
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState('test-2', 'delayed-spinner', 'pass');
+            }
+            setTimeout(() => {
+                spinner.style.display = 'none';
+                cb.style.display = 'flex';
+                cb.classList.add('checked');
+                document.getElementById('success-2').style.display = 'block';
+                // Genuine sub-condition: spinner completed and success message shown.
+                if (typeof window.setCheckState === 'function') {
+                    window.setCheckState('test-2', 'delayed-success', 'pass');
+                }
+            }, 2000);
+        });
+
+        // Test 3: Multi-step
+        document.getElementById('captcha-3a').addEventListener('click', function() {
+            const cb = document.getElementById('checkbox-3a');
+            if (cb.classList.contains('checked')) return;
+            cb.classList.add('checked');
+            // Step 1 genuinely complete: first checkbox is now checked.
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState('test-3', 'step1-done', 'pass');
+            }
+            setTimeout(() => {
+                document.getElementById('step-1').classList.remove('active');
+                document.getElementById('step-2').classList.add('active');
+            }, 600);
+        });
+        document.getElementById('captcha-3b').addEventListener('click', function() {
+            const cb = document.getElementById('checkbox-3b');
+            if (cb.classList.contains('checked')) return;
+            cb.classList.add('checked');
+            // Step 2 genuinely complete: second checkbox appeared and is now checked.
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState('test-3', 'step2-done', 'pass');
+            }
+            setTimeout(() => {
+                document.getElementById('step-2').classList.remove('active');
+                document.getElementById('step-3').classList.add('active');
+            }, 600);
+        });
+        document.getElementById('complete-btn').addEventListener('click', function() {
+            this.textContent = 'Verified!';
+            this.style.background = '#28a745';
+            document.getElementById('success-3').style.display = 'block';
+            // Step 3 genuinely complete: Complete Verification button clicked and success shown.
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState('test-3', 'step3-done', 'pass');
+            }
+        });
+
+        // === Status helpers ===
+        function setTestStatus(testId, status) {
+            const tc = document.getElementById(testId);
+            if (tc) { if (status) { tc.dataset.status = status; } else { delete tc.dataset.status; } updateResultsSummary(); }
+        }
+        function updateResultsSummary() {
+            const tcs = document.querySelectorAll('.test-case');
+            let p=0,f=0,pe=0;
+            tcs.forEach(tc => { switch(tc.dataset.status){case 'pass':p++;break;case 'fail':f++;break;default:pe++;} });
+            document.getElementById('passed-count').textContent = p;
+            document.getElementById('failed-count').textContent = f;
+            document.getElementById('pending-count').textContent = pe;
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            initHoldButton('hold-btn-1', 'progress-1', 'timer-1', 2.0);
+            updateResultsSummary();
+        });
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

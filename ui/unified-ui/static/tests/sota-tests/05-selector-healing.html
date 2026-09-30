@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Selector Self-Healing (Phase 3)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #17a2b8, #138496);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .test-case[data-status="pass"] { border-color: #28a745; background: #f0fff4; }
+        .test-case[data-status="fail"] { border-color: #dc3545; background: #fff5f5; }
+        .test-case[data-status="running"] { border-color: #007bff; background: #f0f8ff; }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+
+        .btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-warning { background: #ffc107; color: #333; }
+        .btn-success { background: #28a745; color: white; }
+
+        .form-demo {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            margin: 15px 0;
+        }
+
+        .status-box {
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 13px;
+        }
+
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "05-selector-healing",
+        "phase": "Phase 3",
+        "title": "Selector Self-Healing",
+        "description": "Tests fallback to alternative selectors when primary selectors break",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 3: Selector Self-Healing</h1>
+        <p>Test the agent's ability to find elements even when IDs, classes, or positions change.</p>
+    </div>
+
+    <!-- Test Case 1: Dynamic ID Change -->
+    <div class="test-case" id="test-1" data-test-id="05-dynamic-id" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Click After ID Change</h3>
+            <span class="test-case-id">05-dynamic-id</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> First click "Simulate Re-render" to change the button's ID (simulating a React/Vue re-render). Then click the "Dynamic ID Button" even though its ID has changed.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="id-changed">Button ID was changed by clicking "Simulate Re-render"</li>
+                <li data-check="still-clicks">Agent still successfully clicks the button despite ID change</li>
+                <li data-check="uses-fallback">Agent uses data-testid or aria-label as fallback selector</li>
+            </ul>
+        </div>
+
+        <div class="form-demo">
+            <button
+                id=""
+                data-testid="dynamic-button"
+                aria-label="Submit the form"
+                class="btn btn-primary"
+                onclick="handleDynamicClick()">
+                Dynamic ID Button
+            </button>
+
+            <div class="status-box">
+                Current ID: <code id="current-id">-</code><br>
+                Click count: <span id="click-count">0</span>
+            </div>
+
+            <button class="btn btn-warning" onclick="regenerateId()">
+                Simulate Re-render (Change ID)
+            </button>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Position Changes -->
+    <div class="test-case" id="test-2" data-test-id="05-position-change" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Click After Position Change</h3>
+            <span class="test-case-id">05-position-change</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click "Shuffle Button Order" to randomize the button positions. Then click the "Beta" button regardless of where it moved to.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="shuffled">Button order was changed by clicking "Shuffle"</li>
+                <li data-check="finds-beta">Agent finds Beta button regardless of position</li>
+                <li data-check="ignores-position">Agent doesn't rely on :nth-child or positional selectors</li>
+            </ul>
+        </div>
+
+        <div class="form-demo">
+            <div id="button-container">
+                <button data-testid="btn-alpha" aria-label="Alpha button" class="btn btn-primary" onclick="alert('Alpha clicked!')">Alpha</button>
+                <button data-testid="btn-beta" aria-label="Beta button" class="btn btn-primary" onclick="handleBetaClick()">Beta</button>
+                <button data-testid="btn-gamma" aria-label="Gamma button" class="btn btn-primary" onclick="alert('Gamma clicked!')">Gamma</button>
+            </div>
+
+            <div class="status-box">
+                Current order: <span id="button-order">Alpha, Beta, Gamma</span>
+            </div>
+
+            <button class="btn btn-warning" onclick="shuffleButtons()">
+                Shuffle Button Order
+            </button>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Class Changes -->
+    <div class="test-case" id="test-3" data-test-id="05-class-change" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Click After Class Change</h3>
+            <span class="test-case-id">05-class-change</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click "Change Button Classes" multiple times to cycle through different class names. Then click the "Class Change Button" (the Action button with aria-label="Action button").
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="classes-changed">Button classes were changed</li>
+                <li data-check="still-finds">Agent still finds the button despite class changes</li>
+                <li data-check="uses-stable">Agent uses ID or data-testid (more stable than classes)</li>
+            </ul>
+        </div>
+
+        <div class="form-demo">
+            <button
+                id="stable-id-button"
+                data-testid="class-change-btn"
+                class="btn btn-success original-class"
+                aria-label="Action button"
+                onclick="handleClassClick()">
+                Class Change Button
+            </button>
+
+            <div class="status-box">
+                Current classes: <code id="current-classes">btn btn-success original-class</code><br>
+                Click count: <span id="class-click-count">0</span>
+            </div>
+
+            <button class="btn btn-warning" onclick="changeClasses()">
+                Change Button Classes
+            </button>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Selector Healing Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let dynamicIdCounter = 0;
+        let classClickCount = 0;
+
+        // Healing-detection flags: the disruptor must run before the target
+        // click counts as genuine selector self-healing.
+        let idDisrupted = false;
+        let buttonsShuffled = false;
+        let classesDisrupted = false;
+
+        function markCheck(testId, checkName) {
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState(testId, checkName, 'pass');
+            }
+        }
+
+        // Initialize dynamic ID (does NOT count as a user-driven disruption)
+        regenerateId(true);
+
+        function regenerateId(isInit) {
+            dynamicIdCounter++;
+            const newId = `react-uid-${Math.random().toString(36).substr(2, 9)}-${dynamicIdCounter}`;
+            const btn = document.querySelector('[data-testid="dynamic-button"]');
+            btn.id = newId;
+            document.getElementById('current-id').textContent = newId;
+            // Only a user-triggered re-render (not the initial setup call) marks
+            // the disruption that the healing test depends on.
+            if (isInit !== true) {
+                idDisrupted = true;
+                markCheck('test-1', 'id-changed');
+            }
+        }
+
+        function handleDynamicClick() {
+            const count = parseInt(document.getElementById('click-count').textContent) + 1;
+            document.getElementById('click-count').textContent = count;
+            // Genuine healing: the target button was clicked AFTER its id was
+            // changed to an unpredictable value, so the agent must have located
+            // it via the stable data-testid / aria-label fallback.
+            if (idDisrupted) {
+                markCheck('test-1', 'still-clicks');
+                markCheck('test-1', 'uses-fallback');
+            }
+            alert('Dynamic button clicked! Count: ' + count);
+        }
+
+        function changeClasses() {
+            const btn = document.querySelector('[data-testid="class-change-btn"]');
+            const classLists = [
+                'btn btn-primary modified-v1',
+                'button cta-button updated',
+                'action-btn primary-action v3',
+                'btn btn-success original-class'
+            ];
+            const currentIndex = classLists.findIndex(c => btn.className === c);
+            const newClasses = classLists[(currentIndex + 1) % classLists.length];
+            btn.className = newClasses;
+            document.getElementById('current-classes').textContent = newClasses;
+            classesDisrupted = true;
+            markCheck('test-3', 'classes-changed');
+        }
+
+        function handleClassClick() {
+            classClickCount++;
+            document.getElementById('class-click-count').textContent = classClickCount;
+            // Genuine healing: target clicked AFTER its class list was mutated
+            // away from the original, so a class-based selector would not match;
+            // the agent must have used the stable id / data-testid.
+            if (classesDisrupted) {
+                markCheck('test-3', 'still-finds');
+                markCheck('test-3', 'uses-stable');
+            }
+            alert('Class change button clicked! Count: ' + classClickCount);
+        }
+
+        function shuffleButtons() {
+            const container = document.getElementById('button-container');
+            const buttons = Array.from(container.children);
+            for (let i = buttons.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                container.appendChild(buttons[j]);
+                buttons.splice(j, 1);
+            }
+            const order = Array.from(container.children).map(b => b.textContent).join(', ');
+            document.getElementById('button-order').textContent = order;
+            buttonsShuffled = true;
+            markCheck('test-2', 'shuffled');
+        }
+
+        function handleBetaClick() {
+            // Genuine healing: the Beta button was clicked AFTER the order was
+            // randomized, proving the agent matched by stable attribute/text and
+            // not by a positional (:nth-child) selector.
+            if (buttonsShuffled) {
+                markCheck('test-2', 'finds-beta');
+                markCheck('test-2', 'ignores-position');
+            }
+            alert('Beta clicked!');
+        }
+
+        // Test management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

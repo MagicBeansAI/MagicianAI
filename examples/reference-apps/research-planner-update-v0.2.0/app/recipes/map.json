@@ -1,0 +1,98 @@
+{
+  "version": "v1",
+  "schemas": {
+    "value": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "local_only"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "value": {
+              "value_type": 1,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:4e4c5b3afd9cdbe72e738dd9c412723b27e48bb1ffd6c9e64622bd5fbbc6363c",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "map",
+          "mapping_digest": "blake3:ab4015940e0819966543c25a9aa5f5af1636d3f9c0f161867037423ee8601d6c",
+          "operations": [
+            {
+              "kind": "select",
+              "source": "value",
+              "target": "value"
+            }
+          ]
+        },
+        "effect": {
+          "class": "none",
+          "idempotency": {
+            "kind": "not_applicable"
+          },
+          "uncertainty": "impossible"
+        },
+        "authority": {},
+        "resources": {
+          "max_active_millis": 1000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 4096,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 100
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 32768,
+      "max_active_millis": 1000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

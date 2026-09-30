@@ -1,0 +1,39 @@
+# Explicit Track B profile. StorageRuntime::open_local rejects this document.
+# magician-bin does not depend on magician-storage-s3 or magician-storage-state.
+schema_version: 1
+profile: remote_durable
+
+state:
+  driver: postgres
+  dsn_env: MAGICIAN_STATE_DATABASE_URL
+  tls: require
+
+objects:
+  driver: s3
+  endpoint_env: MAGICIAN_OBJECT_ENDPOINT
+  region_env: MAGICIAN_OBJECT_REGION
+  bucket: magician-data
+  prefix: production/objects
+  credentials_ref: object-store/production
+  encryption: required
+
+datasets:
+  driver: s3
+  endpoint_env: MAGICIAN_OBJECT_ENDPOINT
+  bucket: magician-data
+  prefix: production/datasets
+  credentials_ref: object-store/production
+
+indexes:
+  driver: local_rebuildable
+  root: /var/cache/magician/indexes
+
+leases:
+  driver: state_database
+
+scratch:
+  root: /var/lib/magician/scratch
+  max_bytes: 53687091200
+
+secrets:
+  driver: external

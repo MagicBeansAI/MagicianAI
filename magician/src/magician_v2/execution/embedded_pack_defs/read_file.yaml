@@ -1,0 +1,34 @@
+name: read_file
+description: Read a file from the local filesystem. Returns the file contents. Prefer over `bash cat` — this tool has correct permissions and uniform error reporting. For binary or image content, use the appropriate pack capability instead.
+version: "1.0.0"
+guide: |
+  Tool name: `read_file`
+
+  Reads a file via the same `FileAction::Read` dispatcher used by the
+  multi-action `files` pack with `action: "read"` — just exposed as a
+  single-purpose named tool for clearer LLM ergonomics. The
+  per-scope `FileSandboxConfig` (from `AgentResources`) enforces the
+  same allowed-roots / read-only / allow-delete policy.
+
+  For modifying an existing file prefer `edit_file` (sends only the
+  diff). For new files or full rewrites use `write_file`.
+parameters:
+  - name: file_path
+    required: true
+    param_type: string
+    description: The absolute path to the file to read.
+  - name: encoding
+    required: false
+    param_type: string
+    description: Optional encoding hint (informational; the executor reads as UTF-8 text).
+implementation:
+  type: compiled
+  provider_name: read_file
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - filesystem
+    - read
+  composition_category: action
+  sandbox: none

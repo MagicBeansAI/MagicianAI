@@ -1,0 +1,29 @@
+{
+  "name": "rect — two-corner geometry (label omitted); w|width coalesce",
+  "recipe": {
+    "type": "rect",
+    "aliases": ["rectangle", "free_body_body", "code_highlight"],
+    "draw": [
+      { "op": "rect", "x": "x", "y": "y", "w": "w|width", "h": "h|height", "radius": 6 },
+      {
+        "op": "label",
+        "at": ["x+(w|width)/2", "y+(h|height)/2"],
+        "text": "text",
+        "anchor": "center",
+        "threshold": 0.5
+      }
+    ]
+  },
+  "shape": { "type": "rect", "x": 40, "y": 60, "width": 200, "height": 120, "text": "Box" },
+  "space": { "width": 2048, "height": 1152 },
+  "expected": [
+    {
+      "op": "rect",
+      "closed": true,
+      "points": [
+        [40, 60],
+        [240, 180]
+      ]
+    }
+  ]
+}

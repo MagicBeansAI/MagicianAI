@@ -1,0 +1,103 @@
+name: shell
+description: |-
+  Run any bash command on the host. The runtime ships with a baseline toolbelt
+  (python3, node, jq, ripgrep, grep, sed, awk, curl, tar, gzip, find, xargs) so
+  you can solve a lot more than file plumbing — write inline python/node when no
+  dedicated tool/skill fits (image edits, PDF generation, data parsing, HTTP
+  calls, light data science, ad-hoc scripts). Reach for `shell` whenever the
+  task isn't covered by a specific tool/skill rather than giving up.
+guide: |-
+  Tool name: `shell` (interpreter is bash)
+  Primary parameter: `command`
+
+  ## Always-available toolbelt
+  Guaranteed in both the production Linux container and the macOS dev
+  environment (see scripts/install-container-tools.sh and
+  scripts/install-prerequisites.sh).
+  - **Interpreters**: `python3` (with stdlib + Pillow + requests), `node`
+    (with stdlib), `bash`
+  - **Text/JSON**: `jq`, `rg` (ripgrep), `grep`, `sed`, `awk` (gawk), `tr`,
+    `cut`, `sort`, `uniq`, `wc`, `head`, `tail`, `tee`
+  - **Files**: `find` (findutils), `xargs`, `tar`, `gzip`, `mv`, `cp`, `rm`,
+    `mkdir`, `stat`
+  - **Network**: `curl`, `wget`, `git`, `openssh`
+  - **Images**: `magick` / `convert` (ImageMagick), plus `python3 -c 'from
+    PIL import Image; ...'` for inline edits
+  - **PDFs**: `pdftotext`, `pdfinfo`, `pdftoppm` (poppler-utils)
+
+  ## Probably-available (probe before relying)
+  Tools below may be on macOS dev boxes but are NOT in the container
+  baseline. Probe with `command -v <tool>` first and fall back to inline
+  python/node if missing:
+  - **Media**: `ffmpeg` (video/audio)
+  - **PDFs**: `pdftk`, `qpdf`, `gs` (ghostscript)
+  - **Office**: `libreoffice --headless`, `pandoc`
+  - **Archives**: `zip`, `unzip` (use `python3 -m zipfile` as a fallback)
+
+  ## When no dedicated tool exists — write inline code
+  If a skill/tool for the task isn't granted, you almost certainly *can* still
+  do it via `python3 -c` / `node -e` / a heredoc. Don't bail; script it.
+  Examples:
+  - **Edit an image** (resize, crop, watermark): `magick` if present, else
+    `python3 -c "from PIL import Image; ..."` (Pillow is available).
+  - **Generate a PDF**: `python3 -c "from reportlab... "` or pipe HTML through
+    a converter.
+  - **Parse weird CSV / fix dates / dedupe**: inline python is almost always
+    the shortest path.
+  - **Call an HTTP API and post-process JSON**: `curl ... | jq ...` or
+    `python3 -c "import urllib.request,json; ..."`.
+  - **Throwaway data analysis**: `python3 -c` with pandas/numpy if present;
+    otherwise plain stdlib.
+
+  ## Conventions
+  - Use `working_dir` for directory-scoped operations instead of `cd && …`.
+  - Use `timeout_secs` for anything that might hang (network, builds).
+  - Keep commands explicit; avoid destructive ops (`rm -rf`, `git reset`,
+    `DROP TABLE`) unless the task clearly demands it.
+  - `capture_output=true` when subsequent steps need the stdout.
+  - Prefer single-purpose commands over long chained scripts when you can —
+    easier to debug from the response.
+  - For multi-line python/node, prefer a heredoc to a one-liner that escapes
+    quotes:
+    `bash -c "python3 <<'PY'\nimport ...\nPY"`
+
+  ## Examples
+  - {"command":"rg -n \"TODO\" .","working_dir":".","timeout_secs":30}
+  - {"command":"cat data.json | jq '.items | length'","capture_output":true}
+  - {"command":"python3 -c 'from PIL import Image; im=Image.open(\"in.png\"); im.thumbnail((512,512)); im.save(\"out.png\")'"}
+  - {"command":"command -v magick >/dev/null && magick in.jpg -resize 50% out.jpg || python3 -c 'from PIL import Image; Image.open(\"in.jpg\").reduce(2).save(\"out.jpg\")'"}
+  - {"command":"node -e 'const u=new URL(process.argv[1]); console.log(u.hostname)' https://example.com/x"}
+parameters:
+- name: command
+  required: true
+  param_type: string
+  description: Shell command to execute
+- name: working_dir
+  param_type: string
+  description: Optional working directory for command execution
+- name: timeout_secs
+  param_type: integer
+  description: Optional command timeout in seconds
+  default: '60'
+- name: env
+  param_type: string
+  description: Optional JSON object of environment variables
+- name: capture_output
+  param_type: boolean
+  description: Capture stdout/stderr in response
+  default: 'true'
+- name: stdin
+  param_type: string
+  description: Optional input piped to the command's stdin once at startup; stdin closes (EOF) after the payload is written. Use for simple y/n prompts, JSON/yaml bodies via `--body-file -`, or any CLI that reads stdin-until-EOF.
+implementation:
+  type: compiled
+  provider_name: shell
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories:
+  - shell
+  - command_execution
+  - system
+  composition_category: shell_operations
+  sandbox: shell

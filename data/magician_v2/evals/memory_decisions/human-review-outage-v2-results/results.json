@@ -1,0 +1,532 @@
+[
+  {
+    "case_id": "H04",
+    "elapsed_ms": 3067,
+    "request": {
+      "contract_version": 4,
+      "operation": "memory_attach",
+      "state": "",
+      "locality": "cloud",
+      "mode": "gate",
+      "request_id": "d632df2ba55d461384ab95456fada6af",
+      "reference_version": "memory-human-review-v1",
+      "expected_policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "projection_version": "human-review-api-v1",
+      "execution_budget_ms": 3000,
+      "context": null,
+      "items": [
+        {
+          "item_id": "H04",
+          "state": {
+            "task": "Activity: plan a remote meeting with no travel.",
+            "memory": "for business flights over four hours choose an aisle seat."
+          }
+        }
+      ]
+    },
+    "reply": {
+      "request_id": "d632df2ba55d461384ab95456fada6af",
+      "engine_instance": "01M3HV8FE2MJQCGMD459BQTX4K",
+      "policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "items": [
+        {
+          "eligible_answers": {},
+          "item_id": "H04",
+          "status": "failed",
+          "response": null,
+          "thresholds": null,
+          "error": "decision request timed out",
+          "latency_ms": 2988
+        }
+      ],
+      "model_health": {
+        "jev": "structured_provider_unavailable"
+      },
+      "model_calls": [
+        {
+          "batch_id": "d632df2ba55d461384ab95456fada6af",
+          "item_ids": [
+            "H04"
+          ],
+          "call_id": "01M3HVANVX43JTF7JHH16B02BF",
+          "retry_group_id": "01M3HVANTQPJZ37Q2B6R5Z9202",
+          "attempt": 1,
+          "operation": "memory_attach",
+          "adapter": "typesafe",
+          "provider": "decision:systemone:typesafe",
+          "requested_model": "jev-1.13.0",
+          "model": "jev-1.13.0",
+          "local": false,
+          "started_at_ms": 1790526707581,
+          "completed_at_ms": 1790526707652,
+          "latency_ms": 71,
+          "status": "failed",
+          "error_class": "structured_provider_unavailable",
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        },
+        {
+          "batch_id": "d632df2ba55d461384ab95456fada6af",
+          "item_ids": [
+            "H04"
+          ],
+          "call_id": "01M3HVANYRQKVN180S7PKY0SAS",
+          "retry_group_id": "01M3HVANYRHZZRXMX7Q5SRCFTW",
+          "attempt": 1,
+          "operation": "memory_attach",
+          "adapter": "kev-mlx",
+          "provider": "decision:kev-mlx",
+          "requested_model": "kev-4b-mlx",
+          "model": "kev-4b-mlx",
+          "local": true,
+          "started_at_ms": 1790526707672,
+          "completed_at_ms": 1790526710510,
+          "latency_ms": 2837,
+          "status": "failed",
+          "error_class": "structured_provider_timeout",
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      ],
+      "contract_version": 4,
+      "status": "failed",
+      "response": null,
+      "thresholds": null,
+      "error": null,
+      "latency_ms": 3002
+    },
+    "grade": {
+      "id": "H04",
+      "operation": "memory_attach",
+      "actual": {},
+      "expected": {
+        "applicable": false,
+        "load_bearing": false
+      },
+      "wrong": [],
+      "missing": [
+        "applicable",
+        "load_bearing"
+      ],
+      "deferred": [
+        "applicable",
+        "load_bearing"
+      ],
+      "accepted_wrong": [],
+      "correct": false,
+      "fully_eligible": false,
+      "status": "failed"
+    }
+  },
+  {
+    "case_id": "H09",
+    "elapsed_ms": 3014,
+    "request": {
+      "contract_version": 4,
+      "operation": "memory_conflict_review",
+      "state": "",
+      "locality": "cloud",
+      "mode": "gate",
+      "request_id": "c548ccc3a6ef4070958aae52a00a7cd9",
+      "reference_version": "memory-human-review-v1",
+      "expected_policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "projection_version": "human-review-api-v1",
+      "execution_budget_ms": 3000,
+      "context": null,
+      "items": [
+        {
+          "item_id": "H09",
+          "state": {
+            "existing_item": {
+              "text": "Project Cedar backend uses Go.",
+              "verified": true
+            },
+            "incoming_item": {
+              "text": "Project Cedar mobile client uses Kotlin.",
+              "verified": true
+            }
+          }
+        }
+      ]
+    },
+    "reply": {
+      "request_id": "c548ccc3a6ef4070958aae52a00a7cd9",
+      "engine_instance": "01M3HV8FE2MJQCGMD459BQTX4K",
+      "policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "items": [
+        {
+          "eligible_answers": {},
+          "item_id": "H09",
+          "status": "failed",
+          "response": null,
+          "thresholds": null,
+          "error": "decision request timed out",
+          "latency_ms": 2999
+        }
+      ],
+      "model_health": {
+        "jev": "structured_provider_unavailable"
+      },
+      "model_calls": [
+        {
+          "batch_id": "c548ccc3a6ef4070958aae52a00a7cd9",
+          "item_ids": [
+            "H09"
+          ],
+          "call_id": "01M3HVARR0VD532N2FD75AHVS9",
+          "retry_group_id": "01M3HVARR0QQXNXQH935AP5WJD",
+          "attempt": 1,
+          "operation": "memory_conflict_review",
+          "adapter": "kev-mlx",
+          "provider": "decision:kev-mlx",
+          "requested_model": "kev-4b-mlx",
+          "model": "kev-4b-mlx",
+          "local": true,
+          "started_at_ms": 1790526710528,
+          "completed_at_ms": 1790526713527,
+          "latency_ms": 2998,
+          "status": "failed",
+          "error_class": "structured_provider_timeout",
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      ],
+      "contract_version": 4,
+      "status": "failed",
+      "response": null,
+      "thresholds": null,
+      "error": null,
+      "latency_ms": 2999
+    },
+    "grade": {
+      "id": "H09",
+      "operation": "memory_conflict_review",
+      "actual": {},
+      "expected": {
+        "resolution": "keep_both"
+      },
+      "wrong": [],
+      "missing": [
+        "resolution"
+      ],
+      "deferred": [
+        "resolution"
+      ],
+      "accepted_wrong": [],
+      "correct": false,
+      "fully_eligible": false,
+      "status": "failed"
+    }
+  },
+  {
+    "case_id": "H10",
+    "elapsed_ms": 3012,
+    "request": {
+      "contract_version": 4,
+      "operation": "memory_conflict_review",
+      "state": "",
+      "locality": "cloud",
+      "mode": "gate",
+      "request_id": "bde96c94d2a5429cbddb8a08bcc2877b",
+      "reference_version": "memory-human-review-v1",
+      "expected_policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "projection_version": "human-review-api-v1",
+      "execution_budget_ms": 3000,
+      "context": null,
+      "items": [
+        {
+          "item_id": "H10",
+          "state": {
+            "existing_item": {
+              "text": "Our current office is Room 12.",
+              "source": "owner_stated"
+            },
+            "incoming_item": {
+              "text": "As of September 27, our office permanently moved to Room 27; Room 12 is obsolete.",
+              "source": "owner_correction"
+            },
+            "scope": "Same organization and office attribute"
+          }
+        }
+      ]
+    },
+    "reply": {
+      "request_id": "bde96c94d2a5429cbddb8a08bcc2877b",
+      "engine_instance": "01M3HV8FE2MJQCGMD459BQTX4K",
+      "policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "items": [
+        {
+          "eligible_answers": {},
+          "item_id": "H10",
+          "status": "failed",
+          "response": null,
+          "thresholds": null,
+          "error": "decision request timed out",
+          "latency_ms": 3000
+        }
+      ],
+      "model_health": {
+        "jev": "structured_provider_unavailable"
+      },
+      "model_calls": [
+        {
+          "batch_id": "bde96c94d2a5429cbddb8a08bcc2877b",
+          "item_ids": [
+            "H10"
+          ],
+          "call_id": "01M3HVAVP3D8361B53M91YV2EN",
+          "retry_group_id": "01M3HVAVP3DSV7FMTFC7CSPVRX",
+          "attempt": 1,
+          "operation": "memory_conflict_review",
+          "adapter": "kev-mlx",
+          "provider": "decision:kev-mlx",
+          "requested_model": "kev-4b-mlx",
+          "model": "kev-4b-mlx",
+          "local": true,
+          "started_at_ms": 1790526713539,
+          "completed_at_ms": 1790526716539,
+          "latency_ms": 3000,
+          "status": "failed",
+          "error_class": "structured_provider_timeout",
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      ],
+      "contract_version": 4,
+      "status": "failed",
+      "response": null,
+      "thresholds": null,
+      "error": null,
+      "latency_ms": 3000
+    },
+    "grade": {
+      "id": "H10",
+      "operation": "memory_conflict_review",
+      "actual": {},
+      "expected": {
+        "resolution": "replace_existing"
+      },
+      "wrong": [],
+      "missing": [
+        "resolution"
+      ],
+      "deferred": [
+        "resolution"
+      ],
+      "accepted_wrong": [],
+      "correct": false,
+      "fully_eligible": false,
+      "status": "failed"
+    }
+  },
+  {
+    "case_id": "H12",
+    "elapsed_ms": 6014,
+    "request": {
+      "contract_version": 4,
+      "operation": "evidence_promote",
+      "state": "",
+      "locality": "cloud",
+      "mode": "gate",
+      "request_id": "6f330914c31e43af907e722594b4ddc7",
+      "reference_version": "memory-human-review-v1",
+      "expected_policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "projection_version": "human-review-api-v1",
+      "execution_budget_ms": 6000,
+      "context": null,
+      "items": [
+        {
+          "item_id": "H12",
+          "state": {
+            "source_kind": "evidence_distillation",
+            "source": "Source contains only: Thanks! Good morning. Have a nice day. No finding, commitment, or reusable observation."
+          }
+        }
+      ]
+    },
+    "reply": {
+      "request_id": "6f330914c31e43af907e722594b4ddc7",
+      "engine_instance": "01M3HV8FE2MJQCGMD459BQTX4K",
+      "policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "items": [
+        {
+          "eligible_answers": {},
+          "item_id": "H12",
+          "status": "failed",
+          "response": null,
+          "thresholds": null,
+          "error": "decision request timed out",
+          "latency_ms": 6000
+        }
+      ],
+      "model_health": {
+        "jev": "structured_provider_unavailable"
+      },
+      "model_calls": [
+        {
+          "batch_id": "6f330914c31e43af907e722594b4ddc7",
+          "item_ids": [
+            "H12"
+          ],
+          "call_id": "01M3HVAYM94ZJ58T51CGRAKEQ4",
+          "retry_group_id": "01M3HVAYM9Q6H8X3STSFR9K1WH",
+          "attempt": 1,
+          "operation": "evidence_promote",
+          "adapter": "kev-mlx",
+          "provider": "decision:kev-mlx",
+          "requested_model": "kev-4b-mlx",
+          "model": "kev-4b-mlx",
+          "local": true,
+          "started_at_ms": 1790526716553,
+          "completed_at_ms": 1790526722553,
+          "latency_ms": 5999,
+          "status": "failed",
+          "error_class": "structured_provider_timeout",
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      ],
+      "contract_version": 4,
+      "status": "failed",
+      "response": null,
+      "thresholds": null,
+      "error": null,
+      "latency_ms": 6000
+    },
+    "grade": {
+      "id": "H12",
+      "operation": "evidence_promote",
+      "actual": {},
+      "expected": {
+        "promote": false,
+        "importance": 0.0
+      },
+      "wrong": [],
+      "missing": [
+        "importance",
+        "promote"
+      ],
+      "deferred": [
+        "importance",
+        "promote"
+      ],
+      "accepted_wrong": [],
+      "correct": false,
+      "fully_eligible": false,
+      "status": "failed"
+    }
+  },
+  {
+    "case_id": "H19",
+    "elapsed_ms": 6017,
+    "request": {
+      "contract_version": 4,
+      "operation": "memory_connection_gate",
+      "state": "",
+      "locality": "cloud",
+      "mode": "gate",
+      "request_id": "5730fb402c434784add4fa94a37603b9",
+      "reference_version": "memory-human-review-v1",
+      "expected_policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "projection_version": "human-review-api-v1",
+      "execution_budget_ms": 6000,
+      "context": null,
+      "items": [
+        {
+          "item_id": "H19",
+          "state": {
+            "sources": [
+              {
+                "id": "review-source",
+                "text": "Two available records give incompatible pickup locations for the same paid order. Available trusted sources cannot resolve the conflict. Only the owner has the merchant confirmation, which is inaccessible to the system. The location must be clarified before explaining how it fits the travel plan."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "reply": {
+      "request_id": "5730fb402c434784add4fa94a37603b9",
+      "engine_instance": "01M3HV8FE2MJQCGMD459BQTX4K",
+      "policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+      "items": [
+        {
+          "eligible_answers": {},
+          "item_id": "H19",
+          "status": "failed",
+          "response": null,
+          "thresholds": null,
+          "error": "decision request timed out",
+          "latency_ms": 6000
+        }
+      ],
+      "model_health": {
+        "jev": "structured_provider_unavailable"
+      },
+      "model_calls": [
+        {
+          "batch_id": "5730fb402c434784add4fa94a37603b9",
+          "item_ids": [
+            "H19"
+          ],
+          "call_id": "01M3HVB4GCTME5S5Q7QNKPD87Z",
+          "retry_group_id": "01M3HVB4GC7MMA9VMXJFSSX33B",
+          "attempt": 1,
+          "operation": "memory_connection_gate",
+          "adapter": "kev-mlx",
+          "provider": "decision:kev-mlx",
+          "requested_model": "kev-4b-mlx",
+          "model": "kev-4b-mlx",
+          "local": true,
+          "started_at_ms": 1790526722572,
+          "completed_at_ms": 1790526728572,
+          "latency_ms": 5999,
+          "status": "failed",
+          "error_class": "structured_provider_timeout",
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      ],
+      "contract_version": 4,
+      "status": "failed",
+      "response": null,
+      "thresholds": null,
+      "error": null,
+      "latency_ms": 6000
+    },
+    "grade": {
+      "id": "H19",
+      "operation": "memory_connection_gate",
+      "actual": {},
+      "expected": {
+        "worth_surfacing": true,
+        "surface": "hitl"
+      },
+      "wrong": [],
+      "missing": [
+        "surface",
+        "worth_surfacing"
+      ],
+      "deferred": [
+        "surface",
+        "worth_surfacing"
+      ],
+      "accepted_wrong": [],
+      "correct": false,
+      "fully_eligible": false,
+      "status": "failed"
+    }
+  }
+]

@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: CAPTCHA - Visual & Spatial (Image Grid + Slider Puzzle)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #00b894, #e84393);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .test-case[data-status="pass"] { border-color: #28a745; background: #f0fff4; }
+        .test-case[data-status="fail"] { border-color: #dc3545; background: #fff5f5; }
+        .test-case-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id { background: #e9ecef; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-family: monospace; }
+        .goal-section { background: #cce5ff; border-left: 4px solid #007bff; padding: 12px 15px; margin: 10px 0; border-radius: 0 4px 4px 0; }
+        .goal-section strong { color: #004085; }
+        .verify-section { background: #d4edda; border-left: 4px solid #28a745; padding: 12px 15px; margin: 10px 0; border-radius: 0 4px 4px 0; }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+        .status-controls { display: flex; gap: 10px; margin-top: 15px; }
+        .status-btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
+        .status-btn.reset { background: #6c757d; color: white; }
+
+        /* Image grid CAPTCHA */
+        .captcha-grid-widget {
+            border: 1px solid #d3d3d3; border-radius: 6px;
+            overflow: hidden; max-width: 360px; background: #4285f4;
+        }
+        .captcha-grid-header { padding: 16px; color: white; font-size: 15px; }
+        .captcha-grid-header strong { font-size: 22px; display: block; margin-bottom: 4px; }
+        .captcha-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr);
+            gap: 2px; padding: 2px; background: #ddd;
+        }
+        .captcha-grid-cell {
+            aspect-ratio: 1; background: #eee; cursor: pointer;
+            position: relative; display: flex; align-items: center;
+            justify-content: center;
+            transition: opacity 0.15s; user-select: none;
+        }
+        .captcha-grid-cell canvas {
+            width: 100%; height: 100%; display: block;
+        }
+        .captcha-grid-cell:hover { opacity: 0.85; }
+        .captcha-grid-cell.selected::after {
+            content: ''; position: absolute; inset: 0;
+            background: rgba(66, 133, 244, 0.4); border: 3px solid #4285f4;
+        }
+        .captcha-grid-cell.selected::before {
+            content: '\2713'; position: absolute; top: 4px; left: 4px;
+            background: #4285f4; color: white; width: 22px; height: 22px;
+            border-radius: 50%; font-size: 14px; display: flex;
+            align-items: center; justify-content: center; z-index: 2;
+        }
+        .captcha-grid-footer { display: flex; justify-content: flex-end; padding: 10px 12px; background: #f9f9f9; }
+        .captcha-verify-btn {
+            padding: 8px 20px; background: #4285f4; color: white;
+            border: none; border-radius: 4px; cursor: pointer; font-weight: 500;
+        }
+        .captcha-verify-btn:hover { background: #3367d6; }
+        .captcha-result {
+            margin-top: 10px; padding: 8px 14px; border-radius: 4px; display: none;
+        }
+        .captcha-result.success { display: block; background: #d4edda; border: 1px solid #28a745; color: #155724; }
+        .captcha-result.error { display: block; background: #f8d7da; border: 1px solid #dc3545; color: #721c24; }
+
+        /* Slider CAPTCHA */
+        .slider-captcha {
+            border: 1px solid #ccc; border-radius: 8px;
+            padding: 20px; max-width: 400px; background: #fafafa;
+        }
+        .slider-captcha-title { font-size: 14px; color: #555; margin-bottom: 15px; }
+        .slider-puzzle-area {
+            position: relative; width: 360px; height: 200px;
+            background: linear-gradient(135deg, #74b9ff, #0984e3);
+            border-radius: 6px; overflow: hidden; margin-bottom: 15px;
+        }
+        .puzzle-target {
+            position: absolute; width: 50px; height: 50px;
+            border: 3px dashed rgba(255,255,255,0.7); border-radius: 6px;
+            background: rgba(255,255,255,0.15);
+        }
+        .puzzle-piece {
+            position: absolute; width: 50px; height: 50px;
+            background: rgba(255,255,255,0.9); border-radius: 6px;
+            border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            transition: left 0.05s;
+        }
+        .puzzle-piece.matched { background: #2ecc71; border-color: #27ae60; }
+        .slider-track {
+            position: relative; width: 100%; height: 44px;
+            background: #e9ecef; border-radius: 22px; overflow: hidden;
+        }
+        .slider-track-fill {
+            position: absolute; left: 0; top: 0; bottom: 0;
+            background: linear-gradient(90deg, #74b9ff, #0984e3);
+            border-radius: 22px; width: 0%;
+        }
+        .slider-handle {
+            position: absolute; top: 50%; transform: translate(-50%, -50%);
+            left: 22px; width: 40px; height: 40px;
+            background: white; border-radius: 50%; border: 2px solid #ddd;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15); cursor: grab;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px; color: #999; z-index: 5;
+            user-select: none; touch-action: none;
+        }
+        .slider-handle:active, .slider-handle.dragging {
+            cursor: grabbing; box-shadow: 0 3px 10px rgba(0,0,0,0.25);
+        }
+        .slider-hint { text-align: center; color: #aaa; font-size: 13px; margin-top: 8px; }
+        .slider-result {
+            margin-top: 10px; padding: 8px 14px; border-radius: 4px;
+            display: none; font-weight: 500;
+        }
+        .slider-result.success { display: block; background: #d4edda; color: #155724; }
+        .slider-result.error { display: block; background: #f8d7da; color: #721c24; }
+
+        .section-divider {
+            border-top: 3px solid #e9ecef; margin: 40px 0 20px; padding-top: 20px;
+        }
+        .section-divider h2 { color: #555; font-size: 16px; margin: 0 0 5px; }
+
+    </style>
+</head>
+<body>
+    <div class="test-header">
+        <h1>Test: CAPTCHA - Visual & Spatial</h1>
+        <p>Tests image-grid selection and slider puzzle alignment CAPTCHAs</p>
+        <div class="results-summary" style="margin-top: 15px; display: flex; gap: 20px;">
+            <span>&#10003; Passed: <strong id="passed-count">0</strong></span>
+            <span>&#10007; Failed: <strong id="failed-count">0</strong></span>
+            <span>&#9675; Pending: <strong id="pending-count">3</strong></span>
+        </div>
+    </div>
+
+    <!-- ==================== IMAGE GRID SECTION ==================== -->
+
+    <!-- Test 1: Select all cars -->
+    <div class="test-case" id="test-1" data-test-id="21-image-select-cars">
+        <div class="test-case-header">
+            <h2 class="test-case-title">1. Image Grid - Select All Cars</h2>
+            <span class="test-case-id">image-select-cars</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> In the 3x3 image grid, select all cells that contain a car image. Then click the "Verify" button.
+        </div>
+        <div style="margin: 20px 0;">
+            <div class="captcha-grid-widget" id="grid-widget-1">
+                <div class="captcha-grid-header">
+                    <strong>Select all images with cars</strong>
+                    Click verify when done.
+                </div>
+                <div class="captcha-grid" id="grid-1" data-testid="captcha-grid-cars">
+                    <div class="captcha-grid-cell" data-cell="0"><canvas width="110" height="110"></canvas></div>
+                    <div class="captcha-grid-cell" data-cell="1"><canvas width="110" height="110"></canvas></div>
+                    <div class="captcha-grid-cell" data-cell="2"><canvas width="110" height="110"></canvas></div>
+                    <div class="captcha-grid-cell" data-cell="3"><canvas width="110" height="110"></canvas></div>
+                    <div class="captcha-grid-cell" data-cell="4"><canvas width="110" height="110"></canvas></div>
+                    <div class="captcha-grid-cell" data-cell="5"><canvas width="110" height="110"></canvas></div>
+                    <div class="captcha-grid-cell" data-cell="6"><canvas width="110" height="110"></canvas></div>
+                    <div class="captcha-grid-cell" data-cell="7"><canvas width="110" height="110"></canvas></div>
+                    <div class="captcha-grid-cell" data-cell="8"><canvas width="110" height="110"></canvas></div>
+                </div>
+                <div class="captcha-grid-footer">
+                    <button class="captcha-verify-btn" id="verify-btn-1" data-testid="verify-cars-btn">Verify</button>
+                </div>
+            </div>
+            <div class="captcha-result" id="result-grid-1"></div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="cars-selected">All 3 car cells (indices 1, 3, 7) should be selected</li>
+                <li data-check="no-false-positives">No non-car cells should be selected</li>
+                <li data-check="verify-clicked">Verify button should be clicked and result should show success</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- ==================== SLIDER PUZZLE SECTION ==================== -->
+    <div class="section-divider"><h2>Slider Puzzle</h2></div>
+
+    <!-- Test 2: Basic slider puzzle -->
+    <div class="test-case" id="test-2" data-test-id="21-slider-basic">
+        <div class="test-case-header">
+            <h2 class="test-case-title">2. Basic Slider Puzzle</h2>
+            <span class="test-case-id">slider-basic</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Drag the slider handle to the right until the puzzle piece aligns with the target outline (dashed border) in the image area. The target is at approximately 75% of the track width. Release when aligned.
+        </div>
+        <div style="margin: 20px 0;">
+            <div class="slider-captcha" id="slider-captcha-1" data-testid="slider-captcha-1">
+                <div class="slider-captcha-title">Drag the slider to complete the puzzle</div>
+                <div class="slider-puzzle-area" id="puzzle-area-1">
+                    <div class="puzzle-target" id="target-1" style="top: 75px; left: 270px;"></div>
+                    <div class="puzzle-piece" id="piece-1" style="top: 75px; left: 0;"></div>
+                </div>
+                <div class="slider-track" id="track-1">
+                    <div class="slider-track-fill" id="fill-1"></div>
+                    <div class="slider-handle" id="handle-1" data-testid="slider-handle-1">&#8594;</div>
+                </div>
+                <div class="slider-hint">Slide right to complete puzzle</div>
+                <div class="slider-result" id="result-slider-1"></div>
+            </div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="piece-aligned">Puzzle piece should align with target outline (within 15px tolerance)</li>
+                <li data-check="slider-positioned">Slider handle should be at ~75% position</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 3: Precise slider -->
+    <div class="test-case" id="test-3" data-test-id="21-slider-precise">
+        <div class="test-case-header">
+            <h2 class="test-case-title">3. Precise Slider Alignment</h2>
+            <span class="test-case-id">slider-precise</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Drag the slider handle to align the puzzle piece with the target. This puzzle requires more precise alignment - the target is at approximately 45% of the track width, with tighter tolerance.
+        </div>
+        <div style="margin: 20px 0;">
+            <div class="slider-captcha" id="slider-captcha-2" data-testid="slider-captcha-2">
+                <div class="slider-captcha-title">Drag carefully - precise alignment required!</div>
+                <div class="slider-puzzle-area" id="puzzle-area-2" style="background: linear-gradient(135deg, #a29bfe, #6c5ce7);">
+                    <div class="puzzle-target" id="target-2" style="top: 75px; left: 162px;"></div>
+                    <div class="puzzle-piece" id="piece-2" style="top: 75px; left: 0;"></div>
+                </div>
+                <div class="slider-track" id="track-2">
+                    <div class="slider-track-fill" id="fill-2" style="background: linear-gradient(90deg, #a29bfe, #6c5ce7);"></div>
+                    <div class="slider-handle" id="handle-2" data-testid="slider-handle-2">&#8594;</div>
+                </div>
+                <div class="slider-hint">Precise alignment required</div>
+                <div class="slider-result" id="result-slider-2"></div>
+            </div>
+        </div>
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="precise-aligned">Puzzle piece should align precisely with target (within 10px tolerance)</li>
+                <li data-check="precise-slider">Slider handle should be at ~45% position</li>
+            </ul>
+        </div>
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // === Image Grid (canvas-rendered, answer key in JS only) ===
+        // Answer key: indices that contain cars — NOT stored in DOM attributes
+        const GRID_ANSWER_KEY = { car: [1, 3, 7] };
+        const GRID_CELL_TYPES = ['tree', 'car', 'house', 'car', 'dog', 'tree', 'house', 'car', 'cat'];
+
+        function drawCellImage(canvas, type) {
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width, h = canvas.height;
+            ctx.clearRect(0, 0, w, h);
+            // Background
+            ctx.fillStyle = '#f0f0f0';
+            ctx.fillRect(0, 0, w, h);
+            switch (type) {
+                case 'car':
+                    // Car body
+                    ctx.fillStyle = '#e74c3c';
+                    ctx.fillRect(15, 50, 80, 30);
+                    ctx.fillRect(30, 30, 50, 25);
+                    // Windshield
+                    ctx.fillStyle = '#85c1e9';
+                    ctx.fillRect(35, 33, 20, 18);
+                    // Wheels
+                    ctx.fillStyle = '#333';
+                    ctx.beginPath(); ctx.arc(35, 82, 10, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(75, 82, 10, 0, Math.PI * 2); ctx.fill();
+                    break;
+                case 'tree':
+                    // Trunk
+                    ctx.fillStyle = '#8B4513';
+                    ctx.fillRect(48, 60, 14, 35);
+                    // Foliage
+                    ctx.fillStyle = '#27ae60';
+                    ctx.beginPath(); ctx.arc(55, 45, 28, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(42, 55, 20, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(68, 55, 20, 0, Math.PI * 2); ctx.fill();
+                    break;
+                case 'house':
+                    // Walls
+                    ctx.fillStyle = '#f39c12';
+                    ctx.fillRect(25, 50, 60, 40);
+                    // Roof
+                    ctx.fillStyle = '#c0392b';
+                    ctx.beginPath(); ctx.moveTo(20, 50); ctx.lineTo(55, 20); ctx.lineTo(90, 50); ctx.fill();
+                    // Door
+                    ctx.fillStyle = '#8B4513';
+                    ctx.fillRect(47, 65, 16, 25);
+                    // Window
+                    ctx.fillStyle = '#85c1e9';
+                    ctx.fillRect(32, 58, 12, 12);
+                    break;
+                case 'dog':
+                    // Body
+                    ctx.fillStyle = '#d4a373';
+                    ctx.fillRect(25, 55, 50, 25);
+                    // Head
+                    ctx.beginPath(); ctx.arc(80, 52, 16, 0, Math.PI * 2); ctx.fill();
+                    // Ears
+                    ctx.fillStyle = '#b08050';
+                    ctx.beginPath(); ctx.arc(72, 38, 7, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(88, 38, 7, 0, Math.PI * 2); ctx.fill();
+                    // Eye
+                    ctx.fillStyle = '#333';
+                    ctx.beginPath(); ctx.arc(82, 50, 3, 0, Math.PI * 2); ctx.fill();
+                    // Legs
+                    ctx.fillStyle = '#d4a373';
+                    ctx.fillRect(30, 78, 8, 16); ctx.fillRect(55, 78, 8, 16);
+                    break;
+                case 'cat':
+                    // Body
+                    ctx.fillStyle = '#888';
+                    ctx.beginPath(); ctx.arc(55, 65, 22, 0, Math.PI * 2); ctx.fill();
+                    // Head
+                    ctx.beginPath(); ctx.arc(55, 40, 16, 0, Math.PI * 2); ctx.fill();
+                    // Ears
+                    ctx.fillStyle = '#666';
+                    ctx.beginPath(); ctx.moveTo(42, 30); ctx.lineTo(46, 18); ctx.lineTo(50, 30); ctx.fill();
+                    ctx.beginPath(); ctx.moveTo(60, 30); ctx.lineTo(64, 18); ctx.lineTo(68, 30); ctx.fill();
+                    // Eyes
+                    ctx.fillStyle = '#2ecc71';
+                    ctx.beginPath(); ctx.arc(49, 38, 4, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(61, 38, 4, 0, Math.PI * 2); ctx.fill();
+                    ctx.fillStyle = '#333';
+                    ctx.beginPath(); ctx.arc(49, 38, 2, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(61, 38, 2, 0, Math.PI * 2); ctx.fill();
+                    break;
+            }
+        }
+
+        // Render all grid cells
+        document.querySelectorAll('#grid-1 .captcha-grid-cell').forEach((cell, i) => {
+            const canvas = cell.querySelector('canvas');
+            drawCellImage(canvas, GRID_CELL_TYPES[i]);
+            cell.addEventListener('click', () => cell.classList.toggle('selected'));
+        });
+
+        document.getElementById('verify-btn-1').addEventListener('click', function() {
+            const cells = document.querySelectorAll('#grid-1 .captcha-grid-cell');
+            const result = document.getElementById('result-grid-1');
+            const carIndices = new Set(GRID_ANSWER_KEY.car);
+            let correct = true;
+            // Per-check sub-conditions: all car cells selected, and no non-car cell selected.
+            let allCarsSelected = true;
+            let noFalsePositives = true;
+            cells.forEach((cell, i) => {
+                const isCar = carIndices.has(i);
+                const isSelected = cell.classList.contains('selected');
+                if (isCar !== isSelected) correct = false;
+                if (isCar && !isSelected) allCarsSelected = false;
+                if (!isCar && isSelected) noFalsePositives = false;
+            });
+            result.className = 'captcha-result ' + (correct ? 'success' : 'error');
+            result.textContent = correct ? 'SUCCESS: All cars correctly identified!' : 'INCORRECT: Please select only car images and try again.';
+            result.style.display = 'block';
+
+            // Genuine success detection: mark each check only when its real sub-condition holds.
+            if (typeof window.setCheckState === 'function') {
+                if (allCarsSelected) window.setCheckState('test-1', 'cars-selected', 'pass');
+                if (noFalsePositives) window.setCheckState('test-1', 'no-false-positives', 'pass');
+                // verify-clicked is only satisfied when the verify produced an actual success result.
+                if (correct) window.setCheckState('test-1', 'verify-clicked', 'pass');
+            }
+        });
+
+        // === Slider Puzzle ===
+        function initSliderPuzzle(handleId, fillId, pieceId, targetId, trackId, resultId, tolerance, detect) {
+            const handle = document.getElementById(handleId);
+            const fill = document.getElementById(fillId);
+            const piece = document.getElementById(pieceId);
+            const target = document.getElementById(targetId);
+            const track = document.getElementById(trackId);
+            const result = document.getElementById(resultId);
+            let isDragging = false;
+            const targetLeft = parseInt(target.style.left);
+            const puzzleAreaWidth = 360;
+
+            function updatePosition(clientX) {
+                const rect = track.getBoundingClientRect();
+                const handleRadius = 22;
+                const maxLeft = rect.width - handleRadius * 2;
+                let x = Math.max(0, Math.min(clientX - rect.left - handleRadius, maxLeft));
+                const percent = x / maxLeft;
+                handle.style.left = (x + handleRadius) + 'px';
+                fill.style.width = (percent * 100) + '%';
+                piece.style.left = (percent * (puzzleAreaWidth - 50)) + 'px';
+            }
+
+            function checkAlignment() {
+                const pieceLeft = parseInt(piece.style.left);
+                const diff = Math.abs(pieceLeft - targetLeft);
+                if (diff <= tolerance) {
+                    piece.classList.add('matched');
+                    result.className = 'slider-result success';
+                    result.textContent = 'SUCCESS: Puzzle piece aligned! (offset: ' + diff + 'px)';
+                    result.style.display = 'block';
+                    // Genuine success detection: piece is within tolerance of the target on release.
+                    if (detect && typeof window.setCheckState === 'function') {
+                        window.setCheckState(detect.testId, detect.alignedCheck, 'pass');
+                        // Independently verify the slider handle landed near the required percent.
+                        const pieceLeftPct = pieceLeft / (puzzleAreaWidth - 50);
+                        if (Math.abs(pieceLeftPct - detect.targetPercent) <= detect.percentTolerance) {
+                            window.setCheckState(detect.testId, detect.sliderCheck, 'pass');
+                        }
+                    }
+                } else {
+                    result.className = 'slider-result error';
+                    result.textContent = 'Not aligned. Off by ' + diff + 'px (need within ' + tolerance + 'px)';
+                    result.style.display = 'block';
+                    setTimeout(() => {
+                        handle.style.left = '22px'; fill.style.width = '0%';
+                        piece.style.left = '0px'; piece.classList.remove('matched');
+                        result.style.display = 'none';
+                    }, 1500);
+                }
+            }
+
+            handle.addEventListener('mousedown', function(e) {
+                e.preventDefault(); isDragging = true;
+                handle.classList.add('dragging');
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
+            function onMove(e) { if (isDragging) { e.preventDefault(); updatePosition(e.clientX); } }
+            function onUp() {
+                if (!isDragging) return;
+                isDragging = false; handle.classList.remove('dragging');
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+                checkAlignment();
+            }
+        }
+
+        // === Status helpers ===
+        function setTestStatus(testId, status) {
+            const tc = document.getElementById(testId);
+            if (tc) { if (status) { tc.dataset.status = status; } else { delete tc.dataset.status; } updateResultsSummary(); }
+        }
+        function updateResultsSummary() {
+            const tcs = document.querySelectorAll('.test-case');
+            let p=0,f=0,pe=0;
+            tcs.forEach(tc => { switch(tc.dataset.status){case 'pass':p++;break;case 'fail':f++;break;default:pe++;} });
+            document.getElementById('passed-count').textContent = p;
+            document.getElementById('failed-count').textContent = f;
+            document.getElementById('pending-count').textContent = pe;
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            const puzzleAreaWidth = 360, pieceTravel = puzzleAreaWidth - 50;
+            initSliderPuzzle('handle-1', 'fill-1', 'piece-1', 'target-1', 'track-1', 'result-slider-1', 15, {
+                testId: 'test-2',
+                alignedCheck: 'piece-aligned',
+                sliderCheck: 'slider-positioned',
+                targetPercent: 270 / pieceTravel,
+                percentTolerance: 15 / pieceTravel
+            });
+            initSliderPuzzle('handle-2', 'fill-2', 'piece-2', 'target-2', 'track-2', 'result-slider-2', 10, {
+                testId: 'test-3',
+                alignedCheck: 'precise-aligned',
+                sliderCheck: 'precise-slider',
+                targetPercent: 162 / pieceTravel,
+                percentTolerance: 10 / pieceTravel
+            });
+            updateResultsSummary();
+        });
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

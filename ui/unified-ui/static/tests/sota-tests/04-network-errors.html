@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Network & Console Errors (Phase 2)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #dc3545, #c82333);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .test-case[data-status="pass"] { border-color: #28a745; background: #f0fff4; }
+        .test-case[data-status="fail"] { border-color: #dc3545; background: #fff5f5; }
+        .test-case[data-status="running"] { border-color: #007bff; background: #f0f8ff; }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+
+        .btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-warning { background: #ffc107; color: #333; }
+        .btn-info { background: #17a2b8; color: white; }
+        .btn-success { background: #28a745; color: white; }
+
+        .result-box {
+            background: #f1f1f1;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 15px;
+            min-height: 50px;
+        }
+        .error { color: #dc3545; }
+        .success { color: #28a745; }
+
+        .console-log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 13px;
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+        .console-log .error { color: #f48771; }
+        .console-log .warn { color: #dcdcaa; }
+
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .status-radio {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #f8fafc;
+            color: #334155;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .status-radio input {
+            margin: 0;
+        }
+
+        .status-radio.pass:has(input:checked) {
+            border-color: #16a34a;
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-radio.fail:has(input:checked) {
+            border-color: #dc2626;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "04-network-errors",
+        "phase": "Phase 2",
+        "title": "Network & Console Error Integration",
+        "description": "Tests detection and reporting of XHR failures, 404s, rate limiting, and console errors",
+        "totalTests": 4
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 2: Network & Console Error Integration</h1>
+        <p>Test the agent's ability to detect and report network errors, API failures, and console messages.</p>
+    </div>
+
+    <!-- Test Case 1: 404 Error -->
+    <div class="test-case" id="test-1" data-test-id="04-detect-404" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Detect 404 Not Found Error</h3>
+            <span class="test-case-id">04-detect-404</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Fetch Non-Existent Resource" button below and report what happened. The agent should detect the 404 error.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="button-clicked">Agent clicks the trigger button</li>
+                <li data-check="error-detected">Agent detects the 404 HTTP error</li>
+                <li data-check="reports-error">Agent reports: "The request failed with a 404 error" or similar</li>
+            </ul>
+        </div>
+
+        <button class="btn btn-danger" onclick="trigger404()" data-testid="trigger-404">
+            Fetch Non-Existent Resource
+        </button>
+        <div class="result-box" id="result-404">Click button to trigger 404 error...</div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-1" value="pass" data-status-radio="test-1"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-1" value="fail" data-status-radio="test-1"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Rate Limiting -->
+    <div class="test-case" id="test-2" data-test-id="04-rate-limiting" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Detect Rate Limiting (429)</h3>
+            <span class="test-case-id">04-rate-limiting</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Trigger Rate Limit" button 3 times rapidly. After 3 clicks, a rate limit error should appear. Report when rate limiting is detected.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="clicks-multiple">Agent clicks button multiple times</li>
+                <li data-check="detects-429">Agent detects 429 rate limiting after 3 clicks</li>
+                <li data-check="stops-or-reports">Agent reports rate limiting and stops or adjusts behavior</li>
+            </ul>
+        </div>
+
+        <button class="btn btn-warning" onclick="triggerRateLimit()" data-testid="trigger-rate-limit">
+            Trigger Rate Limit
+        </button>
+        <span id="request-count" style="margin-left: 10px;">Requests: 0</span>
+        <div class="result-box" id="result-429">Click button multiple times to trigger rate limit...</div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-2" value="pass" data-status-radio="test-2"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-2" value="fail" data-status-radio="test-2"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: JavaScript Error -->
+    <div class="test-case" id="test-3" data-test-id="04-js-error" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Detect JavaScript Console Error</h3>
+            <span class="test-case-id">04-js-error</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Trigger JS Error" button and check if there are any problems or errors. Report what error occurred.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="error-triggered">Agent clicks the JS Error button</li>
+                <li data-check="console-captured">Agent detects the JavaScript error in the console</li>
+                <li data-check="error-described">Agent reports the error message content</li>
+            </ul>
+        </div>
+
+        <button class="btn btn-danger" onclick="triggerJSError()" data-testid="trigger-js-error">
+            Trigger JS Error
+        </button>
+        <button class="btn btn-warning" onclick="triggerJSWarning()" data-testid="trigger-js-warning">
+            Trigger JS Warning
+        </button>
+        <div class="console-log" id="console-output">Console output will appear here...</div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-3" value="pass" data-status-radio="test-3"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-3" value="fail" data-status-radio="test-3"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 4: Successful Request (Control) -->
+    <div class="test-case" id="test-4" data-test-id="04-success-control" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 4: Verify Successful Request (No False Positives)</h3>
+            <span class="test-case-id">04-success-control</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Trigger Successful Request" button and confirm whether it worked. Agent should NOT report any errors.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="success-clicked">Agent clicks the success button</li>
+                <li data-check="no-false-errors">Agent does NOT report any errors (no false positives)</li>
+                <li data-check="confirms-success">Agent confirms the request succeeded</li>
+            </ul>
+        </div>
+
+        <button class="btn btn-success" onclick="triggerSuccess()" data-testid="trigger-success">
+            Trigger Successful Request
+        </button>
+        <div class="result-box" id="result-success">Click button for successful request...</div>
+
+        <div class="status-controls" data-status-controls="test-4">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-4" value="pass" data-status-radio="test-4"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-4" value="fail" data-status-radio="test-4"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Network Error Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">4</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let requestCount = 0;
+        const consoleOutput = document.getElementById('console-output');
+
+        function logToConsole(message, type = 'log') {
+            const line = document.createElement('div');
+            line.className = type;
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            consoleOutput.appendChild(line);
+            consoleOutput.scrollTop = consoleOutput.scrollHeight;
+        }
+
+        function trigger404() {
+            const resultBox = document.getElementById('result-404');
+            resultBox.innerHTML = 'Fetching...';
+
+            fetch('/api/non-existent-endpoint-12345')
+                .then(response => {
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response.json();
+                })
+                .then(data => {
+                    resultBox.innerHTML = '<span class="success">Success (unexpected)</span>';
+                })
+                .catch(error => {
+                    resultBox.innerHTML = `<span class="error">Error: ${error.message}</span>`;
+                    logToConsole(`Network error: ${error.message}`, 'error');
+                });
+        }
+
+        function triggerRateLimit() {
+            requestCount++;
+            document.getElementById('request-count').textContent = `Requests: ${requestCount}`;
+            const resultBox = document.getElementById('result-429');
+
+            if (requestCount >= 3) {
+                resultBox.innerHTML = '<span class="error">429 Too Many Requests - Rate limited!</span>';
+                logToConsole('Rate limit exceeded (429)', 'error');
+            } else {
+                resultBox.innerHTML = `<span class="success">Request ${requestCount} succeeded. ${3 - requestCount} more until rate limit.</span>`;
+            }
+        }
+
+        function triggerJSError() {
+            try {
+                undefinedFunction();
+            } catch (e) {
+                console.error('Intentional JS Error:', e.message);
+                logToConsole(`JavaScript Error: ${e.message}`, 'error');
+            }
+        }
+
+        function triggerJSWarning() {
+            console.warn('This is an intentional warning message for testing');
+            logToConsole('Warning: This is a test warning', 'warn');
+        }
+
+        function triggerSuccess() {
+            const resultBox = document.getElementById('result-success');
+            resultBox.innerHTML = 'Fetching...';
+
+            setTimeout(() => {
+                resultBox.innerHTML = '<span class="success">Request completed successfully!</span>';
+                logToConsole('Request succeeded (200 OK)', 'log');
+            }, 500);
+        }
+
+        // Test management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+</body>
+</html>

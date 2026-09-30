@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "ledger_id": "llm-call-path-coverage-v1",
+  "scope": "production model invocation boundaries owned by this repository",
+  "classifications": [
+    "queued",
+    "direct",
+    "streaming",
+    "realtime_media",
+    "external_ai_run",
+    "excluded"
+  ],
+  "discovery_probes": [
+    {
+      "id": "magician-configured-router-ownership",
+      "roots": [
+        "magician/src",
+        "magician-bin/src",
+        "magician-chunking/src"
+      ],
+      "file_glob": "*.rs",
+      "literal": "ConfiguredRouter",
+      "allowed_paths": {
+        "magician-bin/src/main.rs": "infrastructure",
+        "magician/src/magician_v2/dispatch_glue/boot.rs": "infrastructure",
+        "magician-chunking/src/shadow_eval.rs": "evaluation-and-probe-scripts",
+        "magician/src/magician_v2/query_analysis/multi_llm_service.rs": "chat-multi-llm-direct",
+        "magician/src/magician_v2/query_analysis/operation_llm_router.rs": "operation-router"
+      }
+    },
+    {
+      "id": "qualified-direct-provider-invocations",
+      "roots": [
+        "magician/src",
+        "magicllm/src"
+      ],
+      "file_glob": "*.rs",
+      "literal": "LLMProvider::invoke(",
+      "allowed_paths": {
+        "magicllm/src/dispatch/local_prep.rs": "local-prep-nested-call"
+      }
+    },
+    {
+      "id": "browser-direct-realtime-connections",
+      "roots": [
+        "ui/unified-ui/src"
+      ],
+      "file_glob": "*.ts",
+      "literal": "new RTCPeerConnection(",
+      "allowed_paths": {
+        "ui/unified-ui/src/lib/media/voice/providers/openai.ts": "browser-openai-realtime"
+      }
+    },
+    {
+      "id": "direct-openai-chat-endpoints",
+      "roots": [
+        "magician/src",
+        "magicllm/src"
+      ],
+      "file_glob": "*.rs",
+      "literal": "https://api.openai.com/v1/chat/completions",
+      "allowed_paths": {
+        "magicllm/src/providers/openai_chat.rs": "provider-adapters"
+      }
+    }
+  ],
+  "entries": [
+    {
+      "id": "operation-router",
+      "classification": "queued",
+      "source_path": "magician/src/magician_v2/query_analysis/operation_llm_router.rs",
+      "source_marker": "async fn route_request(",
+      "logical_boundary": "one logical call per public operation generation request",
+      "queue_behavior": "LlmDispatchQueue when installed; direct compatibility fallback before boot/tests",
+      "current_capture": "operation_llm_telemetry emits a scoped response-boundary event; structured callers explicitly report validation success or failure while transport-only callers leave validation unattempted",
+      "phase1_adapter": "full logical-call adapter",
+      "training_eligibility": "eligible after operation-family validator and lineage coverage gates"
+    },
+    {
+      "id": "chat-multi-llm-direct",
+      "classification": "direct",
+      "source_path": "magician/src/magician_v2/query_analysis/multi_llm_service.rs",
+      "source_marker": "route_direct_with_observability",
+      "logical_boundary": "one logical call per inline chat generation or tool-loop model turn",
+      "queue_behavior": "direct ConfiguredRouter route with bypass counters",
+      "current_capture": "chat service emits exact per-model-call receipts, presented response usage and stable chat turn/session lineage for every tool-loop generation",
+      "phase1_adapter": "exact chat turn/call adapter with one call id per generation and one shared turn root",
+      "training_eligibility": "eligible after chat_turn_id and presentation lineage"
+    },
+    {
+      "id": "chat-multi-llm-streaming",
+      "classification": "streaming",
+      "source_path": "magician/src/magician_v2/query_analysis/multi_llm_service.rs",
+      "source_marker": "route_stream_direct_with_observability",
+      "logical_boundary": "one logical call per streaming inline chat model turn",
+      "queue_behavior": "direct ConfiguredRouter streaming route",
+      "current_capture": "stream terminal response carries the exact logical-call receipt plus usage/TTFT when available",
+      "phase1_adapter": "exact streaming chat call adapter",
+      "training_eligibility": "eligible after final response and turn contribution linkage"
+    },
+    {
+      "id": "logical-chunking",
+      "classification": "queued",
+      "source_path": "magician/src/magician_v2/llm_chunking/runner.rs",
+      "source_marker": "pub async fn execute(",
+      "logical_boundary": "one parent logical operation with one or more child provider calls",
+      "queue_behavior": "uses the operation-router dispatch adapter; direct adapter only when queue is explicitly unavailable",
+      "current_capture": "one non-billing parent summary plus physical map/repair/fallback/reduce calls emitted centrally through the runtime bridge with exact receipts, typed parent relation, role, chunk tags and provider usage",
+      "phase1_adapter": "parent/child logical chunk trace adapter",
+      "training_eligibility": "eligible only with root/chunk/reducer lineage; shadow-eval calls excluded from production outcomes"
+    },
+    {
+      "id": "compiled-openai-vision",
+      "classification": "queued",
+      "source_path": "magician/src/magician_v2/execution/compiled_providers.rs",
+      "source_marker": "generate_for_execution_native_tools_with_trace(",
+      "logical_boundary": "one OpenAI vision call made by the analyze_image_via_openai compiled capability",
+      "queue_behavior": "shared operation router and LlmDispatchQueue; exact-receipt direct compatibility fallback only when the queue is unavailable",
+      "current_capture": "compiled dispatch propagates tenant, task/chat and execution identity; the operation telemetry bridge emits provider usage/cost and the router centrally emits exact queue-disabled failures",
+      "phase1_adapter": "compiled-dispatch inherited trace context reused by the operation router without a second logical call id",
+      "training_eligibility": "eligible after the vision validator and downstream tool-result acceptance; raw image and description content remain outside Phase 2 facts"
+    },
+    {
+      "id": "local-prep-nested-call",
+      "classification": "direct",
+      "source_path": "magicllm/src/dispatch/local_prep.rs",
+      "source_marker": "LLMProvider::invoke(&provider, request)",
+      "logical_boundary": "one supporting local summarisation child call inside a queued parent",
+      "queue_behavior": "direct Ollama provider invocation to avoid recursive queue deadlock",
+      "current_capture": "local-prep emits an independent supporting child call and terminal provider-attempt fact; its duration also remains on parent dispatch timing",
+      "phase1_adapter": "supporting child call with parent_call_id",
+      "training_eligibility": "supporting-only; never inherit the parent task reward as a primary call"
+    },
+    {
+      "id": "browser-openai-realtime",
+      "classification": "realtime_media",
+      "source_path": "ui/unified-ui/src/lib/media/voice/providers/openai.ts",
+      "source_marker": "case 'response.done'",
+      "logical_boundary": "provider response inside a direct browser WebRTC session",
+      "queue_behavior": "browser-to-provider WebRTC after server-minted credentials/session",
+      "current_capture": "response.created establishes backend timing and stable call identity; response.done forwards coarse totals plus a complete internally consistent modality/cache split when available through the scoped control channel into one durable canonical call and attempt",
+      "phase1_adapter": "server-scoped realtime response bridge with one pre-completion call id per provider response and active chat-turn lineage",
+      "training_eligibility": "eligible when response timing and detailed modality usage are present; coarse-only usage remains captured with unknown pricing"
+    },
+    {
+      "id": "backend-realtime-voice",
+      "classification": "realtime_media",
+      "source_path": "magician-media/src/media_rails/voice_orchestrator.rs",
+      "source_marker": "capability: \"voice.realtime\".to_string()",
+      "logical_boundary": "one billable upstream response when the provider exposes response usage",
+      "queue_behavior": "backend-proxied realtime provider session",
+      "current_capture": "scoped LLMResponseReceived with response-boundary identity/start, honest coarse-or-detailed usage and measured response latency; active provider errors close the same call with a content-free failure class",
+      "phase1_adapter": "pre-completion realtime response identity plus session rollup",
+      "training_eligibility": "eligible only where provider response boundaries are exact"
+    },
+    {
+      "id": "meeting-realtime-response",
+      "classification": "realtime_media",
+      "source_path": "magician/src/magician_v2/media_seam/meeting_realtime_responder.rs",
+      "source_marker": "capability=\"voice.realtime\" tags the row",
+      "logical_boundary": "one addressed meeting response",
+      "queue_behavior": "backend realtime session",
+      "current_capture": "scoped LLMResponseReceived with pre-injection identity, exact start, honest missing/coarse usage and failed timeout/empty-audio classification when the meeting owns a broadcaster/scope",
+      "phase1_adapter": "pre-injection meeting turn/realtime response adapter",
+      "training_eligibility": "eligible after addressed-turn and meeting outcome linkage"
+    },
+    {
+      "id": "external-coding-engine",
+      "classification": "external_ai_run",
+      "source_path": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
+      "source_marker": "fn emit_llm_call(",
+      "logical_boundary": "one observable external coding run; opaque inner model calls are not fabricated",
+      "queue_behavior": "external Pi/Codex/Claude-compatible engine process",
+      "current_capture": "reported aggregate model/profile/tokens/cost remains in the compatibility LLM view; canonical call/attempt capture explicitly ignores the aggregate",
+      "phase1_adapter": "external_ai_run aggregate with zero physical attempts; no provider attempt is fabricated",
+      "training_eligibility": "excluded from provider-call training until the external engine exposes exact inner call and attempt receipts"
+    },
+    {
+      "id": "mail-assist-operation-telemetry",
+      "classification": "queued",
+      "source_path": "magician/src/magician_v2/llm_dispatch_seam.rs",
+      "source_marker": "pub fn emit_mail_llm_call(",
+      "logical_boundary": "one classified/distilled/drafted channel operation call",
+      "queue_behavior": "operation router, including local-only bindings",
+      "current_capture": "explicit scoped LLMResponseReceived per call",
+      "phase1_adapter": "reuse operation-router identity instead of creating a second call id",
+      "training_eligibility": "eligible after body/privacy policy and downstream acceptance validator"
+    },
+    {
+      "id": "ambient-distillation-telemetry",
+      "classification": "queued",
+      "source_path": "magician-api/src/ambient_api.rs",
+      "source_marker": "RuntimeTransportEvent::LLMResponseReceived",
+      "logical_boundary": "one ambient distillation operation call",
+      "queue_behavior": "operation router with local-only policy where configured",
+      "current_capture": "explicit scoped LLMResponseReceived",
+      "phase1_adapter": "reuse operation-router identity",
+      "training_eligibility": "eligible after source provenance and downstream evidence acceptance"
+    },
+    {
+      "id": "provider-adapters",
+      "classification": "excluded",
+      "source_path": "magicllm/src/provider.rs",
+      "source_marker": "pub trait LLMProvider",
+      "logical_boundary": "transport implementation, not a new caller-owned logical call",
+      "queue_behavior": "invoked by ConfiguredRouter/dispatch worker",
+      "current_capture": "usage and provider response normalization return to the owning boundary",
+      "phase1_adapter": "provider_attempt child records only",
+      "training_eligibility": "never create independent logical training examples from adapter internals"
+    },
+    {
+      "id": "evaluation-and-probe-scripts",
+      "classification": "excluded",
+      "source_path": "scripts/eval-ollama-logical-chunking.py",
+      "source_marker": "def main(",
+      "logical_boundary": "operator-invoked evaluation traffic outside production execution",
+      "queue_behavior": "direct configured provider/test bridge",
+      "current_capture": "isolated evaluator-owned reports",
+      "phase1_adapter": "none",
+      "training_eligibility": "synthetic/eval only; never merge with production bandit outcomes"
+    },
+    {
+      "id": "skill-owned-provider-clients",
+      "classification": "excluded",
+      "source_path": "skillshub/deep-research-with-openai/bin/openai-deep-research",
+      "source_marker": "OpenAI",
+      "logical_boundary": "tool subprocess owned by a skill rather than Magician's model control plane",
+      "queue_behavior": "external skill process",
+      "current_capture": "tool execution/result facts only",
+      "phase1_adapter": "external tool edge, not llm_calls",
+      "training_eligibility": "excluded from model-routing training unless a future explicit provider bridge is added"
+    },
+    {
+      "id": "stt-tts-embedding-and-generation-media",
+      "classification": "excluded",
+      "source_path": "magician-media/src/media_rails/mod.rs",
+      "source_marker": "pub mod providers;",
+      "logical_boundary": "specialized media or embedding/generation operation, not a text/realtime response call",
+      "queue_behavior": "media/resource-specific runtimes",
+      "current_capture": "owned media/memory telemetry",
+      "phase1_adapter": "explicit exclusion in call coverage",
+      "training_eligibility": "excluded from v1 LLM response-training snapshots"
+    },
+    {
+      "id": "compiled-web-answer",
+      "classification": "queued",
+      "source_path": "magician/src/magician_v2/execution/compiled_handlers/web_answer.rs",
+      "source_marker": "generate_for_execution_native_tools_with_trace(",
+      "logical_boundary": "one provider-executed web search LLM call made by the web_answer compiled capability",
+      "queue_behavior": "shared operation router and LlmDispatchQueue; exact-receipt direct compatibility fallback only when the queue is unavailable",
+      "current_capture": "compiled dispatch propagates tenant, task/chat and execution identity; per-call search counts and citations ride the router response summary and settle into cost with server-web-search rates",
+      "phase1_adapter": "compiled-dispatch inherited trace context reused by the operation router without a second logical call id",
+      "training_eligibility": "eligible after the web_answer citations validator; query text and answer content remain outside Phase 2 facts"
+    }
+  ]
+}

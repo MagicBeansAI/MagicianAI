@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "package_root": "app",
+  "base_semantic_version": "0.1.1",
+  "public_contract_version": "1.3.0",
+  "companion_roots": {
+    "composition_destination": "../research-planner-composition-destination/app",
+    "update_candidate": "../research-planner-update-v0.2.0/app",
+    "update_semantic_version": "0.2.0"
+  },
+  "public_sdk": "@magician/apps",
+  "public_operations": [
+    "contract_capabilities",
+    "query_data",
+    "mutate_data",
+    "launch_action",
+    "get_action_run",
+    "compose_action_run",
+    "cancel_action_run",
+    "read_entity_changes"
+  ],
+  "declared_dependencies": {
+    "tools": {
+      "research_outline": ["normalize"],
+      "time_math": ["date_range"],
+      "research-planner-worker": ["agent_as_tool"],
+      "browser__snapshot": ["snapshot"],
+      "browser__navigate": ["navigate"],
+      "browser__scroll": ["scroll"],
+      "browser__click": ["click"]
+    },
+    "procedures": ["skill:plan-brief"]
+  },
+  "recipe_package_nodes": ["query", "get", "map", "validate", "emit_value", "sequence", "parallel", "switch"],
+  "recipe_package_actions": [
+    "recipe_query_topics",
+    "recipe_get_topic",
+    "recipe_map_value",
+    "recipe_sequence_value",
+    "recipe_parallel_value",
+    "recipe_switch_value"
+  ],
+  "composition_destination_action": "accept_plan",
+  "contribution_ports": ["build_plan.plan_memory"],
+  "public_lifecycle_proofs": [
+    "candidate_publish_review_approve",
+    "destructive_update_backup_review_approve",
+    "reinstall_review_approve",
+    "encrypted_data_combined_portability"
+  ],
+  "declarative_surface_components": ["detail", "form", "section", "list", "table"],
+  "generated_artifacts": "fail_closed_generation_required_sentinels",
+  "provider_free_qualification": [
+    "exact_recipe_fixture_execution",
+    "normalized_state",
+    "restart_recovery",
+    "time_math.date_range",
+    "research_outline.normalize",
+    "skill:plan-brief",
+    "research-planner-worker.agent_as_tool",
+    "browser.snapshot",
+    "browser.navigate",
+    "browser.scroll",
+    "browser.click"
+  ],
+  "forbidden_interfaces": [
+    "private_http_routes",
+    "raw_provider_access",
+    "generic_request_helpers",
+    "shell_or_argv_escape_hatches",
+    "generic_agent_delegation",
+    "raw_browser_control_or_ids"
+  ],
+  "publication_status": "source_complete_generation_review_and_pack_pending",
+  "p5_10_status": "source_complete_live_owner_qualification_not_claimed"
+}

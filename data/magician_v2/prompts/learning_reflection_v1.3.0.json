@@ -1,0 +1,85 @@
+{
+  "name": "learning_reflection",
+  "version": "1.3.0",
+  "content": [
+    "Reflect on this completed experience and produce durable learning candidates if warranted.",
+    "",
+    "## Reflection Boundary",
+    "{boundary}",
+    "",
+    "## Current Experience",
+    "{episode_json}",
+    "",
+    "## Related Recent Experiences",
+    "{related_episodes_json}",
+    "",
+    "## Existing Open Learning Candidates",
+    "{existing_candidates_json}",
+    "",
+    "## Extra Review Context",
+    "{extra_context_json}",
+    "",
+    "## Decision Rules",
+    "1. Prefer no-op over weak candidates. The output may contain zero candidates.",
+    "2. Ground every candidate in evidence from the current experience or related recent experiences.",
+    "3. Use existing candidates to avoid duplicates. If an existing candidate already covers the learning, return no new candidate and explain that in no_op_reason.",
+    "4. Memory candidates should be concise and scoped: user-level for explicit durable user preferences/facts/corrections, agent-level or agent_goal-level for project, strategy, or workflow knowledge.",
+    "5. For each memory candidate, include `proposed_change.memory` with `scope`, `target_tier`, `operation`, `key`, `value`, `explicit_user_request`, `explicit_user_correction`, and optional `replaces_key`.",
+    "6. Set `review_required=false` only for low-risk user-memory candidates grounded in an explicit user request/correction. Inferred preferences and agent/workspace facts should require review.",
+    "7. For each evaluation candidate, include `proposed_change.evaluation` with `case_kind`, `priority`, optional `target_agent_id`, optional `focus_area`, `goal`, `failure_mode`, `expected_behavior`, `reproduction_steps`, `success_criteria`, and `source_refs`.",
+    "8. Evaluation candidates should be created when the run revealed a missing regression test, a repeated failure mode, weak capability behavior, memory retrieval/consolidation failure, or a meta-harness review gap. They should normally require review.",
+    "9. For each capability/tool candidate, include `proposed_change.capability_evolution` with `capability_id`, `failure_pattern`, `proposed_fix_type`, `proposed_files`, `required_eval`, `promotion_gate`, `expected_behavior`, and `source_refs`.",
+    "10. Capability/tool candidates should be created when a command guide was confusing, a wrapper/schema/default caused failure, setup/auth docs were missing, a tool output shape was hard to use, tool selection repeatedly failed, or eval coverage is missing. They should require review.",
+    "11. Capability, wrapper, schema, skill, prompt, persona, docs, program, and evaluation candidates are proposals only and should require review unless obviously low-risk documentation.",
+    "12. For failed runs, distinguish between a one-off failure and a reusable bug, missing eval, weak guide, or tool friction pattern.",
+    "13. For successful runs, create skill/workflow candidates only when the procedure is reusable or repeated in related experiences.",
+    "",
+    "Use the structured output schema. Do not include markdown or prose outside the schema."
+  ],
+  "variables": [
+    {
+      "name": "boundary",
+      "description": "Where the reflection was triggered, such as task_terminal_execution or chat_turn_completed",
+      "required": true,
+      "default_value": "task_terminal_execution",
+      "examples": ["task_terminal_execution", "chat_turn_completed"]
+    },
+    {
+      "name": "episode_json",
+      "description": "Compact JSON summary of the current episode/experience",
+      "required": true,
+      "default_value": "{}",
+      "examples": ["{\"episode_id\":\"exec_1\",\"outcome_kind\":\"goal_achieved\"}"]
+    },
+    {
+      "name": "related_episodes_json",
+      "description": "Compact JSON array of recent related episodes for repeated-pattern detection",
+      "required": true,
+      "default_value": "[]",
+      "examples": ["[]"]
+    },
+    {
+      "name": "existing_candidates_json",
+      "description": "Compact JSON array of existing open learning candidates for duplicate avoidance",
+      "required": true,
+      "default_value": "[]",
+      "examples": ["[]"]
+    },
+    {
+      "name": "extra_context_json",
+      "description": "Optional meta-harness verdict or caller-specific review context",
+      "required": true,
+      "default_value": "{}",
+      "examples": ["{\"evaluation\":{\"status\":\"failed\",\"reason\":\"missed requirement\"}}"]
+    }
+  ],
+  "metadata": {
+    "category": "Learning",
+    "description": "User prompt for post-run learning reflection candidate generation.",
+    "author": "magician",
+    "created_at": "2026-05-14T00:00:00Z",
+    "changelog": "v1.3.0: Adds routeable capability-evolution payload shape and review policy. v1.2.0: Adds routeable evaluation payload shape and review policy for eval backlog routing. v1.1.0: Adds routeable memory payload shape and review policy for Phase 3 memory promotion. v1.0.0: Initial post-run reflection prompt with related-experience and duplicate-candidate context.",
+    "tags": ["learning", "reflection", "agent-growth", "capability-evolution"],
+    "estimated_tokens": 530
+  }
+}

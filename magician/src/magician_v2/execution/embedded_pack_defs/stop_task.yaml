@@ -1,0 +1,35 @@
+name: stop_task
+description: Cancel the active execution of a task. No-ops with a clear status when the task has no active execution.
+version: "1.0.0"
+guide: |
+  Tool name: `stop_task`
+
+  Inputs:
+  - `task_id` (required) — task whose active execution should be
+    cancelled.
+
+  Returns:
+  - `status: "cancelled"` plus the task / execution status snapshot
+    when an active execution existed and was successfully cancelled.
+  - `status: "noop"` when the task has no active execution to cancel
+    (already terminal or never started).
+  - `status: "error"` with `reason` on lookup / cancel failures.
+
+  Pair with `get_active_executions` to find what's actually running
+  before stopping.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: Task id whose active execution should be cancelled.
+implementation:
+  type: compiled
+  provider_name: stop_task
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - tasks
+    - lifecycle
+  composition_category: action
+  sandbox: none

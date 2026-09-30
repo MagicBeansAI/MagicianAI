@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Chart Inspector Spatial Workflows</title>
+    <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+    <style>
+        .test-header {
+            background: linear-gradient(135deg, #5d2bea, #0f9fd6);
+        }
+
+        .chart-stage {
+            position: relative;
+            height: 330px;
+            border-radius: 20px;
+            overflow: hidden;
+            background: linear-gradient(180deg, #fbfcff 0%, #eef3ff 100%);
+        }
+
+        .chart-stage svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .chart-stage svg.chart-zoomable {
+            transition: filter 0.2s ease;
+        }
+
+        .axis-label {
+            fill: #65748f;
+            font: 12px sans-serif;
+        }
+
+        .grid-line {
+            stroke: rgba(76, 100, 148, 0.18);
+            stroke-width: 1;
+        }
+
+        .chart-line {
+            fill: none;
+            stroke: #5d2bea;
+            stroke-width: 4;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .area-fill {
+            fill: rgba(93, 43, 234, 0.08);
+        }
+
+        .data-point {
+            fill: #ffffff;
+            stroke: #5d2bea;
+            stroke-width: 4;
+            cursor: pointer;
+        }
+
+        .data-point.peak {
+            stroke: #0f9fd6;
+            stroke-width: 5;
+        }
+
+        .chart-tooltip {
+            position: absolute;
+            min-width: 170px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(12, 23, 50, 0.92);
+            color: #ffffff;
+            opacity: 0;
+            transform: translate(-50%, -8px);
+            transition: opacity 0.18s ease;
+            pointer-events: none;
+        }
+
+        .chart-tooltip.visible {
+            opacity: 1;
+        }
+
+        .brush-layer {
+            position: absolute;
+            inset: 0;
+            cursor: crosshair;
+            touch-action: none;
+        }
+
+        .brush-selection {
+            position: absolute;
+            top: 52px;
+            bottom: 42px;
+            border-radius: 12px;
+            background: rgba(15, 159, 214, 0.14);
+            border: 2px solid rgba(15, 159, 214, 0.62);
+            opacity: 0;
+        }
+
+        .zoom-chip {
+            position: absolute;
+            left: 18px;
+            bottom: 18px;
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(9, 28, 74, 0.9);
+            color: #ffffff;
+            font-weight: 700;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .zoom-chip.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "28-chart-inspector-spatial",
+        "phase": "Phase 4",
+        "title": "Chart Inspector Spatial Workflows",
+        "description": "Chart fixtures covering tooltip hover and brush-based zoom selection.",
+        "totalTests": 2
+    }
+    </script>
+
+    <div class="page-shell">
+        <div class="test-header">
+            <h1>Chart Inspector Spatial Workflows</h1>
+            <p>These fixtures stress chart-local targeting: the first requires a precise peak hover, and the second requires a brush selection across a date window instead of a simple click target.</p>
+            <div class="results-summary">
+                <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+                <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+                <div class="summary-pill">Pending<strong id="pending-count">2</strong></div>
+            </div>
+        </div>
+
+        <div class="fixture-grid">
+            <section class="test-case" id="test-1" data-test-id="28-hover-peak" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">1. Hover the April peak to reveal the tooltip</h2>
+                    <span class="test-case-id">28-hover-peak</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Move the pointer over the highest point in the line chart so the tooltip shows the April peak value.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Throughput Trend</h3>
+                            <p class="caption">Only the correct peak point should reveal the target tooltip.</p>
+                        </div>
+                        <button class="surface-btn" type="button" id="hover-reset">Reset surface</button>
+                    </div>
+                    <div class="workspace-surface chart-stage">
+                        <span class="surface-label">Chart Surface</span>
+                        <svg viewBox="0 0 760 330" aria-label="Throughput trend chart">
+                            <line class="grid-line" x1="64" y1="76" x2="720" y2="76"></line>
+                            <line class="grid-line" x1="64" y1="132" x2="720" y2="132"></line>
+                            <line class="grid-line" x1="64" y1="188" x2="720" y2="188"></line>
+                            <line class="grid-line" x1="64" y1="244" x2="720" y2="244"></line>
+                            <path class="area-fill" d="M 110 220 L 220 172 L 330 96 L 440 148 L 550 124 L 660 178 L 660 270 L 110 270 Z"></path>
+                            <path class="chart-line" d="M 110 220 L 220 172 L 330 96 L 440 148 L 550 124 L 660 178"></path>
+                            <circle class="data-point" cx="110" cy="220" r="10"></circle>
+                            <circle class="data-point" cx="220" cy="172" r="10"></circle>
+                            <circle class="data-point peak" id="peak-point" cx="330" cy="96" r="12"></circle>
+                            <circle class="data-point" cx="440" cy="148" r="10"></circle>
+                            <circle class="data-point" cx="550" cy="124" r="10"></circle>
+                            <circle class="data-point" cx="660" cy="178" r="10"></circle>
+                            <text class="axis-label" x="100" y="296">Jan</text>
+                            <text class="axis-label" x="210" y="296">Feb</text>
+                            <text class="axis-label" x="320" y="296">Apr</text>
+                            <text class="axis-label" x="430" y="296">May</text>
+                            <text class="axis-label" x="540" y="296">Jun</text>
+                            <text class="axis-label" x="650" y="296">Jul</text>
+                        </svg>
+                        <div class="chart-tooltip" id="peak-tooltip">
+                            <strong>April Peak</strong><br>
+                            Throughput reached 94 tasks/hr.
+                        </div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="peak-hovered">The April peak point should be hovered.</li>
+                        <li data-check="tooltip-visible">The tooltip should become visible with the April peak label.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" id="hover-reset-status" data-status-reset="test-1">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-2" data-test-id="28-brush-zoom" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">2. Brush-select the March to May window</h2>
+                    <span class="test-case-id">28-brush-zoom</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Drag a brush selection across the middle of the chart so the selected window covers the March-through-May date range.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Brush Zoom Inspector</h3>
+                            <p class="caption">A correct brush selection should visibly zoom the chart into the Mar-May range.</p>
+                        </div>
+                        <button class="surface-btn" type="button" id="brush-reset">Reset surface</button>
+                    </div>
+                    <div class="workspace-surface chart-stage" id="brush-stage">
+                        <span class="surface-label">Brush Surface</span>
+                        <svg id="brush-svg" class="chart-zoomable" viewBox="0 0 760 330" aria-label="Brush zoom chart">
+                            <g id="brush-grid">
+                                <line class="grid-line" x1="64" y1="84" x2="720" y2="84"></line>
+                                <line class="grid-line" x1="64" y1="144" x2="720" y2="144"></line>
+                                <line class="grid-line" x1="64" y1="204" x2="720" y2="204"></line>
+                            </g>
+                            <path id="brush-area" class="area-fill"></path>
+                            <path id="brush-line" class="chart-line"></path>
+                            <g id="brush-axis-labels"></g>
+                        </svg>
+                        <div class="brush-selection" id="brush-selection"></div>
+                        <div class="brush-layer" id="brush-layer"></div>
+                        <div class="zoom-chip" id="brush-zoom-chip">Zoomed to Mar-May</div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="brush-drawn">A brush selection should be drawn across the chart.</li>
+                        <li data-check="target-window-selected">The resulting zoom state should report the Mar-May window.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" id="brush-reset-status" data-status-reset="test-2">Reset</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        (function () {
+            const peakPoint = document.getElementById("peak-point");
+            const peakTooltip = document.getElementById("peak-tooltip");
+            const brushLayer = document.getElementById("brush-layer");
+            const brushArea = document.getElementById("brush-area");
+            const brushLine = document.getElementById("brush-line");
+            const brushAxisLabels = document.getElementById("brush-axis-labels");
+            const brushSelection = document.getElementById("brush-selection");
+            const brushZoomChip = document.getElementById("brush-zoom-chip");
+            let brushState = null;
+            const brushSeries = [
+                { label: "Jan", x: 104, y: 212 },
+                { label: "Feb", x: 180, y: 196 },
+                { label: "Mar", x: 256, y: 154 },
+                { label: "Apr", x: 332, y: 110 },
+                { label: "May", x: 408, y: 128 },
+                { label: "Jun", x: 484, y: 164 },
+                { label: "Jul", x: 560, y: 182 },
+                { label: "Aug", x: 636, y: 156 }
+            ];
+            const brushChartLeft = 104;
+            const brushChartRight = 636;
+            const brushLabelY = 296;
+            const brushBaselineY = 270;
+            const brushTargetStartX = brushSeries[2].x;
+            const brushTargetEndX = brushSeries[4].x;
+            const minimumBrushDomainWidth = 30;
+            let currentBrushDomainStartX = brushChartLeft;
+            let currentBrushDomainEndX = brushChartRight;
+
+            function resetHoverSurface() {
+                peakTooltip.classList.remove("visible");
+                setTestStatus("test-1", null);
+                setCheckState("test-1", "peak-hovered", "pending");
+                setCheckState("test-1", "tooltip-visible", "pending");
+                setResult("test-1", "Hover the April peak point to reveal the tooltip.", "info");
+            }
+
+            function showPeakTooltip(event) {
+                const stageRect = peakTooltip.parentElement.getBoundingClientRect();
+                const pointRect = peakPoint.getBoundingClientRect();
+                peakTooltip.style.left = pointRect.left - stageRect.left + pointRect.width / 2 + "px";
+                peakTooltip.style.top = pointRect.top - stageRect.top - 6 + "px";
+                peakTooltip.classList.add("visible");
+                setCheckState("test-1", "peak-hovered", "pass");
+                setCheckState("test-1", "tooltip-visible", "pass");
+                setResult("test-1", "April peak tooltip is visible.", "success");
+                setTestStatus("test-1", "pass");
+            }
+
+            function resetBrushSurface() {
+                brushState = null;
+                renderBrushChart(brushChartLeft, brushChartRight);
+                brushSelection.style.opacity = "0";
+                brushSelection.style.left = "0px";
+                brushSelection.style.width = "0px";
+                brushZoomChip.classList.remove("visible");
+                brushZoomChip.textContent = "";
+                setTestStatus("test-2", null);
+                setCheckState("test-2", "brush-drawn", "pending");
+                setCheckState("test-2", "target-window-selected", "pending");
+                setResult("test-2", "Drag a brush selection across the Mar-May range.", "info");
+            }
+
+            function updateBrushSelection(startX, currentX) {
+                const left = Math.min(startX, currentX);
+                const width = Math.abs(currentX - startX);
+                brushSelection.style.left = left + "px";
+                brushSelection.style.width = width + "px";
+                brushSelection.style.opacity = width > 0 ? "1" : "0";
+            }
+
+            function convertBrushPixelToDomainX(pixelX, rect) {
+                const width = Math.max(rect.width, 1);
+                const visibleSvgX = Math.max(brushChartLeft, Math.min(brushChartRight, (pixelX / width) * 760));
+                const progress = (visibleSvgX - brushChartLeft) / (brushChartRight - brushChartLeft);
+                return currentBrushDomainStartX + progress * (currentBrushDomainEndX - currentBrushDomainStartX);
+            }
+
+            function interpolateBrushY(x) {
+                if (x <= brushSeries[0].x) return brushSeries[0].y;
+                if (x >= brushSeries[brushSeries.length - 1].x) return brushSeries[brushSeries.length - 1].y;
+                for (let index = 0; index < brushSeries.length - 1; index += 1) {
+                    const leftPoint = brushSeries[index];
+                    const rightPoint = brushSeries[index + 1];
+                    if (x >= leftPoint.x && x <= rightPoint.x) {
+                        const progress = (x - leftPoint.x) / (rightPoint.x - leftPoint.x);
+                        return leftPoint.y + (rightPoint.y - leftPoint.y) * progress;
+                    }
+                }
+                return brushSeries[brushSeries.length - 1].y;
+            }
+
+            function scaleBrushX(x, domainStartX, domainEndX) {
+                const chartWidth = brushChartRight - brushChartLeft;
+                return brushChartLeft + ((x - domainStartX) / (domainEndX - domainStartX)) * chartWidth;
+            }
+
+            function buildBrushVisibleSeries(domainStartX, domainEndX) {
+                const visibleSeries = [{ x: domainStartX, y: interpolateBrushY(domainStartX) }];
+                brushSeries.forEach((point) => {
+                    if (point.x > domainStartX && point.x < domainEndX) {
+                        visibleSeries.push({ x: point.x, y: point.y });
+                    }
+                });
+                visibleSeries.push({ x: domainEndX, y: interpolateBrushY(domainEndX) });
+                return visibleSeries;
+            }
+
+            function formatBrushBoundaryLabel(x) {
+                if (x <= brushSeries[0].x) return brushSeries[0].label;
+                if (x >= brushSeries[brushSeries.length - 1].x) return brushSeries[brushSeries.length - 1].label;
+                for (let index = 0; index < brushSeries.length - 1; index += 1) {
+                    const leftPoint = brushSeries[index];
+                    const rightPoint = brushSeries[index + 1];
+                    if (x >= leftPoint.x && x <= rightPoint.x) {
+                        const progress = (x - leftPoint.x) / (rightPoint.x - leftPoint.x);
+                        if (progress <= 0.08) return leftPoint.label;
+                        if (progress >= 0.92) return rightPoint.label;
+                        const day = Math.max(2, Math.min(30, Math.round(1 + progress * 29)));
+                        return `${leftPoint.label} ${day}`;
+                    }
+                }
+                return brushSeries[brushSeries.length - 1].label;
+            }
+
+            function buildBrushLabels(domainStartX, domainEndX) {
+                const labels = [];
+                labels.push({ label: formatBrushBoundaryLabel(domainStartX), mappedX: brushChartLeft });
+                brushSeries.forEach((point) => {
+                    if (point.x > domainStartX && point.x < domainEndX) {
+                        labels.push({ label: point.label, mappedX: scaleBrushX(point.x, domainStartX, domainEndX) });
+                    }
+                });
+                labels.push({ label: formatBrushBoundaryLabel(domainEndX), mappedX: brushChartRight });
+                return labels.filter((label, index) => index === 0 || label.label !== labels[index - 1].label);
+            }
+
+            function renderBrushChart(domainStartX, domainEndX) {
+                currentBrushDomainStartX = domainStartX;
+                currentBrushDomainEndX = domainEndX;
+                const visibleSeries = buildBrushVisibleSeries(domainStartX, domainEndX).map((point) => ({
+                    ...point,
+                    mappedX: scaleBrushX(point.x, domainStartX, domainEndX)
+                }));
+                const linePath = visibleSeries
+                    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.mappedX} ${point.y}`)
+                    .join(" ");
+                const areaPath = `${linePath} L ${visibleSeries[visibleSeries.length - 1].mappedX} ${brushBaselineY} L ${visibleSeries[0].mappedX} ${brushBaselineY} Z`;
+
+                brushLine.setAttribute("d", linePath);
+                brushArea.setAttribute("d", areaPath);
+                brushAxisLabels.innerHTML = buildBrushLabels(domainStartX, domainEndX)
+                    .map((point) => `<text class="axis-label" x="${point.mappedX - 12}" y="${brushLabelY}">${point.label}</text>`)
+                    .join("");
+            }
+
+            brushLayer.addEventListener("pointerdown", (event) => {
+                const rect = brushLayer.getBoundingClientRect();
+                brushState = { pointerId: event.pointerId, startX: event.clientX - rect.left };
+                brushLayer.setPointerCapture(event.pointerId);
+                updateBrushSelection(brushState.startX, brushState.startX);
+            });
+
+            brushLayer.addEventListener("pointermove", (event) => {
+                if (!brushState || brushState.pointerId !== event.pointerId) return;
+                const rect = brushLayer.getBoundingClientRect();
+                updateBrushSelection(brushState.startX, event.clientX - rect.left);
+            });
+
+            brushLayer.addEventListener("pointerup", (event) => {
+                if (!brushState || brushState.pointerId !== event.pointerId) return;
+                brushLayer.releasePointerCapture(event.pointerId);
+                const rect = brushLayer.getBoundingClientRect();
+                const endX = event.clientX - rect.left;
+                const left = Math.min(brushState.startX, endX);
+                const right = Math.max(brushState.startX, endX);
+                const leftDomainX = convertBrushPixelToDomainX(left, rect);
+                const rightDomainX = convertBrushPixelToDomainX(right, rect);
+                const brushDrawn = Math.abs(rightDomainX - leftDomainX) >= minimumBrushDomainWidth;
+                const domainStartX = brushDrawn ? Math.max(brushChartLeft, Math.min(leftDomainX, rightDomainX)) : brushChartLeft;
+                const domainEndX = brushDrawn ? Math.min(brushChartRight, Math.max(leftDomainX, rightDomainX)) : brushChartRight;
+                const targetMatch = brushDrawn && domainStartX <= brushTargetStartX && domainEndX >= brushTargetEndX;
+                renderBrushChart(domainStartX, domainEndX);
+                brushSelection.style.opacity = "0";
+                setCheckState("test-2", "brush-drawn", brushDrawn ? "pass" : "pending");
+                setCheckState("test-2", "target-window-selected", targetMatch ? "pass" : "pending");
+                brushZoomChip.classList.toggle("visible", brushDrawn);
+                if (brushDrawn) {
+                    const visibleStart = formatBrushBoundaryLabel(domainStartX);
+                    const visibleEnd = formatBrushBoundaryLabel(domainEndX);
+                    brushZoomChip.textContent = `Showing ${visibleStart}-${visibleEnd}`;
+                } else {
+                    brushZoomChip.textContent = "";
+                }
+                setResult(
+                    "test-2",
+                    targetMatch
+                        ? "Brush window captured Mar-May."
+                        : brushDrawn
+                            ? `Showing ${
+                                (brushSeries.find((point) => point.x >= domainStartX) ?? brushSeries[0]).label
+                              }-${
+                                ([...brushSeries].reverse().find((point) => point.x <= domainEndX) ?? brushSeries[brushSeries.length - 1]).label
+                              }. Drag the brush across the Mar-May range.`
+                            : "Drag the brush across the Mar-May range.",
+                    targetMatch ? "success" : brushDrawn ? "info" : "info"
+                );
+                if (brushDrawn && targetMatch) {
+                    setTestStatus("test-2", "pass");
+                }
+                brushState = null;
+            });
+
+            peakPoint.addEventListener("pointerenter", showPeakTooltip);
+            peakPoint.addEventListener("focus", showPeakTooltip);
+
+            document.getElementById("hover-reset").addEventListener("click", resetHoverSurface);
+            document.getElementById("hover-reset-status").addEventListener("click", resetHoverSurface);
+            document.getElementById("brush-reset").addEventListener("click", resetBrushSurface);
+            document.getElementById("brush-reset-status").addEventListener("click", resetBrushSurface);
+
+            resetHoverSurface();
+            resetBrushSurface();
+        })();
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,72 @@
+{
+  "agy_cli_version": "1.1.19",
+  "generated_from": "agy 1.1.19 --print --output-format stream-json (NDJSON, not JSON-RPC); piped stdout; stdin /dev/null",
+  "transport": "ndjson",
+  "output_format": "stream-json",
+  "requires_verbose": false,
+  "stdin_print": "null",
+  "resume_flag": "--conversation",
+  "never_continue_flag": true,
+  "session_id_field": "conversation_id",
+  "event_field": "event",
+  "event_types": ["init", "step_update", "result"],
+  "terminal_event": {
+    "event": "result",
+    "success": { "status": "SUCCESS" },
+    "not_success": ["ERROR", "CANCELED", "INTERRUPTED", "INVALID", "WAITING", "RUNNING"]
+  },
+  "init_fields": ["cwd", "tools", "permission_mode"],
+  "permission_mode_build": "always-proceed",
+  "permission_mode_discuss": "request-review",
+  "auth": {
+    "oauth_token_file": "~/.gemini/antigravity-cli/antigravity-oauth-token",
+    "public_reason": "sign in required"
+  },
+  "usage_fields": [
+    "input_tokens",
+    "output_tokens",
+    "thinking_tokens",
+    "cache_read_tokens",
+    "total_tokens"
+  ],
+  "no_usd": true,
+  "launch_argv_build": [
+    "-p",
+    "<prompt>",
+    "--output-format",
+    "stream-json",
+    "--dangerously-skip-permissions",
+    "--sandbox",
+    "--disable-slash-commands"
+  ],
+  "launch_argv_discuss": [
+    "-p",
+    "<prompt>",
+    "--output-format",
+    "stream-json",
+    "--mode",
+    "plan",
+    "--sandbox",
+    "--disable-slash-commands"
+  ],
+  "qualify_launch_argv": [
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--dangerously-skip-permissions",
+    "--sandbox",
+    "--disable-slash-commands"
+  ],
+  "forbidden_runtime_tools": [
+    "search_web",
+    "read_url_content",
+    "call_mcp_tool",
+    "invoke_subagent",
+    "define_subagent",
+    "manage_subagents",
+    "browser_subagent",
+    "generate_image",
+    "send_message"
+  ]
+}

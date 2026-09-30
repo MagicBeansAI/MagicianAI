@@ -1,0 +1,113 @@
+[
+ {
+  "name": "memory_relevance",
+  "state": {
+   "memory": "The user is allergic to peanuts and prefers Italian food.",
+   "request": "Book a table for two at an Italian restaurant tonight"
+  },
+  "questions": {
+   "about_cars": {
+    "type": "noul",
+    "instructions": "`request` is about buying a car"
+   },
+   "relevant": {
+    "type": "noul",
+    "instructions": "`memory` is relevant context for answering `request`"
+   },
+   "urgency": {
+    "type": "score",
+    "instructions": "How urgent is `request`?",
+    "criteria": [
+     "not urgent: weeks away",
+     "soon: within days",
+     "urgent: today"
+    ]
+   }
+  }
+ },
+ {
+  "name": "sentiment_es",
+  "state": "Es un desastre, estoy muy decepcionado con el servicio.",
+  "questions": {
+   "sentiment": {
+    "type": "choice",
+    "instructions": "What is the sentiment of the message?",
+    "criteria": {
+     "negative": "the writer is unhappy, angry, or disappointed",
+     "neutral": "no clear feeling either way",
+     "positive": "the writer is pleased or happy"
+    }
+   }
+  }
+ },
+ {
+  "name": "noul_with_criteria",
+  "state": "Invoice #4471 for $1,200 is due on Friday. Please confirm receipt.",
+  "questions": {
+   "needs_reply": {
+    "type": "noul",
+    "instructions": "The sender is waiting on a reply",
+    "criteria": {
+     "true": "the message asks the reader to do or confirm something",
+     "false": "information only, nothing is asked"
+    }
+   }
+  }
+ },
+ {
+  "name": "many_options",
+  "state": "- button \"Search flights\" [ref=e5]\n- textbox \"From\" [ref=e3]\n- textbox \"To\" [ref=e4]\n- link \"Sign in\" [ref=e9]",
+  "questions": {
+   "next_element": {
+    "type": "choice",
+    "instructions": "Which element starts the flight search?",
+    "criteria": {
+     "@e1": "banner",
+     "@e12": "combobox Passengers",
+     "@e2": "heading Find your flight",
+     "@e3": "textbox From",
+     "@e4": "textbox To",
+     "@e5": "button Search flights",
+     "@e9": "link Sign in"
+    }
+   }
+  }
+ },
+ {
+  "name": "plain_choice_no_desc",
+  "state": "The customer wants a refund for a damaged blender.",
+  "questions": {
+   "team": {
+    "type": "choice",
+    "instructions": "Which team should handle this?",
+    "criteria": {
+     "billing": "",
+     "returns": "",
+     "sales": ""
+    }
+   }
+  }
+ },
+ {
+  "name": "long_state_truncates",
+  "state": {
+   "log": "Step 0: the agent opened page 0, read the order table, and found 0 pending refunds for customer C0. Step 1: the agent opened page 1, read the order table, and found 1 pending refunds for customer C1. Step 2: the agent opened page 2, read the order table, and found 2 pending refunds for customer C2. Step 3: the agent opened page 3, read the order table, and found 3 pending refunds for customer C3. Step 4: the agent opened page 4, read the order table, and found 4 pending refunds for customer C4. Step 5: the agent opened page 5, read the order table, and found 5 pending refunds for customer C5. Step 6: the agent opened page 6, read the order table, and found 6 pending refunds for customer C6. Step 7: the agent opened page 7, read the order table, and found 0 pending refunds for customer C7. Step 8: the agent opened page 8, read the order table, and found 1 pending refunds for customer C8. Step 9: the agent opened page 9, read the order table, and found 2 pending refunds for customer C9. Step 10: the agent opened page 10, read the order table, and found 3 pending refunds for customer C10. Step 11: the agent opened page 11, read the order table, and found 4 pending refunds for customer C11. Step 12: the agent opened page 12, read the order table, and found 5 pending refunds for customer C12. Step 13: the agent opened page 13, read the order table, and found 6 pending refunds for customer C0. Step 14: the agent opened page 14, read the order table, and found 0 pending refunds for customer C1. Step 15: the agent opened page 15, read the order table, and found 1 pending refunds for customer C2. Step 16: the agent opened page 16, read the order table, and found 2 pending refunds for customer C3. Step 17: the agent opened page 17, read the order table, and found 3 pending refunds for customer C4. Step 18: the agent opened page 18, read the order table, and found 4 pending refunds for customer C5. Step 19: the agent opened page 19, read the order table, and found 5 pending refunds for customer C6. Step 20: the agent opened page 20, read the order table, and found 6 pending refunds for customer C7. Step 21: the agent opened page 21, read the order table, and found 0 pending refunds for customer C8. Step 22: the agent opened page 22, read the order table, and found 1 pending refunds for customer C9. Step 23: the agent opened page 23, read the order table, and found 2 pending refunds for customer C10. Step 24: the agent opened page 24, read the order table, and found 3 pending refunds for customer C11. Step 25: the agent opened page 25, read the order table, and found 4 pending refunds for customer C12. Step 26: the agent opened page 26, read the order table, and found 5 pending refunds for customer C0. Step 27: the agent opened page 27, read the order table, and found 6 pending refunds for customer C1. Step 28: the agent opened page 28, read the order table, and found 0 pending refunds for customer C2. Step 29: the agent opened page 29, read the order table, and found 1 pending refunds for customer C3. Step 30: the agent opened page 30, read the order table, and found 2 pending refunds for customer C4. Step 31: the agent opened page 31, read the order table, and found 3 pending refunds for customer C5. Step 32: the agent opened page 32, read the order table, and found 4 pending refunds for customer C6. Step 33: the agent opened page 33, read the order table, and found 5 pending refunds for customer C7. Step 34: the agent opened page 34, read the order table, and found 6 pending refunds for customer C8. Step 35: the agent opened page 35, read the order table, and found 0 pending refunds for customer C9. Step 36: the agent opened page 36, read the order table, and found 1 pending refunds for customer C10. Step 37: the agent opened page 37, read the order table, and found 2 pending refunds for customer C11. Step 38: the agent opened page 38, read the order table, and found 3 pending refunds for customer C12. Step 39: the agent opened page 39, read the order table, and found 4 pending refunds for customer C0. Step 40: the agent opened page 40, read the order table, and found 5 pending refunds for customer C1. Step 41: the agent opened page 41, read the order table, and found 6 pending refunds for customer C2. Step 42: the agent opened page 42, read the order table, and found 0 pending refunds for customer C3. Step 43: the agent opened page 43, read the order table, and found 1 pending refunds for customer C4. Step 44: the agent opened page 44, read the order table, and found 2 pending refunds for customer C5. Step 45: the agent opened page 45, read the order table, and found 3 pending refunds for customer C6. Step 46: the agent opened page 46, read the order table, and found 4 pending refunds for customer C7. Step 47: the agent opened page 47, read the order table, and found 5 pending refunds for customer C8. Step 48: the agent opened page 48, read the order table, and found 6 pending refunds for customer C9. Step 49: the agent opened page 49, read the order table, and found 0 pending refunds for customer C10. Step 50: the agent opened page 50, read the order table, and found 1 pending refunds for customer C11. Step 51: the agent opened page 51, read the order table, and found 2 pending refunds for customer C12. Step 52: the agent opened page 52, read the order table, and found 3 pending refunds for customer C0. Step 53: the agent opened page 53, read the order table, and found 4 pending refunds for customer C1. Step 54: the agent opened page 54, read the order table, and found 5 pending refunds for customer C2. Step 55: the agent opened page 55, read the order table, and found 6 pending refunds for customer C3. Step 56: the agent opened page 56, read the order table, and found 0 pending refunds for customer C4. Step 57: the agent opened page 57, read the order table, and found 1 pending refunds for customer C5. Step 58: the agent opened page 58, read the order table, and found 2 pending refunds for customer C6. Step 59: the agent opened page 59, read the order table, and found 3 pending refunds for customer C7. Step 60: the agent opened page 60, read the order table, and found 4 pending refunds for customer C8. Step 61: the agent opened page 61, read the order table, and found 5 pending refunds for customer C9. Step 62: the agent opened page 62, read the order table, and found 6 pending refunds for customer C10. Step 63: the agent opened page 63, read the order table, and found 0 pending refunds for customer C11. Step 64: the agent opened page 64, read the order table, and found 1 pending refunds for customer C12. Step 65: the agent opened page 65, read the order table, and found 2 pending refunds for customer C0. Step 66: the agent opened page 66, read the order table, and found 3 pending refunds for customer C1. Step 67: the agent opened page 67, read the order table, and found 4 pending refunds for customer C2. Step 68: the agent opened page 68, read the order table, and found 5 pending refunds for customer C3. Step 69: the agent opened page 69, read the order table, and found 6 pending refunds for customer C4. Step 70: the agent opened page 70, read the order table, and found 0 pending refunds for customer C5. Step 71: the agent opened page 71, read the order table, and found 1 pending refunds for customer C6. Step 72: the agent opened page 72, read the order table, and found 2 pending refunds for customer C7. Step 73: the agent opened page 73, read the order table, and found 3 pending refunds for customer C8. Step 74: the agent opened page 74, read the order table, and found 4 pending refunds for customer C9. Step 75: the agent opened page 75, read the order table, and found 5 pending refunds for customer C10. Step 76: the agent opened page 76, read the order table, and found 6 pending refunds for customer C11. Step 77: the agent opened page 77, read the order table, and found 0 pending refunds for customer C12. Step 78: the agent opened page 78, read the order table, and found 1 pending refunds for customer C0. Step 79: the agent opened page 79, read the order table, and found 2 pending refunds for customer C1. Step 80: the agent opened page 80, read the order table, and found 3 pending refunds for customer C2. Step 81: the agent opened page 81, read the order table, and found 4 pending refunds for customer C3. Step 82: the agent opened page 82, read the order table, and found 5 pending refunds for customer C4. Step 83: the agent opened page 83, read the order table, and found 6 pending refunds for customer C5. Step 84: the agent opened page 84, read the order table, and found 0 pending refunds for customer C6. Step 85: the agent opened page 85, read the order table, and found 1 pending refunds for customer C7. Step 86: the agent opened page 86, read the order table, and found 2 pending refunds for customer C8. Step 87: the agent opened page 87, read the order table, and found 3 pending refunds for customer C9. Step 88: the agent opened page 88, read the order table, and found 4 pending refunds for customer C10. Step 89: the agent opened page 89, read the order table, and found 5 pending refunds for customer C11. Step 90: the agent opened page 90, read the order table, and found 6 pending refunds for customer C12. Step 91: the agent opened page 91, read the order table, and found 0 pending refunds for customer C0. Step 92: the agent opened page 92, read the order table, and found 1 pending refunds for customer C1. Step 93: the agent opened page 93, read the order table, and found 2 pending refunds for customer C2. Step 94: the agent opened page 94, read the order table, and found 3 pending refunds for customer C3. Step 95: the agent opened page 95, read the order table, and found 4 pending refunds for customer C4. Step 96: the agent opened page 96, read the order table, and found 5 pending refunds for customer C5. Step 97: the agent opened page 97, read the order table, and found 6 pending refunds for customer C6. Step 98: the agent opened page 98, read the order table, and found 0 pending refunds for customer C7. Step 99: the agent opened page 99, read the order table, and found 1 pending refunds for customer C8. Step 100: the agent opened page 100, read the order table, and found 2 pending refunds for customer C9. Step 101: the agent opened page 101, read the order table, and found 3 pending refunds for customer C10. Step 102: the agent opened page 102, read the order table, and found 4 pending refunds for customer C11. Step 103: the agent opened page 103, read the order table, and found 5 pending refunds for customer C12. Step 104: the agent opened page 104, read the order table, and found 6 pending refunds for customer C0. Step 105: the agent opened page 105, read the order table, and found 0 pending refunds for customer C1. Step 106: the agent opened page 106, read the order table, and found 1 pending refunds for customer C2. Step 107: the agent opened page 107, read the order table, and found 2 pending refunds for customer C3. Step 108: the agent opened page 108, read the order table, and found 3 pending refunds for customer C4. Step 109: the agent opened page 109, read the order table, and found 4 pending refunds for customer C5. Step 110: the agent opened page 110, read the order table, and found 5 pending refunds for customer C6. Step 111: the agent opened page 111, read the order table, and found 6 pending refunds for customer C7. Step 112: the agent opened page 112, read the order table, and found 0 pending refunds for customer C8. Step 113: the agent opened page 113, read the order table, and found 1 pending refunds for customer C9. Step 114: the agent opened page 114, read the order table, and found 2 pending refunds for customer C10. Step 115: the agent opened page 115, read the order table, and found 3 pending refunds for customer C11. Step 116: the agent opened page 116, read the order table, and found 4 pending refunds for customer C12. Step 117: the agent opened page 117, read the order table, and found 5 pending refunds for customer C0. Step 118: the agent opened page 118, read the order table, and found 6 pending refunds for customer C1. Step 119: the agent opened page 119, read the order table, and found 0 pending refunds for customer C2.",
+   "request": "Should we escalate the refund backlog today?"
+  },
+  "questions": {
+   "escalate": {
+    "type": "noul",
+    "instructions": "The refund backlog in  should be escalated today"
+   },
+   "owner": {
+    "type": "choice",
+    "instructions": "Which team owns the backlog?",
+    "criteria": {
+     "billing": "refunds and invoices",
+     "engineering": "bugs and outages",
+     "support": "customer tickets"
+    }
+   }
+  }
+ }
+]

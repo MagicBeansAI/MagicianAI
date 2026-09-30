@@ -1,0 +1,351 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "mode": {
+              "value_type": 1,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "enum",
+          "values": [
+            "snapshot"
+          ]
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:003123b638f35ad90113da4ca28e133d95e61698845c40e29e84f39727e06c30",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:003123b638f35ad90113da4ca28e133d95e61698845c40e29e84f39727e06c30",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "reconcile",
+          "declaration": {
+            "tool": "agent_roster_data",
+            "action": "list_members",
+            "parameters": {
+              "limit": 50
+            },
+            "rows_field": "members",
+            "next_cursor_field": "next_cursor",
+            "truncated_field": "scan_truncated",
+            "max_source_rows": 50,
+            "max_existing_rows": 1000,
+            "targets": [
+              {
+                "entity": "member",
+                "key_field": "member_id",
+                "source_key": "agent_id",
+                "fields": {
+                  "kind": {
+                    "kind": "literal",
+                    "value": "agent"
+                  },
+                  "display_name": {
+                    "kind": "source",
+                    "field": "display_name",
+                    "fallback": null
+                  },
+                  "introversion": {
+                    "kind": "source",
+                    "field": "introversion",
+                    "fallback": 0.5
+                  },
+                  "opted_out": {
+                    "kind": "source",
+                    "field": "opted_out",
+                    "fallback": true
+                  },
+                  "enrolled": {
+                    "kind": "source",
+                    "field": "enabled",
+                    "fallback": null
+                  },
+                  "created_at": {
+                    "kind": "timestamp"
+                  },
+                  "synced_at": {
+                    "kind": "timestamp"
+                  }
+                },
+                "update_fields": [
+                  "display_name",
+                  "introversion",
+                  "opted_out",
+                  "enrolled",
+                  "synced_at"
+                ],
+                "seeds": [
+                  {
+                    "key": "operator",
+                    "record_id": "operator",
+                    "fields": {
+                      "kind": {
+                        "kind": "literal",
+                        "value": "operator"
+                      },
+                      "display_name": {
+                        "kind": "literal",
+                        "value": "Operator"
+                      },
+                      "introversion": {
+                        "kind": "literal",
+                        "value": 0
+                      },
+                      "opted_out": {
+                        "kind": "literal",
+                        "value": false
+                      },
+                      "enrolled": {
+                        "kind": "literal",
+                        "value": true
+                      },
+                      "created_at": {
+                        "kind": "timestamp"
+                      },
+                      "synced_at": {
+                        "kind": "timestamp"
+                      }
+                    }
+                  }
+                ],
+                "retirement": {
+                  "discriminator": "kind",
+                  "value": "agent",
+                  "patch": {
+                    "enrolled": false
+                  }
+                }
+              },
+              {
+                "entity": "self_state",
+                "key_field": "member_id",
+                "source_key": "agent_id",
+                "fields": {
+                  "valence": {
+                    "kind": "literal",
+                    "value": 0
+                  },
+                  "energy": {
+                    "kind": "literal",
+                    "value": 0.5
+                  },
+                  "baseline_valence": {
+                    "kind": "literal",
+                    "value": 0
+                  },
+                  "baseline_energy": {
+                    "kind": "literal",
+                    "value": 0.5
+                  },
+                  "note": {
+                    "kind": "literal",
+                    "value": null
+                  },
+                  "updated_at": {
+                    "kind": "timestamp"
+                  }
+                },
+                "update_fields": [],
+                "seeds": [],
+                "retirement": null
+              },
+              {
+                "entity": "turn_cursor",
+                "key_field": "cursor_id",
+                "source_key": null,
+                "fields": {},
+                "update_fields": [],
+                "seeds": [
+                  {
+                    "key": "singleton",
+                    "record_id": "singleton",
+                    "fields": {
+                      "last_member_id": {
+                        "kind": "literal",
+                        "value": null
+                      },
+                      "turns_taken": {
+                        "kind": "literal",
+                        "value": 0
+                      },
+                      "updated_at": {
+                        "kind": "timestamp"
+                      }
+                    }
+                  }
+                ],
+                "retirement": null
+              }
+            ]
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "primitive_ref": "primitive:platform:0ea1ea5135fd33b324e06906c3c1d95252fc663f5371f52228d8ca53248aa7de",
+          "action_ref": "primitive-action:platform:e98872729b3b4128b707abf9ea0868d2ec9ed4d73a9ba2e5835c54b3aac0cb90",
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 1,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 1
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

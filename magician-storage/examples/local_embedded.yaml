@@ -1,0 +1,26 @@
+# Default Magician profile. magician-bin selects this when no bootstrap file
+# is present. Copying a scope directory is not a migration; remote_durable is
+# a separate document and is not opened with StorageRuntime::open_local.
+schema_version: 1
+profile: local_embedded
+
+state:
+  driver: sqlite
+
+objects:
+  driver: filesystem
+
+datasets:
+  driver: filesystem
+
+indexes:
+  driver: local_rebuildable
+
+leases:
+  driver: filesystem
+
+scratch:
+  max_bytes: 21474836480
+
+secrets:
+  driver: governed_local

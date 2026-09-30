@@ -1,0 +1,196 @@
+# Operator-supplied configuration for `make -C skillshub setup-all` and
+# related setup-* targets.
+#
+# This template is committed; the live `skillshub/operator-config.yaml`
+# is gitignored. Copy this file to `operator-config.yaml`, fill in your
+# real values, and run `make -C skillshub setup-all` (or specific
+# setup-* targets) to propagate changes into your scope tree.
+#
+# OAuth Desktop client JSON for Google Workspace lives alongside this
+# file at `skillshub/client_secret.json` (also gitignored). Download
+# it once from https://console.cloud.google.com/apis/credentials
+# (Create OAuth Client → Desktop app → Download JSON).
+#
+# Replaces the legacy <repo>/{`.env copy.development`, `accounts.txt`,
+# `client_secret.json`} trio. Migration is automatic — the scripts
+# fall back to those legacy files with a deprecation warning when
+# this YAML is absent.
+
+# Scope-local secrets consumed by setup scripts:
+#   - aggregate_env_examples.py writes per-skill .env files at
+#     <scope>/skills/<skill>/config/.env using each skill's own
+#     .env.example as the key list. Only keys present in BOTH this
+#     file and the skill's .env.example land in the scope file.
+#   - setup_bot_envs.py writes per-bot env files at
+#     <scope>/bots/<bot>/.env.<account|development> using the
+#     per-bot key set defined in setup_bot_envs.py itself.
+#
+# All keys are optional. Skills/bots whose required keys are absent
+# from this file get a warning at setup time and skip the env-file
+# write — they'll still install but won't function until the keys
+# arrive.
+secrets:
+  # Values are NOT stored here. Each `${VAR}` names the env var that supplies the
+  # secret; put the real value in .env (production) or .env.development (dev),
+  # both under the runtime root (~/MagicianNotes), mode 0600, never committed.
+  # See magician_data_v3/.env.example. Consumers resolve from the process env
+  # (LLM providers via api_key_env; Kapso/AgentMail env-first), so this block is
+  # a documented reference, not a value store.
+
+  # AI providers
+  ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}'
+  OPENAI_API_KEY: '${OPENAI_API_KEY}'
+  GEMINI_API_KEY: '${GEMINI_API_KEY}'
+  NANOBANANA2_API_KEY: '${NANOBANANA2_API_KEY}'
+  VEO31_API_KEY: '${VEO31_API_KEY}'
+  MINIMAX_API_KEY: '${MINIMAX_API_KEY}'
+  MAGICIAN_MINIMAX_GROUP_ID: '${MAGICIAN_MINIMAX_GROUP_ID}'
+  MINIMAX_REGION: '${MINIMAX_REGION}'  # global (default) or cn
+  DEEPSEEK_API_KEY: '${DEEPSEEK_API_KEY}'
+  GITHUB_TOKEN: '${GITHUB_TOKEN}'
+
+  # Search / data providers
+  TINYFISH_API_KEY: '${TINYFISH_API_KEY}'
+  EXA_API_KEY: '${EXA_API_KEY}'
+  TAVILY_API_KEY: '${TAVILY_API_KEY}'
+  KLIPY_API_KEY: '${KLIPY_API_KEY}'
+  # Optional pair: enables engagement-aware Reddit OAuth JSON search. Without
+  # both values, reddit-search uses its content-only Atom fallback.
+  REDDIT_CLIENT_ID: '${REDDIT_CLIENT_ID}'
+  REDDIT_CLIENT_SECRET: '${REDDIT_CLIENT_SECRET}'
+
+  # Browser providers
+  CLOAKBROWSER_LICENSE_KEY: '${CLOAKBROWSER_LICENSE_KEY}'
+
+  # Imgflip (meme generation)
+  IMGFLIP_USERNAME: '${IMGFLIP_USERNAME}'
+  IMGFLIP_PASSWORD: '${IMGFLIP_PASSWORD}'
+
+  # Metabase (analytics queries)
+  METABASE_BASE_URL: '${METABASE_BASE_URL}'
+  METABASE_API_KEY: '${METABASE_API_KEY}'
+
+  #AgentMail
+  # Inbox-scoped key for the default account "work" (magican@agentmail.to).
+  AGENT_MAIL_KEY: '${AGENT_MAIL_KEY}'
+  # For additional accounts (see agentmail_accounts below), add per-account
+  # secrets named by convention (<NAME> = alias upper-cased, non-alnum -> "_"):
+  #   AGENT_MAIL_KEY_<NAME>: am_us_inbox_xxxx
+  #   AGENTMAIL_ACCOUNT_<NAME>_EMAIL: <name>@agentmail.to
+  # Public base URL AgentMail can reach (ngrok / magictunnel) — required for
+  # the inbound bot to receive webhooks. When set, the bot self-registers a
+  # webhook at <url>/agentmail-webhook for "message.received".
+  # AGENTMAIL_WEBHOOK_URL: https://your-public-host.example.com
+  # Webhook signing secret (whsec_...) for svix signature verification.
+  # AGENTMAIL_WEBHOOK_SECRET: whsec_xxxx
+
+  # Bot daemons
+  TELEGRAM_TOKEN: '${TELEGRAM_TOKEN}'
+  KAPSO_API_KEY: '${KAPSO_API_KEY}'
+  KAPSO_PHONE_NUMBER_ID: '${KAPSO_PHONE_NUMBER_ID}'
+  KAPSO_PHONE_NUMBER: '${KAPSO_PHONE_NUMBER}'
+  # Number-webhook HMAC secret; required by the public Kapso receiver.
+  KAPSO_WEBHOOK_SECRET: '${KAPSO_WEBHOOK_SECRET}'
+
+  # Magician runtime URL — bots use this to reach the local Magician
+  MAGICIAN_URL: '${MAGICIAN_URL}'
+
+# Google Workspace accounts. Each entry drives two scope-side artifacts:
+#   - <scope>/auth/gws-<name>/         OAuth dir (client_secret.json is
+#                                      copied from <repo>/client_secret.json)
+#   - <scope>/bots/gmail/.env.<name>   per-account gmail bot env
+#
+# `expected_email` is optional but recommended. When set, the gmail
+# adapter's `assertExpectedAccount` guard refuses to bind any other
+# Google identity at OAuth time — protects against accidentally
+# signing all bots into the same account when re-authing across
+# multiple browser sessions.
+gws_accounts:
+  - name: business
+    expected_email: alice@yourcompany.com
+  - name: personal
+    expected_email: alice@gmail.com
+  - name: work
+    # expected_email: alice.work@othercompany.com  # uncomment to enable validation
+
+# Fixed service-owned profiles are available only to fixed-profile skills and
+# are never projected into the shared skills' selectable `account` parameter.
+gws_fixed_profiles:
+  - name: presto
+    expected_email: reach.magican@gmail.com
+
+# Provider-neutral credential-profile registry consumed by the governed tool
+# runtime. `storage_namespace` must match the skill manifest; the runtime derives
+# auth/<namespace>-<alias> when that manifest partitions storage by profile.
+# During the migration window the GWS entries above remain for the Gmail bot and
+# setup tooling; keep both projections aligned until those consumers move too.
+tool_runtime_profiles:
+  - provider: google-workspace
+    storage_namespace: gws
+    alias: business
+    expected_identity: alice@yourcompany.com
+  - provider: google-workspace
+    storage_namespace: gws
+    alias: personal
+    expected_identity: alice@gmail.com
+  - provider: google-workspace
+    storage_namespace: gws
+    alias: work
+    # expected_identity: alice.work@othercompany.com
+  - provider: google-workspace
+    storage_namespace: gws
+    alias: presto
+    expected_identity: reach.magican@gmail.com
+
+# AgentMail accounts — agent-owned email inboxes. Registry for the `account`
+# param on the agentmail-read / agentmail-send tools (mirrors gws_accounts).
+# Each account's inbox-scoped key is the secret AGENT_MAIL_KEY (for "work") or
+# AGENT_MAIL_KEY_<NAME> (others); the wrapper reads AGENTMAIL_ACCOUNT_<NAME>_EMAIL
+# for non-"work" inboxes. See the AgentMail secrets block above for the naming.
+agentmail_accounts:
+  - name: work
+    email: magican@agentmail.to
+  # - name: support           # example second account (alias is flexible)
+  #   email: support@agentmail.to
+
+# Channel-provider registry — the ONE place a channel's classification lives
+# (read by magician's `channel_assist::channel_providers`). Adding a provider or
+# an email domain is a config edit here, not a code change; the shipped
+# providers below are also the built-in defaults, so this block is optional.
+#
+# `provider` is the TRANSPORT (which adapter/CLI), not the domain — every
+# Google Workspace domain is the one `gmail` transport, `agentmail.to` is a
+# different one. `kind` (email | chat) decides the distill prompt word, the
+# work-evidence tier (email -> user.email_evidence, chat -> user.chat_evidence),
+# and how the channel is grouped. `channel` is the user-facing name in the
+# `/observe` config (gmail's is `email`; others default to the key). `domains`
+# is a provider -> domains index (documentation + future domain-based routing).
+channel_providers:
+  gmail:
+    kind: email
+    channel: email
+    # Your Google Workspace mail domains — `make setup-identity` fills this in
+    # the instance file (a customized list is never overwritten).
+    domains: [gmail.com]
+  agentmail:
+    kind: email
+    domains: [agentmail.to]
+  whatsapp:
+    kind: chat
+  whatsapp_kapso:
+    kind: chat
+  # slack:                    # example: a new provider is config-only for
+  #   kind: chat              # classification (a new TRANSPORT still needs its
+  #   channel: slack          # ingestor code).
+
+# Agent (envoy) accounts — the `(provider, alias)` pairs that belong to the
+# AGENT itself (Presto), so they render as the "Presto" lane in /observe and
+# feed the envoy assist loop; everything else is the owner's "You" lane. This
+# ADDS to the shipped defaults (gmail/presto, calendar/presto,
+# whatsapp_kapso/presto, agentmail/work) — it can't drop them — so it's only
+# needed for extra agent identities. One place; no hardcoded `presto` in code.
+agent_accounts:
+  - { provider: gmail,          alias: presto }
+  - { provider: calendar,       alias: presto }
+  - { provider: whatsapp_kapso, alias: presto }
+  - { provider: agentmail,      alias: work }

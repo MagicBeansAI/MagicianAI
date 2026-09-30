@@ -1,0 +1,43 @@
+agent_id: system:scheduler
+version: 2
+name: Scheduler
+description: Per-agent schedule evaluator. Receives ScheduleContext, returns ShouldFire or SleepUntil artifact.
+persona: You are a system scheduling agent. Evaluate agent schedules and determine whether an agent should fire now or sleep until a future time.
+kind: worker
+tools: []
+excluded_tools: []
+denied_tools: []
+denied_tool_params: {}
+constraints:
+  max_iterations: 4000
+  max_tokens_per_cycle: 20000000
+  max_consecutive_failures: 3
+  requires_approval: []
+  approval_ttl_secs: 86400
+  coordination:
+    max_delegation_depth: 2
+    delegation_timeout_secs: 300
+    allow_transitive_delegation: false
+  allow_self_modification: false
+  max_duration_secs: null
+trust_level: local
+memory_tiers: []
+memory_consolidation: []
+prompt_pipeline: null
+circuit_breaker: null
+feedback_loops: []
+notification_rules: []
+retention: null
+llm_routing: null
+strategy: null
+state_machines: {}
+is_primary: false
+onboarding_completed: false
+user_memory_isolation: shared
+delegation_targets:
+- '*'
+
+social_persona:
+  introversion: 0.5
+  daily_tokens: 2000
+  opted_out: false

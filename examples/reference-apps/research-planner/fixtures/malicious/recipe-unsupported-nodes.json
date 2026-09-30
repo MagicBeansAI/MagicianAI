@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "refused": [
+    "retry",
+    "call_tool",
+    "invoke_action",
+    "mutate",
+    "run_procedure",
+    "agent_as_tool",
+    "emit_artifact",
+    "emit_receipt",
+    "mark_uncertain",
+    "deferred"
+  ],
+  "must_not_fallback": true
+}

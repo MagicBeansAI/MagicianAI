@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Magician Theme Previews</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #f5f5f5;
+      padding: 2rem;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 2rem;
+      color: #1a1a1a;
+    }
+
+    .themes-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .theme-card {
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    }
+
+    .theme-header {
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .theme-header h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .theme-header .badge {
+      font-size: 0.7rem;
+      padding: 0.25rem 0.5rem;
+      border-radius: 999px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .theme-body {
+      padding: 1.5rem;
+    }
+
+    .color-row {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .color-swatch {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.6rem;
+      font-weight: 600;
+    }
+
+    .color-group {
+      margin-bottom: 1.5rem;
+    }
+
+    .color-group-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+    }
+
+    .sample-ui {
+      border-radius: 12px;
+      padding: 1rem;
+      margin-top: 1rem;
+    }
+
+    .sample-btn {
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-right: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .sample-badge {
+      display: inline-flex;
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-right: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .sample-card {
+      border-radius: 8px;
+      padding: 1rem;
+      margin-top: 1rem;
+    }
+
+    .view-full-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 1rem;
+      padding: 0.5rem 1rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-decoration: none;
+      border-radius: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .view-full-link svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* ===== SOFT MACHINE ===== */
+    .soft-machine .theme-header {
+      background: #fefdfb;
+      color: #2d2a26;
+    }
+    .soft-machine .theme-header .badge {
+      background: #fff0f0;
+      color: #e85d5d;
+    }
+    .soft-machine .theme-body {
+      background: #f8f6f2;
+      color: #2d2a26;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .soft-machine .color-group-label { color: #8a847a; }
+    .soft-machine .sample-ui { background: #fefdfb; border: 1px solid #ebe7e0; }
+    .soft-machine .btn-primary { background: #e85d5d; color: white; }
+    .soft-machine .btn-secondary { background: #e8f0ec; color: #6b9080; }
+    .soft-machine .badge-success { background: #e8f5ed; color: #5fa67a; }
+    .soft-machine .badge-warning { background: #fdf6e8; color: #d4a34a; }
+    .soft-machine .badge-error { background: #fdecea; color: #d4574a; }
+    .soft-machine .badge-plum { background: #f0edf8; color: #8b7ec8; }
+    .soft-machine .sample-card { background: #ffffff; border: 1px solid #ebe7e0; }
+    .soft-machine .view-full-link { background: #fff0f0; color: #e85d5d; }
+    .soft-machine .view-full-link:hover { background: #e85d5d; color: white; }
+
+    /* ===== ARCANE TERMINAL ===== */
+    .arcane-terminal .theme-header {
+      background: #0a0a0f;
+      color: #e0e0e0;
+    }
+    .arcane-terminal .theme-header .badge {
+      background: rgba(0, 212, 170, 0.15);
+      color: #00d4aa;
+    }
+    .arcane-terminal .theme-body {
+      background: #12121a;
+      color: #e0e0e0;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .arcane-terminal .color-group-label { color: #6b6b7a; }
+    .arcane-terminal .sample-ui { background: #0a0a0f; border: 1px solid #2a2a3a; }
+    .arcane-terminal .btn-primary { background: #00d4aa; color: #0a0a0f; }
+    .arcane-terminal .btn-secondary { background: rgba(138, 100, 200, 0.15); color: #8a64c8; }
+    .arcane-terminal .badge-success { background: rgba(0, 212, 170, 0.15); color: #00d4aa; }
+    .arcane-terminal .badge-warning { background: rgba(255, 200, 87, 0.15); color: #ffc857; }
+    .arcane-terminal .badge-error { background: rgba(255, 107, 107, 0.15); color: #ff6b6b; }
+    .arcane-terminal .badge-plum { background: rgba(138, 100, 200, 0.15); color: #8a64c8; }
+    .arcane-terminal .sample-card { background: #1a1a24; border: 1px solid #2a2a3a; }
+    .arcane-terminal .view-full-link { background: rgba(0, 212, 170, 0.15); color: #00d4aa; }
+    .arcane-terminal .view-full-link:hover { background: #00d4aa; color: #0a0a0f; }
+
+    /* ===== EDITORIAL PRECISION ===== */
+    .editorial-precision .theme-header {
+      background: #fafaf8;
+      color: #1a1a1a;
+    }
+    .editorial-precision .theme-header .badge {
+      background: #1a1a1a;
+      color: #fafaf8;
+    }
+    .editorial-precision .theme-body {
+      background: #f5f5f3;
+      color: #1a1a1a;
+      font-family: 'Inter', sans-serif;
+    }
+    .editorial-precision .color-group-label { color: #8a8a8a; }
+    .editorial-precision .sample-ui { background: #fafaf8; border: 1px solid #e5e5e5; }
+    .editorial-precision .btn-primary { background: #1a1a1a; color: #fafaf8; }
+    .editorial-precision .btn-secondary { background: #f0f0f0; color: #4a4a4a; }
+    .editorial-precision .badge-success { background: #e8f5e9; color: #2e7d32; }
+    .editorial-precision .badge-warning { background: #fff8e1; color: #f57c00; }
+    .editorial-precision .badge-error { background: #ffebee; color: #c62828; }
+    .editorial-precision .badge-plum { background: #f3e5f5; color: #7b1fa2; }
+    .editorial-precision .sample-card { background: #ffffff; border: 1px solid #e5e5e5; }
+    .editorial-precision .view-full-link { background: #1a1a1a; color: #fafaf8; }
+    .editorial-precision .view-full-link:hover { background: #333; color: white; }
+
+    /* ===== MIDNIGHT OCEAN ===== */
+    .midnight-ocean .theme-header {
+      background: #0d1117;
+      color: #e6edf3;
+    }
+    .midnight-ocean .theme-header .badge {
+      background: rgba(88, 166, 255, 0.15);
+      color: #58a6ff;
+    }
+    .midnight-ocean .theme-body {
+      background: #161b22;
+      color: #e6edf3;
+      font-family: 'Inter', sans-serif;
+    }
+    .midnight-ocean .color-group-label { color: #6e7681; }
+    .midnight-ocean .sample-ui { background: #0d1117; border: 1px solid #30363d; }
+    .midnight-ocean .btn-primary { background: #58a6ff; color: #0d1117; }
+    .midnight-ocean .btn-secondary { background: rgba(163, 113, 247, 0.15); color: #a371f7; }
+    .midnight-ocean .badge-success { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+    .midnight-ocean .badge-warning { background: rgba(210, 153, 34, 0.15); color: #d29922; }
+    .midnight-ocean .badge-error { background: rgba(248, 81, 73, 0.15); color: #f85149; }
+    .midnight-ocean .badge-plum { background: rgba(163, 113, 247, 0.15); color: #a371f7; }
+    .midnight-ocean .sample-card { background: #21262d; border: 1px solid #30363d; }
+    .midnight-ocean .view-full-link { background: rgba(88, 166, 255, 0.15); color: #58a6ff; }
+    .midnight-ocean .view-full-link:hover { background: #58a6ff; color: #0d1117; }
+
+    /* ===== FOREST MIST ===== */
+    .forest-mist .theme-header {
+      background: #f5f7f4;
+      color: #2d3a2e;
+    }
+    .forest-mist .theme-header .badge {
+      background: #dfeee3;
+      color: #4a7c59;
+    }
+    .forest-mist .theme-body {
+      background: #eef2ec;
+      color: #2d3a2e;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .forest-mist .color-group-label { color: #6b7c6c; }
+    .forest-mist .sample-ui { background: #f5f7f4; border: 1px solid #d4ddd5; }
+    .forest-mist .btn-primary { background: #4a7c59; color: white; }
+    .forest-mist .btn-secondary { background: #f5e6dd; color: #c17f59; }
+    .forest-mist .badge-success { background: #dfeee3; color: #4a7c59; }
+    .forest-mist .badge-warning { background: #faf3dc; color: #c9a227; }
+    .forest-mist .badge-error { background: #f8e5e5; color: #b54a4a; }
+    .forest-mist .badge-plum { background: #f5f0e0; color: #a69356; }
+    .forest-mist .sample-card { background: #ffffff; border: 1px solid #d4ddd5; }
+    .forest-mist .view-full-link { background: #dfeee3; color: #4a7c59; }
+    .forest-mist .view-full-link:hover { background: #4a7c59; color: white; }
+
+    /* ===== NORDIC FROST ===== */
+    .nordic-frost .theme-header {
+      background: #f8f9fb;
+      color: #1e2a3b;
+    }
+    .nordic-frost .theme-header .badge {
+      background: #e0effa;
+      color: #3b82c4;
+    }
+    .nordic-frost .theme-body {
+      background: #eef1f5;
+      color: #1e2a3b;
+      font-family: 'Inter', sans-serif;
+    }
+    .nordic-frost .color-group-label { color: #6b7b8c; }
+    .nordic-frost .sample-ui { background: #f8f9fb; border: 1px solid #dce1e8; }
+    .nordic-frost .btn-primary { background: #3b82c4; color: white; }
+    .nordic-frost .btn-secondary { background: #e8ebef; color: #64748b; }
+    .nordic-frost .badge-success { background: #d1fae5; color: #059669; }
+    .nordic-frost .badge-warning { background: #fef3c7; color: #d97706; }
+    .nordic-frost .badge-error { background: #fee2e2; color: #dc2626; }
+    .nordic-frost .badge-plum { background: #eef2ff; color: #6366f1; }
+    .nordic-frost .sample-card { background: #ffffff; border: 1px solid #dce1e8; }
+    .nordic-frost .view-full-link { background: #e0effa; color: #3b82c4; }
+    .nordic-frost .view-full-link:hover { background: #3b82c4; color: white; }
+  </style>
+</head>
+<body>
+  <h1>Magician Theme Previews</h1>
+
+  <div class="themes-grid">
+    <!-- Soft Machine -->
+    <div class="theme-card soft-machine">
+      <div class="theme-header">
+        <span style="font-size: 1.5rem;">&#127800;</span>
+        <h2>Soft Machine</h2>
+        <span class="badge">Light - Default</span>
+      </div>
+      <div class="theme-body">
+        <p style="margin-bottom: 1rem; color: #5c564e;">Warm & Approachable - Coral accents with cream backgrounds</p>
+
+        <div class="sample-ui">
+          <div style="margin-bottom: 1rem;">
+            <button class="sample-btn btn-primary">Execute</button>
+            <button class="sample-btn btn-secondary">Edit Plan</button>
+          </div>
+          <div>
+            <span class="sample-badge badge-success">Ready</span>
+            <span class="sample-badge badge-warning">Pending</span>
+            <span class="sample-badge badge-error">Failed</span>
+            <span class="sample-badge badge-plum">Planning</span>
+          </div>
+          <div class="sample-card">
+            <strong>Sample Task Card</strong>
+            <p style="color: #8a847a; font-size: 0.85rem; margin-top: 0.5rem;">This is how content appears in Soft Machine theme</p>
+          </div>
+          <a href="03-soft-machine.html" target="_blank" class="view-full-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            View Full Preview
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Editorial Precision -->
+    <div class="theme-card editorial-precision">
+      <div class="theme-header">
+        <span style="font-size: 1.5rem;">&#128240;</span>
+        <h2>Editorial Precision</h2>
+        <span class="badge">Light</span>
+      </div>
+      <div class="theme-body">
+        <p style="margin-bottom: 1rem; color: #6a6a6a;">Refined & Professional - High contrast black/white</p>
+
+        <div class="sample-ui">
+          <div style="margin-bottom: 1rem;">
+            <button class="sample-btn btn-primary">Execute</button>
+            <button class="sample-btn btn-secondary">Edit Plan</button>
+          </div>
+          <div>
+            <span class="sample-badge badge-success">Ready</span>
+            <span class="sample-badge badge-warning">Pending</span>
+            <span class="sample-badge badge-error">Failed</span>
+            <span class="sample-badge badge-plum">Planning</span>
+          </div>
+          <div class="sample-card">
+            <strong>Sample Task Card</strong>
+            <p style="color: #8a8a8a; font-size: 0.85rem; margin-top: 0.5rem;">This is how content appears in Editorial Precision theme</p>
+          </div>
+          <a href="02-editorial-precision.html" target="_blank" class="view-full-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            View Full Preview
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Forest Mist -->
+    <div class="theme-card forest-mist">
+      <div class="theme-header">
+        <span style="font-size: 1.5rem;">&#127807;</span>
+        <h2>Forest Mist</h2>
+        <span class="badge">Light</span>
+      </div>
+      <div class="theme-body">
+        <p style="margin-bottom: 1rem; color: #4a5d4b;">Natural & Calming - Sage greens with organic feel</p>
+
+        <div class="sample-ui">
+          <div style="margin-bottom: 1rem;">
+            <button class="sample-btn btn-primary">Execute</button>
+            <button class="sample-btn btn-secondary">Edit Plan</button>
+          </div>
+          <div>
+            <span class="sample-badge badge-success">Ready</span>
+            <span class="sample-badge badge-warning">Pending</span>
+            <span class="sample-badge badge-error">Failed</span>
+            <span class="sample-badge badge-plum">Planning</span>
+          </div>
+          <div class="sample-card">
+            <strong>Sample Task Card</strong>
+            <p style="color: #6b7c6c; font-size: 0.85rem; margin-top: 0.5rem;">This is how content appears in Forest Mist theme</p>
+          </div>
+          <a href="05-forest-mist.html" target="_blank" class="view-full-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            View Full Preview
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Nordic Frost -->
+    <div class="theme-card nordic-frost">
+      <div class="theme-header">
+        <span style="font-size: 1.5rem;">&#10052;</span>
+        <h2>Nordic Frost</h2>
+        <span class="badge">Light</span>
+      </div>
+      <div class="theme-body">
+        <p style="margin-bottom: 1rem; color: #3d4f61;">Clean & Minimal - Ice blue accents, crisp design</p>
+
+        <div class="sample-ui">
+          <div style="margin-bottom: 1rem;">
+            <button class="sample-btn btn-primary">Execute</button>
+            <button class="sample-btn btn-secondary">Edit Plan</button>
+          </div>
+          <div>
+            <span class="sample-badge badge-success">Ready</span>
+            <span class="sample-badge badge-warning">Pending</span>
+            <span class="sample-badge badge-error">Failed</span>
+            <span class="sample-badge badge-plum">Planning</span>
+          </div>
+          <div class="sample-card">
+            <strong>Sample Task Card</strong>
+            <p style="color: #6b7b8c; font-size: 0.85rem; margin-top: 0.5rem;">This is how content appears in Nordic Frost theme</p>
+          </div>
+          <a href="06-nordic-frost.html" target="_blank" class="view-full-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            View Full Preview
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Arcane Terminal -->
+    <div class="theme-card arcane-terminal">
+      <div class="theme-header">
+        <span style="font-size: 1.5rem;">&#128302;</span>
+        <h2>Arcane Terminal</h2>
+        <span class="badge">Dark</span>
+      </div>
+      <div class="theme-body">
+        <p style="margin-bottom: 1rem; color: #9090a0;">Dark & Mystical - Cyan accents with deep purple undertones</p>
+
+        <div class="sample-ui">
+          <div style="margin-bottom: 1rem;">
+            <button class="sample-btn btn-primary">Execute</button>
+            <button class="sample-btn btn-secondary">Edit Plan</button>
+          </div>
+          <div>
+            <span class="sample-badge badge-success">Ready</span>
+            <span class="sample-badge badge-warning">Pending</span>
+            <span class="sample-badge badge-error">Failed</span>
+            <span class="sample-badge badge-plum">Planning</span>
+          </div>
+          <div class="sample-card">
+            <strong>Sample Task Card</strong>
+            <p style="color: #6b6b7a; font-size: 0.85rem; margin-top: 0.5rem;">This is how content appears in Arcane Terminal theme</p>
+          </div>
+          <a href="01-arcane-terminal.html" target="_blank" class="view-full-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            View Full Preview
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Midnight Ocean -->
+    <div class="theme-card midnight-ocean">
+      <div class="theme-header">
+        <span style="font-size: 1.5rem;">&#127754;</span>
+        <h2>Midnight Ocean</h2>
+        <span class="badge">Dark</span>
+      </div>
+      <div class="theme-body">
+        <p style="margin-bottom: 1rem; color: #8b949e;">Deep & Modern - Electric blue accents, GitHub-inspired</p>
+
+        <div class="sample-ui">
+          <div style="margin-bottom: 1rem;">
+            <button class="sample-btn btn-primary">Execute</button>
+            <button class="sample-btn btn-secondary">Edit Plan</button>
+          </div>
+          <div>
+            <span class="sample-badge badge-success">Ready</span>
+            <span class="sample-badge badge-warning">Pending</span>
+            <span class="sample-badge badge-error">Failed</span>
+            <span class="sample-badge badge-plum">Planning</span>
+          </div>
+          <div class="sample-card">
+            <strong>Sample Task Card</strong>
+            <p style="color: #6e7681; font-size: 0.85rem; margin-top: 0.5rem;">This is how content appears in Midnight Ocean theme</p>
+          </div>
+          <a href="04-midnight-ocean.html" target="_blank" class="view-full-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            View Full Preview
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

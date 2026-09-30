@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Card background -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/surface" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+
+    <!-- Wave curve at top -->
+    <item android:top="0dp">
+        <vector
+            android:width="360dp"
+            android:height="48dp"
+            android:viewportWidth="360"
+            android:viewportHeight="48">
+            <path
+                android:fillColor="@color/primary"
+                android:fillAlpha="0.1"
+                android:pathData="M0,0 L360,0 L360,24 Q270,48 180,24 T0,24 Z" />
+        </vector>
+    </item>
+
+    <!-- Wave curve at bottom -->
+    <item android:bottom="0dp">
+        <vector
+            android:width="360dp"
+            android:height="48dp"
+            android:viewportWidth="360"
+            android:viewportHeight="48">
+            <path
+                android:fillColor="@color/accent"
+                android:fillAlpha="0.08"
+                android:pathData="M0,24 Q90,0 180,24 T360,24 L360,48 L0,48 Z" />
+        </vector>
+    </item>
+</layer-list>

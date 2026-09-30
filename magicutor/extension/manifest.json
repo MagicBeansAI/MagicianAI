@@ -1,0 +1,72 @@
+{
+  "manifest_version": 3,
+  "name": "Magican",
+  "version": "0.2.2",
+  "description": "Take control of browser with Magican",
+  "permissions": [
+    "tabs",
+    "windows",
+    "debugger",
+    "tabCapture",
+    "offscreen",
+    "cookies",
+    "scripting",
+    "webNavigation",
+    "storage",
+    "alarms",
+    "sidePanel",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "gmail_mail_assist_latency.js",
+        "content-script.js",
+        "visual_overlay.js",
+        "ambient_browsing.js",
+        "contextual_assist_context.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "overlay_styles.css"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

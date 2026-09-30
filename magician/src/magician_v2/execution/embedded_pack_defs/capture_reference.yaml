@@ -1,0 +1,34 @@
+name: capture_reference
+description: Capture a screenshot of a provided URL to use as a design reference for the agent.
+version: "1.0.0"
+guide: |
+  Tool name: `capture_reference`
+
+  Captures a PNG of the provided URL and registers it as a `#vibedev` attachment.
+  Returns `{ ok, attachment_id, attachment_session_id, url, screenshot_path, full_page }`.
+
+  Pass `url` (required) and optional `full_page:true` for the whole scrollable
+  page (default is the viewport / above-the-fold shot).
+
+  You can pass the returned `attachment_id` and `attachment_session_id` to
+  `run_coding_task` so the agent can see the reference design.
+parameters:
+  - name: url
+    required: true
+    param_type: string
+    description: The URL of the external reference or design to capture.
+  - name: full_page
+    required: false
+    param_type: boolean
+    description: Capture the entire scrollable page instead of just the viewport. Defaults to false (viewport).
+implementation:
+  type: compiled
+  provider_name: capture_reference
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 150
+  categories:
+    - coding
+    - browser
+  composition_category: action
+  sandbox: none

@@ -1,0 +1,259 @@
+{
+  "$defs": {
+    "AppExpectedRecordRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "entity": {
+          "$ref": "#/$defs/AppName"
+        },
+        "record_id": {
+          "$ref": "#/$defs/AppRecordId"
+        },
+        "revision": {
+          "$ref": "#/$defs/AppRevision"
+        }
+      },
+      "required": [
+        "entity",
+        "record_id",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "AppMutationAtomicity": {
+      "enum": [
+        "all_or_nothing"
+      ],
+      "type": "string"
+    },
+    "AppMutationOperation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "entity": {
+              "$ref": "#/$defs/AppName"
+            },
+            "kind": {
+              "const": "create",
+              "type": "string"
+            },
+            "payload": true,
+            "record_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AppRecordId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Caller-chosen record id, when the caller needs to be able to name\nthe row again later.\n\nOmitted — the default and the norm — the store mints\n`rec_<hex>` from the mutation key and the `temporary_id`. That id is\nstable under replay, which is what makes a retried create an exact\nreplay rather than a second row, but it is unknowable to whoever\nwrote the package: it depends on the mutation key.\n\nThat is a problem for exactly one shape, and it is why this field\nexists. A declared behavior resolves its input by record id\n(`AppManifestBehaviorInputSelector`), so a package that owns a\nsingleton must be able to write a row it can name in its own\nmanifest. Without this, no literal an author can spell ever\nresolves, and the behavior fails to find its source record forever.\n\nNaming a row does not widen what a caller may write. The id is\nstill confined to an entity the caller is authorized to mutate, a\ncreate against an id that already exists is refused rather than\ntreated as an overwrite, and the host-minted `rec_` namespace is\nreserved so a caller cannot aim at an id the store is about to mint."
+            },
+            "temporary_id": {
+              "$ref": "#/$defs/AppName"
+            }
+          },
+          "required": [
+            "kind",
+            "entity",
+            "temporary_id",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "entity": {
+              "$ref": "#/$defs/AppName"
+            },
+            "kind": {
+              "const": "update",
+              "type": "string"
+            },
+            "patch": true,
+            "record_id": {
+              "$ref": "#/$defs/AppRecordId"
+            }
+          },
+          "required": [
+            "kind",
+            "entity",
+            "record_id",
+            "patch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "entity": {
+              "$ref": "#/$defs/AppName"
+            },
+            "kind": {
+              "const": "delete",
+              "type": "string"
+            },
+            "record_id": {
+              "$ref": "#/$defs/AppRecordId"
+            }
+          },
+          "required": [
+            "kind",
+            "entity",
+            "record_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "entity": {
+              "$ref": "#/$defs/AppName"
+            },
+            "kind": {
+              "const": "restore",
+              "type": "string"
+            },
+            "record_id": {
+              "$ref": "#/$defs/AppRecordId"
+            }
+          },
+          "required": [
+            "kind",
+            "entity",
+            "record_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "expected_from_revision": {
+              "$ref": "#/$defs/AppRevision"
+            },
+            "expected_to_revision": {
+              "$ref": "#/$defs/AppRevision"
+            },
+            "from_record_id": {
+              "$ref": "#/$defs/AppRecordId"
+            },
+            "kind": {
+              "const": "create_relation",
+              "type": "string"
+            },
+            "relation": {
+              "$ref": "#/$defs/AppName"
+            },
+            "to_record_id": {
+              "$ref": "#/$defs/AppRecordId"
+            }
+          },
+          "required": [
+            "kind",
+            "relation",
+            "from_record_id",
+            "to_record_id",
+            "expected_from_revision",
+            "expected_to_revision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "expected_from_revision": {
+              "$ref": "#/$defs/AppRevision"
+            },
+            "expected_to_revision": {
+              "$ref": "#/$defs/AppRevision"
+            },
+            "from_record_id": {
+              "$ref": "#/$defs/AppRecordId"
+            },
+            "kind": {
+              "const": "delete_relation",
+              "type": "string"
+            },
+            "relation": {
+              "$ref": "#/$defs/AppName"
+            },
+            "to_record_id": {
+              "$ref": "#/$defs/AppRecordId"
+            }
+          },
+          "required": [
+            "kind",
+            "relation",
+            "from_record_id",
+            "to_record_id",
+            "expected_from_revision",
+            "expected_to_revision"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AppName": {
+      "type": "string"
+    },
+    "AppProtocolVersion": {
+      "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    },
+    "AppRecordId": {
+      "type": "string"
+    },
+    "AppReference": {
+      "type": "string"
+    },
+    "AppRevision": {
+      "description": "A positive, monotonically increasing contract revision.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-mutation-command.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "atomicity": {
+      "$ref": "#/$defs/AppMutationAtomicity"
+    },
+    "expected_record_revisions": {
+      "items": {
+        "$ref": "#/$defs/AppExpectedRecordRevision"
+      },
+      "type": "array"
+    },
+    "expected_schema_revision": {
+      "$ref": "#/$defs/AppRevision"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/AppReference"
+    },
+    "operations": {
+      "items": {
+        "$ref": "#/$defs/AppMutationOperation"
+      },
+      "type": "array"
+    },
+    "protocol_version": {
+      "$ref": "#/$defs/AppProtocolVersion"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "idempotency_key",
+    "atomicity",
+    "expected_schema_revision",
+    "operations"
+  ],
+  "title": "AppMutationCommand",
+  "type": "object"
+}

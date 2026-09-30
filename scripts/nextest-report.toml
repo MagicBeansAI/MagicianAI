@@ -1,0 +1,14 @@
+[profile.rust-report]
+inherits = "default"
+fail-fast = false
+# The report profile saturates the workspace with four concurrent test
+# processes. Give a saturated macOS runner enough time to close inherited
+# output handles before classifying a passing process as leaky. Focused reruns
+# of the two tests that crossed the old two-second boundary exited cleanly in
+# under half a second; genuine descendants still trip this bounded deadline.
+leak-timeout = "3s"
+
+[profile.rust-report.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true

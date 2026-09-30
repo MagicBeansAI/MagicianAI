@@ -1,0 +1,33 @@
+name: ask_owner
+description: Ask the human owner a question on behalf of an external contact, then relay the owner's answer back.
+version: "1.0.0"
+guide: |
+  Tool name: `ask_owner`
+
+  Use this when an external contact (a stranger messaging on a connected channel)
+  asks something only the owner can answer. The question is surfaced to the owner
+  in their attention bar; when the owner replies, their answer is relayed back to
+  the contact automatically. You never need the owner's private data yourself.
+
+  - `question`: the question to put to the owner, in your own words.
+  - `context_summary`: a short note on who is asking and why (optional).
+parameters:
+  - name: question
+    required: true
+    param_type: string
+    description: The question to ask the owner, phrased for the owner to answer.
+  - name: context_summary
+    param_type: string
+    description: Optional short context about the contact and their request.
+implementation:
+  type: compiled
+  provider_name: ask_owner
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - harness
+    - communication
+    - owner
+  composition_category: communication
+  sandbox: none

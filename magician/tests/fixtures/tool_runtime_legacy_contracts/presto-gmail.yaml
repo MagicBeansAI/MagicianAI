@@ -1,0 +1,448 @@
+name: presto-gmail
+version: 0.1.0
+parameters:
+- name: command
+  required: true
+  param_type: string
+  description: Outer-loop fallback command string after `gws gmail`, for example "+triage --max 10" or "users messages list --params '{\"userId\":\"me\"}'". Ignored while implementation.type is primitive.
+- name: timeout_secs
+  param_type: integer
+  description: Command timeout in seconds
+  default: '30'
+auth:
+  required: true
+  setup_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth login -s gmail,sheets,drive,docs,calendar
+  check_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth status
+  reauth_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth login -s gmail,sheets,drive,docs,calendar
+  error_patterns:
+  - '401'
+  - authError
+  - No OAuth client configured
+  - Token has been expired or revoked
+native_action_schemas:
+  triage:
+    description: |
+      Run `gws gmail +triage` to summarize unread or query-matched
+      inbox messages. Typed params — schema validates shape before the
+      call leaves the LLM.
+    argv:
+    - gmail
+    - +triage
+    parameters:
+    - query
+    - max
+    - label
+    - format
+    - extra_args
+    required: []
+    parameter_overrides:
+      query:
+        type: string
+        description: Gmail search query (e.g. "is:unread", "from:foo@x.com newer_than:7d"). Maps to `--query`.
+      max:
+        type: integer
+        description: Maximum messages to triage. Maps to `--max`.
+      label:
+        type: string
+        description: Restrict to messages with this label. Maps to `--label`.
+      format:
+        type: string
+        enum:
+        - json
+        - table
+        - text
+        description: Output format. Maps to `--format`.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens for flags this schema does not yet surface.
+      args: &id001
+        type: array
+        items:
+          type: string
+        description: |
+          DEPRECATED — use the typed parameters above plus `extra_args`.
+          Kept for the long-tail actions that have not been typified yet.
+    arg_mappings:
+    - type: flag
+      flag: --query
+      param: query
+    - type: flag
+      flag: --max
+      param: max
+    - type: flag
+      flag: --label
+      param: label
+    - type: flag
+      flag: --format
+      param: format
+    - type: passthrough
+      param: extra_args
+  send:
+    description: |
+      Run `gws gmail +send`. Confirm recipients/subject/body before
+      sending. Typed params enforce required `to`, `subject`, `body`.
+    argv:
+    - gmail
+    - +send
+    parameters:
+    - to
+    - cc
+    - bcc
+    - subject
+    - body
+    - reply_to_message_id
+    - extra_args
+    required:
+    - to
+    - subject
+    - body
+    parameter_overrides:
+      to:
+        type: string
+        description: Primary recipients (comma-separated for multiple). Maps to `--to`.
+      cc:
+        type: string
+        description: CC recipients (comma-separated). Maps to `--cc`.
+      bcc:
+        type: string
+        description: BCC recipients (comma-separated). Maps to `--bcc`.
+      subject:
+        type: string
+        description: Email subject line. Maps to `--subject`.
+      body:
+        type: string
+        description: Email body text. Maps to `--body`.
+      reply_to_message_id:
+        type: string
+        description: Message id to reply to (sets In-Reply-To/References headers). Maps to `--reply-to-message-id`.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: |
+          Escape hatch — for repeated flags such as `--attachments`,
+          pass them here in pairs, e.g. ["--attachments", "/tmp/x.pdf",
+          "--attachments", "/tmp/y.pdf"].
+    arg_mappings:
+    - type: flag
+      flag: --to
+      param: to
+    - type: flag
+      flag: --cc
+      param: cc
+    - type: flag
+      flag: --bcc
+      param: bcc
+    - type: flag
+      flag: --subject
+      param: subject
+    - type: flag
+      flag: --body
+      param: body
+    - type: flag
+      flag: --reply-to-message-id
+      param: reply_to_message_id
+    - type: passthrough
+      param: extra_args
+  reply:
+    description: |
+      Run `gws gmail +reply` for one message id. Typed params enforce
+      required `message_id` and `body`.
+    argv:
+    - gmail
+    - +reply
+    parameters:
+    - message_id
+    - body
+    - include_original
+    - extra_args
+    required:
+    - message_id
+    - body
+    parameter_overrides:
+      message_id:
+        type: string
+        description: Gmail message id to reply to. Maps to `--message-id`.
+      body:
+        type: string
+        description: Reply body text. Maps to `--body`.
+      include_original:
+        type: boolean
+        description: Quote the original message in the reply. Maps to `--include-original` (bool flag — emitted only when true).
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+    - type: flag
+      flag: --message-id
+      param: message_id
+    - type: flag
+      flag: --body
+      param: body
+    - type: bool_flag
+      flag: --include-original
+      param: include_original
+    - type: passthrough
+      param: extra_args
+  reply_all:
+    description: |
+      Run `gws gmail +reply-all` for one message id. Typed params
+      enforce required `message_id` and `body`.
+    argv:
+    - gmail
+    - +reply-all
+    parameters:
+    - message_id
+    - body
+    - include_original
+    - extra_args
+    required:
+    - message_id
+    - body
+    parameter_overrides:
+      message_id:
+        type: string
+        description: Gmail message id to reply to. Maps to `--message-id`.
+      body:
+        type: string
+        description: Reply body text. Maps to `--body`.
+      include_original:
+        type: boolean
+        description: Quote the original message. Maps to `--include-original` (bool flag).
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+    - type: flag
+      flag: --message-id
+      param: message_id
+    - type: flag
+      flag: --body
+      param: body
+    - type: bool_flag
+      flag: --include-original
+      param: include_original
+    - type: passthrough
+      param: extra_args
+  forward:
+    description: |
+      Run `gws gmail +forward` for one message id to new recipients.
+      Typed params enforce required `message_id` and `to`.
+    argv:
+    - gmail
+    - +forward
+    parameters:
+    - message_id
+    - to
+    - body
+    - extra_args
+    required:
+    - message_id
+    - to
+    parameter_overrides:
+      message_id:
+        type: string
+        description: Source message id to forward. Maps to `--message-id`.
+      to:
+        type: string
+        description: Forward recipients (comma-separated). Maps to `--to`.
+      body:
+        type: string
+        description: Optional intro text added before the forwarded content. Maps to `--body`.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+    - type: flag
+      flag: --message-id
+      param: message_id
+    - type: flag
+      flag: --to
+      param: to
+    - type: flag
+      flag: --body
+      param: body
+    - type: passthrough
+      param: extra_args
+  watch:
+    description: Run `gws gmail +watch` to stream new messages. Use only when a long-running watcher is explicitly needed.
+    argv:
+    - gmail
+    - +watch
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 300
+  messages_list:
+    description: Run `gws gmail users messages list`. Use Gmail search queries in --params.q and prefer --format json.
+    argv:
+    - gmail
+    - users
+    - messages
+    - list
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  messages_get:
+    description: Run `gws gmail users messages get` for a message id.
+    argv:
+    - gmail
+    - users
+    - messages
+    - get
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  messages_trash:
+    description: Run `gws gmail users messages trash`. Use only after identifying the exact message id.
+    argv:
+    - gmail
+    - users
+    - messages
+    - trash
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  messages_modify:
+    description: Run `gws gmail users messages modify` to add or remove labels on a message.
+    argv:
+    - gmail
+    - users
+    - messages
+    - modify
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  labels_list:
+    description: Run `gws gmail users labels list` to inspect available labels.
+    argv:
+    - gmail
+    - users
+    - labels
+    - list
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+  threads_list:
+    description: Run `gws gmail users threads list` to search matching conversation threads.
+    argv:
+    - gmail
+    - users
+    - threads
+    - list
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  threads_get:
+    description: Run `gws gmail users threads get` for a thread id.
+    argv:
+    - gmail
+    - users
+    - threads
+    - get
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  raw:
+    description: 'Escape hatch: run exact argv tokens after `gws gmail` for any Gmail CLI command not listed above.'
+    argv:
+    - gmail
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  help:
+    description: 'Run exact gws help argv. Examples: ["--help"], ["gmail","--help"], ["gmail","+send","--help"].'
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    skip_tool_name: true
+  auth_status:
+    description: Run `gws auth status` for Presto's own account (reach.magican@gmail.com).
+    argv:
+    - auth
+    - status
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+  auth_login:
+    description: Run `gws auth login` for Presto's own account (reach.magican@gmail.com) when re-authentication is explicitly needed.
+    argv:
+    - auth
+    - login
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+  auth_setup:
+    description: Run `gws auth setup` for first-time OAuth setup.
+    argv:
+    - auth
+    - setup
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+implementation:
+  type: primitive
+  command:
+  - 'gws'
+  program: 'gws'
+  fixed_args:
+  - gmail
+  arg_mappings:
+  - type: split_positional
+    param: command
+  content_type: email
+  timeout_secs: 30
+  env:
+    GOOGLE_WORKSPACE_CLI_CONFIG_DIR: '{scope_capability_auth_root}/gws-presto'
+    CLOUDSDK_CONFIG: '{scope_capability_auth_root}/gws-presto/cloudsdk'
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - messaging
+  - email
+  - gmail
+  - communication
+  composition_category: messaging_operations
+  sandbox: shell

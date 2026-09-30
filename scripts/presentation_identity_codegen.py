@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Generate presentation-only identity constants for every product surface."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Mapping
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+MANIFEST_PATH = REPO_ROOT / "data" / "presentation_identity.json"
+OUTPUT_PATHS = {
+    "rust": REPO_ROOT
+    / "magician"
+    / "src"
+    / "magician_v2"
+    / "presentation_identity_generated.rs",
+    "typescript": REPO_ROOT
+    / "ui"
+    / "unified-ui"
+    / "src"
+    / "lib"
+    / "presentationIdentity.generated.ts",
+    "swift": REPO_ROOT / "magios" / "Shared" / "ProductIdentity.generated.swift",
+    "kotlin": REPO_ROOT
+    / "magdroid"
+    / "android"
+    / "bridge"
+    / "src"
+    / "main"
+    / "kotlin"
+    / "ai"
+    / "magicbeans"
+    / "magdroid"
+    / "identity"
+    / "ProductIdentity.generated.kt",
+    "desktop_rust": REPO_ROOT
+    / "desktop"
+    / "src-tauri"
+    / "src"
+    / "presentation_identity_generated.rs",
+    "desktop_typescript": REPO_ROOT
+    / "desktop"
+    / "src"
+    / "lib"
+    / "presentationIdentity.generated.ts",
+}
+REQUIRED_CONSUMER_TOKENS = {
+    REPO_ROOT / "magician" / "src" / "magician_v2" / "presentation_identity.rs": (
+        'include!("presentation_identity_generated.rs");',
+    ),
+    REPO_ROOT / "ui" / "unified-ui" / "src" / "lib" / "presentationIdentity.ts": (
+        "from './presentationIdentity.generated'",
+    ),
+    REPO_ROOT / "magios" / "Magios" / "SettingsView.swift": (
+        "ProductIdentity.productName",
+    ),
+    REPO_ROOT
+    / "magdroid"
+    / "android"
+    / "app"
+    / "src"
+    / "main"
+    / "kotlin"
+    / "ai"
+    / "magicbeans"
+    / "magdroid"
+    / "ui"
+    / "SettingsScreen.kt": ("import ai.magicbeans.magdroid.identity.ProductIdentity",),
+    REPO_ROOT
+    / "magdroid"
+    / "android"
+    / "bridge"
+    / "src"
+    / "main"
+    / "kotlin"
+    / "ai"
+    / "magicbeans"
+    / "magdroid"
+    / "voice"
+    / "WakeService.kt": ("import ai.magicbeans.magdroid.identity.ProductIdentity",),
+    REPO_ROOT / "desktop" / "src-tauri" / "src" / "main.rs": (
+        "mod presentation_identity_generated;",
+        "presentation_identity_generated::{HOST_APP_NAME, PRODUCT_NAME}",
+    ),
+    REPO_ROOT / "desktop" / "src" / "lib" / "Settings.svelte": (
+        'from "./presentationIdentity.generated.js"',
+    ),
+}
+NO_RAW_PRODUCT_LITERAL_PATHS = tuple(REQUIRED_CONSUMER_TOKENS)[2:]
+EXPECTED_KEYS = {
+    "schema_version",
+    "product_name",
+    "host_app_name",
+    "assistant_fallback_name",
+}
+IDENTITY_KEYS = (
+    "product_name",
+    "host_app_name",
+    "assistant_fallback_name",
+)
+RAW_PRODUCT_LITERAL_ALLOW_MARKER = (
+    "presentation-identity-allow: stable-operational-identifier"
+)
+
+
+def load_identity(path: Path = MANIFEST_PATH) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read presentation identity manifest {path}: {error}") from error
+
+    if not isinstance(value, dict):
+        raise ValueError("presentation identity manifest must be a JSON object")
+    keys = set(value)
+    if keys != EXPECTED_KEYS:
+        missing = sorted(EXPECTED_KEYS - keys)
+        unknown = sorted(keys - EXPECTED_KEYS)
+        raise ValueError(
+            f"presentation identity keys differ: missing={missing}, unknown={unknown}"
+        )
+    if value["schema_version"] != 1:
+        raise ValueError("presentation identity schema_version must be 1")
+
+    for key in IDENTITY_KEYS:
+        field = value[key]
+        if not isinstance(field, str):
+            raise ValueError(f"presentation identity {key} must be a string")
+        if not field.strip() or field != field.strip():
+            raise ValueError(f"presentation identity {key} must be non-empty and trimmed")
+        if len(field) > 80:
+            raise ValueError(f"presentation identity {key} exceeds 80 characters")
+        if any(ord(character) < 32 or ord(character) == 127 for character in field):
+            raise ValueError(f"presentation identity {key} contains a control character")
+    return value
+
+
+def quoted(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def kotlin_quoted(value: object) -> str:
+    # Kotlin interpolates dollars even inside an ordinary quoted literal.
+    return quoted(value).replace("$", r"\$")
+
+
+def render_outputs(identity: Mapping[str, object]) -> dict[Path, str]:
+    product = quoted(identity["product_name"])
+    host = quoted(identity["host_app_name"])
+    assistant = quoted(identity["assistant_fallback_name"])
+    kotlin_product = kotlin_quoted(identity["product_name"])
+    kotlin_host = kotlin_quoted(identity["host_app_name"])
+    kotlin_assistant = kotlin_quoted(identity["assistant_fallback_name"])
+    generated = "Generated by scripts/presentation_identity_codegen.py; do not edit."
+
+    return {
+        OUTPUT_PATHS["rust"]: (
+            f"// {generated}\n"
+            f"pub const PRODUCT_NAME: &str = {product};\n"
+            f"pub const HOST_APP_NAME: &str = {host};\n"
+            f"pub const ASSISTANT_FALLBACK_NAME: &str = {assistant};\n"
+        ),
+        OUTPUT_PATHS["typescript"]: (
+            f"// {generated}\n"
+            f"export const PRODUCT_NAME: string = {product};\n"
+            f"export const HOST_APP_NAME: string = {host};\n"
+            f"export const ASSISTANT_FALLBACK_NAME: string = {assistant};\n"
+        ),
+        OUTPUT_PATHS["swift"]: (
+            f"// {generated}\n"
+            "enum ProductIdentity {\n"
+            f"    static let productName = {product}\n"
+            f"    static let hostAppName = {host}\n"
+            f"    static let assistantFallbackName = {assistant}\n"
+            "}\n"
+        ),
+        OUTPUT_PATHS["kotlin"]: (
+            f"// {generated}\n"
+            "package ai.magicbeans.magdroid.identity\n\n"
+            "object ProductIdentity {\n"
+            f"    const val productName = {kotlin_product}\n"
+            f"    const val hostAppName = {kotlin_host}\n"
+            f"    const val assistantFallbackName = {kotlin_assistant}\n"
+            "}\n"
+        ),
+        OUTPUT_PATHS["desktop_rust"]: (
+            f"// {generated}\n"
+            f"pub const PRODUCT_NAME: &str = {product};\n"
+            f"pub const HOST_APP_NAME: &str = {host};\n"
+        ),
+        OUTPUT_PATHS["desktop_typescript"]: (
+            f"// {generated}\n"
+            f"export const PRODUCT_NAME: string = {product};\n"
+            f"export const HOST_APP_NAME: string = {host};\n"
+        ),
+    }
+
+
+def atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def generate(outputs: Mapping[Path, str]) -> None:
+    for path, content in outputs.items():
+        atomic_write(path, content)
+        print(f"generated {path.relative_to(REPO_ROOT)}")
+
+
+def check(
+    outputs: Mapping[Path, str], identity: Mapping[str, object] | None = None
+) -> int:
+    errors: list[str] = []
+    for path, expected in outputs.items():
+        try:
+            actual = path.read_text(encoding="utf-8")
+        except OSError:
+            actual = ""
+        if actual != expected:
+            errors.append(f"generated file is stale: {path.relative_to(REPO_ROOT)}")
+
+    consumer_sources: dict[Path, str] = {}
+    for path, tokens in REQUIRED_CONSUMER_TOKENS.items():
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"cannot read consumer {path.relative_to(REPO_ROOT)}: {error}")
+            continue
+        consumer_sources[path] = source
+        for token in tokens:
+            if token not in source:
+                errors.append(
+                    f"consumer {path.relative_to(REPO_ROOT)} is missing generated identity seam {token!r}"
+                )
+
+    if identity is None:
+        identity = load_identity()
+    product_name = str(identity["product_name"])
+    for path in NO_RAW_PRODUCT_LITERAL_PATHS:
+        source = consumer_sources.get(path)
+        if source is None:
+            continue
+        for number, line in enumerate(source.splitlines(), start=1):
+            if (
+                product_name in line
+                and ('"' in line or "'" in line)
+                and RAW_PRODUCT_LITERAL_ALLOW_MARKER not in line
+            ):
+                errors.append(
+                    f"raw product-name literal in {path.relative_to(REPO_ROOT)}:{number}"
+                )
+
+    if errors:
+        print("presentation identity drift detected:")
+        for error in errors:
+            print(f"  - {error}")
+        print("run: make presentation-identity-codegen")
+        return 1
+    print("presentation identity manifest, generated files, and migrated consumers agree")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices=("generate", "check"))
+    args = parser.parse_args()
+    try:
+        identity = load_identity()
+        outputs = render_outputs(identity)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.mode == "generate":
+        generate(outputs)
+        return 0
+    return check(outputs, identity)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

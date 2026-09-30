@@ -1,0 +1,94 @@
+{
+  "name": "entity_mapping",
+  "version": "1.0.0",
+  "content": [
+    "Map extracted entities to tool parameters using semantic understanding.",
+    "",
+    "**Tool Parameters**:",
+    "{tool_parameters}",
+    "",
+    "**Extracted Entities**:",
+    "{extracted_entities}",
+    "",
+    "**Original Query**: \"{query}\"",
+    "",
+    "**Task**:",
+    "1. Match entities to parameters by semantic meaning (not just exact name match)",
+    "2. Determine appropriate type conversions (string → integer, etc.)",
+    "3. Identify confidence level for each mapping (0.0-1.0)",
+    "4. List any required parameters that cannot be filled from entities",
+    "",
+    "**Examples**:",
+    "- Entity \"target\" → Parameter \"hostname\" (semantic match)",
+    "- Entity \"port\" → Parameter \"port_number\" (semantic match)",
+    "- Entity \"timeout\" value \"30\" → Parameter \"timeout_seconds\" value 30 (type: int)",
+    "- Entity \"enable_verbose\" value \"yes\" → Parameter \"verbose\" value true (type: bool)",
+    "",
+    "**Response Format** (JSON):",
+    "{",
+    "  \"mappings\": [",
+    "    {",
+    "      \"entity_key\": \"target\",",
+    "      \"parameter_name\": \"hostname\",",
+    "      \"value\": \"google.com\",",
+    "      \"confidence\": 0.95,",
+    "      \"reasoning\": \"Target entity maps semantically to hostname parameter\"",
+    "    }",
+    "  ],",
+    "  \"missing_required\": [\"api_key\"],",
+    "  \"overall_confidence\": 0.85",
+    "}",
+    "",
+    "**Important**:",
+    "- Return ONLY valid JSON, no additional text",
+    "- Use semantic matching, not just exact names",
+    "- Consider parameter descriptions when matching",
+    "- Values should be in their original form (they will be type-converted based on schema)",
+    "- For missing required parameters, return empty array if all are satisfied",
+    "- Overall confidence should reflect the quality of all mappings combined"
+  ],
+  "variables": [
+    {
+      "name": "tool_parameters",
+      "description": "Formatted description of tool parameters with types and descriptions",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "- hostname [string] (required): Target hostname\n- port [integer] (optional): Port number"
+      ]
+    },
+    {
+      "name": "extracted_entities",
+      "description": "Formatted list of extracted entities with their values",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "- target: \"google.com\"\n- port: \"443\""
+      ]
+    },
+    {
+      "name": "query",
+      "description": "Original user query for context",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "ping google.com on port 443",
+        "deploy to us-west-2 with 30 second timeout"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "ParameterElicitation",
+    "description": "Maps extracted entities to tool parameters using semantic understanding",
+    "author": "MagicianV2",
+    "created_at": "2025-10-03T01:51:00Z",
+    "changelog": "Initial version of entity mapping prompt",
+    "tags": [
+      "entity_mapping",
+      "parameter_mapping",
+      "semantic_matching",
+      "type_conversion"
+    ],
+    "estimated_tokens": 450
+  }
+}

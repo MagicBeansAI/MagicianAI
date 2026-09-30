@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "scope": { "principal": "owner", "workspace": "default" },
+  "delivery": {
+    "decision_id": "delivery-root-follow-up-1",
+    "lane": "follow_up",
+    "projection_id": "canonical-projection-1",
+    "policy_snapshot_id": "bandit-policy-1",
+    "policy_model_version": "bandit-model-1",
+    "posterior_version": 7,
+    "created_at": 1000,
+    "expires_at": 901000
+  },
+  "item": {
+    "candidate_id": "follow_up:annotation-1",
+    "source_revision": "distill:3",
+    "position": 1,
+    "root_policy_propensity": 0.25,
+    "conditional_delivery_propensity": 1.0,
+    "attribution_item_frozen": true
+  },
+  "impression": {
+    "impression_id": "impression-1",
+    "delivery_id": "delivery-page-1",
+    "page_index": 0,
+    "position": 1,
+    "verified": true
+  },
+  "outcome": {
+    "outcome_id": "outcome-1",
+    "decision_id": "delivery-root-follow-up-1",
+    "candidate_id": "follow_up:annotation-1",
+    "source_revision": "distill:3",
+    "impression_id": "impression-1",
+    "expected_attribution_quality": "verified_impression",
+    "expected_posterior_version_before": 7,
+    "expected_single_update": true
+  }
+}

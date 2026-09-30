@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Bounded, dependency-free arXiv Atom search with canonical v1 output."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime
+
+ATOM = "{http://www.w3.org/2005/Atom}"
+ARXIV = "{http://arxiv.org/schemas/atom}"
+
+
+def text(element: ET.Element | None, default: str = "") -> str:
+    return " ".join((element.text if element is not None and element.text else default).split())
+
+
+def parse_response(payload: bytes, limit: int) -> list[dict]:
+    root = ET.fromstring(payload)
+    items = []
+    for entry in root.findall(f"{ATOM}entry")[:limit]:
+        entry_id = text(entry.find(f"{ATOM}id"))
+        arxiv_id = entry_id.rsplit("/", 1)[-1]
+        canonical_url = f"https://arxiv.org/abs/{arxiv_id}"
+        published = text(entry.find(f"{ATOM}published"))
+        published_at_ms = None
+        if published:
+            published_at_ms = int(
+                datetime.fromisoformat(published.replace("Z", "+00:00")).timestamp() * 1000
+            )
+        authors = [text(author.find(f"{ATOM}name")) for author in entry.findall(f"{ATOM}author")]
+        categories = [node.attrib.get("term", "") for node in entry.findall(f"{ATOM}category")]
+        primary = entry.find(f"{ARXIV}primary_category")
+        items.append(
+            {
+                "source_item_id": arxiv_id,
+                "title": text(entry.find(f"{ATOM}title")),
+                "cheap_text": text(entry.find(f"{ATOM}summary")),
+                "canonical_url": canonical_url,
+                "published_at_ms": published_at_ms,
+                "source_label": "arXiv",
+                "metadata": {
+                    "authors": authors,
+                    "categories": categories,
+                    "primary_category": primary.attrib.get("term", "") if primary is not None else "",
+                },
+            }
+        )
+    return items
+
+
+def search(query: str, limit: int, category: str) -> dict:
+    expression = f'all:"{query}"'
+    if category:
+        expression = f"cat:{category} AND ({expression})"
+    url = "https://export.arxiv.org/api/query?" + urllib.parse.urlencode(
+        {
+            "search_query": expression,
+            "start": 0,
+            "max_results": limit,
+            "sortBy": "submittedDate",
+            "sortOrder": "descending",
+        }
+    )
+    request = urllib.request.Request(url, headers={"User-Agent": "MagicianContentReader/1"})
+    with urllib.request.urlopen(request, timeout=25) as response:
+        payload = response.read(2 * 1024 * 1024)
+    return {"items": parse_response(payload, limit), "next_cursor": None, "cost": None}
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    query = str(request.get("query", "")).strip()
+    limit = int(request.get("limit", 10))
+    category = str(request.get("category", "")).strip()
+    if not query or not 1 <= limit <= 50:
+        print(json.dumps({"error": "query is required and limit must be between 1 and 50"}))
+        return 0
+    try:
+        print(json.dumps(search(query, limit, category)))
+    except (urllib.error.URLError, TimeoutError, ET.ParseError, ValueError) as error:
+        digest = hashlib.sha256(str(error).encode()).hexdigest()[:12]
+        print(json.dumps({"error": f"arxiv request failed ({digest})"}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

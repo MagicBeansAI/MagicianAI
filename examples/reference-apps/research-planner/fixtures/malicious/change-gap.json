@@ -1,0 +1,17 @@
+{
+  "installation_id": "install_fixture",
+  "surface_revision": 1,
+  "after_change_sequence": 7,
+  "through_change_sequence": 10,
+  "current_change_sequence": 10,
+  "changes": [
+    {
+      "entity": "research_topic",
+      "record_id": "topic_1",
+      "record_revision": 5,
+      "change_sequence": 10
+    }
+  ],
+  "has_more": false,
+  "reset_required": false
+}

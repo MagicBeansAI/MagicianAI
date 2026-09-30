@@ -1,0 +1,1440 @@
+/*
+ * Fleet Civilization — GAME CHROME layer.
+ *
+ * The game-feel skin for HUD panels and sheets: framed plates, nameplate
+ * banners, stat blocks, inventory slot grids, status seals. Deliberately
+ * PALETTE-NEUTRAL — every colour comes from the app theme tokens (the Jarvis
+ * rule: game feel via structure, framing, iconography and motion, never an
+ * imposed fantasy palette). Imported once (FleetWorld) — classes are global.
+ */
+
+/*
+ * Departure Mono 1.500 — Helena Zhang, SIL Open Font License 1.1. The binary
+ * and its licence live at static/fonts/departure-mono/, following the same
+ * convention as the world's model packs (static/fleet/<pack>/LICENSE-*). Local
+ * file, no CDN: /square has to come up on an offline machine.
+ *
+ * This is a real bitmap design rather than a decorative "pixel-look" face, so
+ * every stem is axis-aligned and it renders RAZOR SHARP — which is the whole
+ * point. It is drawn on an 11px grid, so --game-display-sm/lg below are 11px
+ * and 22px: at those sizes the stems land exactly on device pixels. Pick a size
+ * off the grid and the glyphs go soft, which is the failure mode this identity
+ * exists to avoid.
+ *
+ * Only a Regular ships. Every rule that sets this family must therefore also
+ * set font-weight: 400 — ask for bold and the browser SYNTHESISES it by
+ * smearing the outline sideways, which is exactly the blur we are avoiding.
+ * font-synthesis: none on the display rules is the backstop for that.
+ */
+@font-face {
+	font-family: 'Departure Mono';
+	src: url('/fonts/departure-mono/DepartureMono-Regular.woff2') format('woff2');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+/* --- framed game panel: double-line border + corner ticks --- */
+.gc-frame {
+	position: relative;
+	border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.35)) !important;
+	box-shadow:
+		inset 0 0 0 3px var(--bg-elevated, var(--bg-card, #fff)),
+		inset 0 0 0 4px var(--border-subtle, rgba(128, 128, 128, 0.28)),
+		0 24px 70px rgba(0, 0, 0, 0.35) !important;
+}
+.gc-frame::before,
+.gc-frame::after {
+	content: '';
+	position: absolute;
+	width: 0.55rem;
+	height: 0.55rem;
+	border: 2px solid var(--text-secondary, rgba(128, 128, 128, 0.8));
+	opacity: 0.55;
+	pointer-events: none;
+}
+.gc-frame::before {
+	top: 0.3rem;
+	left: 0.3rem;
+	border-right: none;
+	border-bottom: none;
+}
+.gc-frame::after {
+	bottom: 0.3rem;
+	right: 0.3rem;
+	border-left: none;
+	border-top: none;
+}
+
+/* --- game window TITLE BAR: full-width strip bleeding to the frame edge.
+ * Windows using it must pad 1rem 1.1rem. --- */
+.gc-titlebar {
+	display: flex;
+	align-items: center;
+	gap: 0.55rem;
+	margin: -1rem -1.1rem 0.3rem;
+	padding: 0.55rem 2.6rem 0.5rem 1rem;
+	border-bottom: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.28));
+	background: linear-gradient(
+		180deg,
+		color-mix(in srgb, var(--text-primary, #888) 8%, transparent),
+		transparent
+	);
+}
+.gc-titlebar__icon {
+	font-size: 1.15rem;
+	line-height: 1;
+}
+.gc-titlebar__text {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+.gc-titlebar__title {
+	font-size: 1rem;
+	font-weight: 800;
+	line-height: 1.25;
+	letter-spacing: 0.01em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.gc-titlebar__sub {
+	font-size: 0.7rem;
+	font-weight: 500;
+	color: var(--text-secondary, #777);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* --- urgent block: the needs-you section reads FIRST --- */
+.gc-urgent {
+	border: 1px solid var(--fleet-needs, #ae6500);
+	border-left-width: 4px;
+	border-radius: 0.5rem;
+	background: color-mix(in srgb, var(--fleet-needs, #ae6500) 9%, transparent);
+	padding: 0.5rem 0.6rem;
+}
+
+/* --- nameplate: centred title with flanking rules --- */
+.gc-nameplate {
+	display: flex;
+	align-items: center;
+	gap: 0.55rem;
+	text-align: center;
+}
+.gc-nameplate::before,
+.gc-nameplate::after {
+	content: '';
+	flex: 1;
+	height: 1px;
+	background: linear-gradient(
+		90deg,
+		transparent,
+		var(--text-secondary, rgba(128, 128, 128, 0.7)),
+		transparent
+	);
+	opacity: 0.6;
+}
+
+/* --- section heading with a trailing rule --- */
+.gc-rule {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+.gc-rule::after {
+	content: '';
+	flex: 1;
+	height: 1px;
+	background: var(--border-subtle, rgba(128, 128, 128, 0.3));
+}
+
+/* --- stat plates: icon over value over label --- */
+.gc-plates {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(4rem, 1fr));
+	gap: 0.4rem;
+}
+.gc-plate {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.06rem;
+	padding: 0.4rem 0.25rem 0.35rem;
+	border-radius: 0.5rem;
+	border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.28));
+	background: color-mix(in srgb, var(--bg-card, #f5f5f5) 55%, transparent);
+}
+.gc-plate__icon {
+	font-size: 0.95rem;
+	line-height: 1;
+}
+.gc-plate__value {
+	font-size: 0.92rem;
+	font-weight: 800;
+	line-height: 1.15;
+}
+.gc-plate__label {
+	font-size: 0.6rem;
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+	color: var(--text-secondary, #777);
+}
+
+/* --- inventory slot grid --- */
+.gc-slots {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(4.4rem, 1fr));
+	gap: 0.35rem;
+}
+.gc-slot {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 0.15rem;
+	min-height: 3.4rem;
+	padding: 0.3rem 0.25rem;
+	border-radius: 0.45rem;
+	border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.3));
+	background:
+		linear-gradient(160deg, color-mix(in srgb, var(--bg-card, #eee) 70%, transparent), transparent);
+	box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12);
+	font-size: 0.62rem;
+	text-align: center;
+	color: inherit;
+	overflow: hidden;
+}
+.gc-slot__icon {
+	font-size: 1.05rem;
+	line-height: 1;
+}
+.gc-slot__label {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-secondary, #666);
+}
+button.gc-slot {
+	cursor: pointer;
+}
+button.gc-slot:hover {
+	border-color: var(--accent-primary, #888);
+}
+
+/* --- round status seal (wax-stamp energy, app-token colours) --- */
+.gc-seal {
+	display: inline-grid;
+	place-items: center;
+	width: 3rem;
+	height: 3rem;
+	border-radius: 50%;
+	border: 2px solid var(--border-subtle, rgba(128, 128, 128, 0.4));
+	box-shadow: inset 0 0 0 3px var(--bg-elevated, #fff);
+	font-size: 0.56rem;
+	font-weight: 900;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	transform: rotate(-8deg);
+	flex-shrink: 0;
+}
+/* Same split as --game-tone / --game-tone-text below: the ring is the state
+ * colour at full strength, the 0.56rem label is the same colour pulled toward
+ * the surface's body text so it clears 4.5:1. The seal label sits on
+ * --bg-elevated (its inset ring), where the raw state colours read 2.85-3.76. */
+.gc-seal[data-tone='good'] {
+	border-color: var(--fleet-working, #20773d);
+	color: color-mix(in srgb, var(--fleet-working, #20773d) 60%, var(--text-primary));
+}
+.gc-seal[data-tone='warn'] {
+	border-color: var(--fleet-needs, #ae6500);
+	color: color-mix(in srgb, var(--fleet-needs, #ae6500) 60%, var(--text-primary));
+}
+.gc-seal[data-tone='bad'] {
+	border-color: var(--color-error, #e5484d);
+	color: color-mix(in srgb, var(--color-error, #e5484d) 60%, var(--text-primary));
+}
+.gc-seal[data-tone='calm'] {
+	border-color: var(--fleet-paused, #8b5cf6);
+	color: color-mix(in srgb, var(--fleet-paused, #8b5cf6) 60%, var(--text-primary));
+}
+
+/* --- guild banner header: heraldic hue block + shield initial --- */
+.gc-banner {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	margin: -0.85rem -0.95rem 0.4rem;
+	padding: 0.6rem 0.95rem 0.55rem;
+	border-bottom: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.25));
+	background: linear-gradient(
+		180deg,
+		hsl(var(--gc-hue, 210) 45% 50% / 0.22),
+		transparent
+	);
+}
+.gc-banner__shield {
+	display: grid;
+	place-items: center;
+	width: 2rem;
+	height: 2.3rem;
+	clip-path: polygon(0 0, 100% 0, 100% 68%, 50% 100%, 0 68%);
+	background: hsl(var(--gc-hue, 210) 50% 48%);
+	color: #fff;
+	font-weight: 900;
+	font-size: 0.95rem;
+	flex-shrink: 0;
+}
+
+/* --- standing name plaque: who this is, carried on the world itself ---
+ *
+ * ONE plaque style, TWO surfaces. The campus anchors it over a 3D citizen
+ * (FleetHud) and the office floor hangs it over a seated head (OfficeFloor);
+ * both are "a crew member, named, where they are", so both draw the same
+ * object. It lives here rather than in either component because the second
+ * surface is exactly when a scoped copy becomes two styles that drift.
+ *
+ * A hard-edged label that belongs to the world rather than to the panel
+ * chrome — square corners, no blur, bitmap caps, the same vocabulary as the
+ * crew panels. The fill and the two label colours below were measured as a
+ * set. The display face ships Regular alone, so the name cannot ask for bold
+ * without the browser smearing a synthetic one. */
+.fw-plaque {
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+	padding: 0.1rem 0.25rem;
+	border: 1px solid rgba(12, 18, 24, 0.55);
+	background: rgba(252, 248, 238, 0.94);
+	color: #1f2b33;
+	font-family: var(--game-font-display, ui-monospace, SFMono-Regular, Menlo, monospace);
+	font-size: 0.6875rem;
+	font-weight: 400;
+	font-synthesis: none;
+	line-height: 1.35;
+	letter-spacing: 1px;
+	text-transform: uppercase;
+	white-space: nowrap;
+	pointer-events: none;
+	box-shadow: 0 1px 0 rgba(12, 18, 24, 0.35);
+}
+/* Stacked: the name over its chip instead of beside it. Same plaque, turned
+ * through ninety degrees, for surfaces where the horizontal pitch between two
+ * crew members is fixed and narrow — the office floor's desk cell is about
+ * 108px and a side-by-side plaque overruns it, so every second name would be
+ * culled for a three-pixel overlap. Turning it makes the plaque as wide as its
+ * widest line, which fits, and it is also how a desk nameplate is built. */
+.fw-plaque--stacked {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 0.1rem;
+	text-align: center;
+}
+/* The chip fill is the status token deepened toward near-black, because the
+ * tokens themselves sit mid-value (L* 37-52) so that they clear the lawn as
+ * ground rings — and at mid-value neither black nor white label text reaches
+ * 4.5:1 on every vibe. Deepening the fill lets one white label colour clear
+ * all five with margin. These plaques exist to make crew identity readable
+ * without hover, so the contrast is the point of them.
+ *
+ * That headroom is one-directional, so it is an invariant, not a safety net:
+ * white on this mix holds 4.5:1 only while a status token stays under about
+ * L* 58 (it fails by L* 60). Every current token is 33-52, but the obvious
+ * future retune — "make the ring pop more on the lawn" — is LIGHTER, and
+ * would break these labels silently. Keep status tokens under L* 58, or
+ * lower the mix percentage here at the same time. */
+.fw-plaque__role {
+	padding: 0 0.2rem;
+	background: color-mix(in srgb, var(--fleet-idle, #0078a4) 82%, #0b1116);
+	color: #fff;
+	font-weight: 400;
+}
+.fw-plaque__role[data-vibe='working'] {
+	background: color-mix(in srgb, var(--fleet-working, #20773d) 82%, #0b1116);
+}
+.fw-plaque__role[data-vibe='needs'] {
+	background: color-mix(in srgb, var(--fleet-needs, #ae6500) 82%, #0b1116);
+}
+.fw-plaque__role[data-vibe='paused'] {
+	background: color-mix(in srgb, var(--fleet-paused, #8b5cf6) 82%, #0b1116);
+}
+.fw-plaque__role[data-vibe='offline'] {
+	background: color-mix(in srgb, var(--fleet-offline, #4f5860) 82%, #0b1116);
+}
+
+/* --- quest stamp for finished entries --- */
+.gc-stamped {
+	opacity: 0.62;
+}
+.gc-stamped .gc-stamp {
+	font-weight: 900;
+	letter-spacing: 0.05em;
+}
+
+/*
+ * Desktop command-surface foundation.
+ *
+ * These tokens are intentionally independent from the world's palette. Game
+ * state aliases may resolve to --fleet-* colors, but every material and text
+ * color continues to follow the app theme.
+ */
+:root {
+	/* Five-level type scale: caption, label, body, title, display. */
+	--game-type-1: 0.6875rem;
+	--game-type-2: 0.75rem;
+	--game-type-3: 0.875rem;
+	--game-type-4: 1.125rem;
+	--game-type-5: 1.5rem;
+	--game-line-tight: 1.2;
+	--game-line-body: 1.5;
+	--game-weight-medium: 600;
+	--game-weight-strong: 750;
+
+	/* Display type. Two sizes only, both multiples of the face's 11px grid —
+	 * the reference identity this is modelled on runs its whole interface on a
+	 * small label size and one big title size, and the discipline is what makes
+	 * it read as a system rather than as a font swap. Tracking is in whole
+	 * pixels for the same reason a size is: a fractional advance walks the
+	 * glyphs off the pixel grid one character at a time. */
+	--game-font-display: 'Departure Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+	--game-display-sm: 0.6875rem;
+	--game-display-lg: 1.375rem;
+	--game-display-track-sm: 1px;
+	--game-display-track-lg: 2px;
+
+	/* Four-pixel spacing rhythm. */
+	--game-space-1: 0.25rem;
+	--game-space-2: 0.5rem;
+	--game-space-3: 0.75rem;
+	--game-space-4: 1rem;
+	--game-space-5: 1.5rem;
+	--game-space-6: 2rem;
+	--game-space-7: 3rem;
+
+	/* Stable desktop regions and click targets. */
+	--game-target-sm: 2rem;
+	--game-target-md: 2.5rem;
+	--game-hud-top-height: 3.25rem;
+	--game-hud-left-width: 13.5rem;
+	--game-hud-left-half-width: 6.75rem;
+	--game-hud-gap: 0.75rem;
+	--game-hud-gutter: var(--game-hud-gap);
+	--game-inspector-width: clamp(21rem, 27vw, 25rem);
+	--game-inspector-half-width: clamp(10.5rem, 13.5vw, 12.5rem);
+	--game-inspector-width-wide: clamp(25rem, 32vw, 30rem);
+	--game-inspector-half-width-wide: clamp(12.5rem, 16vw, 15rem);
+	--game-workspace-nav-width: 13.5rem;
+	--game-workspace-context-height: 5.5rem;
+	--game-command-bar-width: min(
+		45rem,
+		calc(
+			100vw - var(--game-hud-left-width) - var(--game-inspector-width) -
+			var(--game-hud-gap) - var(--game-hud-gap) - var(--game-hud-gap)
+		)
+	);
+
+	/* Semantic state contract. */
+	--game-state-neutral: var(--text-secondary, #667085);
+	--game-state-active: var(--accent-primary, #3978d4);
+	--game-state-success: var(--fleet-working, #20773d);
+	--game-state-attention: var(--fleet-needs, #ae6500);
+	--game-state-danger: var(--color-error, #d92d20);
+	--game-state-paused: var(--fleet-paused, #8b5cf6);
+
+	--game-radius-sm: 0.25rem;
+	--game-radius-md: 0.5rem;
+	--game-shadow-hud: 0 0.5rem 1.5rem rgba(16, 24, 40, 0.18);
+	--game-shadow-panel: -0.75rem 0 2rem rgba(16, 24, 40, 0.22);
+
+	/* Focus, layers, and authored motion. */
+	--game-focus-color: var(--focus-ring, var(--game-state-active));
+	--game-focus-ring: 0 0 0 2px var(--game-material-workspace), 0 0 0 4px var(--game-focus-color);
+	--game-layer-world: 0;
+	--game-layer-hud: 20;
+	--game-layer-command: 24;
+	--game-layer-inspector: 30;
+	--game-layer-workspace: 40;
+	--game-layer-system: 50;
+	--game-layer-tooltip: 60;
+	--game-motion-fast: 120ms;
+	--game-motion-base: 200ms;
+	--game-motion-deliberate: 320ms;
+	--game-ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
+	--game-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+}
+
+/*
+ * Resolve app-theme materials at the Town Square boundary. Keeping these
+ * aliases local prevents a live theme switch or stylesheet HMR update from
+ * pairing a stale light fallback with newly inherited dark-theme text.
+ */
+.square-hero {
+	--game-material-hud: color-mix(in srgb, var(--bg-elevated, var(--bg-card, Canvas)) 90%, transparent);
+	--game-material-panel: color-mix(in srgb, var(--bg-elevated, var(--bg-card, Canvas)) 97%, transparent);
+	--game-material-workspace: var(--bg-base, var(--bg-surface, var(--bg-card, Canvas)));
+	--game-material-raised: var(--bg-card, var(--bg-elevated, Canvas));
+	--game-material-muted: color-mix(in srgb, var(--text-primary, CanvasText) 6%, transparent);
+	--game-material-selected: color-mix(in srgb, var(--game-state-active) 12%, transparent);
+	--game-border: var(--border-subtle, color-mix(in srgb, var(--text-secondary, CanvasText) 28%, transparent));
+	--game-border-soft: color-mix(in srgb, var(--game-border) 68%, transparent);
+	--game-border-strong: color-mix(in srgb, var(--text-secondary, CanvasText) 54%, transparent);
+	--game-text: var(--text-primary, CanvasText);
+	--game-text-muted: var(--text-secondary, CanvasText);
+	--game-text-inverse: var(--text-inverse, Canvas);
+}
+
+/*
+ * A tone has two forms, and they are not interchangeable.
+ *
+ * --game-tone is a FILL: borders, left rules, dots, tinted backgrounds. It is
+ * the state colour at full strength.
+ *
+ * --game-tone-text is the same tone as TEXT, pulled toward the surface's own
+ * body colour so it stays legible. Neither source palette is a text palette:
+ * the world tokens are tuned to read as rings on a bright lawn (success and
+ * attention land at 2.85 and 3.53 on dark HUD material), and the app's
+ * semantic tokens are accents rather than text — aliasing to them is worse,
+ * not better, because --color-warning is a pale yellow that reads 1.25 on
+ * light. Deriving from --text-primary instead is theme-agnostic, which matters
+ * because app.css carries twenty-odd themes, and needs no per-theme table.
+ *
+ * WHAT WAS ACTUALLY MEASURED: every tone clears 4.5:1 on OPAQUE surfaces — the
+ * inspector/workspace panel and the app card — on the default light and dark
+ * themes. That is narrower than it sounds, and two known gaps remain, both of
+ * them the same trap:
+ *
+ *   - --game-material-hud and --game-material-panel are 90%/97% over
+ *     TRANSPARENT, and on /square what is behind them is the live WebGL canvas.
+ *     So a floating HUD label is really on bg-elevated composited over lawn,
+ *     paving or sky, and some of those combinations fall under 4.5:1 (worst
+ *     measured 4.04, dark theme over paving).
+ *   - .game-ui-objective-row repaints under its own label on :hover
+ *     (--game-material-muted) and [data-selected] (--game-material-selected),
+ *     and both of those are translucent over that already-translucent panel.
+ *     Worst measured 3.40.
+ *
+ * Fixing those means giving the HUD an opaque backing behind text, or deriving
+ * the tone text from the composited surface rather than from --text-primary.
+ * Neither is done here.
+ *
+ * Set both together. --game-tone-text cannot be derived once at :root, because
+ * custom properties substitute at the element that declares them, so it would
+ * capture the root's tone and never track a descendant's.
+ *
+ * The pairing invariant is the cost of this shape, and it is worth knowing what
+ * buys it. Inlining the mix at the eight text sites instead — color-mix(...
+ * var(--game-tone) 60%, var(--text-primary)) — would substitute at the USING
+ * element, which inherits --game-tone from its nearest ancestor setter, so the
+ * :root objection does not apply to it and the invariant would disappear
+ * entirely. What it cannot do is preserve the untoned default: these sites read
+ * var(--game-tone-text, var(--game-text-muted)), so with no tone ancestor they
+ * fall back to the plain muted grey, whereas the inlined form would mix that
+ * muted grey toward --text-primary and shift it. Untoned is the common case
+ * here — most stat icons, eyebrows and row markers carry no tone — so the
+ * variable stays.
+ */
+[data-game-tone='neutral'] {
+	--game-tone: var(--game-state-neutral);
+	--game-tone-text: color-mix(in srgb, var(--game-state-neutral) 60%, var(--text-primary));
+}
+[data-game-tone='active'] {
+	--game-tone: var(--game-state-active);
+	--game-tone-text: color-mix(in srgb, var(--game-state-active) 60%, var(--text-primary));
+}
+[data-game-tone='success'] {
+	--game-tone: var(--game-state-success);
+	--game-tone-text: color-mix(in srgb, var(--game-state-success) 60%, var(--text-primary));
+}
+[data-game-tone='attention'] {
+	--game-tone: var(--game-state-attention);
+	--game-tone-text: color-mix(in srgb, var(--game-state-attention) 60%, var(--text-primary));
+}
+[data-game-tone='danger'] {
+	--game-tone: var(--game-state-danger);
+	--game-tone-text: color-mix(in srgb, var(--game-state-danger) 60%, var(--text-primary));
+}
+[data-game-tone='paused'] {
+	--game-tone: var(--game-state-paused);
+	--game-tone-text: color-mix(in srgb, var(--game-state-paused) 60%, var(--text-primary));
+}
+
+.game-ui-sr-only {
+	position: absolute !important;
+	width: 1px !important;
+	height: 1px !important;
+	padding: 0 !important;
+	margin: -1px !important;
+	overflow: hidden !important;
+	clip: rect(0, 0, 0, 0) !important;
+	white-space: nowrap !important;
+	border: 0 !important;
+}
+
+.game-ui-hud-button {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	min-width: var(--game-target-md);
+	height: var(--game-target-md);
+	gap: var(--game-space-2);
+	padding: 0 var(--game-space-3);
+	border: 1px solid var(--game-border);
+	border-radius: var(--game-radius-md);
+	background: var(--game-material-hud);
+	box-shadow: 0 0.25rem 0.75rem rgba(16, 24, 40, 0.12);
+	color: var(--game-text);
+	font: inherit;
+	font-size: var(--game-type-2);
+	font-weight: var(--game-weight-strong);
+	line-height: 1;
+	letter-spacing: 0;
+	cursor: pointer;
+	backdrop-filter: blur(10px);
+	transition:
+		background-color var(--game-motion-fast) ease,
+		border-color var(--game-motion-fast) ease,
+		color var(--game-motion-fast) ease,
+		transform var(--game-motion-fast) ease;
+}
+.game-ui-hud-button[data-size='compact'] {
+	min-width: var(--game-target-sm);
+	height: var(--game-target-sm);
+	padding-inline: var(--game-space-2);
+}
+.game-ui-hud-button[data-icon-only='true'] { padding-inline: 0; }
+.game-ui-hud-button[data-tone]:not([data-game-tone='neutral']) {
+	border-color: color-mix(in srgb, var(--game-tone) 55%, var(--game-border));
+	color: var(--game-tone-text);
+}
+.game-ui-hud-button[data-active='true'],
+.game-ui-hud-button[aria-pressed='true'] {
+	border-color: var(--game-tone, var(--game-state-active));
+	background: color-mix(in srgb, var(--game-tone, var(--game-state-active)) 14%, var(--game-material-hud));
+}
+.game-ui-hud-button:hover:not(:disabled) {
+	border-color: var(--game-tone, var(--game-border-strong));
+	background: var(--game-material-raised);
+}
+.game-ui-hud-button:active:not(:disabled) { transform: translateY(1px); }
+.game-ui-hud-button:disabled { cursor: not-allowed; opacity: 0.48; }
+.game-ui-hud-button:focus-visible {
+	outline: none;
+	box-shadow: var(--game-focus-ring);
+}
+.game-ui-hud-button__icon {
+	display: inline-grid;
+	place-items: center;
+	width: 1rem;
+	height: 1rem;
+	flex: 0 0 auto;
+}
+.game-ui-hud-button__label { white-space: nowrap; }
+.game-ui-hud-button__badge {
+	position: absolute;
+	top: -0.3rem;
+	right: -0.3rem;
+	display: grid;
+	place-items: center;
+	min-width: 1rem;
+	height: 1rem;
+	padding: 0 0.2rem;
+	border: 2px solid var(--game-material-workspace);
+	border-radius: 999px;
+	background: var(--game-state-danger);
+	color: #fff;
+	font-size: var(--game-type-1);
+	font-weight: 800;
+	line-height: 1;
+}
+
+.game-ui-status-instrument {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	grid-template-areas: 'icon label' 'icon value' 'icon detail';
+	align-items: center;
+	column-gap: var(--game-space-2);
+	min-width: 6.5rem;
+	min-height: var(--game-target-md);
+	padding: var(--game-space-1) var(--game-space-3);
+	border: 0;
+	border-left: 2px solid var(--game-tone, var(--game-border-strong));
+	background: transparent;
+	color: var(--game-text);
+	font: inherit;
+	text-align: left;
+}
+button.game-ui-status-instrument { cursor: pointer; }
+button.game-ui-status-instrument:hover { background: var(--game-material-muted); }
+button.game-ui-status-instrument:focus-visible {
+	outline: none;
+	box-shadow: var(--game-focus-ring);
+}
+.game-ui-status-instrument__icon {
+	grid-area: icon;
+	display: grid;
+	place-items: center;
+	width: 1.25rem;
+	color: var(--game-tone-text, var(--game-text-muted));
+}
+.game-ui-status-instrument__label {
+	grid-area: label;
+	color: var(--game-text-muted);
+	font-size: var(--game-type-1);
+	font-weight: var(--game-weight-medium);
+	line-height: var(--game-line-tight);
+}
+.game-ui-status-instrument__value {
+	grid-area: value;
+	min-width: 0;
+	font-size: var(--game-type-3);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.game-ui-status-instrument__detail {
+	grid-area: detail;
+	color: var(--game-text-muted);
+	font-size: var(--game-type-1);
+	line-height: var(--game-line-tight);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.game-ui-inspector {
+	pointer-events: auto;
+	position: absolute;
+	top: var(--game-hud-gap);
+	right: var(--game-hud-gap);
+	bottom: var(--game-hud-gap);
+	z-index: var(--game-layer-inspector);
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr) auto;
+	width: var(--game-inspector-width);
+	min-width: 21rem;
+	max-width: calc(
+		100% - var(--game-hud-left-width) - var(--game-hud-gap) - var(--game-hud-gap) -
+		var(--game-hud-gap)
+	);
+	overflow: hidden;
+	border: 1px solid var(--game-border);
+	border-radius: var(--game-radius-md);
+	background: var(--game-material-panel);
+	box-shadow: var(--game-shadow-panel);
+	color: var(--game-text);
+	backdrop-filter: blur(14px);
+	animation: game-ui-inspector-enter var(--game-motion-base) var(--game-ease-enter);
+}
+.game-ui-inspector[data-width='wide'] { width: var(--game-inspector-width-wide); }
+.game-ui-inspector:focus { outline: none; }
+.game-ui-inspector__header {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: var(--game-space-3);
+	align-items: start;
+	padding: var(--game-space-4);
+	border-bottom: 1px solid var(--game-border);
+}
+.game-ui-inspector__identity {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: var(--game-space-3);
+	align-items: center;
+	min-width: 0;
+}
+.game-ui-inspector__title-wrap { min-width: 0; }
+.game-ui-inspector__eyebrow {
+	margin: 0 0 var(--game-space-1);
+	color: var(--game-tone-text, var(--game-text-muted));
+	font-size: var(--game-type-1);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	text-transform: uppercase;
+}
+.game-ui-inspector__title {
+	margin: 0;
+	font-size: var(--game-type-4);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	letter-spacing: 0;
+	overflow-wrap: anywhere;
+}
+.game-ui-inspector__subtitle {
+	margin: var(--game-space-1) 0 0;
+	color: var(--game-text-muted);
+	font-size: var(--game-type-2);
+	line-height: var(--game-line-body);
+}
+.game-ui-inspector__tools { display: flex; gap: var(--game-space-2); }
+.game-ui-inspector__body {
+	min-height: 0;
+	overflow: auto;
+	padding: 0 var(--game-space-4) var(--game-space-5);
+	background: var(--game-material-panel);
+	color: var(--game-text);
+	overscroll-behavior: contain;
+}
+.game-ui-inspector__footer {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: var(--game-space-2);
+	min-height: calc(var(--game-target-md) + var(--game-space-3) + var(--game-space-3));
+	padding: var(--game-space-3) var(--game-space-4);
+	border-top: 1px solid var(--game-border);
+	background: var(--game-material-raised);
+}
+
+.game-ui-workspace {
+	pointer-events: auto;
+	position: absolute;
+	inset: 0;
+	z-index: var(--game-layer-workspace);
+	display: grid;
+	grid-template-rows: var(--game-workspace-context-height) minmax(0, 1fr);
+	min-width: 64rem;
+	min-height: 36rem;
+	overflow: hidden;
+	background: var(--game-material-workspace);
+	color: var(--game-text);
+	animation: game-ui-workspace-enter var(--game-motion-deliberate) var(--game-ease-enter);
+}
+.game-ui-workspace[data-context='false'] { grid-template-rows: minmax(0, 1fr); }
+.game-ui-workspace[data-presentation='overlay'] {
+	top: 4.75rem;
+	right: max(2rem, calc((100% - 88rem) / 2));
+	bottom: 2rem;
+	left: max(4.5rem, calc((100% - 88rem) / 2));
+	inset-block: 4.75rem 2rem;
+	min-width: 0;
+	min-height: 30rem;
+	border: 1px solid var(--game-border-strong);
+	border-radius: var(--game-radius-md);
+	box-shadow: var(--game-shadow-panel);
+}
+.game-ui-workspace[data-presentation='docked'] {
+	position: relative;
+	inset: auto;
+	z-index: 0;
+	min-width: 0;
+	min-height: 0;
+	height: 100%;
+	animation: none;
+	background: transparent;
+}
+.game-ui-workspace[data-presentation='docked'] .game-ui-workspace__header {
+	display: none;
+}
+.game-ui-workspace__backdrop {
+	pointer-events: auto;
+	position: absolute;
+	inset: 0;
+	z-index: calc(var(--game-layer-workspace) - 1);
+	padding: 0;
+	border: 0;
+	background: color-mix(in srgb, var(--game-material-workspace) 28%, transparent);
+	cursor: default;
+}
+.game-ui-workspace:focus { outline: none; }
+.game-ui-workspace__context {
+	position: relative;
+	overflow: hidden;
+	border-bottom: 1px solid var(--game-border);
+	background: var(--game-material-muted);
+}
+.game-ui-workspace__frame {
+	display: grid;
+	grid-template-columns: var(--game-workspace-nav-width) minmax(0, 1fr);
+	min-height: 0;
+}
+.game-ui-workspace__frame[data-navigation='false'] { grid-template-columns: minmax(0, 1fr); }
+.game-ui-workspace__nav {
+	min-width: 0;
+	overflow: auto;
+	padding: var(--game-space-4) var(--game-space-3);
+	border-right: 1px solid var(--game-border);
+	background: var(--game-material-raised);
+}
+.game-ui-workspace__main {
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr) auto;
+	min-width: 0;
+	min-height: 0;
+}
+.game-ui-workspace__header {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: var(--game-space-3);
+	min-height: 4.5rem;
+	padding: var(--game-space-3) var(--game-space-5);
+	border-bottom: 1px solid var(--game-border);
+	background: var(--game-material-raised);
+}
+.game-ui-workspace__heading { min-width: 0; }
+.game-ui-workspace__title {
+	margin: 0;
+	font-size: var(--game-type-5);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	letter-spacing: 0;
+}
+.game-ui-workspace__subtitle {
+	margin: var(--game-space-1) 0 0;
+	color: var(--game-text-muted);
+	font-size: var(--game-type-2);
+	line-height: var(--game-line-body);
+}
+.game-ui-workspace__actions,
+.game-ui-workspace__footer {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: var(--game-space-2);
+}
+.game-ui-workspace__body {
+	min-width: 0;
+	min-height: 0;
+	overflow: auto;
+	padding: var(--game-space-5);
+	background: var(--game-material-workspace);
+	color: var(--game-text);
+	overscroll-behavior: contain;
+}
+.game-ui-workspace__footer {
+	min-height: calc(var(--game-target-md) + var(--game-space-3) + var(--game-space-3));
+	padding: var(--game-space-3) var(--game-space-5);
+	border-top: 1px solid var(--game-border);
+	background: var(--game-material-raised);
+}
+
+.game-ui-section {
+	padding: var(--game-space-5) 0;
+	border-bottom: 1px solid var(--game-border);
+}
+.game-ui-section:last-child { border-bottom: 0; }
+.game-ui-section[data-compact='true'] { padding-block: var(--game-space-4); }
+.game-ui-section__header {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: start;
+	gap: var(--game-space-3);
+	margin-bottom: var(--game-space-3);
+}
+.game-ui-section__title {
+	margin: 0;
+	font-size: var(--game-type-3);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	letter-spacing: 0;
+}
+.game-ui-section__description {
+	margin: var(--game-space-1) 0 0;
+	color: var(--game-text-muted);
+	font-size: var(--game-type-2);
+	line-height: var(--game-line-body);
+}
+.game-ui-section__actions { display: flex; align-items: center; gap: var(--game-space-2); }
+
+.game-ui-stat {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	grid-template-areas: 'icon value' 'icon label' 'icon detail';
+	align-items: center;
+	column-gap: var(--game-space-2);
+	min-width: 0;
+	margin: 0;
+	padding: var(--game-space-2) 0;
+}
+.game-ui-stat__icon {
+	grid-area: icon;
+	display: grid;
+	place-items: center;
+	width: 1.5rem;
+	height: 1.5rem;
+	color: var(--game-tone-text, var(--game-text-muted));
+}
+.game-ui-stat__term { display: contents; }
+.game-ui-stat__label {
+	grid-area: label;
+	color: var(--game-text-muted);
+	font-size: var(--game-type-1);
+	font-weight: var(--game-weight-medium);
+	line-height: var(--game-line-tight);
+}
+.game-ui-stat__value {
+	grid-area: value;
+	margin: 0;
+	font-size: var(--game-type-4);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	overflow-wrap: anywhere;
+}
+.game-ui-stat__detail {
+	grid-area: detail;
+	margin: var(--game-space-1) 0 0;
+	color: var(--game-text-muted);
+	font-size: var(--game-type-1);
+	line-height: var(--game-line-body);
+}
+
+.game-ui-objective-row {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: var(--game-space-3);
+	width: 100%;
+	min-height: 3.5rem;
+	padding: var(--game-space-2) var(--game-space-3);
+	border: 0;
+	border-left: 3px solid var(--game-tone, var(--game-border));
+	border-radius: 0;
+	background: transparent;
+	color: var(--game-text);
+	font: inherit;
+	text-align: left;
+}
+button.game-ui-objective-row { cursor: pointer; }
+button.game-ui-objective-row:hover:not(:disabled) { background: var(--game-material-muted); }
+.game-ui-objective-row[data-selected='true'] { background: var(--game-material-selected); }
+.game-ui-objective-row[data-complete='true'] {
+	--game-tone: var(--game-state-success);
+	--game-tone-text: color-mix(in srgb, var(--game-state-success) 60%, var(--text-primary));
+}
+.game-ui-objective-row:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 2px var(--game-focus-color);
+}
+.game-ui-objective-row:disabled { cursor: not-allowed; opacity: 0.5; }
+.game-ui-objective-row__marker {
+	display: grid;
+	place-items: center;
+	width: 1.5rem;
+	height: 1.5rem;
+	color: var(--game-tone-text, var(--game-text-muted));
+}
+.game-ui-objective-row__content { min-width: 0; }
+.game-ui-objective-row__title {
+	display: block;
+	font-size: var(--game-type-3);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.game-ui-objective-row__detail,
+.game-ui-objective-row__meta {
+	display: block;
+	margin-top: var(--game-space-1);
+	color: var(--game-text-muted);
+	font-size: var(--game-type-2);
+	line-height: var(--game-line-tight);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.game-ui-objective-row__progress {
+	position: relative;
+	height: 0.25rem;
+	margin-top: var(--game-space-2);
+	overflow: hidden;
+	background: var(--game-material-muted);
+}
+.game-ui-objective-row__progress > span {
+	display: block;
+	height: 100%;
+	background: var(--game-tone, var(--game-state-active));
+	transition: width var(--game-motion-base) var(--game-ease-enter);
+}
+.game-ui-objective-row__state {
+	max-width: 8rem;
+	color: var(--game-tone-text, var(--game-text-muted));
+	font-size: var(--game-type-1);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	text-align: right;
+	text-transform: uppercase;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.game-ui-command-bar {
+	--game-command-inspector-width: var(--game-inspector-width);
+	--game-command-inspector-half-width: var(--game-inspector-half-width);
+	pointer-events: auto;
+	position: absolute;
+	left: calc(
+		50% + var(--game-hud-left-half-width) - var(--game-command-inspector-half-width)
+	);
+	bottom: var(--game-hud-gap);
+	z-index: var(--game-layer-command);
+	display: grid;
+	grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+	align-items: center;
+	gap: var(--game-space-3);
+	width: min(
+		45rem,
+		calc(
+			100vw - var(--game-hud-left-width) - var(--game-command-inspector-width) -
+			var(--game-hud-gap) - var(--game-hud-gap) - var(--game-hud-gap)
+		)
+	);
+	min-height: calc(var(--game-target-md) + var(--game-space-2) + var(--game-space-2));
+	padding: var(--game-space-2);
+	border: 1px solid var(--game-border);
+	border-radius: var(--game-radius-md);
+	background: var(--game-material-hud);
+	box-shadow: var(--game-shadow-hud);
+	color: var(--game-text);
+	transform: translateX(-50%);
+	backdrop-filter: blur(12px);
+	animation: game-ui-command-enter var(--game-motion-base) var(--game-ease-enter);
+}
+.game-ui-command-bar:focus { outline: none; }
+.game-ui-command-bar__context {
+	min-width: 0;
+	padding-inline: var(--game-space-2) var(--game-space-3);
+	border-right: 1px solid var(--game-border);
+}
+.game-ui-command-bar__label {
+	display: block;
+	font-size: var(--game-type-2);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.game-ui-command-bar__detail {
+	display: block;
+	margin-top: var(--game-space-1);
+	color: var(--game-text-muted);
+	font-size: var(--game-type-1);
+	line-height: var(--game-line-tight);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.game-ui-command-bar__commands {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: var(--game-space-2);
+	min-width: 0;
+}
+.game-ui-command-bar[data-context='false'] { grid-template-columns: minmax(0, 1fr); }
+.game-ui-command-bar[data-inspector-width='wide'] {
+	--game-command-inspector-width: var(--game-inspector-width-wide);
+	--game-command-inspector-half-width: var(--game-inspector-half-width-wide);
+}
+.game-ui-command-bar[data-reserve-inspector='false'] {
+	left: 50%;
+	width: min(45rem, calc(100vw - var(--game-hud-gap) - var(--game-hud-gap)));
+}
+
+.game-ui-encounter {
+	--game-tone: var(--game-state-attention);
+	--game-tone-text: color-mix(in srgb, var(--game-state-attention) 60%, var(--text-primary));
+	position: relative;
+	padding: var(--game-space-4) 0 var(--game-space-4) var(--game-space-4);
+	border-block: 1px solid var(--game-border);
+	border-left: 3px solid var(--game-tone);
+	color: var(--game-text);
+}
+.game-ui-encounter__header {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: start;
+	gap: var(--game-space-3);
+}
+.game-ui-encounter__icon {
+	display: grid;
+	place-items: center;
+	width: 1.75rem;
+	height: 1.75rem;
+	color: var(--game-tone-text);
+}
+.game-ui-encounter__kind {
+	margin: 0 0 var(--game-space-1);
+	color: var(--game-tone-text);
+	font-size: var(--game-type-1);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	text-transform: uppercase;
+}
+.game-ui-encounter__title {
+	margin: 0;
+	font-size: var(--game-type-4);
+	font-weight: var(--game-weight-strong);
+	line-height: var(--game-line-tight);
+	letter-spacing: 0;
+}
+.game-ui-encounter__summary,
+.game-ui-encounter__body {
+	margin: var(--game-space-3) 0 0;
+	font-size: var(--game-type-3);
+	line-height: var(--game-line-body);
+}
+.game-ui-encounter__facts {
+	display: grid;
+	gap: var(--game-space-2);
+	margin: var(--game-space-4) 0 0;
+}
+.game-ui-encounter__fact {
+	display: grid;
+	grid-template-columns: 7rem minmax(0, 1fr);
+	gap: var(--game-space-3);
+	margin: 0;
+	padding-top: var(--game-space-2);
+	border-top: 1px solid var(--game-border);
+	font-size: var(--game-type-2);
+	line-height: var(--game-line-body);
+}
+.game-ui-encounter__fact dt { color: var(--game-text-muted); font-weight: var(--game-weight-medium); }
+.game-ui-encounter__fact dd { margin: 0; overflow-wrap: anywhere; }
+.game-ui-encounter__actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: flex-end;
+	gap: var(--game-space-2);
+	margin-top: var(--game-space-4);
+}
+.game-ui-encounter[data-resolved='true'] {
+	--game-tone: var(--game-state-success);
+	--game-tone-text: color-mix(in srgb, var(--game-state-success) 60%, var(--text-primary));
+}
+
+.game-ui-tooltip-anchor {
+	position: relative;
+	display: inline-flex;
+	min-width: 0;
+}
+.game-ui-tooltip-anchor[data-display='block'] { display: block; width: 100%; }
+.game-ui-tooltip {
+	/* GameTooltip portals to <body>, outside the .square-hero token scope. */
+	--game-tooltip-background: var(--bg-elevated, var(--bg-card, Canvas));
+	--game-tooltip-foreground: var(--text-primary, CanvasText);
+	--game-tooltip-border: var(--border-default, color-mix(in srgb, var(--game-tooltip-foreground) 20%, transparent));
+	position: fixed;
+	z-index: var(--game-layer-tooltip);
+	width: max-content;
+	max-width: min(20rem, 40vw);
+	padding: var(--game-space-2) var(--game-space-3);
+	border: 1px solid var(--game-tooltip-border);
+	border-radius: var(--game-radius-sm);
+	background: var(--game-tooltip-background);
+	box-shadow: var(--game-shadow-hud);
+	color: var(--game-tooltip-foreground);
+	font-family: var(--font-primary, system-ui);
+	font-size: var(--game-type-1);
+	font-weight: 500;
+	line-height: 1.4;
+	letter-spacing: 0;
+	overflow-wrap: anywhere;
+	pointer-events: none;
+	opacity: 0;
+	visibility: hidden;
+	transition: opacity var(--game-motion-fast) ease;
+}
+.game-ui-tooltip[data-visible='true'] { opacity: 1; visibility: visible; }
+.game-ui-tooltip__shortcut {
+	margin-left: var(--game-space-2);
+	opacity: 0.7;
+	white-space: nowrap;
+}
+
+/* =========================================================================
+ * CREW SKIN — data-game-skin="pixel"
+ *
+ * The crew-facing surfaces (Citizen Inspector, Roster Strip, Crew Board) carry
+ * a distinct identity: a bitmap display face on labels, square corners, hard
+ * drawn borders, opaque plates, no blur, no gradient, and selected states that
+ * INVERT rather than tint.
+ *
+ * THE IDENTITY IS STRUCTURE AND TYPE, NEVER A FIXED PALETTE, and that is a
+ * decision rather than a default. A hardcoded cream-and-ink plate would match
+ * the reference most literally and would be wrong here for two reasons that
+ * are specific to this codebase:
+ *
+ *   1. These panels host components from OUTSIDE lib/magician/square — the
+ *      Citizen Inspector embeds ExecutionControls, the Crew Board embeds
+ *      CrewLeaderboard — and those paint themselves from app theme tokens. A
+ *      fixed cream plate under a dark theme would render them as dark text on
+ *      dark, i.e. genuinely broken rather than deliberately different.
+ *   2. --game-tone-text is derived from --text-primary precisely so that it
+ *      needs no per-theme table across app.css's twenty-odd themes (see the
+ *      long note above). Pinning the plate while the tone text still tracks the
+ *      app theme would invert that relationship on every dark theme and undo
+ *      the measurement it encodes.
+ *
+ * So the skin overrides SHAPE tokens and leaves COLOUR tokens deriving from
+ * the theme, which is the same rule the rest of this file already follows.
+ *
+ * OPT-IN, because the shared primitives are shared. GameInspector /
+ * GameWorkspace / GameSection all spread $$restProps onto their root, so a
+ * surface joins the skin by passing data-game-skin="pixel" and everything
+ * inside it follows. Quest, treasury and council panels use the same
+ * primitives and deliberately do not opt in.
+ *
+ * CONTRAST. Two properties of this block are load-bearing, not cosmetic:
+ *
+ *   - The plates go OPAQUE. --game-material-hud/panel were 90%/97% over
+ *     transparent, and on /square what is behind them is the live WebGL
+ *     canvas, which is the documented gap that put a HUD label at 4.04 over
+ *     paving. An opaque plate is what the reference actually looks like and it
+ *     closes that hole for these surfaces; the alpha-composited measurement
+ *     stops applying because there is no longer an alpha.
+ *   - Selected states INVERT: fill with --game-text, paint with
+ *     --game-material-panel. WCAG contrast is symmetric, so an inverted plate
+ *     has EXACTLY the ratio of body text on that plate — whatever theme is
+ *     live, in both directions. That is why the hard selected state the
+ *     reference uses is safe to adopt without a per-theme table.
+ * ========================================================================= */
+
+[data-game-skin='pixel'] {
+	--game-radius-sm: 0;
+	--game-radius-md: 0;
+	--game-shadow-hud: none;
+	--game-shadow-panel: none;
+
+	/* opaque plates — see CONTRAST above */
+	--game-material-hud: var(--bg-elevated, var(--bg-card, Canvas));
+	--game-material-panel: var(--bg-elevated, var(--bg-card, Canvas));
+
+	/* borders are drawn structure here, not an implied edge */
+	--game-border: color-mix(in srgb, var(--text-primary, CanvasText) 32%, transparent);
+	--game-border-soft: color-mix(in srgb, var(--text-primary, CanvasText) 20%, transparent);
+	--game-border-strong: color-mix(in srgb, var(--text-primary, CanvasText) 62%, transparent);
+
+	--game-select-fill: var(--game-text);
+	--game-select-text: var(--game-material-panel);
+}
+
+/* --- display type: labels, headings, chips. Never paragraphs. --- */
+[data-game-skin='pixel'] .game-ui-inspector__eyebrow,
+[data-game-skin='pixel'] .game-ui-section__title,
+[data-game-skin='pixel'] .game-ui-stat__label,
+[data-game-skin='pixel'] .game-ui-status-instrument__label,
+[data-game-skin='pixel'] .game-ui-objective-row__state,
+[data-game-skin='pixel'] .game-ui-encounter__kind,
+[data-game-skin='pixel'] .game-ui-encounter__fact dt,
+[data-game-skin='pixel'] .game-ui-hud-button__label {
+	font-family: var(--game-font-display);
+	font-size: var(--game-display-sm);
+	font-weight: 400;
+	font-synthesis: none;
+	letter-spacing: var(--game-display-track-sm);
+	text-transform: uppercase;
+}
+[data-game-skin='pixel'].game-ui-inspector .game-ui-inspector__title,
+[data-game-skin='pixel'].game-ui-workspace .game-ui-workspace__title {
+	font-family: var(--game-font-display);
+	font-size: var(--game-display-lg);
+	font-weight: 400;
+	font-synthesis: none;
+	letter-spacing: var(--game-display-track-lg);
+	text-transform: uppercase;
+}
+
+/* --- flat plates: square, hard-edged, no blur, no shadow --- */
+[data-game-skin='pixel'].game-ui-inspector,
+[data-game-skin='pixel'].game-ui-workspace[data-presentation='overlay'] {
+	border: 1px solid var(--game-border-strong);
+	backdrop-filter: none;
+	box-shadow: none;
+}
+[data-game-skin='pixel'] .game-ui-hud-button {
+	backdrop-filter: none;
+	box-shadow: none;
+}
+/* Title bar as a banded strip, the way the reference tops every window. Flat
+ * fill, not the gradient .gc-titlebar uses — a gradient means the label's
+ * backdrop varies across its own width, which is unmeasurable by definition. */
+[data-game-skin='pixel'] .game-ui-inspector__header,
+[data-game-skin='pixel'] .game-ui-workspace__header {
+	background: var(--game-material-muted);
+}
+[data-game-skin='pixel'] .game-ui-hud-button:active:not(:disabled) { transform: none; }
+
+/* --- hard selected states: invert, do not tint --- */
+[data-game-skin='pixel'] .game-ui-hud-button[data-active='true'],
+[data-game-skin='pixel'] .game-ui-hud-button[aria-pressed='true'],
+[data-game-skin='pixel'] .game-ui-objective-row[data-selected='true'] {
+	border-color: var(--game-select-fill);
+	background: var(--game-select-fill);
+	color: var(--game-select-text);
+}
+[data-game-skin='pixel'] .game-ui-objective-row[data-selected='true'] .game-ui-objective-row__marker,
+[data-game-skin='pixel'] .game-ui-objective-row[data-selected='true'] .game-ui-objective-row__detail,
+[data-game-skin='pixel'] .game-ui-objective-row[data-selected='true'] .game-ui-objective-row__meta,
+[data-game-skin='pixel'] .game-ui-objective-row[data-selected='true'] .game-ui-objective-row__state {
+	color: inherit;
+}
+
+/* --- rows and callouts read as framed tiles --- */
+[data-game-skin='pixel'] .game-ui-objective-row {
+	border: 1px solid var(--game-border);
+	border-left: 3px solid var(--game-tone, var(--game-border-strong));
+}
+[data-game-skin='pixel'] .game-ui-encounter {
+	padding: var(--game-space-4);
+	border: 1px solid var(--game-border);
+	border-left: 3px solid var(--game-tone);
+}
+
+/* --- focus stays a hard visible ring on a square plate --- */
+[data-game-skin='pixel'] .game-ui-objective-row:focus-visible,
+[data-game-skin='pixel'] .game-ui-hud-button:focus-visible {
+	outline: 2px solid var(--game-focus-color);
+	outline-offset: 1px;
+}
+
+/* Tooltips portal to <body>, outside the surface that owns them, so
+ * GameTooltip copies the skin attribute across at mount. */
+.game-ui-tooltip[data-game-skin='pixel'] {
+	border-radius: 0;
+	border-color: var(--game-tooltip-foreground);
+	box-shadow: none;
+}
+.game-ui-tooltip[data-game-skin='pixel'] .game-ui-tooltip__shortcut {
+	font-family: var(--game-font-display);
+	font-weight: 400;
+	font-synthesis: none;
+	text-transform: uppercase;
+}
+
+@keyframes game-ui-inspector-enter {
+	from { opacity: 0; transform: translateX(1.25rem); }
+	to { opacity: 1; transform: translateX(0); }
+}
+@keyframes game-ui-workspace-enter {
+	from { opacity: 0; transform: translateY(0.75rem); }
+	to { opacity: 1; transform: translateY(0); }
+}
+@keyframes game-ui-command-enter {
+	from { opacity: 0; transform: translate(-50%, 0.75rem); }
+	to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--game-motion-fast: 0ms;
+		--game-motion-base: 0ms;
+		--game-motion-deliberate: 0ms;
+	}
+	.game-ui-inspector,
+	.game-ui-workspace,
+	.game-ui-command-bar { animation: none; }
+	.game-ui-objective-row__progress > span { transition: none; }
+}

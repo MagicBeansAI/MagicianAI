@@ -1,0 +1,330 @@
+{
+  "$defs": {
+    "AppComparisonOperator": {
+      "enum": [
+        "equal",
+        "not_equal",
+        "less_than",
+        "less_than_or_equal",
+        "greater_than",
+        "greater_than_or_equal",
+        "contains",
+        "starts_with"
+      ],
+      "type": "string"
+    },
+    "AppFieldPath": {
+      "type": "string"
+    },
+    "AppInstallationId": {
+      "type": "string"
+    },
+    "AppName": {
+      "type": "string"
+    },
+    "AppOrderDirection": {
+      "enum": [
+        "ascending",
+        "descending"
+      ],
+      "type": "string"
+    },
+    "AppPredicate": {
+      "additionalProperties": false,
+      "description": "A non-recursive, bounded query predicate arena.",
+      "properties": {
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/AppPredicateNode"
+          },
+          "type": "array"
+        },
+        "root": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "root",
+        "nodes"
+      ],
+      "type": "object"
+    },
+    "AppPredicateNode": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "children": {
+              "items": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "children"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "children": {
+              "items": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "any",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "children"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "child": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "not",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "child"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/AppFieldPath"
+            },
+            "kind": {
+              "const": "compare",
+              "type": "string"
+            },
+            "operator": {
+              "$ref": "#/$defs/AppComparisonOperator"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "field",
+            "operator",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/AppFieldPath"
+            },
+            "kind": {
+              "const": "in",
+              "type": "string"
+            },
+            "values": {
+              "items": true,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "field",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/AppFieldPath"
+            },
+            "kind": {
+              "const": "is_null",
+              "type": "string"
+            },
+            "negated": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "field"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AppProtocolVersion": {
+      "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    },
+    "AppQueryOrder": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/AppOrderDirection"
+        },
+        "field": {
+          "$ref": "#/$defs/AppFieldPath"
+        }
+      },
+      "required": [
+        "field",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "AppQueryPagination": {
+      "enum": [
+        "snapshot",
+        "keyset"
+      ],
+      "type": "string"
+    },
+    "AppReference": {
+      "type": "string"
+    },
+    "AppRelationExpansion": {
+      "additionalProperties": false,
+      "properties": {
+        "max_depth": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_rows": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "relation": {
+          "$ref": "#/$defs/AppName"
+        },
+        "select": {
+          "items": {
+            "$ref": "#/$defs/AppFieldPath"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "relation",
+        "max_depth",
+        "max_rows"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-query-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cursor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AppReference"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "entity": {
+      "$ref": "#/$defs/AppName"
+    },
+    "limit": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "order": {
+      "items": {
+        "$ref": "#/$defs/AppQueryOrder"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "$ref": "#/$defs/AppQueryPagination",
+      "description": "Live keyset pages seek through current indexed heads; snapshots freeze membership."
+    },
+    "predicate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AppPredicate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocol_version": {
+      "$ref": "#/$defs/AppProtocolVersion"
+    },
+    "purpose": {
+      "$ref": "#/$defs/AppName"
+    },
+    "relation_expansions": {
+      "items": {
+        "$ref": "#/$defs/AppRelationExpansion"
+      },
+      "type": "array"
+    },
+    "select": {
+      "items": {
+        "$ref": "#/$defs/AppFieldPath"
+      },
+      "type": "array"
+    },
+    "source_installation_id": {
+      "$ref": "#/$defs/AppInstallationId"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "source_installation_id",
+    "entity",
+    "select",
+    "limit",
+    "purpose"
+  ],
+  "title": "AppQueryRequest",
+  "type": "object"
+}

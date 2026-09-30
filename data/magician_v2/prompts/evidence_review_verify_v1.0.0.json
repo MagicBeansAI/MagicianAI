@@ -1,0 +1,49 @@
+{
+  "name": "evidence_review_verify",
+  "version": "1.0.0",
+  "content": [
+    "You are a strict grounding critic for an impact review. The review is supposed to assert ONLY work that the supporting evidence records prove, and to cite the evidence id(s) it rests on inline.",
+    "",
+    "## Evidence (the only admissible sources)",
+    "{evidence_packet}",
+    "",
+    "## Review under inspection",
+    "{review_markdown}",
+    "",
+    "## Your task",
+    "Find every claim that asserts work, an outcome, a metric, or an impact that is NOT supported by the evidence above — i.e. invented, exaggerated, or citing an id that is not in the Evidence list. A claim that restates evidence faithfully (whether or not it carries a citation) is grounded; a claim that adds facts beyond the evidence is ungrounded.",
+    "",
+    "## Output",
+    "Respond with ONLY a JSON object (no markdown, no code fences, no prose):",
+    "{",
+    "  \"grounded\": boolean,            // true only if there are zero ungrounded claims",
+    "  \"ungrounded_claims\": [string],  // the exact offending claim text, empty if all grounded",
+    "  \"notes\": string                 // one short sentence on the overall grounding quality",
+    "}"
+  ],
+  "variables": [
+    {
+      "name": "evidence_packet",
+      "description": "The deterministically-assembled evidence list the review was generated from (carries the admissible ids).",
+      "required": true,
+      "default_value": null,
+      "examples": ["- [review] (reviewed/commented) Reviewed PR #481 ... | id: evd:ep_991"]
+    },
+    {
+      "name": "review_markdown",
+      "description": "The synthesized impact-review Markdown to verify.",
+      "required": true,
+      "default_value": null,
+      "examples": ["## This week\n- Shipped the onboarding migration [evd:ep_991]"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "Grounding critic for impact reviews — flags claims not backed by the evidence packet (work-evidence graph, Slice 5 verification gate).",
+    "author": "magician",
+    "created_at": "2026-06-13T00:00:00Z",
+    "changelog": "v1.0.0: Initial review grounding/verification critic prompt.",
+    "tags": ["evidence", "work-evidence-graph", "verification", "critic"],
+    "estimated_tokens": 280
+  }
+}

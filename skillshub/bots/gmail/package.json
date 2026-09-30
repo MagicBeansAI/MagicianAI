@@ -1,0 +1,19 @@
+{
+  "name": "@magician/bot-gmail",
+  "version": "0.2.3",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "npm --prefix ../.. run build -w @magician/bot-sdk && node ../build_bundle.mjs",
+    "check": "npm --prefix ../.. run build -w @magician/bot-sdk && tsc -p tsconfig.json --noEmit",
+    "start": "node --env-file=${ENV_FILE:-.env.development} dist/index.js",
+    "test": "npm --prefix ../.. run build -w @magician/bot-sdk && tsc -p tsconfig.json && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@magician/bot-sdk": "file:../sdk",
+    "@googleworkspace/cli": "^0.16.0"
+  }
+}

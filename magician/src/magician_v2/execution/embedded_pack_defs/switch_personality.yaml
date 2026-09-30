@@ -1,0 +1,46 @@
+name: switch_personality
+description: Switch the agent's personality preset. Loads the named template from the workspace personality skills and writes it into the agent-scope `personality_profile` memory tier so the new personality persists across all sessions and modes.
+version: "1.0.0"
+guide: |
+  Tool name: `switch_personality`
+
+  Use when the user (or the agent's own runtime logic) asks to change the
+  agent's personality — e.g. "switch to witty mode", "be brutal honest
+  for this turn". Personality presets are AgentSkills (`type: personality`)
+  in the workspace skills layer.
+
+  Inputs:
+  - `mode` (required) — personality preset slug (lowercase + hyphens, e.g.
+    `witty`, `brutal`, `coach`). Pass `mode: "list"` (or `"?"`) to receive
+    the available personality modes without writing anything.
+
+  Output:
+  - `{status: "ok", mode, agent_id, source}` — personality successfully
+    written to the agent's `personality_profile` tier.
+  - `{status: "ok", action: "list", available_modes}` — when called with
+    `mode: "list"`.
+  - `{status: "error", reason}` (with optional `available_modes`) on
+    validation / lookup / write failure.
+
+  Side effects:
+  - Writes the parsed personality fields to the agent-scope
+    `personality_profile` memory tier (principal + workspace + agent_id
+    keyed). Subsequent runs of the agent — chat or autonomous — see the
+    new personality without further action.
+parameters:
+  - name: mode
+    required: true
+    param_type: string
+    description: Personality preset slug (lowercase + hyphens). Pass `list` or `?` to enumerate available modes without writing.
+implementation:
+  type: compiled
+  provider_name: switch_personality
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - identity
+    - personality
+    - write
+  composition_category: action
+  sandbox: none

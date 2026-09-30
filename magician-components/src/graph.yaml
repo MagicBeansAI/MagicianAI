@@ -1,0 +1,721 @@
+# The component graph: what can be installed, what it satisfies, and what that
+# enables. Data, not code — adding a capability is an entry here, never an edit
+# to the resolver.
+#
+# Every probe path in this file is taken from something that already exists:
+# the port inventory in scripts/install-verify.sh, the phases in
+# scripts/install.sh, or the identity keys in magician_data_v3/.env.example.
+# Nothing here is aspirational. If a component cannot be probed from a process,
+# it says so with a `manual` probe rather than guessing.
+#
+# `{data_root}` is expanded by the caller to MAGICIAN_ROOT_DIR.
+
+requirements:
+  - id: model
+    name: a model
+    question: How should the agent run models?
+  - id: embeddings
+    name: an embedding model
+    question: How should memory be indexed?
+  - id: local-processing
+    name: an on-device generation model
+    question: Should classification and distillation run on this machine?
+  - id: browser-driver
+    name: a browser driver
+    question: How should the agent drive a browser?
+  - id: notes-store
+    name: a notes store
+    question: Where should notes live?
+  - id: reachable-origin
+    name: an origin the phone can reach
+    question: How should your phone reach this machine?
+  - id: public-ingress
+    name: a public URL
+    question: How should the internet reach this machine?
+  - id: workspace-mail
+    name: a Google Workspace mail connection
+    question: Which mailbox should the agent work in?
+  - id: web-search
+    name: a search provider
+    question: How should the agent search the web?
+  - id: agent-whatsapp-number
+    name: a WhatsApp number of the agent's own
+    question: Which number should the agent answer on?
+  - id: agent-inbox
+    name: an email address of the agent's own
+    question: Which address should the agent send and receive from?
+
+components:
+  # ---------------------------------------------------------------- core ----
+  - id: magician-runtime
+    name: Magician runtime
+    core: true
+    provides: [notes-store]
+    requires: []
+    cost: ""
+    install: { kind: with_runtime }
+    probe: { kind: http_ok, url: "http://127.0.0.1:3002/health", timeout_ms: 2000 }
+
+  - id: magicutor
+    name: Browser and tool executor
+    core: true
+    provides: []
+    requires: []
+    cost: ""
+    install: { kind: with_runtime }
+    probe: { kind: http_ok, url: "http://127.0.0.1:3003/", timeout_ms: 2000 }
+
+  # Not optional on macOS: it binds the host gateway that relays the mac skills
+  # and carries Apple-Events automation, macOS pairing and Android authority.
+  # It no-ops off macOS, which is why it is core rather than a choice.
+  - id: desktop-host-gateway
+    name: Desktop tray and host gateway
+    core: true
+    provides: []
+    requires: []
+    cost: ""
+    install: { kind: with_runtime }
+    probe: { kind: http_ok, url: "http://127.0.0.1:3017/host/automation/status", timeout_ms: 2000 }
+
+  # ------------------------------------------------------------- models ----
+  # First provider of `model`, and deliberately so: the resolver picks the
+  # first declared, and chatting is what most people arrive for. It does not
+  # need a local model, and asking someone to pull several GB before their
+  # first question would misstate what the product requires.
+  - id: remote-models
+    name: Remote models (API key)
+    core: false
+    provides: [model]
+    requires: []
+    cost: "Billed per use by whichever provider you use. Content leaves the machine, so this cannot serve private processing."
+    pricing: paid
+    install:
+      kind: manual
+      steps:
+      - "Pick a provider: OpenAI, Anthropic, Google Gemini, DeepSeek, MiniMax, or OpenRouter as a front end to many."
+      - "Create a key in that provider's console."
+      - "Add its line to {data_root}/.env — OPENAI_API_KEY=, ANTHROPIC_API_KEY=, GEMINI_API_KEY=, DEEPSEEK_API_KEY=, MINIMAX_API_KEY= or OPENROUTER_API_KEY=."
+      - "One is enough to chat. Profiles in magician-config.yaml name the provider each job uses."
+      - "Keep that file at mode 0600; it is untracked and never leaves the machine."
+    # The wizard offers each of these and writes the one you paste. Skipping the
+    # rest is normal: the probe is any-of, so one key satisfies it.
+      secrets:
+      - { variable: OPENAI_API_KEY, label: OpenAI }
+      - { variable: ANTHROPIC_API_KEY, label: Anthropic }
+      - { variable: GEMINI_API_KEY, label: Google Gemini }
+      - { variable: DEEPSEEK_API_KEY, label: DeepSeek }
+      - { variable: MINIMAX_API_KEY, label: MiniMax }
+      - { variable: OPENROUTER_API_KEY, label: OpenRouter }
+    probe:
+      kind: env_key_present
+      keys:
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+      - GEMINI_API_KEY
+      - DEEPSEEK_API_KEY
+      - MINIMAX_API_KEY
+      - OPENROUTER_API_KEY
+      files: ["{data_root}/.env", "{data_root}/.env.development"]
+
+  # Not declinable, and not free either. Memory is indexed on this machine in
+  # both processing modes, so declining this is declining memory rather than
+  # choosing a smaller install — but it is still a multi-gigabyte pull, which is
+  # why it is `required` and not `core`. It also brings Ollama itself, which is
+  # why local generation depends on it rather than the other way round.
+  #
+  # A liveness check is not enough here: the daemon answers happily with no model
+  # resident, which is indistinguishable from working until something embeds.
+  - id: ollama-embedding
+    name: Required PPLX memory model
+    core: false
+    required: true
+    provides: [embeddings]
+    requires: []
+    cost: "Downloads PPLX Embed 4B and keeps roughly 4 GB resident while Magician runs. It is required in both processing modes because memory embeddings never leave this machine."
+    install: { kind: make, target: setup-ollama-embedding, script: setup-ollama-embedding.sh }
+    probe:
+      kind: http_body_contains
+      url: "http://127.0.0.1:11435/api/ps"
+      needle: 'hf.co/mykor/pplx-embed-v1-4b-GGUF:Q6_K'
+      timeout_ms: 2000
+    setup: { definition: ollama-runtime }
+
+  # The optional half. Desktop presents the catalog and writes the selected
+  # value under `runtime.ollama.local_generation` before this installer runs.
+  # This entry never names a model: the catalog, installer, and runtime read the
+  # same value and the graph does not become another model list.
+  - id: ollama-generation
+    name: Local generation model
+    core: false
+    provides: [model, local-processing]
+    requires: [ollama-embedding]
+    cost: "Another several GB resident on top of the embedder. Chat does not need it — a remote provider does that. What it buys is that classification, distillation and monitors never send content anywhere."
+    install: { kind: make, target: setup-local-generation-selected, script: setup-selected-local-generation-model.sh }
+    probe:
+      kind: configured_ollama_model_present
+      url: "http://127.0.0.1:11434/api/tags"
+      config_path: "{data_root}/magician-config.yaml"
+      key_path: [runtime, ollama, local_generation, selected]
+      timeout_ms: 2000
+    host:
+      min_memory_gb: 16
+      arch: [arm64]
+      os: [macos]
+      because: "Local generation plus the always-resident embedder needs unified memory and a GPU the runtime can reach. Below 16 GB it swaps and every local operation takes minutes, which is worse than not offering it. Chat and everything else still work through a remote provider."
+
+  # ------------------------------------------------------- paid services ----
+  # Everything in this section is declinable and none of it is needed to start.
+  # Grouped together because "will this charge me" is the question people
+  # actually have, and answering it component by component buried it.
+  - id: search-api
+    name: Web search API
+    core: false
+    provides: [web-search]
+    requires: []
+    cost: "Reading a page needs a browser; finding the page needs a search index. TinyFish has a free tier. Exa and Tavily are the fallbacks and both are paid."
+    pricing: free_tier
+    install:
+      kind: manual
+      steps:
+      - "Pick a provider: TinyFish has a free tier; Exa and Tavily are paid."
+      - "Create a key in that provider's console."
+      - "Add TINYFISH_API_KEY=, EXA_API_KEY= or TAVILY_API_KEY= to {data_root}/.env"
+      - "One is enough. See docs/setup/api-keys.md."
+      secrets:
+      - { variable: TINYFISH_API_KEY, label: "TinyFish (free tier)" }
+      - { variable: EXA_API_KEY, label: "Exa (paid)" }
+      - { variable: TAVILY_API_KEY, label: "Tavily (paid)" }
+    probe:
+      kind: env_key_present
+      keys: [TINYFISH_API_KEY, EXA_API_KEY, TAVILY_API_KEY]
+      files: ["{data_root}/.env", "{data_root}/.env.development"]
+
+  - id: media-generation
+    name: Image and video generation
+    core: false
+    provides: []
+    requires: []
+    cost: "Billed per generation, and generation is the expensive kind of call. Nothing generates without you asking for it."
+    pricing: paid
+    install:
+      kind: manual
+      steps:
+      - "Nano Banana 2 (images) and Veo 3.1 (video) are Google models — one Gemini key covers both."
+      - "MiniMax covers images, video, music and speech from a single key."
+      - "Add NANOBANANA2_API_KEY=, VEO31_API_KEY= or MINIMAX_API_KEY= to {data_root}/.env"
+      - "See docs/setup/api-keys.md."
+      secrets:
+      - { variable: NANOBANANA2_API_KEY, label: "Nano Banana 2 (images)" }
+      - { variable: VEO31_API_KEY, label: "Veo 3.1 (video)" }
+      - { variable: MINIMAX_API_KEY, label: "MiniMax (images, video, music, speech)" }
+      - { variable: KLIPY_API_KEY, label: "Klipy (GIFs and memes)" }
+    probe:
+      kind: env_key_present
+      keys: [NANOBANANA2_API_KEY, VEO31_API_KEY, MINIMAX_API_KEY, KLIPY_API_KEY]
+      files: ["{data_root}/.env", "{data_root}/.env.development"]
+
+  # Your own WhatsApp, not the agent's. Paired by scanning a QR code the way
+  # WhatsApp Web is, so there is no key and nothing to pay. The graph keeps a
+  # manual probe for non-Desktop consumers; Desktop replaces it with the live
+  # supervisor auth snapshot and never offers a confirmation bypass.
+  - id: whatsapp-session
+    name: Your WhatsApp (paired)
+    core: false
+    provides: []
+    requires: []
+    cost: "The agent acts as you on your own number. Nothing new to buy; the session is the one on your phone, and it expires the way WhatsApp Web does."
+    pricing: free
+    install:
+      kind: manual
+      steps:
+      - "Start account pairing in Magician Desktop."
+      - "Scan the QR code with the phone holding the account, as you would for WhatsApp Web."
+      - "The session is a paired device, not a key — there is nothing to add to .env."
+    probe:
+      kind: manual
+      hint: "Pair WhatsApp and verify the supervisor reports an active session"
+    setup: { definition: whatsapp }
+
+  - id: kapso-whatsapp
+    name: WhatsApp number for the agent (Kapso)
+    core: false
+    provides: [agent-whatsapp-number]
+    requires: []
+    cost: "A Kapso account and a Meta Cloud number belonging to the agent — not the one on your phone. Inbound messages fail closed until the webhook signing secret is set, because an unsigned message is one anybody could have sent."
+    pricing: paid
+    install:
+      kind: manual
+      open: "https://kapso.ai"
+      steps:
+      - "Create a Kapso project and a number for the agent."
+      - "Add KAPSO_API_KEY= to {data_root}/.env"
+      - "Add KAPSO_PHONE_NUMBER_ID= from the WhatsApp numbers list."
+      - "Copy the number-webhook signing secret from Kapso Project Settings and add it too."
+      - "WhatsApp also needs the public tunnel, so Kapso can reach this machine."
+      secrets:
+      - { variable: KAPSO_API_KEY, label: "Kapso API key", bot: kapso }
+      - { variable: KAPSO_PHONE_NUMBER_ID, label: "Kapso phone number ID", bot: kapso }
+      - { variable: KAPSO_WEBHOOK_SECRET, label: "Kapso webhook signing secret", bot: kapso }
+    probe:
+      kind: env_keys_all_present
+      keys: [KAPSO_API_KEY, KAPSO_PHONE_NUMBER_ID, KAPSO_WEBHOOK_SECRET]
+      files: ["{data_root}/.env", "{data_root}/.env.development"]
+
+  # Every channel comes in two shapes and they are not interchangeable: the
+  # agent acting AS YOU on an account you already have, or the agent having an
+  # account OF ITS OWN that other people can reach. The first needs a pairing
+  # and costs nothing; the second needs a credential and usually costs money.
+  - id: telegram-bot
+    name: Telegram bot for the agent
+    core: false
+    provides: []
+    requires: []
+    cost: "A bot of the agent's own that people message. Free from BotFather, and a bot cannot read a chat it was not added to."
+    pricing: free
+    install:
+      kind: manual
+      open: "https://t.me/BotFather"
+      steps:
+      - "Message @BotFather on Telegram and send /newbot."
+      - "Pick a name and a username ending in 'bot'."
+      - "Copy the token it gives you."
+      - "Add TELEGRAM_TOKEN=<token> to {data_root}/.env"
+      secrets:
+      - { variable: TELEGRAM_TOKEN, label: "Telegram bot token from @BotFather", bot: telegram }
+    probe:
+      kind: env_key_present
+      keys: [TELEGRAM_TOKEN]
+      files: ["{data_root}/.env", "{data_root}/.env.development"]
+
+  - id: telegram-credentials
+    name: Telegram application credentials
+    core: false
+    provides: []
+    requires: []
+    cost: "The API id and hash identify your Telegram application. Telegram issues them without charge."
+    pricing: free
+    install:
+      kind: manual
+      open: "https://my.telegram.org/apps"
+      steps:
+      - "Sign in at my.telegram.org and create an application."
+      - "Add TGCLI_API_ID= and TGCLI_API_HASH= to {data_root}/.env"
+      secrets:
+      - { variable: TGCLI_API_ID, label: "Telegram API id", bot: telegram-self }
+      - { variable: TGCLI_API_HASH, label: "Telegram API hash", bot: telegram-self }
+    probe:
+      kind: env_keys_all_present
+      keys: [TGCLI_API_ID, TGCLI_API_HASH]
+      files: ["{data_root}/.env", "{data_root}/.env.development"]
+
+  - id: telegram-session
+    name: Your Telegram (paired)
+    core: false
+    provides: []
+    requires: [telegram-credentials]
+    cost: "The agent reads and replies as you, on your own account. Free, and like any paired device the session expires and has to be re-paired."
+    pricing: free
+    install:
+      kind: manual
+      steps:
+      - "Start account pairing in Magician Desktop."
+      - "Scan the QR code with the phone holding the account."
+      - "If Telegram asks for two-step verification, enter it in Desktop's private 2FA field."
+    probe:
+      kind: manual
+      hint: "Pair Telegram and verify the supervisor reports an authenticated session"
+    setup: { definition: telegram-self }
+
+  - id: agentmail-inbox
+    name: Email address for the agent (AgentMail)
+    core: false
+    provides: [agent-inbox]
+    requires: []
+    cost: "An address of the agent's own, separate from yours, so it can be written to directly. Free to start and metered after."
+    pricing: free_tier
+    install:
+      kind: manual
+      open: "https://agentmail.to"
+      steps:
+      - "Create an AgentMail account and an inbox for the agent."
+      - "Add AGENT_MAIL_KEY= to {data_root}/.env"
+      - "Add MAGICIAN_AGENT_EMAIL=<the address> so the agent knows its own name."
+      secrets:
+      - { variable: AGENT_MAIL_KEY, label: "AgentMail API key", bot: agentmail }
+      - { variable: MAGICIAN_AGENT_EMAIL, label: "the agent's own address", bot: agentmail }
+    probe:
+      kind: env_keys_all_present
+      keys: [AGENT_MAIL_KEY, MAGICIAN_AGENT_EMAIL]
+      files: ["{data_root}/.env", "{data_root}/.env.development"]
+
+  # ------------------------------------------------------------ browser ----
+  # The extension bridges to your real Chrome, so it needs magicutor up; a
+  # healthy extension probe with magicutor down would offer a driver that fails
+  # on first use.
+  - id: chrome-extension
+    name: Chrome extension pairing
+    core: false
+    provides: [browser-driver]
+    requires: [magicutor]
+    cost: "The only driver that can see the tabs you already have open, because it drives your real Chrome. Chrome has to be running."
+    install:
+      kind: manual
+      open: "chrome://extensions"
+      steps:
+      - "Turn on Developer mode, top right."
+      - "Choose Load unpacked, and select magicutor/extension in this repository."
+      - "Leave Chrome running — the extension dials magicutor on port 3003."
+    probe:
+      kind: http_body_contains
+      url: "http://127.0.0.1:3003/health"
+      needle: '"extension_connected":true'
+      timeout_ms: 3000
+    setup: { definition: browser-extension }
+
+  - id: bundled-browser
+    name: Bundled browser
+    core: false
+    provides: [browser-driver]
+    requires: []
+    cost: "Isolated and unattended. No signed-in sites, and none of your open tabs."
+    # No `script`: this target delegates to skillshub's Makefile, so there is
+    # no single script a package could carry. It needs a checkout, and the
+    # wizard says so rather than failing at the step.
+    install: { kind: make, target: setup-agent-browser }
+    probe: { kind: file_exists, path: "{home}/.agent-browser" }
+
+  # ------------------------------------------------------------ ingress ----
+  # Any HTTP answer proves the hop routed through: the Kapso webhook is
+  # POST-only, so a GET legitimately returns 4xx.
+  - id: cloudflare-tunnel
+    name: Public Cloudflare tunnel
+    core: false
+    provides: [public-ingress, reachable-origin]
+    requires: []
+    cost: "A Cloudflare account and a zone you own. Reachable from anywhere."
+    pricing: free_tier
+    install: { kind: make, target: ensure-tunnel, script: ensure-magician-tunnel.sh }
+    probe: { kind: file_exists, path: "{data_root}/funnel-url" }
+
+  # The phone works on the same network without any tunnel. Modelling mobile as
+  # requiring the tunnel would overstate what declining it costs.
+  - id: lan-origin
+    name: Local network address
+    core: false
+    provides: [reachable-origin]
+    requires: []
+    cost: "Works only while the phone is on the same Wi-Fi."
+    install: { kind: make, target: setup-identity, script: setup-identity.sh }
+    probe:
+      kind: env_key_present
+      keys: [MAGICIAN_MOBILE_PUBLIC_ORIGIN]
+      files: ["{data_root}/.env", "{data_root}/.env.development"]
+
+  # ------------------------------------------------------------ identity ----
+  - id: operator-identity
+    name: Operator identity
+    core: false
+    provides: []
+    requires: []
+    cost: ""
+    install: { kind: make, target: setup-identity, script: setup-identity.sh }
+    probe:
+      kind: env_key_present
+      keys: [MAGICIAN_PRINCIPAL]
+      files: ["{data_root}/.env"]
+
+  - id: workspace-oauth
+    name: Google Workspace OAuth client
+    core: false
+    provides: []
+    requires: []
+    cost: "A Google Cloud project with an OAuth client and a Pub/Sub topic."
+    pricing: free_tier
+    install:
+      kind: manual
+      steps:
+      - "In Google Cloud, create an OAuth client and a Pub/Sub topic."
+      - "Download the client secret and save it as {data_root}/client_secret.json"
+    probe: { kind: file_exists, path: "{data_root}/client_secret.json" }
+    setup: { definition: google-oauth-client }
+
+  - id: workspace-account
+    name: Your Google Workspace account
+    core: false
+    provides: [workspace-mail]
+    requires: [workspace-oauth]
+    cost: "The OAuth token stays inside this workspace's scoped auth directory."
+    pricing: free
+    install:
+      kind: manual
+      steps:
+      - "Enter the exact Google email address this profile must use."
+      - "Start account login and finish Google's consent flow in the browser Desktop opens."
+      - "Magician verifies the connected identity and refuses a different account."
+    probe:
+      kind: manual
+      hint: "Connect and verify the Google Workspace account in Desktop setup"
+    setup: { definition: google-workspace, profile: work }
+
+  # CUA belongs to the desktop provider, independently of the backend OS and
+  # independently of the Mac-only Automation/Full Disk Access permissions.
+  - id: cua-driver
+    name: Desktop computer use (CuaDriver)
+    core: false
+    provides: []
+    requires: []
+    cost: "Controls apps in the signed-in desktop session. Requires local accessibility access; Linux needs a graphical session."
+    install:
+      kind: manual
+      steps:
+      - "In Magican Desktop, choose Install, start and verify; Desktop installs the one pinned CuaDriver release (hash-checked official installer scripts) for the signed-in user and replaces any other version."
+      - "Terminal fallback on Linux/macOS: make setup-cua-driver ARGS=--start; on Windows: py -3 scripts/setup-cua-driver.py --start. Both install the same pinned release."
+      - "Desktop starts CuaDriver in this graphical session and verifies that it can observe a real window."
+      - "macOS: cua-driver permissions grant asks for Accessibility and Screen Recording on CuaDriver.app itself. Windows and Linux verify their native desktop accessibility session."
+    probe:
+      kind: manual
+      hint: "Run the CUA read-only check on the desktop host; installation alone does not verify desktop permissions."
+    setup: { definition: cua-driver }
+
+  # -------------------------------------------------- macOS permissions ----
+  # Apple Events is the one macOS permission with a real truth source: the host
+  # gateway reports whether it was granted.
+  - id: tcc-automation
+    name: Automation permission
+    core: false
+    provides: []
+    requires: [desktop-host-gateway]
+    cost: ""
+    install:
+      kind: manual
+      open: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+      steps:
+      - "Allow the desktop app to control the apps you want it to drive."
+      - "The tray has to be running for this to be verifiable."
+    probe:
+      kind: http_body_contains
+      url: "http://127.0.0.1:3017/host/automation/status"
+      needle: '"permitted":true'
+      timeout_ms: 2000
+
+  - id: tcc-full-disk
+    name: Full Disk Access
+    core: false
+    provides: []
+    requires: []
+    cost: "Whatever runs Magician gets read access to the Messages database, and to everything else Full Disk Access covers. It is the broadest grant here."
+    install:
+      kind: manual
+      open: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+      steps:
+      # Named by what runs, not by "your terminal". The reader who installed the
+      # tray grants it to the app; the reader running from a checkout grants it
+      # to their terminal. Saying only one of those sends half of them to the
+      # wrong row in System Settings, where nothing they toggle will help.
+      - "Turn on Full Disk Access for whatever runs Magician: the Magican Desktop app if you use the tray, or your terminal if you run it from a checkout."
+      - "Quit and reopen that app afterwards. macOS does not apply the grant to a process that was already running, so skipping this looks exactly like the grant not working."
+      - "This is what lets the agent read your iMessage history. Sending a reply is a separate permission, on the next step."
+    # A read attempt, not an existence check. chat.db is on every Mac that has
+    # ever sent a text, so `file_exists` here answered "have you used Messages"
+    # while appearing to answer "is the permission granted" — and a permission
+    # probe that says yes when the permission is missing ends the step and
+    # surfaces later as an empty inbox.
+    probe:
+      kind: file_readable
+      path: "{home}/Library/Messages/chat.db"
+      because: "Full Disk Access is not granted to this process — macOS refuses the read"
+
+  # Reading and replying are two grants, and iMessage needs both. Reading goes
+  # straight at chat.db; replying drives Messages.app over AppleScript, which is
+  # Automation and nothing else. Declaring only the first is what left "read and
+  # reply" delivering half of itself with no explanation.
+  - id: tcc-automation-messages
+    name: Automation for Messages
+    core: false
+    provides: []
+    requires: []
+    cost: "Lets Magician tell Messages to send. Separate from the general Automation grant, because macOS asks per controlled app."
+    install:
+      kind: manual
+      open: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+      steps:
+      - "Under Automation, find whatever runs Magician and turn on Messages beneath it."
+      - "The row only appears after something has tried to drive Messages once, so ask the agent to send you a message if it is not there yet — macOS will show the Allow prompt, and allowing it is the grant."
+      - "Without this the agent can read iMessage but not answer it."
+    probe: { kind: manual, hint: "Confirm Automation access to Messages in System Settings" }
+
+  # macOS gives no way to read these from a process that does not hold them, so
+  # the honest answer is to ask.
+  - id: tcc-microphone
+    name: Microphone permission
+    core: false
+    provides: []
+    requires: []
+    cost: ""
+    install:
+      kind: manual
+      open: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+      steps:
+      - "Enable microphone access for the app you talk to."
+    probe: { kind: manual, hint: "Confirm microphone access in System Settings" }
+
+  - id: tcc-screen-recording
+    name: Screen Recording permission
+    core: false
+    provides: []
+    requires: []
+    cost: ""
+    install:
+      kind: manual
+      open: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+      steps:
+      - "Enable screen recording for the desktop app."
+    probe: { kind: manual, hint: "Confirm screen recording access in System Settings" }
+
+features:
+  - id: chat
+    name: Chat with your agent
+    description: Ask questions, launch work, and continue from previous tasks. Runs on a remote provider or a local model — either satisfies it.
+    needs: [{ requirement: model }]
+    surfaces: [web, ios, android, desktop]
+
+  - id: browser-research
+    name: Research on the web
+    description: Search, read and cross-reference sources, then answer with citations. Either driver will do.
+    needs: [{ requirement: browser-driver }, { requirement: model }]
+    surfaces: [web, ios, android, desktop]
+
+  - id: api-mining
+    name: Learn repeated browser tasks
+    description: Observe the agent's own browser traffic, learn task-shaped API recipes, and replay repeated work without reopening the browser. It can be turned off per workspace at any time.
+    needs: [{ requirement: browser-driver }, { requirement: model }]
+    surfaces: [web, desktop]
+
+  # Deliberately needs the extension itself rather than the browser-driver
+  # requirement: a bundled browser satisfies that requirement but has none of
+  # your tabs, so modelling this as "any driver" would promise something the
+  # isolated browser cannot do.
+  - id: read-open-tabs
+    name: Work with your open tabs
+    description: Read and act on the pages you already have open, signed in as you.
+    needs: [{ component: chrome-extension }, { requirement: model }]
+    surfaces: [web, desktop]
+
+  - id: memory
+    name: Remember across conversations
+    description: Index and retrieve what the agent has seen before. Embeddings stay on this machine in both processing modes, so this always needs the local embedding daemon.
+    needs: [{ requirement: embeddings }]
+    surfaces: [web, ios, android, desktop]
+
+  # The distinction the graph could not express before: these run with a remote
+  # model perfectly well. What the on-device model buys is that the content
+  # never leaves, which is a different thing from whether the feature works.
+  - id: private-processing
+    name: Keep processing on this machine
+    description: Run classification, distillation and monitors on the on-device model instead of sending content to a provider. They work either way — this is what keeps the content local.
+    needs: [{ requirement: local-processing }]
+    surfaces: [web, desktop, ios, android]
+
+  - id: notes
+    name: Notes
+    description: Read and write notes the agent shares with you.
+    needs: [{ requirement: notes-store }]
+    surfaces: [web, ios, android, desktop]
+
+  - id: search-the-web
+    name: Search the web
+    description: Find pages rather than only reading ones you name. A browser can open a page; a search index is how the agent decides which page.
+    needs: [{ requirement: web-search }, { requirement: model }]
+    surfaces: [web, ios, android, desktop]
+
+  - id: make-media
+    name: Make images and video
+    description: Generate images, video, music and speech from a description.
+    needs: [{ component: media-generation }, { requirement: model }]
+    surfaces: [web, ios, android, desktop]
+
+  # Needs the number as well as the ingress: a tunnel with nothing on the other
+  # end of it is not WhatsApp.
+  - id: telegram
+    name: Talk to the agent on Telegram
+    description: A bot of the agent's own that you and anyone you share it with can message.
+    needs: [{ component: telegram-bot }, { requirement: model }]
+    surfaces: [web]
+
+  - id: own-telegram
+    name: Use your own Telegram
+    description: Read and reply on your own Telegram account, as you. Paired by QR, like a second device.
+    needs: [{ component: telegram-session }, { requirement: model }]
+    surfaces: [web, desktop]
+
+  - id: agent-email
+    name: Give the agent its own email
+    description: An address people can write to that is the agent's, not yours.
+    needs: [{ requirement: agent-inbox }, { requirement: model }]
+    surfaces: [web]
+
+  - id: own-whatsapp
+    name: Use your own WhatsApp
+    description: Read and reply on the number already on your phone, as you. Paired by QR like WhatsApp Web — no second number, nothing to pay.
+    needs: [{ component: whatsapp-session }, { requirement: model }]
+    surfaces: [web, desktop]
+
+  # A different thing from the one above: the agent gets a number of its own
+  # that other people can message. That needs a public URL for the webhook,
+  # which your own paired session does not.
+  - id: whatsapp
+    name: Give the agent its own WhatsApp
+    description: A number of the agent's own that other people can message, separate from yours.
+    needs: [{ requirement: public-ingress }, { requirement: agent-whatsapp-number }, { requirement: model }]
+    surfaces: [web]
+
+  - id: mobile-apps
+    name: The phone apps
+    description: Reach the agent from the iOS and Android companions.
+    needs: [{ requirement: reachable-origin }]
+    surfaces: [ios, android]
+
+  - id: mail-assist
+    name: Mail assist
+    description: Triage and draft in your Google Workspace mailbox.
+    needs: [{ requirement: workspace-mail }, { requirement: model }]
+    surfaces: [web]
+
+  - id: imessage
+    name: iMessage
+    description: Read and reply to iMessage from the agent.
+    needs: [{ component: tcc-full-disk }, { component: tcc-automation-messages }]
+    surfaces: [desktop]
+
+  - id: mac-skills
+    name: Control Mac apps
+    description: Drive Finder, Mail, Calendar and other apps on your behalf.
+    needs: [{ component: tcc-automation }]
+    surfaces: [desktop]
+
+  - id: computer-use
+    name: Control desktop apps
+    description: Drive native apps through CuaDriver on a Windows, Linux or macOS desktop, locally or through the desktop relay.
+    needs: [{ component: cua-driver }]
+    surfaces: [desktop]
+
+  - id: voice
+    name: Talk to your agent
+    description: Wake word, dictation and spoken replies.
+    needs: [{ component: tcc-microphone }, { requirement: model }]
+    surfaces: [desktop, ios, android]
+
+  - id: screen-ask
+    name: Ask about what is on screen
+    description: Capture the screen and ask about what it shows.
+    needs: [{ component: tcc-screen-recording }, { requirement: model }]
+    surfaces: [desktop]
+
+  # A clip is recorded by CuaDriver's daemon (the Clip and ask chord), not by
+  # the capture that screenshots use, so without CuaDriver the chord failed
+  # while setup reported screen-ask as ready and never offered the driver.
+  - id: screen-clips
+    name: Record a screen clip and ask
+    description: Record the screen for a few seconds and ask about what happened in it.
+    needs: [{ component: tcc-screen-recording }, { component: cua-driver }, { requirement: model }]
+    surfaces: [desktop]

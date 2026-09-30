@@ -1,0 +1,58 @@
+name: promote_backlog_item
+description: Promote a groomed company-backlog item into assigned execution work; internal by default, with an explicit user-visible commitment option.
+version: "1.2.0"
+guide: |
+  Tool name: `promote_backlog_item`
+
+  Promote a groomed backlog item into real, assigned execution work. Creates the
+  task for `agent_id`, starts it immediately by default, and marks the backlog
+  item promoted after the task has started. The resulting task is internal by
+  default; use `user_visible=true` only when the promotion creates a commitment
+  the user should manage directly.
+
+  Guidelines:
+  - `backlog_item_id` is the id returned by `propose_backlog_item` (or listed in
+    the backlog); the item's title/description/priority seed the new task
+  - `agent_id` is the engineering owner who will build it — set this to the
+    engineering lead (typically the CTO) who tiers and assigns the build. Must be
+    in your delegation scope
+  - the item flips to `promoted` and records the resulting task id (audit trail)
+  - promotion is not closure: after the task ends, inspect its actual outputs and
+    call `review_backlog_delivery` with `accepted` or `rework`
+  - discovery or planning is not delivery unless the backlog item explicitly asks
+    for discovery or planning; nonexistent/planned artifacts never count
+  - pass `start_immediately=false` only when deliberately parking the promoted
+    task for manual start; default true is the autonomous progress path
+parameters:
+  - name: backlog_item_id
+    required: true
+    param_type: string
+    description: The id of the backlog item to promote.
+  - name: agent_id
+    required: true
+    param_type: string
+    description: >-
+      The agent that will own the resulting task — set this to the engineering
+      lead (typically the CTO) who tiers and assigns the build. Must be in your
+      delegation scope.
+  - name: goal_id
+    param_type: string
+    description: Optional goal to associate the resulting task with.
+  - name: start_immediately
+    param_type: boolean
+    description: Defaults to true. Starts the promoted task immediately so backlog promotion turns into actual work; set false only to park the task.
+    default: true
+  - name: user_visible
+    param_type: boolean
+    description: Defaults false, keeping autonomous backlog execution in Internal tasks. Set true only when the promoted item is an explicit durable commitment the user should manage in /tasks.
+    default: false
+implementation:
+  type: compiled
+  provider_name: promote_backlog_item
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+  composition_category: action
+  sandbox: none

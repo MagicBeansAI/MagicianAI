@@ -1,0 +1,41 @@
+name: propose_meeting
+description: Propose a meeting between an external contact and the owner; the owner approves or rejects before anything is booked.
+version: "1.0.0"
+guide: |
+  Tool name: `propose_meeting`
+
+  Use this when an external contact wants to meet with the owner. The proposal is
+  surfaced to the owner as an approve/reject decision. On approval, the owner's
+  assistant books it and the confirmation is relayed back to the contact. You never
+  touch the owner's calendar yourself.
+
+  - `topic`: what the meeting is about.
+  - `window`: the proposed time window (e.g. "Thu afternoon", "next week"), optional.
+  - `duration`: proposed duration (e.g. "30 min"), optional.
+  - `context_summary`: a short note on who is asking and why (optional).
+parameters:
+  - name: topic
+    required: true
+    param_type: string
+    description: What the meeting is about.
+  - name: window
+    param_type: string
+    description: Optional proposed time window.
+  - name: duration
+    param_type: string
+    description: Optional proposed duration.
+  - name: context_summary
+    param_type: string
+    description: Optional short context about the contact and their request.
+implementation:
+  type: compiled
+  provider_name: propose_meeting
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - harness
+    - communication
+    - owner
+  composition_category: communication
+  sandbox: none

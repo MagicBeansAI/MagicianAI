@@ -1,0 +1,289 @@
+{
+  "name": "agentic_decision",
+  "version": "1.3.1",
+  "content": [
+    "## GOAL",
+    "{goal}",
+    "",
+    "## SUCCESS CRITERIA",
+    "{success_criteria}",
+    "",
+    "{capabilities_section}",
+    "{delegation_section}",
+    "{task_context}",
+    "{hint_section}",
+    "",
+    "<!--MAGICIAN_CACHE_BREAKPOINT-->",
+    "",
+    "{user_memory_section}",
+    "{agent_memory_section}",
+    "{agent_goal_memory_section}",
+    "{procedure_memory_section}",
+    "{environment_knowledge_section}",
+    "",
+    "{call_frequency_section}",
+    "",
+    "## CURRENT STATE ({state_type})",
+    "{state_description}",
+    "",
+    "{taskplan_section}",
+    "{history_section}",
+    "{task_state_section}",
+    "{execution_files_section}",
+    "{input_context}",
+    "## TASK STATE ACTION",
+    "Every response must include `task_state_action` as internal metadata: `{\\\"action\\\": \\\"none|create|patch|close\\\", \\\"reason\\\": \\\"...\\\", \\\"confidence\\\": 0.0-1.0, \\\"next_review\\\": \\\"next_outer_iteration|after_capability_return|on_resume|never\\\", \\\"proposed_taskplan\\\": null, \\\"patch\\\": null, \\\"source_execution_id\\\": null, \\\"source_iteration_range\\\": null, \\\"evidence_refs\\\": [], \\\"notes\\\": null}`.",
+    "Use `action: \\\"none\\\"` for ordinary short/self-contained steps. Use create/patch/close only when durable task state should change at this outer-loop boundary.",
+    "",
+    "## YOUR DECISION",
+    "",
+    "Analyze the current state and determine:",
+    "",
+    "IMPORTANT: Before choosing any action, check whether the success criteria are ALREADY met by the current observable state. If the data you need is visible in the state description, declare goal_reached immediately — do NOT use evaluate or other actions to 're-extract' information already present. The goal describes WHAT to achieve, not HOW — treat any method in the goal text as a suggestion.",
+    "",
+    "1. If the goal is ACHIEVED based on the current state and success criteria, respond:",
+    "   {\"decision\": \"goal_reached\", \"artifacts\": []}",
+    "",
+    "   To return collected data or results, include artifacts (base64 or plain text):",
+    "   {\"decision\": \"goal_reached\", \"artifacts\": [{\"name\": \"result.json\", \"content_type\": \"application/json\", \"data\": \"{\\\"key\\\": \\\"value\\\"}\"}]}",
+    "   To produce a dashboardable artifact that the system can auto-render as a visual surface, set artifact_type:",
+    "   {\"decision\": \"goal_reached\", \"artifacts\": [{\"name\": \"metrics.json\", \"content_type\": \"application/json\", \"artifact_type\": \"custom:metric_set\", \"data\": \"{\\\"items\\\": [{\\\"label\\\": \\\"Total\\\", \\\"value\\\": \\\"42\\\"}]}\"}]}",
+    "   Dashboardable artifact_type values: custom:metric_set (metrics grid), custom:record_table (data table), custom:activity_feed (activity list), custom:summary_note (markdown summary).",
+    "   IMPORTANT: Do NOT use file write actions to produce result data. Use artifacts instead — they are stored in memory and survive without filesystem access.",
+    "",
+    "2. If you CANNOT proceed (error state, impossible goal), respond:",
+    "   {\"decision\": \"cannot_proceed\", \"reason\": \"explanation\"}",
+    "",
+    "3. If you need to EXECUTE an action, respond with ONE of:",
+    "",
+    "   For Browser:",
+    "   {\"decision\": \"execute\", \"action_type\": \"tool\", \"capability_name\": \"browser\", \"parameters\": {\"connection_mode\": \"cdp\"}}",
+    "",
+    "   IMPORTANT: Browser automation is an inner-loop capability. The outer loop chooses the browser capability and optional session parameters only; primitive page actions such as open, snapshot, click, fill, press, screenshot, and batch are selected inside the browser inner loop from browser.yaml and the pinned agent-browser CLI.",
+    "",
+    "   For File:",
+    "   {\"decision\": \"execute\", \"action_type\": \"file\", \"operation\": \"read\", \"path\": \"/path/to/file\"}",
+    "   {\"decision\": \"execute\", \"action_type\": \"file\", \"operation\": \"write\", \"path\": \"/path/to/file\", \"content\": \"file contents\"}",
+    "",
+    "   For HTTP:",
+    "   {\"decision\": \"execute\", \"action_type\": \"http\", \"method\": \"GET\", \"url\": \"https://api.example.com/data\"}",
+    "   {\"decision\": \"execute\", \"action_type\": \"http\", \"method\": \"POST\", \"url\": \"https://api.example.com/data\", \"body\": \"{}\"}",
+    "",
+    "   For Bash:",
+    "   {\"decision\": \"execute\", \"action_type\": \"bash\", \"command\": \"ls -la\"}",
+    "",
+    "4. If you need USER INPUT to proceed (only when you CANNOT determine from observation), use need_user_input:",
+    "",
+    "   For credentials (you see a login form with password field):",
+    "   {\"decision\": \"need_user_input\", \"question\": \"Please enter your password\", \"input_type\": \"password\", \"hint\": \"The password field on the login form\"}",
+    "",
+    "   For confirmation (destructive action):",
+    "   {\"decision\": \"need_user_input\", \"question\": \"Delete this file permanently?\", \"input_type\": \"confirmation\", \"hint\": \"This cannot be undone\"}",
+    "",
+    "   For external action (CAPTCHA, MFA, QR code scan):",
+    "   {\"decision\": \"need_user_input\", \"question\": \"Please solve the CAPTCHA\", \"input_type\": \"external_action\", \"hint\": \"Complete the verification on the page\"}",
+    "",
+    "   For choice (multiple options visible, unclear which to select):",
+    "   {\"decision\": \"need_user_input\", \"question\": \"Which account?\", \"input_type\": \"choice\", \"options\": [{\"id\": \"personal\", \"label\": \"Personal\"}, {\"id\": \"work\", \"label\": \"Work\"}]}",
+    "",
+    "   WHEN TO ASK vs WHEN TO PROCEED:",
+    "",
+    "   ASK only when you SEE something that requires user action:",
+    "   - Login form with password field visible (user MUST provide credentials)",
+    "   - CAPTCHA/MFA challenge appears on screen (user MUST solve it)",
+    "   - QR code to scan with phone visible (user MUST scan)",
+    "   - Destructive action confirmation dialog (delete, purchase)",
+    "   - Multiple accounts/profiles shown and unclear which to use",
+    "",
+    "   DON'T ASK - just observe and proceed:",
+    "   - Whether user is logged in (you can SEE this from the page)",
+    "   - What page type is displayed (you can SEE this)",
+    "   - Whether a form exists (you can SEE this)",
+    "   - Any state that is visible in the current observation",
+    "   - Value is in USER-PROVIDED VALUES section (already resolved)",
+    "",
+    "   Available input_type values: text, password, choice, multi_choice, confirmation, external_action, file_path, guidance",
+    "",
+    "5. If your task's PRECONDITION IS NOT YET MET and you should retry later, DEFER the execution:",
+    "",
+    "   {\"decision\": \"execute\", \"action_type\": \"http\", \"method\": \"POST\", \"url\": \"{api_base}/tasks/{task_id}/defer\", \"body\": \"{\\\"retry_after_minutes\\\": 60, \\\"reason\\\": \\\"Only 6 hours logged, need 8 before clocking out\\\"}\"}",
+    "",
+    "   Where {api_base} and {task_id} come from the TASK CONTEXT section above.",
+    "",
+    "   USE THIS WHEN:",
+    "   - A time-based condition hasn't been reached yet (e.g., \"need 8 hours logged but only 6 so far\")",
+    "   - An external state hasn't changed yet (e.g., \"report not yet published, check again in 30 min\")",
+    "   - A prerequisite will be satisfied later but isn't ready now",
+    "",
+    "   DO NOT USE THIS FOR:",
+    "   - Goals that are impossible (use cannot_proceed)",
+    "   - Goals already achieved (use goal_reached)",
+    "   - Information needed from the user (use need_user_input)",
+    "",
+    "   The system automatically retries your task after the delay. Choose retry_after_minutes wisely:",
+    "   - 15-30 min for fast-changing conditions (emails, approvals)",
+    "   - 30-60 min for slow-changing conditions (hours logged, reports)",
+    "   - Your SINGLE response for a defer decision should be the execute/http POST /defer action above.",
+    "   - Do NOT also return goal_reached in the same turn; the runtime handles the deferral.",
+    "",
+    "Respond with ONLY the JSON decision."
+  ],
+  "variables": [
+    {
+      "name": "goal",
+      "description": "The goal to achieve in the agentic execution",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Login to the application",
+        "Navigate to checkout page"
+      ]
+    },
+    {
+      "name": "success_criteria",
+      "description": "Criteria that define when the goal is achieved",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "URL contains /dashboard",
+        "Success message visible"
+      ]
+    },
+    {
+      "name": "state_type",
+      "description": "Type of environment state (Browser, Filesystem, Http, Shell)",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Browser",
+        "Filesystem"
+      ]
+    },
+    {
+      "name": "state_description",
+      "description": "Human-readable description of current environment state",
+      "required": true,
+      "default_value": null,
+      "examples": []
+    },
+    {
+      "name": "taskplan_section",
+      "description": "Current taskplan markdown content, injected when strategy is taskplan. Empty otherwise.",
+      "required": false,
+      "default_value": "",
+      "examples": []
+    },
+    {
+      "name": "history_summary",
+      "description": "Summary of previous iterations in the agentic loop",
+      "required": true,
+      "default_value": "No actions executed yet.",
+      "examples": []
+    },
+    {
+      "name": "history_section",
+      "description": "Rendered execution-history section for non-taskplan prompts. Empty when taskplan projection already includes runtime summary.",
+      "required": false,
+      "default_value": "",
+      "examples": []
+    },
+    {
+      "name": "hint_section",
+      "description": "Optional hint from planner about suggested first action",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## HINT\nThe planner suggested starting with: Navigate to login page"
+      ]
+    },
+    {
+      "name": "input_context",
+      "description": "Section showing user-provided values that have been resolved.",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## USER-PROVIDED VALUES\n  - password: [REDACTED]"
+      ]
+    },
+    {
+      "name": "task_context",
+      "description": "Task execution context with task_id, execution_id, and API base URL. Empty when not executing a task.",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## TASK CONTEXT\nYou are executing task_id: abc123\nexecution_id: def456\nAPI base: http://localhost:3002/api/magician/v2"
+      ]
+    },
+    {
+      "name": "task_state_section",
+      "description": "Persisted task state JSON from previous runs. Empty on first run or non-task executions.",
+      "required": false,
+      "default_value": ""
+    },
+    {
+      "name": "execution_files_section",
+      "description": "Bounded list of files produced by prior tool calls in this execution (plus any seed-time artifacts). Each line carries `[<content_type>; <bytes> bytes] path: <abs path>` so the LLM can reuse the absolute path verbatim as the relevant file argument when chaining any follow-up tool. Domain-agnostic — applies to image, video, document, audio, archive, or any other file-shaped output. Survives compaction (regenerated from `history.artifacts` each iteration). Omitted when no materialised artifacts have been produced yet.",
+      "required": false,
+      "default_value": ""
+    },
+    {
+      "name": "user_memory_section",
+      "description": "Durable user-tier memory such as preferences and long-lived constraints. Empty when no relevant user memory exists.",
+      "required": false,
+      "default_value": ""
+    },
+    {
+      "name": "agent_memory_section",
+      "description": "Durable agent-tier memory such as entities, insights, and archive summaries. Empty when no relevant agent memory exists.",
+      "required": false,
+      "default_value": ""
+    },
+    {
+      "name": "agent_goal_memory_section",
+      "description": "Goal-scoped agent memory such as recent activity or task progress. Empty when no relevant goal memory exists.",
+      "required": false,
+      "default_value": ""
+    },
+    {
+      "name": "procedure_memory_section",
+      "description": "Relevant active reusable procedures retrieved for this goal. Empty when no active procedure is relevant.",
+      "required": false,
+      "default_value": ""
+    },
+    {
+      "name": "environment_knowledge_section",
+      "description": "Prior environment knowledge from memory — learned patterns, blockers, and successful interaction sequences for matched environments. Empty when no prior knowledge exists.",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## WHAT YOU ALREADY KNOW ABOUT THIS ENVIRONMENT\n\n### WHAT WORKED IN SIMILAR SITUATIONS\n- ...\n"
+      ]
+    },
+    {
+      "name": "call_frequency_section",
+      "description": "Frequency rollup of `(call, args)` signatures across the entire execution history. The windowed `EXECUTION HISTORY` below only shows the most-recent ~10 iterations, so this section is the only place the model can see what it's already tried at high counts (e.g. 'list_tasks(status=completed) × 656'). Only signatures with count ≥ 2 are listed; capped at 15 entries to bound prompt size. Empty when no signature repeats.",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## REPEATED CALLS (this execution, full history)\nEach line is one unique `(call, args)` signature × how many times it has appeared across all 500 iteration(s) of this execution. The windowed EXECUTION HISTORY below shows only recent turns — this section is the only place you see what you've already tried at higher counts. 4 signature(s) repeated.\n\n- `bash:# list_tasks status=completed` × 480\n- `pack:search` × 10\n- `bash:# get_task_details task_id=task_abc` × 8\n- `bash:find . -iname '*sku*'` × 2\n"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "General",
+    "description": "Decision prompt for the agentic observe-decide-execute loop. Browser automation is exposed as an inner-loop browser capability; primitive browser actions are selected inside that nested loop from browser.yaml and the pinned agent-browser CLI.",
+    "author": "magician",
+    "created_at": "2025-01-21T00:00:00Z",
+    "changelog": "v1.3.1: Adds `{call_frequency_section}` between memory sections and `## CURRENT STATE`. Renders a frequency table of `(call, args)` signatures across the entire execution history (capped at 15 unique signatures, only count ≥ 2). The windowed `EXECUTION HISTORY` below only shows ~10 most-recent iterations, so a stuck planner that has called `list_tasks(status=completed)` 600× cannot see that repetition from its local window — every iteration looks like a fresh attempt. This section surfaces the repetition as hard fact in the prompt itself, so self-correction can fire before the loop detector's ≥5-call control-pressure threshold. Empty when no signature repeats (cold execution). v1.3.0: Cache layout — relocates `{task_context}` and `{hint_section}` above the cache breakpoint (they're stable per task) and moves the five memory sections (`user_memory_section`, `agent_memory_section`, `agent_goal_memory_section`, `procedure_memory_section`, `environment_knowledge_section`) BELOW it (vector-ranked, can shift between iterations and was poisoning the prefix cache). Net effect: the stable prefix (goal, criteria, capabilities, delegation, task_context, hint) survives across iterations of the same goal even when memory ranking shifts; the prefix cache on Anthropic + the implicit prefix cache on OpenAI/Gemini now hit reliably turn-over-turn instead of invalidating on every memory rerank. No content changes inside any section — pure reorder. v1.2.0: Adds {procedure_memory_section}. v1.1.0: Reordered content array for prompt cache split. v1.0.x: see prior changelog stanzas.",
+    "tags": [
+      "agentic",
+      "execution",
+      "decision",
+      "nav-only",
+      "non-som",
+      "observation-first",
+      "prompt-cache"
+    ],
+    "estimated_tokens": 1000
+  }
+}

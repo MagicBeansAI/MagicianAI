@@ -1,0 +1,22 @@
+{
+  "dataset_sha256": "48daeba9cf1f669b132723e302b4a58b1d809cf84b9c000a26eaa1ecadaad542",
+  "cases": 20,
+  "correct_cases": 7,
+  "fully_eligible_cases": 1,
+  "accepted_wrong_heads": 3,
+  "correct_heads": 16,
+  "total_heads": 46,
+  "wall_seconds": 3.488,
+  "p50_ms": 126.5,
+  "p95_ms": 519,
+  "model_calls": 18,
+  "known_cost_usd": 0.0,
+  "unpriced_calls": 0,
+  "input_tokens": 5943,
+  "output_tokens": 0,
+  "cache_read_tokens_known_calls": 0,
+  "cache_write_tokens_known_calls": 0,
+  "pricing_source": "Pinned builtin magicllm/src/pricing.rs: decision:typesafe jev-1.13, effective 2026-09-15; input $0.042/M, output $0/M; local decision adapters free",
+  "allowed_local_models": [],
+  "scope": "Direct classification API; no owner mutations, Magician ledger writes or host cache; full qualification not claimed"
+}

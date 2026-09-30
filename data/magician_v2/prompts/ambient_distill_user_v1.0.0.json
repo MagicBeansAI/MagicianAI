@@ -1,0 +1,28 @@
+{
+  "name": "ambient_distill_user",
+  "version": "1.0.0",
+  "content": [
+    "Distill this ambient browser-signal cluster (one origin, one day) into an evidence-record proposal per the system contract. Promote only if it evidences substantive work; otherwise skip.",
+    "",
+    "## Signal cluster",
+    "{signal_cluster_json}"
+  ],
+  "variables": [
+    {
+      "name": "signal_cluster_json",
+      "description": "JSON cluster: { host, origin, signal_count, observed_event_kinds, page_summaries }.",
+      "required": true,
+      "default_value": null,
+      "examples": ["{\n  \"host\": \"github.com\",\n  \"signal_count\": 6,\n  \"observed_event_kinds\": [\"page_change\", \"form\"],\n  \"page_summaries\": [\"Pull Request #481\"]\n}"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt carrying the ambient signal cluster to distill (work-evidence graph, Phase 2).",
+    "author": "magician",
+    "created_at": "2026-06-13T00:00:00Z",
+    "changelog": "v1.0.0: Initial ambient-signal-cluster distillation user prompt.",
+    "tags": ["evidence", "work-evidence-graph", "ambient", "distillation"],
+    "estimated_tokens": 80
+  }
+}

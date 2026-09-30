@@ -1,0 +1,86 @@
+{
+  "claude_cli_version": "2.1.229",
+  "generated_from": "claude 2.1.229 --print --output-format stream-json --verbose (NDJSON, not JSON-RPC)",
+  "transport": "ndjson",
+  "output_format": "stream-json",
+  "requires_verbose": true,
+  "never_bare": true,
+  "stdin": "null",
+  "auth": {
+    "default": "subscription_oauth",
+    "apiKeySource_none": "Max subscription / OAuth, not Anthropic API key",
+    "inherit_api_keys": false
+  },
+  "resume_flag": "--resume",
+  "session_id_field": "session_id",
+  "terminal_event": {
+    "type": "result",
+    "success": { "subtype": "success", "is_error": false }
+  },
+  "event_types": [
+    "system",
+    "rate_limit_event",
+    "assistant",
+    "user",
+    "result"
+  ],
+  "content_block_types": [
+    "text",
+    "thinking",
+    "tool_use",
+    "tool_result"
+  ],
+  "launch_argv_build": [
+    "-p",
+    "<prompt>",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "bypassPermissions",
+    "--dangerously-skip-permissions",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+    "--disable-slash-commands",
+    "--no-chrome",
+    "--safe-mode",
+    "--disallowedTools",
+    "WebSearch,WebFetch,Task,CronCreate,CronDelete,CronList,PushNotification,RemoteTrigger,Monitor,SendMessage,Workflow,ToolSearch"
+  ],
+  "qualify_launch_argv": [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--input-format",
+    "stream-json",
+    "--permission-mode",
+    "bypassPermissions",
+    "--dangerously-skip-permissions",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+    "--disable-slash-commands",
+    "--no-chrome",
+    "--safe-mode",
+    "--disallowedTools",
+    "WebSearch,WebFetch,Task,CronCreate,CronDelete,CronList,PushNotification,RemoteTrigger,Monitor,SendMessage,Workflow,ToolSearch",
+    "--no-session-persistence"
+  ],
+  "launch_argv_discuss_permission_mode": "plan",
+  "disallowed_tools": [
+    "WebSearch",
+    "WebFetch",
+    "Task",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "PushNotification",
+    "RemoteTrigger",
+    "Monitor",
+    "SendMessage",
+    "Workflow",
+    "ToolSearch"
+  ]
+}

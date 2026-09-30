@@ -1,0 +1,350 @@
+{
+  "schema_version": 1,
+  "contract_id": "llm-operation-families-v1",
+  "intentional_mapping_variance": {
+    "repo_only": {},
+    "template_only": {}
+  },
+  "families": [
+    {
+      "id": "conversation",
+      "validator_id": "presented_response_v1",
+      "operations": [
+        "chat_completion",
+        "app_data_processing",
+        "brainstorm_facilitation",
+        "kapso_envoy_chat",
+        "kapso_envoy_chat_fallback",
+        "meeting_response"
+      ]
+    },
+    {
+      "id": "planning_and_decision",
+      "validator_id": "planning_contract_v1",
+      "operations": [
+        "task_decomposition",
+        "query_analysis",
+        "atomic_composition_outline",
+        "atomic_composition",
+        "tool_evaluation",
+        "ask_loop_clarifier",
+        "question_rewriting",
+        "question_curation",
+        "workflow_compilation",
+        "agentic_decision",
+        "agentic_decision_retry",
+        "agentic_ledger_compaction",
+        "progress_review",
+        "agent_general"
+      ]
+    },
+    {
+      "id": "strict_extraction",
+      "validator_id": "structured_output_v1",
+      "operations": [
+        "entity_mapping",
+        "category_matching",
+        "memory_applicability_judge",
+        "answer_interpretation",
+        "slot_extraction",
+        "parameter_extraction",
+        "parameter_default_inference",
+        "discovery_planning",
+        "discovery_extraction",
+        "placeholder_resolution",
+        "agentic_input_interpretation",
+        "channel_classify",
+        "thinking_map_interpret",
+        "evidence_claims"
+      ]
+    },
+    {
+      "id": "safety_and_review",
+      "validator_id": "review_decision_v1",
+      "operations": [
+        "parameter_safety_check",
+        "evidence_precision_judge",
+        "evidence_review_verify",
+        "memory_connection_review",
+        "memory_lifecycle_review",
+        "memory_conflict_review",
+        "memory_conflict_review_high_risk"
+      ]
+    },
+    {
+      "id": "memory_learning",
+      "validator_id": "memory_structured_output_v1",
+      "operations": [
+        "memory_entity_extraction",
+        "memory_environment_knowledge_extraction",
+        "memory_insight_distillation",
+        "memory_user_promotion",
+        "memory_episode_quality_classification",
+        "memory_temperature_utility_review",
+        "learning_reflection"
+      ]
+    },
+    {
+      "id": "summarization_and_distillation",
+      "validator_id": "distillation_output_v1",
+      "operations": [
+        "memory_archive_summary",
+        "voice_context_compaction",
+        "distill_evidence",
+        "ambient_distill",
+        "local_prep",
+        "channel_ingest_distill",
+        "channel_pattern_synthesis",
+        "resurfacing_curate",
+        "resurfacing_deep_summary",
+        "memory_attach_stage2",
+        "screen_evidence_distill",
+        "tier_evidence_distill",
+        "taste_profile_distill",
+        "evidence_review",
+        "meeting_summary",
+        "task_summary"
+      ]
+    },
+    {
+      "id": "drafting_and_state_synthesis",
+      "validator_id": "synthesis_output_v1",
+      "operations": [
+        "channel_reply_draft",
+        "durable_task_state_generate",
+        "durable_task_state_patch",
+        "durable_task_state_close_summary",
+        "durable_task_state_generate_retry",
+        "durable_task_state_patch_retry",
+        "v3_execution_output_synthesis",
+        "v3_task_agent_output_synthesis",
+        "v3_task_user_output_synthesis"
+      ]
+    },
+    {
+      "id": "vision_and_grounding",
+      "validator_id": "vision_grounding_v1",
+      "operations": [
+        "analyze_image_via_openai",
+        "page_understanding_vision",
+        "screen_observation",
+        "screen_understanding",
+        "screen_grounding"
+      ]
+    },
+    {
+      "id": "research_and_grounding",
+      "validator_id": "web_answer_citations_v1",
+      "operations": [
+        "web_answer"
+      ]
+    },
+    {
+      "id": "embedding",
+      "validator_id": "embedding_output_v1",
+      "operations": [
+        "embed_documents",
+        "embed_query"
+      ]
+    }
+  ],
+  "validators": [
+    {
+      "id": "presented_response_v1",
+      "authority": "presentation surface plus explicit feedback/use signals",
+      "source_paths": [
+        "magician/src/magician_v2/chat/service.rs",
+        "magician/src/magician_v2/media_seam/meeting_realtime_responder.rs"
+      ],
+      "immediate_signals": [
+        "nonempty_response",
+        "provider_finish_state"
+      ],
+      "delayed_signals": [
+        "presented",
+        "edited",
+        "regenerated",
+        "explicit_feedback",
+        "followup_correction"
+      ]
+    },
+    {
+      "id": "planning_contract_v1",
+      "authority": "operation caller parser followed by canonical step/action outcomes",
+      "source_paths": [
+        "magician/src/magician_v2/query_analysis/operation_llm_router.rs",
+        "magician/src/magician_v2/execution/agentic/decision.rs",
+        "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
+        "magician/src/magician_v2/strategy/decomposer.rs"
+      ],
+      "immediate_signals": [
+        "parse_valid",
+        "required_shape_present",
+        "action_valid"
+      ],
+      "delayed_signals": [
+        "action_succeeded",
+        "step_progressed",
+        "replan_required",
+        "task_terminal"
+      ]
+    },
+    {
+      "id": "structured_output_v1",
+      "authority": "operation-specific schema/parser at the model caller",
+      "source_paths": [
+        "magician/src/magician_v2/query_analysis/operation_llm_router.rs",
+        "magician-surfaces/src/thinking_map/llm_router_adapter.rs",
+        "magician/src/magician_v2/memory_applicability.rs"
+      ],
+      "immediate_signals": [
+        "parse_valid",
+        "schema_valid",
+        "complete_required_items"
+      ],
+      "delayed_signals": [
+        "downstream_accepted",
+        "correction_retry"
+      ]
+    },
+    {
+      "id": "review_decision_v1",
+      "authority": "review caller plus protected downstream policy/action outcome",
+      "source_paths": [
+        "magician/src/magician_v2/attention/resurfacing/memory_connections.rs",
+        "magician/src/magician_v2/agents/memory_lifecycle.rs",
+        "magician/src/magician_v2/agents/memory_lifecycle/review_wire.rs",
+        "magician/src/magician_v2/agents/memory_lifecycle/runtime.rs",
+        "magician/src/magician_v2/agents/memory_utility_reviewer.rs",
+        "magician/src/magician_v2/query_analysis/operation_llm_router.rs"
+      ],
+      "immediate_signals": [
+        "schema_valid",
+        "decision_allowed",
+        "evidence_references_valid"
+      ],
+      "delayed_signals": [
+        "review_upheld",
+        "manual_override",
+        "reversal"
+      ]
+    },
+    {
+      "id": "memory_structured_output_v1",
+      "authority": "logical-chunk memory adapter parser and canonical memory writer",
+      "source_paths": [
+        "magician-chunking/src/memory_adapters.rs",
+        "magician/src/magician_v2/agents/memory_utility_reviewer.rs",
+        "magician/src/magician_v2/agents/memory_consolidator.rs"
+      ],
+      "immediate_signals": [
+        "schema_valid",
+        "identity_preserved",
+        "sensitivity_gate_passed"
+      ],
+      "delayed_signals": [
+        "persisted",
+        "deduplicated",
+        "promoted",
+        "used_in_retrieval"
+      ]
+    },
+    {
+      "id": "distillation_output_v1",
+      "authority": "domain caller parser and downstream evidence/summary store",
+      "source_paths": [
+        "magician-chunking/src/hierarchical_adapters.rs",
+        "magician-comms/src/channel_assist/assist/distill.rs",
+        "magician-api/src/ambient_api.rs",
+        "magician/src/magician_v2/evidence/mod.rs",
+        "magician/src/magician_v2/evidence/screen_distill.rs",
+        "magician/src/magician_v2/evidence/tier_distill.rs",
+        "magician-media/src/media_rails/voice_context_compactor.rs",
+        "magician/src/magician_v2/artifact_v2/service.rs",
+        "magician/src/magician_v2/taste_capture.rs"
+      ],
+      "immediate_signals": [
+        "nonempty",
+        "schema_valid",
+        "source_facts_preserved"
+      ],
+      "delayed_signals": [
+        "stored",
+        "not_duplicate",
+        "downstream_used"
+      ]
+    },
+    {
+      "id": "synthesis_output_v1",
+      "authority": "durable-state/output caller validator and resulting artifact/task state",
+      "source_paths": [
+        "magician/src/magician_v2/execution/durable_task_state.rs",
+        "magician-comms/src/channel_assist/assist/reply_draft.rs",
+        "magician/src/magician_v2/artifact_v2/synthesis.rs"
+      ],
+      "immediate_signals": [
+        "parse_valid",
+        "required_fields_present",
+        "grounding_valid"
+      ],
+      "delayed_signals": [
+        "artifact_saved",
+        "draft_sent",
+        "edited",
+        "reversed"
+      ]
+    },
+    {
+      "id": "vision_grounding_v1",
+      "authority": "screen rail parser plus observed action/target outcome",
+      "source_paths": [
+        "magician-api/src/screen_api.rs",
+        "magician-media/src/media_rails/screen_observe.rs",
+        "magician/src/magician_v2/execution/compiled_providers.rs"
+      ],
+      "immediate_signals": [
+        "parse_valid",
+        "coordinates_in_bounds",
+        "target_present"
+      ],
+      "delayed_signals": [
+        "action_succeeded",
+        "screen_changed_as_expected",
+        "correction_required"
+      ]
+    },
+    {
+      "id": "web_answer_citations_v1",
+      "authority": "web_answer tool caller parser followed by search counts and citations in the retained raw provider response",
+      "source_paths": [
+        "magician/src/magician_v2/execution/compiled_handlers/web_answer.rs",
+        "magicllm/src/server_web_search.rs"
+      ],
+      "immediate_signals": [
+        "answer_nonempty",
+        "citations_parsed",
+        "search_count_reported"
+      ],
+      "delayed_signals": [
+        "citation_reused_in_final_answer",
+        "operator_cost_review"
+      ]
+    },
+    {
+      "id": "embedding_output_v1",
+      "authority": "vector-index embedding writers: response shape checks at call time, persistence and retrieval use downstream",
+      "source_paths": [
+        "magician-vector-index/src/vector_toolkit.rs",
+        "magician-vector-index/src/memory_index.rs"
+      ],
+      "immediate_signals": [
+        "dims_valid",
+        "finite_norm"
+      ],
+      "delayed_signals": [
+        "stored",
+        "used_in_retrieval"
+      ]
+    }
+  ]
+}

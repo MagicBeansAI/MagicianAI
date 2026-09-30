@@ -1,0 +1,533 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "emoji": {
+              "value_type": 1,
+              "required": true
+            },
+            "member_id": {
+              "value_type": 2,
+              "required": true
+            },
+            "post_id": {
+              "value_type": 3,
+              "required": true
+            },
+            "reaction_id": {
+              "value_type": 4,
+              "required": true
+            },
+            "removed": {
+              "value_type": 5,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "boolean"
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:fbd280b43e070b8af3b0371c6ee78b9ace01e9ac9617d7cdf6e8c454a367cf52",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:fbd280b43e070b8af3b0371c6ee78b9ace01e9ac9617d7cdf6e8c454a367cf52",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {},
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/reaction_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/post_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/member_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/emoji"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/removed"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/tuple/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 10
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/post/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 12
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/post_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 14,
+                  "right": 4
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/member_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 16,
+                  "right": 5
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/emoji"
+                },
+                {
+                  "kind": "equal",
+                  "left": 18,
+                  "right": 6
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    15,
+                    17,
+                    19
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 9
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    21,
+                    20
+                  ]
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "reaction",
+                  "parts": [
+                    4,
+                    5,
+                    6
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 7
+                },
+                {
+                  "kind": "not",
+                  "value": 9
+                },
+                {
+                  "kind": "not",
+                  "value": 11
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    24,
+                    25,
+                    26
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/record_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/record_revision"
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    7,
+                    9
+                  ]
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "post",
+                "entity": "post",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "post_id"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "post_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 4
+                }
+              },
+              {
+                "name": "existing",
+                "entity": "reaction",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "reaction_id",
+                    "post_id",
+                    "member_id",
+                    "emoji",
+                    "created_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "reaction_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 3
+                }
+              },
+              {
+                "name": "tuple",
+                "entity": "reaction",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "reaction_id",
+                    "post_id",
+                    "member_id",
+                    "emoji",
+                    "created_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 3,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "post_id",
+                        "operator": "equal",
+                        "value": null
+                      },
+                      {
+                        "kind": "compare",
+                        "field": "member_id",
+                        "operator": "equal",
+                        "value": null
+                      },
+                      {
+                        "kind": "compare",
+                        "field": "emoji",
+                        "operator": "equal",
+                        "value": null
+                      },
+                      {
+                        "kind": "all",
+                        "children": [
+                          0,
+                          1,
+                          2
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 4,
+                  "/predicate/nodes/1/value": 5,
+                  "/predicate/nodes/2/value": 6
+                }
+              }
+            ],
+            "query_when": {},
+            "guards": [
+              {
+                "require": 13,
+                "reason": "post_missing"
+              },
+              {
+                "require": 22,
+                "reason": "reaction_identity_conflict"
+              }
+            ],
+            "mutations": [
+              {
+                "entity": "reaction",
+                "for_each": null,
+                "when": 27,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 23,
+                  "fields": {
+                    "reaction_id": 3,
+                    "post_id": 4,
+                    "member_id": 5,
+                    "emoji": 6,
+                    "created_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "reaction",
+                "for_each": null,
+                "when": 30,
+                "semantic_result": false,
+                "change": {
+                  "kind": "delete",
+                  "record_id": 28,
+                  "revision": 29
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

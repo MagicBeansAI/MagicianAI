@@ -1,0 +1,80 @@
+name: meeting
+description: Join a Google Meet (meet.google.com) call as a voice participant — launches the bot's own signed-in browser, captures and transcribes the meeting audio, and speaks back when addressed by a wake phrase. USE THIS for ANY meet.google.com link (a "join the meeting/call" request whose link is meet.google.com), NOT the `browser` tool — `browser` only opens the page passively, with no audio capture or voice. Google Meet only; Zoom / Teams / Webex are not supported.
+guide: |-
+  Tool name: `meeting`
+  Primary parameter: `action`
+
+  Use this to have the assistant participate in a Google Meet by voice. It joins on
+  its OWN (launches a signed-in browser — no human needed), listens + transcribes the
+  whole meeting, and only speaks when someone says a wake phrase. If you don't have a
+  link, find one with your `calendar` / `gmail` tools, then join.
+
+  ROUTING: any `meet.google.com` link is a `meeting` job, NOT `browser`. When the user
+  says "join the meeting/call" and the link is meet.google.com, call this tool — the
+  `browser` tool would only open the page passively (no audio capture, no voice).
+  Only Google Meet is supported here; for Zoom / Teams / Webex links, say it's not
+  wired up rather than opening them.
+
+  Actions:
+    join    Join a meeting. Params: url (required), display_name (optional),
+            wake_phrases (optional list), title (optional), date (optional).
+            Returns { session_id, status }.
+    status  Params: session_id (required). Returns the current state.
+    leave   Params: session_id (required). Stops the session.
+    list    No params. Returns the active sessions.
+
+  CLOSING a meeting: call `list` FIRST and leave the session id(s) it returns.
+  Session ids remembered from earlier turns are usually stale (ended sessions
+  are reaped) and return `unknown session_id` — don't retry them one by one.
+
+  THREAD: the meeting gets its OWN chat thread, keyed `meeting-<label>-<date>`.
+  When you found the link on a calendar event, ALSO pass that event's `title`
+  (so the thread reads e.g. `meeting-eng-standup-2026-06-10`) and its `date`
+  (`YYYY-MM-DD`). If you don't pass them, the thread falls back to the Meet code
+  and today's date. Pass them whenever you have the event — it makes the thread
+  legible and keeps each day's occurrence separate.
+parameters:
+- name: action
+  required: true
+  param_type: string
+  description: 'What to do: join, status, leave, or list'
+  enum_values:
+  - join
+  - status
+  - leave
+  - list
+- name: url
+  param_type: string
+  description: The Google-Meet link to join (required for action=join)
+- name: session_id
+  param_type: string
+  description: The session id returned by join (required for status and leave)
+- name: display_name
+  param_type: string
+  description: Name the bot joins as (optional; defaults to the configured name)
+- name: wake_phrases
+  param_type: array
+  description: Phrases that make the bot respond (optional; defaults to the configured set)
+- name: title
+  param_type: string
+  description: >-
+    Calendar event title for this meeting (optional). When you found the link on
+    a calendar event, pass its title so the bot's chat thread is keyed by it
+    (meeting-<slug(title)>-<date>); omit and the thread falls back to the Meet code.
+- name: date
+  param_type: string
+  description: >-
+    Scheduled meeting date as YYYY-MM-DD (optional; from the calendar event). Always
+    part of the thread id; omit and the join date (today) is used.
+implementation:
+  type: compiled
+  provider_name: meeting
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - meeting
+  - voice
+  - realtime
+  composition_category: utility_operations
+  sandbox: none

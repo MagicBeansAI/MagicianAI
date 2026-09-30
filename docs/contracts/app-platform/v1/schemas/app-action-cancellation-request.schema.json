@@ -1,0 +1,27 @@
+{
+  "$defs": {
+    "AppReference": {
+      "type": "string"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-action-cancellation-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Closed, generation-bound cancellation request. The run identity is carried\nby the URL and authenticated workflow control, never by caller-supplied\ntask/execution identifiers.",
+  "properties": {
+    "expected_generation": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/AppReference"
+    }
+  },
+  "required": [
+    "expected_generation",
+    "idempotency_key"
+  ],
+  "title": "AppActionCancellationRequest",
+  "type": "object"
+}

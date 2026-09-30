@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
+
+# Pre-flight reminder before launching Codex.
+scripts/codexhook_docs_notify.sh || true
+
+exec codex "$@"

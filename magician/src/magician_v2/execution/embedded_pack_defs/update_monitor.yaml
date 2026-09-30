@@ -1,0 +1,80 @@
+name: update_monitor
+description: Edit an existing monitor's title, contract fields, or schedule. Spec edits bump the server-owned monitor revision. Refuses plain tasks.
+version: "1.0.0"
+guide: |
+  Tool name: `update_monitor`
+
+  Edits an EXISTING monitor (a task carrying a monitor contract). Use when
+  the user asks to change what a monitor watches, its rules, strictness,
+  notification policy, cadence, or title — e.g. "make the pricing watch
+  daily", "stop notifying me about blog posts on that monitor".
+
+  Pass `task_id` plus ONLY the fields to change:
+  - Provided contract fields REPLACE the current value; an explicitly empty
+    list clears that list. Omitted fields are kept as-is.
+  - The merged contract is re-validated with the same admission gate as
+    creation — e.g. removing every source fails with
+    `monitor_sources_required` and leaves the monitor untouched.
+  - A contract edit bumps the server-owned `monitor_revision`; title or
+    schedule-only edits do not.
+  - `schedule` REPLACES the schedule (same TaskSchedule object shape as
+    create). To pause/resume instead of rescheduling, use the monitor's
+    pause/resume controls, not this tool.
+
+  A plain (non-monitor) task is refused with `monitor_not_found` — use
+  `update_task` for ordinary tasks. Summarize the applied change back to
+  the user, including the new revision when the contract changed.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: The monitor's task id.
+  - name: title
+    param_type: string
+    description: New short title.
+  - name: objective
+    param_type: string
+    description: Replacement objective, in the user's words.
+  - name: urls
+    param_type: array
+    description: Replacement explicit http(s) URLs ([] clears).
+  - name: domains
+    param_type: array
+    description: Replacement domains ([] clears).
+  - name: authenticated_sources
+    param_type: array
+    description: Replacement authenticated source names ([] clears).
+  - name: query_seeds
+    param_type: array
+    description: Replacement query seeds ([] clears).
+  - name: include_rules
+    param_type: array
+    description: Replacement include rules ([] clears).
+  - name: exclude_rules
+    param_type: array
+    description: Replacement exclude rules ([] clears).
+  - name: match_mode
+    param_type: string
+    description: New match mode.
+    enum_values: [strict, balanced, broad]
+  - name: notification_policy
+    param_type: string
+    description: New notification policy.
+    enum_values: [material_changes, every_run, never]
+  - name: notify_initial_baseline
+    param_type: boolean
+    description: New baseline notification opt-in.
+  - name: schedule
+    param_type: object
+    description: Replacement TaskSchedule object.
+implementation:
+  type: compiled
+  provider_name: update_monitor
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - tasks
+    - monitors
+  composition_category: action
+  sandbox: none

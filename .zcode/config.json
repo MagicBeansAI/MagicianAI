@@ -1,0 +1,52 @@
+{
+  "mcp": {
+    "servers": {
+      "codegraph": {
+        "command": "python3",
+        "args": [
+          "docs/codegraph/mcp_server.py"
+        ],
+        "cwd": "."
+      }
+    }
+  },
+  "hooks": {
+    "enabled": true,
+    "timeoutMs": 60000,
+    "events": {
+      "PostToolUse": [
+        {
+          "matcher": "Write|Edit",
+          "hooks": [
+            {
+              "type": "process",
+              "command": "bash",
+              "args": [
+                "-lc",
+                "exec \"$(git rev-parse --show-toplevel)/scripts/docs_remind_hook.sh\" zcode"
+              ],
+              "enabled": true,
+              "timeoutMs": 30000
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "process",
+              "command": "bash",
+              "args": [
+                "-lc",
+                "exec \"$(git rev-parse --show-toplevel)/scripts/docs_remind_hook.sh\" zcode"
+              ],
+              "enabled": true,
+              "timeoutMs": 30000
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

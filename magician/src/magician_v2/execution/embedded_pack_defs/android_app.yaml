@@ -1,0 +1,37 @@
+name: android_app
+description: Launch, close, or list apps on the Android phone.
+version: "1.0.0"
+guide: |
+  Tool name: `android_app`
+
+  - `launch` with a `package` brings an app to the foreground, starting it if
+    needed. Snapshot afterwards and give it a moment: a cold start often shows a
+    blank screen first, and a snapshot taken too early looks like an app with no
+    content.
+  - `close` with a `package` stops it.
+  - `list` returns what is installed, which is how you find a package name when
+    the owner names an app rather than a package.
+
+  Package names are the Android identifier, not the label on the icon —
+  `com.example.app`, not "Example". Use `list` when you are unsure rather than
+  guessing, because launching a package that does not exist simply fails.
+parameters:
+  - name: operation
+    param_type: string
+    description: "launch (default), close, or list."
+  - name: package
+    param_type: string
+    description: "Package name, e.g. com.example.app. Required for launch and close."
+  - name: device
+    param_type: string
+    description: Which phone, when more than one is connected.
+implementation:
+  type: compiled
+  provider_name: android_app
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 45
+  categories:
+    - android
+  composition_category: action
+  sandbox: none

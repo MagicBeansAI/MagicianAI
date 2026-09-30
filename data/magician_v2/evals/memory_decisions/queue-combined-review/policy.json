@@ -1,0 +1,334 @@
+{
+  "engine_instance": "01M3J67G1JTAZ8B4V7PB0CF7VK",
+  "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+  "contract_version": 4,
+  "action_contract_version": 4,
+  "operations": [
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "9c46298ca08b31878500b623aea053eadccbd39ff0d144d6e2db2af6a82bbcb8",
+        "pack": "evidence_promote",
+        "pack_version": "1.1.0"
+      },
+      "name": "evidence_promote",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000,
+          "queue_budget_ms": 0
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "e8b6de4371c96d448c81df3ee83009c97fa5b7f24fc5bf0bc46e7d7353ddba0a",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_applicability",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "e8b6de4371c96d448c81df3ee83009c97fa5b7f24fc5bf0bc46e7d7353ddba0a",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_attach",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "b1e38ecb78587e4c9d1e06c7a313920dc88e1e53bfb0dec5432d78919c3b8103",
+        "pack": "memory_conflict_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_conflict_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "3f15e308ec5164cde5a206a5e4127fe33802bad817ae420057cf8105c6401bf4",
+        "pack": "memory_connection_gate",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_connection_gate",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "f07739c69c0b8f994f5c5014975a9b72ea2eecf670405fb795462e5b9b0f6fb6",
+        "pack": "memory_episode_quality",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_episode_quality",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c",
+        "pack": "memory_lifecycle_relation",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_lifecycle_relation",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 8192,
+          "max_request_bytes": 131072,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "176e89ccc1c75d89d22d7cbba806cafcf6d9b10ec3962e4fd4ebf8f3965b5be0",
+        "pack": "memory_utility_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_utility_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "3431a9eb00c49dac525fb70892aceef4d8063341819a797402a1ae5640000180",
+        "pack": "procedure_feedback",
+        "pack_version": "1.0.0"
+      },
+      "name": "procedure_feedback",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": false,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 1000,
+          "queue_budget_ms": 0
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "9ef1df04b0880ec61552f40ca17399bf0f522ccf7572d37dfd73e1af00c93efb",
+        "pack": "tool_action_judge",
+        "pack_version": "1.0.0"
+      },
+      "name": "tool_action_judge",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [],
+      "route_cloud": [
+        "jev"
+      ]
+    }
+  ]
+}

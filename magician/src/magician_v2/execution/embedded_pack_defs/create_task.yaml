@@ -1,0 +1,136 @@
+name: create_task
+description: Create tracked work in the active scope; user/chat requests are visible, while autonomous harness work is internal unless explicitly marked user-visible.
+version: "1.3.1"
+guide: |
+  Tool name: `create_task`
+
+  Use this to create explicit tracked work in the active scope.
+  ONLY call this when the user EXPLICITLY asked to create, track, schedule, or
+  be reminded of durable work whose progress should appear in `/tasks` —
+  signals like "create a task", "track this", "remind me", "every day",
+  "set up a job". A plain question, a lookup, or a one-off "do X now" is NOT
+  such a request: answer it directly or hand it to a single
+  `delegate_to_agent` (transient internal run) — do NOT create a task the user
+  didn't ask for. NEVER pair `create_task` with `delegate_to_agent` for the
+  same request: the delegate does the work while this leaves an orphaned,
+  never-run card in the user's `/tasks`.
+
+  Guidelines:
+  - keep the title short and operational
+  - put the actionable context in `description`
+  - `agent_id` is required by the shared schema, but chat-owned tasks are
+    structurally owned by the current personal agent; put specialist routing
+    needs in `description` so the task can delegate internally when it runs
+  - set `priority` only when it materially changes urgency
+  - use `goal_id` when the task should stay tied to the current harness focus or another stable semantic goal
+  - when the task is a continuation of prior work, pass
+    `reference_task_ids` with the completed task ids whose outputs/artifacts
+    should be available as read-only context to the new task
+  - do not pass `reference_task_ids` for unrelated work; use `list_tasks` to
+    discover candidate ids and `get_task_details` to inspect the prior output
+    before linking it
+  - in normal chat/user context, tasks created via this tool are always
+    user-visible tracked work in `/tasks`; `user_visible` is ignored there
+  - in autonomous harness context, tasks are internal by default because they
+    are agent execution machinery. Set `user_visible=true` ONLY when the user
+    is expected to manage the resulting durable commitment in `/tasks`
+  - for transient chat work, use delegation or the capability runtime path
+    instead of creating either kind of tracked task
+  - In autonomous harness context, created tasks start immediately by
+    default so a cycle cannot leave draft-only work behind. Pass
+    `start_immediately=false` only when the intended outcome is a parked
+    tracked task, not delegated execution. In normal chat/user task
+    creation, call `run_task` only when the user explicitly asks to start
+    an existing task now.
+
+  Task references:
+  - Use `reference_task_ids` for follow-ups like "continue from that",
+    "break down the previous result by city", "reuse the SQL/query from
+    task_...", or "turn that task output into a report".
+  - Referenced task outputs are injected into the spawned task's execution
+    seed as linked artifacts. When available, the spawned task will see a
+    `continuation_context` JSON output first; read that compact index to find
+    exact prior outputs, SQL/scripts, tool-output files, traces, and larger
+    artifacts only when needed.
+  - If you only need to answer in chat from a prior task, call
+    `get_task_details` and answer directly; create a new task only when there
+    is new work to perform.
+  - If you need follow-up execution that reuses prior outputs, SQL, scripts,
+    downloads, or generated files, call `get_task_details` first, then pass
+    only the completed source task id(s) in `reference_task_ids`.
+
+  Recurring tasks (cron-scheduled):
+  Pass a `schedule` field (object) alongside the standard params. `kind` is
+  EXTERNALLY tagged: the variant name is the single key wrapping that
+  variant's fields — `{"Cron": {...}}` or `{"Interval": {...}}`. Never put
+  a `type` key inside `kind` (an internally-tagged shape does NOT parse and
+  the schedule is silently dropped). Shape:
+    {
+      "kind": { "Cron": { "expression": "<cron>", "timezone": "<IANA tz>" } },
+      "timezone": "<IANA tz>",       // optional fallback
+      "max_runs": <integer>           // optional; omit for indefinite recurrence
+    }
+  Examples:
+  - daily 9am summary:
+      schedule = { "kind": {"Cron":{"expression":"0 9 * * *","timezone":"America/New_York"}}, "max_runs": 7 }
+  - every 5 minutes, capped at 12 fires (1 hour):
+      schedule = { "kind": {"Cron":{"expression":"*/5 * * * *","timezone":"UTC"}}, "max_runs": 12 }
+  - every 5 minutes on a plain interval (no cron), with jitter:
+      schedule = { "kind": {"Interval":{"seconds":300,"jitter_seconds":30}} }
+  The scheduler increments a persistent fire counter on each fire and
+  retires the schedule once the count hits `max_runs`.
+parameters:
+  - name: agent_id
+    required: true
+    param_type: string
+    description: Required owning-agent hint. In chat this is forced to the current personal agent; include specialist routing needs in description instead of relying on this field.
+  - name: title
+    required: true
+    param_type: string
+    description: Short task title.
+  - name: description
+    required: true
+    param_type: string
+    description: Full task description for the assigned agent.
+  - name: priority
+    param_type: string
+    description: Optional task priority.
+    enum_values: [urgent, high, medium, low, p1, p2, p3, p4]
+  - name: due_date
+    param_type: string
+    description: Optional due date or due timestamp string.
+  - name: goal_id
+    param_type: string
+    description: Optional stable semantic goal id for repeated work tracking.
+  - name: output_mode
+    param_type: string
+    description: Task output projection mode.
+    enum_values: [accumulate, overwrite]
+    default: "accumulate"
+  - name: reference_task_ids
+    param_type: array
+    description: Optional completed task ids whose outputs/artifacts should be made available as read-only continuation context to this new task. Use only after inspecting candidates with get_task_details; do not pass for unrelated work.
+  - name: start_immediately
+    param_type: boolean
+    description: Harness-context option. Defaults to true for autonomous harness task assignment so the assigned task starts immediately; set false only to intentionally park a tracked task without execution. Normal chat create_task ignores this field.
+    default: true
+  - name: user_visible
+    param_type: boolean
+    description: Harness-context only. Defaults false, keeping autonomous/system work in Internal tasks. Set true only for an explicit durable commitment that the user should manage in /tasks. Ignored by normal chat create_task, which remains user-visible.
+    default: false
+  - name: allow_duplicate
+    param_type: boolean
+    description: Leave unset/false normally. The system blocks creating a task identical to one already created in THIS conversation (a common symptom of a request carried over from earlier context) and asks you to confirm with the user first. Set true ONLY to deliberately create another, separate task identical to an existing one, and ONLY after the user has explicitly confirmed they want a fresh re-run.
+    default: false
+implementation:
+  type: compiled
+  provider_name: create_task
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - tasks
+    - delegation
+  composition_category: action
+  sandbox: none

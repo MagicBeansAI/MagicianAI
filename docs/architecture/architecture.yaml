@@ -1,0 +1,494 @@
+# Magician runtime architecture — curated model (C4).
+#
+# This file is the human-owned source of truth for architecture INTENT:
+# what runs where, who talks to whom, over which transport, and why.
+# It is validated against docs/codegraph/graph.json by
+# scripts/generate_c4_index.py (via make graph-index / make graph-check).
+# A code_refs entry that no longer exists in the graph fails the build.
+#
+# Authoring guide: docs/architecture/README.md
+
+version: 1
+
+system:
+  label: Magician
+  summary: >-
+    A local-first personal-agent runtime. Magician thinks with a replaceable
+    mouth (its own LLM or a roster harness) whose hands stay on the plane;
+    apps, chat, and background ops share that same governed surface.
+  doc: README.md
+
+nodes:
+  # ---- Runtime processes / systems (C4 containers) -------------------------
+
+  - id: runtime:supervisor
+    label: Magic Supervisor
+    summary: Process supervisor for the local stack; keeps magician and magicutor alive.
+    detail: >-
+      Manages the magician (:3002) and magicutor (:3003) child processes with
+      process groups, /health polling every 20s (observational), and restart
+      guards (10s cooldown, 5 attempts per 5 minutes). TCP control plane on
+      127.0.0.1:8081 via supervisor-ctl. Proxies host-* commands to the
+      desktop host gateway (:3017). Does not manage SilverBullet Notes.
+    doc: docs/components/magic-supervisor/supervisor.md
+    runs: { port: 8081 }
+    code_refs: [crate::magic-supervisor]
+
+  - id: runtime:magician
+    label: Magician Server
+    summary: "The main agent service: HTTP/WS API, agentic loop, skills, memory, spend authority."
+    detail: >-
+      Actix HTTP/WS server (package magician-bin) on :3002 hosting the
+      magician-api surface and all feature areas below. Builds main /
+      execution / Lance Tokio runtimes from magician-config.yaml. The
+      decide/chat mouths can be Magician or a roster harness; hands stay
+      on the plane MCP door. Owns the macOS audio-engine sidecar (:3029)
+      and background version/readiness workers.
+    doc: docs/components/magician-bin/README.md
+    runs: { port: 3002 }
+    code_refs: [crate::magician, crate::magician-api, crate::magician-bin]
+
+  - id: runtime:magicutor
+    label: Magicutor (browser sidecar)
+    summary: CDP proxy + Chrome-extension bridge with per-thread trace/auth/ambient buffers.
+    detail: >-
+      Browser sidecar on :3003. No longer hosts the high-level browser
+      runtime: it proxies Chrome DevTools Protocol endpoints, bridges the
+      MV3 extension over WebSocket, and buffers per-thread network traces,
+      auth, and ambient page signals for magician to drain. magician binds
+      tabs per thread via POST /cdp/threads/{id}/bind-tab.
+    doc: docs/components/magicutor/README.md
+    runs: { port: 3003 }
+    code_refs: [crate::magicutor]
+
+  - id: runtime:fluidaudio
+    label: FluidAudio Engine (sidecar)
+    summary: macOS audio engine sidecar for VAD/voice, lazily started by magician.
+    doc: docs/components/desktop/README.md
+    parent: runtime:magician
+    runs: { port: 3029 }
+    code_refs: [crate::macos-audio-engine]
+
+  - id: runtime:desktop
+    label: Desktop App (Tauri)
+    summary: Menu-bar app + host gateway; manages the containerized stack and native surfaces.
+    detail: >-
+      Tauri v2 menu-bar app (macOS/Linux). Either manages the containerized
+      stack (Apple Container / Docker; supervisor is the entrypoint) or runs
+      local-supervisor mode. Owns the host gateway on :3017 (/host/*,
+      /health, speech, reminders, contextual-assist). Hosts Ambient Orb
+      voice, Quick Automate overlay, screen-capture chords, and loads
+      unified-ui in a WebView.
+    doc: docs/components/desktop/README.md
+    runs: { port: 3017 }
+    code_refs: [crate::magician-desktop]
+
+  - id: runtime:web
+    label: Unified UI (web)
+    summary: "Svelte web frontend: Today, Chat, Attention, Memory, Tasks, Square, Apps."
+    detail: >-
+      Svelte 5 + Vite frontend served locally (dev :5173) or from the
+      container. Consumes magician HTTP + SSE chat streaming and the
+      realtime WebSocket.
+    doc: docs/components/unified-ui/README.md
+    runs: { port: 5173 }
+    code_refs: [crate::unified-ui]
+
+  - id: runtime:ios
+    label: Magios (iOS)
+    summary: "Native SwiftUI companion: Today/Chat/Attention/Tasks, Observe, voice, widgets."
+    detail: >-
+      Reaches magician through a Cloudflare customer origin: /api/* proxied
+      to magician :3002 (incl. WebSocket), /host/* and /health to the
+      desktop gateway :3017. Voice uses SSE chat plus a PCM control
+      WebSocket. Enrolls via QR to a durable device credential.
+    doc: docs/components/magios/README.md
+    code_refs: [crate::Magios]
+
+  - id: runtime:android
+    label: Magdroid (Android)
+    summary: AccessibilityService automation engine + native client sharing one enrolled scope.
+    detail: >-
+      Automation is exposed through the device bridge: the phone dials
+      GET /api/magician/v2/devices/bridge and holds a WebSocket carrying
+      MCP JSON-RPC — magician is the governed MCP client, the phone a
+      tools-only MCP server.
+    doc: magdroid/README.md
+    ungrounded: true
+
+  - id: runtime:esp32
+    label: Magesp (ESP32-C6 voice terminal)
+    summary: Physical voice terminal calling media voice-note / TTS endpoints.
+    detail: >-
+      Plain HTTP client of existing magician endpoints: POST
+      /media/voice-notes (audio -> STT -> chat -> reply), POST
+      /media/tts/synthesize (PCM), voice control WebSocket.
+    doc: docs/components/magesp/README.md
+    ungrounded: true
+
+  - id: runtime:bots
+    label: Consumer Bots (Node)
+    summary: Telegram / WhatsApp / Kapso channel bots over the shared chat API.
+    detail: >-
+      @magician/bot-sdk processes (bot-telegram, bot-whatsapp, kapso) using
+      the shared Magician HTTP/WS chat API after POST /enroll. Bundled
+      per-bot under the active scope; operated via /presto/bots and
+      /api/magician/v2/bots/*.
+    doc: docs/components/bots/README.md
+    code_refs: [crate::bots, crate::bot-sdk, crate::bot-telegram, crate::bot-whatsapp, crate::bot-kapso]
+
+  - id: runtime:extension
+    label: Chrome MV3 Extension
+    summary: Browser extension bridged through magicutor; captures selections and page signals.
+    detail: >-
+      Ships with magicutor; attaches to its WebSocket bridge for debugger
+      events and ambient page signals, discovers ports via the desktop
+      gateway, and posts note captures directly to magician.
+    doc: docs/components/magicutor/README.md
+    code_refs: [crate::magicutor-extension]
+
+  - id: runtime:silverbullet
+    label: Notes files (no sidecar)
+    summary: Markdown notes live in the workspace space and are served by Magician. The SilverBullet process on :3021 is not installed or proxied.
+    doc: docs/components/magician/notes-provider.md
+    ungrounded: true
+
+  # ---- Feature areas inside the magician server (C4 components) ------------
+
+  - id: area:agentic-loop
+    parent: runtime:magician
+    label: Agentic Execution Loop
+    summary: Flat outer loop; decide can think with Magician or a roster harness, hands on the plane.
+    detail: >-
+      One outer agentic loop; nested inner loop removed. Leaves are
+      `<pack>__<action>` primitives dispatched without an LLM call; `yield`
+      is the sole terminal. `execution.harness_engine` (default magician)
+      can replace the decide mouth; ChatScoped vs Plane grants keep
+      surfaces separate. Accepted launches are sealed Artifact envelopes;
+      Runtime/Artifact is task-status authority.
+    doc: docs/components/magician/execution/README.md
+    code_refs:
+      - module::magician::magician_v2::execution
+      - module::magician::magician_v2::orchestrator
+      - module::magician-media::run_state
+    endpoints: ["POST /executions"]
+
+  - id: area:plane
+    parent: runtime:magician
+    label: Plane / Replaceable Runtime
+    summary: Governed MCP door and roster harness engines that think while Magician keeps the hands.
+    detail: >-
+      POST/GET/DELETE /plane/mcp authenticates plt_ grants. Catalogs are Terminal
+      vs spawned-bare. Roster: magician, claude_code, codex,
+      codex_app_server, grok, agy. Native-tool strip is per engine.
+      run_task starts attenuated delegated executions. Durable grants are
+      session-bearer minted; a plt_ bearer cannot mint siblings.
+    doc: docs/components/magician/plane.md
+    code_refs:
+      - module::magician::magician_v2::execution
+    endpoints: ["POST /plane/mcp", "GET /plane/mcp", "DELETE /plane/mcp", "GET /plane/engines"]
+
+  - id: area:delegation-agents
+    parent: runtime:magician
+    label: Delegation & Agents-as-Data
+    summary: Typed first-owner delegation with fan-out, child permits, and durable checkpoints.
+    detail: >-
+      Agents are data: personas, tools, and memory tiers defined in YAML.
+      Delegation is typed and first-owner with per-level child permits;
+      runs have durable checkpoints and can resume.
+    doc: docs/features/README.md
+    code_refs:
+      - module::magician::magician_v2::agents
+      - module::magician::magician_v2::task_run_factory
+
+  - id: area:tasks-artifacts
+    parent: runtime:magician
+    label: Tasks, Artifacts & Scheduling
+    summary: V3 task workspace with server-computed lanes, durable artifacts, and monitors.
+    detail: >-
+      Two-tier storage: git-backed magician_data_v3 seeds vs live
+      MAGICIAN_ROOT_DIR (default ~/MagicianNotes) scoped state. Runtime/
+      Artifact is the single task-status authority. Tasks support
+      scheduled/recurring execution; artifacts are durable and
+      workspace-scoped.
+    doc: docs/components/magician/storage-v2-format.md
+    code_refs:
+      - module::magician::magician_v2::task_lanes
+      - module::magician::magician_v2::artifact_v2
+      - module::magician-media::scheduling
+      - module::magician::magician_v2::storage
+
+  - id: area:background-ops
+    parent: runtime:magician
+    label: Background Ops
+    summary: Scheduler, monitors, wakes, and harness-enabled personal agents that run without a chat turn.
+    detail: >-
+      Recurring monitors and scheduled tasks use the task-cron spine.
+      Harness-enabled personal agents (CEO/CTO/CMO/CRO company loop)
+      compile focus areas into scoped scheduler goals. Wake consumers
+      lease generations before starting handlers. App background ticks
+      are designed on this same spine; the timer is not yet wired.
+    doc: docs/components/magician/harness-company-loop-phase2.md
+    code_refs:
+      - module::magician-media::scheduling
+      - module::magician::magician_v2::orchestrator
+      - module::magician::magician_v2::agents
+
+  - id: area:chat-lane
+    parent: runtime:magician
+    label: Chat Lane / Threads
+    summary: Shared chat backend; the mouth can be Magician or a roster harness, hands stay on the plane.
+    detail: >-
+      ChatService::process_message() is the single backend behind every
+      consumer surface. `chat.harness_engine` (default magician) can
+      replace the mouth; ChatScoped plt_ grants keep the conversation's
+      lane. Voice, meeting, App Copilot, Tutor, and public envoy stay on
+      the Magician LLM. Continuation is process-local.
+    doc: docs/components/magician/chat-mode.md
+    code_refs:
+      - module::magician::magician_v2::chat
+      - module::magician::magician_v2::ui_threads
+      - crate::magician-api
+    endpoints: ["POST /chat/new", "GET /realtime/ws", "PUT /plane/chat-engine"]
+
+  - id: area:skills
+    parent: runtime:magician
+    label: Skills & Capability Packs
+    summary: AgentSkills v1 SKILL.md contract with compiled / composite / command implementations.
+    detail: >-
+      Capability registry resolves packs via engine -> artifact: compiled
+      Rust providers, composite packs, command templates, and primitives.
+      activate_skill is an outer-loop control tool. Skillshub holds the
+      curated skill packages.
+    doc: docs/components/magician/skills-spec.md
+    code_refs:
+      - module::magician::magician_v2::skills
+      - module::magician::magician_v2::tool_matcher
+      - module::magician::magician_v2::tooling
+
+  - id: area:resource-authority
+    parent: runtime:magician
+    label: Resource Authority (Spend Gate)
+    summary: Ceilings, capability tokens, reservations, and the spend ledger around every dispatch.
+    detail: >-
+      Every dispatch is wrapped by spend authority: ceilings, capability
+      tokens, reservations/refunds, and period closes, exposed under
+      /resource-authority/* (API-key gated).
+    doc: docs/components/magician/resource-authority-api.md
+    code_refs:
+      - module::magician::magician_v2::resource_authority
+      - module::magician::magician_v2::local_resource_governor
+    endpoints: ["POST /resource-authority/credit", "POST /resource-authority/freeze"]
+
+  - id: area:memory
+    parent: runtime:magician
+    label: Memory & Retrieval
+    summary: Tiered memory JSON as truth with a derived LanceDB hybrid index per scope.
+    detail: >-
+      BM25 + embedding hybrid search over scoped memory via LanceDB
+      (Ollama embeddings), with consolidation, learning procedures, and
+      memory evals keeping the index derived — never primary.
+    doc: docs/components/magician/memory-index.md
+    code_refs:
+      - module::magician::magician_v2::context_retrieval
+      - module::magician::magician_v2::learning
+      - crate::magician-vector-index
+
+  - id: area:comms-channels
+    parent: runtime:magician
+    label: Comms / Channel Assist
+    summary: Gmail, calendar, WhatsApp, Telegram ingestion with local distillation and annotation.
+    detail: >-
+      Observe connectors ingest channels; distillation and follow-up
+      classification run locally; reconciliation keeps channels in sync.
+      Implemented by the magician-comms satellite crate.
+    doc: docs/components/magician-comms/README.md
+    code_refs:
+      - crate::magician-comms
+      - module::magician::magician_v2::observe_connectors
+      - module::magician-media::reply_routing
+
+  - id: area:attention-hitl
+    parent: runtime:magician
+    label: Attention / HITL / Resurfacing
+    summary: Approval inbox, typed human-input escalations, and proactive resurfacing into Today.
+    detail: >-
+      11 typed HITL input types feed an attention routing funnel; the run
+      inbox and approval envelopes gate agent work; resurfacing and the
+      worth-a-look feed push the right things back to the user.
+    doc: docs/components/magician/hitl-attention.md
+    code_refs:
+      - module::magician::magician_v2::approval_envelopes
+      - module::magician-media::run_inbox
+      - module::magician::magician_v2::resurfacing_seam
+      - module::magician::magician_v2::feed
+
+  - id: area:app-platform
+    parent: runtime:magician
+    label: App Platform
+    summary: Governed apps with a public 8-op contract, custom surfaces, and an OS-jail runtime.
+    detail: >-
+      magician-app-contract owns the supported-public wire (live 1.4.0).
+      magician-apps hosts surfaces, workers, OS-jail, and entity lifecycle.
+      Registry/workflows stay lib-side pending the execution↔apps cycle
+      inversion. Internal apps (Town Square) sit on the same primitives.
+      Background ticks are designed on the task-cron spine, not yet wired.
+    doc: docs/components/magician-apps/README.md
+    code_refs:
+      - module::magician::magician_v2::apps
+      - crate::magician-apps
+      - crate::magician-app-contract
+
+  - id: area:device-bridge
+    parent: runtime:magician
+    label: Device Bridge & Device Automation
+    summary: Outbound Android MCP bridge plus screen-capture-and-ask and mac automation.
+    detail: >-
+      Magician is the governed MCP client over the Android device-bridge
+      WebSocket; the phone is a tools-only MCP server. Device governance
+      and pairing manage enrollment.
+    doc: docs/components/magician/device-bridge.md
+    code_refs:
+      - module::magician::magician_v2::device_bridge
+      - module::magician::magician_v2::device_governance
+      - module::magician::magician_v2::device_pairing
+
+  - id: area:voice-media
+    parent: runtime:magician
+    label: Realtime Media / Voice Rails
+    summary: Voice notes (audio->STT->chat->TTS), live calls over PCM control WS, meeting capture.
+    detail: >-
+      Media session admission gates live audio; BackendProxied PCM frames
+      flow over /media/voice/{id}/control; the FluidAudio engine is owned
+      and lazily started by the server.
+    doc: docs/components/magician/realtime-media-rails.md
+    code_refs:
+      - module::magician-media::media_rails
+      - module::magician::magician_v2::realtime_events
+    endpoints: ["POST /media/voice-notes", "POST /media/tts/synthesize"]
+
+  - id: area:coding-engines
+    parent: runtime:magician
+    label: Coding Engines (VibeDev)
+    summary: run_coding_task dispatch across Pi, Codex, Grok ACP, Claude Code, Antigravity CLIs.
+    detail: >-
+      Coding engines run with fail-closed isolation receipts; readiness
+      refresh endpoints report which engines are live for dispatch.
+    doc: docs/components/magician/vibedev-rail.md
+    code_refs:
+      - module::magician::magician_v2::vibedev_rail
+      - module::magician::magician_v2::vibedev_run_service
+      - module::magician::magician_v2::vibedev_dispatch_intent
+
+  - id: area:llm-dispatch
+    parent: runtime:magician
+    label: LLM Dispatch & Analytics
+    summary: Global dispatch queue with priority lanes, retries, circuit breakers, DuckDB analytics.
+    detail: >-
+      OperationLlmRouter / LlmDispatchQueue in magicllm with priority
+      lanes (Voice=High, Memory=Background), RPM/TPM caps, per-call
+      Parquet/DuckDB analytics and training-data observability.
+    doc: docs/components/magician/llm-dispatch-queue.md
+    code_refs:
+      - module::magician::magician_v2::llm_dispatch_seam
+      - module::magician::magician_v2::analytics
+      - crate::magicllm
+
+  - id: area:observation
+    parent: runtime:magician
+    label: Observation & Content Sources
+    summary: Observe connectors, observable sources (Notes/RSS/arXiv), work evidence graph.
+    detail: >-
+      Email/calendar/desktop producers feed observe_catchup; observable
+      sources and the work evidence graph ground agent claims in real
+      evidence.
+    doc: docs/components/magician/content-sources.md
+    code_refs:
+      - module::magician::magician_v2::content_sources
+      - module::magician::magician_v2::observe_catchup
+      - module::magician::magician_v2::evidence
+
+  - id: area:identity-auth
+    parent: runtime:magician
+    label: Identity & Auth
+    summary: Session, PAT, and paired-device bearers bind principal and workspace server-side.
+    detail: >-
+      The v2/v3 boundary resolves principal and workspace from an opaque
+      bearer and engraves internal compatibility context before handlers run.
+      Caller scope headers/query fields are ignored. Open local mode is a
+      bootstrap posture that ends when the first identity is created.
+      Terminal plt_ grants stay confined to /plane/mcp. Mobile devices use
+      QR-enrolled durable credentials; Cloudflare is an outer gateway, not
+      a scope selector.
+    doc: docs/components/magician/auth.md
+    code_refs:
+      - module::magician::magician_v2::api_scope
+      - module::magician::magician_v2::cloudflare_access
+      - module::magician::magician_v2::presentation_identity
+
+edges:
+  # actors -> surfaces
+  - { from: actor:user, to: runtime:web, kind: uses, summary: "Day-to-day surfaces: Today, Chat, Attention, Memory, Tasks, Square, Apps." }
+  - { from: actor:user, to: runtime:desktop, kind: uses, summary: "Menu bar, Ambient Orb voice, Quick Automate, contextual assistance." }
+  - { from: actor:user, to: runtime:ios, kind: uses, summary: "Mobile companion surfaces and Observe capture." }
+  - { from: actor:user, to: runtime:android, kind: uses, summary: "Android client and on-device automation." }
+  - { from: actor:user, to: runtime:esp32, kind: uses, summary: "Physical voice terminal interactions." }
+  - { from: actor:operator, to: runtime:supervisor, kind: operates, transport: "supervisor-ctl TCP :8081", summary: "Restart/stop/status/health/shutdown control." }
+
+  # supervision & hosting
+  - { from: runtime:desktop, to: external:container-runtime, kind: hosts, transport: "Apple Container / Docker CLI", summary: "Packaged posture: desktop manages the containerized stack; supervisor is the entrypoint." }
+  - { from: runtime:desktop, to: runtime:supervisor, kind: manages, transport: "container CLI or supervisor-ctl", summary: "Starts/stops/restarts the local stack (or local-supervisor mode)." }
+  - { from: runtime:supervisor, to: runtime:magician, kind: supervises, transport: "child process + GET /health q20s", summary: "Process-group ownership, observational health checks, restart guards (10s cooldown, 5/5min)." }
+  - { from: runtime:supervisor, to: runtime:magicutor, kind: supervises, transport: "child process + GET /health q20s", summary: "Same supervision contract as magician." }
+  - { from: runtime:supervisor, to: runtime:desktop, kind: proxies, transport: "HTTP -> host gateway :3017", summary: "host-* commands proxy to the desktop host gateway." }
+  - { from: runtime:magician, to: runtime:fluidaudio, kind: owns, transport: "process lifecycle, audio on :3029", trigger: "lazily started for VAD", summary: "Server owns the audio engine sidecar's lifecycle." }
+  - { from: runtime:magician, to: runtime:silverbullet, kind: owns, transport: "filesystem", summary: "Magician reads and writes the notes space directly and keeps the search index next to it." }
+
+  # clients -> magician
+  - { from: runtime:web, to: runtime:magician, kind: consumes, transport: "HTTP + SSE + WS /realtime/ws", summary: "Chat streaming, threads, and realtime updates." }
+  - { from: runtime:desktop, to: runtime:magician, kind: invokes, transport: "loopback HTTP/WS :3002", summary: "Media prefs, skills list, contextual writing, POST /executions for Quick Automate, voice PCM/TTS." }
+  - { from: runtime:desktop, to: runtime:magicutor, kind: probes, transport: "HTTP :3003 /contextual-assist/probe", summary: "Extension pull probe plus /health." }
+  - { from: runtime:ios, to: external:cloudflare, kind: tunnels, transport: "ios origin -> /api/* and /host/*", summary: "Cloudflare customer origin proxies /api/* to magician and /host/* to the desktop gateway." }
+  - { from: runtime:ios, to: runtime:magician, kind: consumes, transport: "HTTP/WS via Cloudflare", summary: "Same v2 API as web, plus SSE voice and PCM control WS." }
+  - { from: runtime:android, to: runtime:magician, kind: bridges, transport: "WS MCP JSON-RPC (GET /api/magician/v2/devices/bridge)", trigger: "device automation tasks", summary: "Magician is the governed MCP client; the phone a tools-only MCP server." }
+  - { from: runtime:bots, to: runtime:magician, kind: consumes, transport: "shared chat HTTP/WS after POST /enroll", summary: "All channels use the same chat API; operated via /presto/bots." }
+  - { from: runtime:esp32, to: runtime:magician, kind: consumes, transport: "HTTP media endpoints", summary: "Voice notes (audio->STT->chat->reply), TTS, event posting, voice control." }
+
+  # browser rail
+  - { from: runtime:magician, to: runtime:magicutor, kind: invokes, transport: "CDP WS ws://127.0.0.1:3003/devtools/browser/{thread}", trigger: "browser task in the agentic loop", summary: "agent-browser CDP mode connects per thread; magician drains traces/auth/ambient at inner-loop boundaries and binds tabs." }
+  - { from: runtime:extension, to: runtime:magicutor, kind: attaches, transport: "WebSocket bridge", summary: "Debugger events and ambient page signals." }
+  - { from: runtime:extension, to: runtime:magician, kind: posts, transport: "POST /notes/capture-selection", summary: "Direct backend-only note captures." }
+  - { from: runtime:extension, to: runtime:desktop, kind: opens, transport: "POST /host/contextual-assist/open via gateway :3017", summary: "Surfaces contextual assistance UI." }
+  - { from: runtime:magician, to: runtime:desktop, kind: invokes, transport: "HTTP host gateway :3017", summary: "Host-native speech STT/TTS helpers and Apple Reminders creation." }
+
+  # replaceable runtime
+  - { from: area:chat-lane, to: area:plane, kind: uses, transport: "ChatScoped plt_ grant + /plane/mcp", trigger: "chat.harness_engine is a roster name", summary: "Chat mouth thinks with the harness; hands stay on the plane." }
+  - { from: area:agentic-loop, to: area:plane, kind: uses, transport: "live plt_ grant minted at decide", trigger: "execution.harness_engine is a roster name", summary: "Decide mouth can be a roster harness; Magician still executes." }
+  - { from: area:plane, to: external:harness-clis, kind: spawns, transport: "isolated CLI child (grant never on argv)", trigger: "harness turn", summary: "claude_code / codex / grok / agy think; Magician keeps the catalog." }
+  - { from: area:background-ops, to: area:agentic-loop, kind: launches, transport: "task-cron spine + sealed accepted-launch", trigger: "due schedule, monitor fire, or harness cycle", summary: "Background work enters the same flat loop as interactive tasks." }
+  - { from: area:app-platform, to: area:agentic-loop, kind: dispatches, transport: "governed app operations + OS-jail / custom-surface host", summary: "Installed apps run through Magician authority, not a side process." }
+
+  # externals
+  - { from: runtime:magician, to: external:llm-providers, kind: dispatches, transport: "magicllm multi-provider router", summary: "Priority lanes, retry, circuit breakers, RPM/TPM caps." }
+  - { from: runtime:magician, to: external:ollama, kind: embeds, transport: "local Ollama embeddings", summary: "Embedding source for the LanceDB memory index." }
+  - { from: runtime:magician, to: external:apple-reminders, kind: creates, transport: "via desktop host gateway", summary: "Apple Reminders creation from Magician only." }
+  - { from: runtime:magician, to: external:gmail, kind: ingests, transport: "comms observe connectors", summary: "Gmail ingestion and distillation." }
+  - { from: runtime:magician, to: external:google-calendar, kind: ingests, transport: "comms observe connectors", summary: "Calendar sync and annotation." }
+  - { from: runtime:magician, to: external:telegram, kind: exchanges, transport: "bot + comms channel runtime", summary: "Telegram bot traffic and channel ingestion." }
+  - { from: runtime:magician, to: external:whatsapp-cloud, kind: exchanges, transport: "WhatsApp Cloud API (Kapso bridge)", summary: "Consumer WhatsApp messaging." }
+
+externals:
+  - { id: external:llm-providers, label: LLM Providers, kind: ai, summary: "Multi-provider LLM backends behind the dispatch queue.", touched_by: [runtime:magician] }
+  - { id: external:harness-clis, label: Harness CLIs, kind: ai, summary: "Replaceable think-mouths: Claude Code, Codex, Grok, agy. Hands stay on Magician's plane.", touched_by: [runtime:magician] }
+  - { id: external:ollama, label: Ollama (local), kind: ai, summary: "Local embedding server for vector indexing.", touched_by: [runtime:magician] }
+  - { id: external:cloudflare, label: Cloudflare, kind: edge, summary: "Outer gate / tunnels for mobile origins and device-authenticated requests.", touched_by: [runtime:ios, runtime:android] }
+  - { id: external:gmail, label: Gmail, kind: email, summary: "Email channel source.", touched_by: [runtime:magician] }
+  - { id: external:google-calendar, label: Google Calendar, kind: calendar, summary: "Calendar channel source.", touched_by: [runtime:magician] }
+  - { id: external:telegram, label: Telegram, kind: messaging, summary: "Telegram bot channel.", touched_by: [runtime:magician] }
+  - { id: external:whatsapp-cloud, label: WhatsApp Cloud API, kind: messaging, summary: "WhatsApp consumer channel.", touched_by: [runtime:magician] }
+  - { id: external:apple-reminders, label: Apple Reminders, kind: os, summary: "Host reminders created via the desktop gateway.", touched_by: [runtime:magician] }
+  - { id: external:container-runtime, label: Container Runtime, kind: infra, summary: "Apple Container (macOS>=26/ARM) or Docker hosting the packaged stack.", touched_by: [runtime:desktop] }
+
+actors:
+  - { id: actor:user, label: User, summary: "Human owner interacting through any surface." }
+  - { id: actor:operator, label: Operator, summary: "Whoever runs supervisor-ctl and the deployment." }

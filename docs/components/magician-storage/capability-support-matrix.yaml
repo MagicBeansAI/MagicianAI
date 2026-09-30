@@ -1,0 +1,155 @@
+# Track A capability-support matrix (Task 18).
+# Derived from storage-catalog.yaml. Task 19 reads this before exposing
+# remote_durable. Every Tier 2 owner must appear. Device-local owners are
+# classified, not migrated.
+#
+# remote_outcome:
+#   regenerable_local_projection — rebuild from named Tier 1 inputs + watermark
+#   unavailable — profile does not construct it; product uses degraded_behavior
+# host-durable is not an allowed remote_durable outcome.
+
+profile: remote_durable
+accepted_at: '2026-09-01'
+owners:
+- id: analytics_duckdb
+  tier: 2
+  remote_outcome: regenerable_local_projection
+  rebuild_sources:
+  - events
+  - memory_events
+  - activity_rows
+  - activity_rollups
+  - llm_calls
+  - llm_embeddings
+  - llm_provider_attempts
+  - llm_tool_calls
+  - llm_capture_gaps
+  - llm_dispatch
+  - llm_call_io
+  - llm_context_blocks
+  - llm_content_tombstones
+  - llm_content_access_audit
+  watermark: parquet_partition_manifest
+  degraded_behavior: >
+    analytics.duckdb may be absent after host loss. Rebuild from DatasetStore
+    Parquet. Queries wait or serve empty-until-rebuild. Parquet families must
+    not be emptied.
+- id: feed_duckdb
+  tier: 2
+  remote_outcome: regenerable_local_projection
+  rebuild_sources:
+  - task_records
+  - attention_funnel_sqlite
+  - social_sqlite
+  watermark: source_task_and_attention_revision
+  degraded_behavior: >
+    feed.duckdb may be absent. Rebuild from task/attention/social identity.
+    A missing feed must not empty social_sqlite or task_records.
+- id: compaction_metrics
+  tier: 2
+  remote_outcome: regenerable_local_projection
+  rebuild_sources: []
+  watermark: last_compaction_run
+  degraded_behavior: >
+    compaction_metrics.json may be absent. The next compaction run recreates
+    it. Loss does not change canonical store bytes.
+- id: list_index
+  tier: 2
+  remote_outcome: regenerable_local_projection
+  rebuild_sources:
+  - task_records
+  - internal_tasks
+  watermark: task_record_revision
+  degraded_behavior: >
+    list_index.db may be discarded and rebuilt from task records. A missing
+    projection must not empty task_records.
+- id: memory_index
+  tier: 2
+  remote_outcome: regenerable_local_projection
+  rebuild_sources:
+  - memory_canonical
+  watermark: memory_canonical_source
+  degraded_behavior: >
+    LanceDB/index files may be discarded. Rebuild from memory_canonical.
+    Search is unavailable until rebuild. Canonical memory must remain.
+- id: progress_lineage
+  tier: 2
+  remote_outcome: regenerable_local_projection
+  rebuild_sources:
+  - progress_channels
+  watermark: progress_event_offset
+  degraded_behavior: >
+    lineage_index.json may be absent. Rebuild from progress_channels events.
+    A missing index must not empty progress event logs.
+- id: workdirs_scratch
+  tier: 2
+  remote_outcome: unavailable
+  rebuild_sources: []
+  watermark: none
+  degraded_behavior: >
+    Tool workdirs are ephemeral until accepted. Host loss drops them. Accepted
+    bytes already live on Task 10 object owners.
+- id: scratch_tool_duckdb
+  tier: 2
+  remote_outcome: unavailable
+  rebuild_sources: []
+  watermark: none
+  degraded_behavior: >
+    Tool-opened DuckDB scratch is not migrated. Loss is expected. Results
+    publish only through an acceptance path.
+- id: storage_governance_inventory
+  tier: 2
+  remote_outcome: regenerable_local_projection
+  rebuild_sources: []
+  watermark: catalog_yaml
+  degraded_behavior: >
+    /storage is a projection of storage-catalog.yaml. Rebuild by re-reading
+    the catalog. It is not a fourth canonical database.
+- id: learning_procedure_index
+  tier: 2
+  remote_outcome: regenerable_local_projection
+  rebuild_sources:
+  - learning_procedures
+  watermark: learning_procedures_source
+  degraded_behavior: >
+    Procedure LanceDB may be discarded and rebuilt from learning_procedures.
+    A missing index must not empty procedure YAML.
+- id: silverbullet_space_runtime
+  tier: device_local
+  remote_outcome: unavailable
+  rebuild_sources: []
+  watermark: none
+  degraded_behavior: >
+    SilverBullet space runtime stays a local profile variant. It is not migrated
+    as server tenant storage.
+- id: notes_provider
+  tier: device_local
+  remote_outcome: unavailable
+  rebuild_sources: []
+  watermark: none
+  degraded_behavior: >
+    Human-editable notes stay on the notes provider. They are not migrated
+    into server storage.
+- id: desktop_engine_roots
+  tier: device_local
+  remote_outcome: unavailable
+  rebuild_sources: []
+  watermark: none
+  degraded_behavior: >
+    Device-local desktop paths stay on the device. Engine-owned reads go
+    through engine_base_url. Track A adds no Settings control.
+- id: device_local_imessage
+  tier: device_local
+  remote_outcome: unavailable
+  rebuild_sources: []
+  watermark: none
+  degraded_behavior: >
+    iMessage chat.db is device-local ingest. Not migrated to server storage.
+- id: device_local_whatsapp
+  tier: device_local
+  remote_outcome: unavailable
+  rebuild_sources: []
+  watermark: none
+  degraded_behavior: >
+    WhatsApp Desktop wu.db is device-local ingest. Not migrated to server
+    storage.

@@ -1,0 +1,196 @@
+name: catchup_merge
+description: |
+  Deterministic cross-source merge for catch-up / situation-awareness research
+  envelopes. Pure Rust port of the legacy Python `whatsgoingon2` script —
+  same algorithm (URL dedup → RRF fusion → engagement+freshness scoring →
+  optional Jaccard clustering), no subprocess, no JSON file I/O. Pass
+  envelopes inline as a JSON array; receive a unified ranked envelope in
+  the response.
+guide: |-
+  Tool name: `catchup_merge`
+
+  Use to fuse multiple source-search envelopes (reddit-search,
+  hackernews-search, github-search, producthunt-search, polymarket-search,
+  youtube-search, news-search-via-tavily, browser, etc.) into one ranked + deduped pool
+  for downstream synthesis.
+
+  This is the in-process Rust replacement for `whatsgoingon2` (the Python
+  skill at `skillshub/whatsgoingon2/`). Same algorithm, same envelope
+  shape, faster dispatch — no subprocess, no `/tmp` file write/read.
+
+  ## Algorithm
+
+  1. **Dedup by normalized URL** — host lowercased, scheme stripped,
+     trailing slash dropped, common tracking params (`utm_*`, `fbclid`,
+     `gclid`, `ref`, `ref_src`) removed. Same article from Reddit + HN
+     dedups to one item with `_sources: ["reddit", "hackernews"]`.
+  2. **RRF fusion** — sums `1 / (60 + rank)` across sources, optional
+     per-source weight multipliers.
+  3. **Score each survivor** — `0.5 * rrf_norm + 0.3 * engagement_norm
+     + 0.2 * freshness_norm`. Engagement uses log-compression; freshness
+     linear-decays over 30 days.
+  4. **Sort** descending by `final_score`.
+  5. **Cluster** (optional, default on) — Jaccard similarity on title
+     tokens, threshold 0.5.
+  6. **Truncate** to `limit`. Default 60.
+
+  ## Input
+
+  `envelopes` is a JSON array. Each entry: `{"source": "<name>", "items": [...]}`.
+  Items have `title`, `url`, `snippet`, plus optional `published_at` (ISO),
+  `engagement` (object of numeric counters), `author`, `container`.
+
+  ## Output
+
+  Returned as a JSON object in the tool result body:
+
+  ```
+  {
+    "query": "...",
+    "total_items": 47,
+    "items": [{title, url, snippet, published_at, source, _sources,
+               _source_ranks, _score_breakdown, ...}, ...],
+    "source_summary": [{source, input_count, contributed_to_final}, ...],
+    "dedup_summary": {total_input_items, deduped_count, final_count},
+    "clusters": [{representative_url, representative_title,
+                  member_count, member_urls}, ...],
+    "duration_ms": 3
+  }
+  ```
+
+  Internal fields prefixed with `_` (e.g. `_sources`, `_source_ranks`,
+  `_score_breakdown`) carry provenance: which sources contributed,
+  their native ranks, and the score components that produced the final
+  ranking. Useful for audit / debug; safe to drop in final synthesis.
+
+  ## Edge cases
+
+  - **Empty `envelopes` or all-empty envelopes** → returns
+    `total_items: 0` with empty arrays. Not an error.
+  - **Items missing `url`** → silently dropped (URL is the dedup key
+    and is required for the algorithm to work).
+  - **Items missing `published_at`** → freshness defaults to 0.5
+    (neutral) so the item isn't punished for missing metadata.
+  - **Items missing `engagement`** → engagement_norm = 0; item is
+    ranked solely on RRF position and freshness.
+
+  ## Engagement scoring notes
+
+  The merge sums **all numeric values** in the `engagement` object flat
+  (upvotes + comments + likes + shares all count equally). It does NOT
+  weight per-key. If you want a per-source weighting like
+  "comments are worth 3x upvotes for Reddit", normalize beforehand at
+  the source-search layer, not here.
+
+  ## Composition with the `vector` toolkit
+
+  For semantic rerank against the user's query, chain with `vector.rank`:
+  ```
+  merged = catchup_merge(query="X", envelopes=[...])
+  reranked = vector(action="rank", output="ranked",
+                    query="X", items=merged.items)
+  ```
+
+  For semantic dedup catching paraphrases that token-Jaccard missed:
+  ```
+  dedupe = vector(action="rank", output="deduped", threshold=0.85,
+                  items=merged.items)
+  ```
+
+  See `skillshub/whatsgoingon2/SKILL.md` for the full catch-up
+  orchestration recipe (per-topic shape, cache check, vs-mode, etc.).
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: |
+    Original research topic. Echoed in the output envelope; used for context
+    and downstream synthesis. Not used for ranking — RRF is rank-position
+    based, not query-relevance based. Pair with `vector.rank` if you want
+    semantic-relevance reranking.
+- name: envelopes
+  required: true
+  param_type: array
+  description: |
+    Array of source envelopes. Each envelope is `{"source": "<name>",
+    "items": [...]}`. Items minimally need `{title, url}`; optional fields:
+    `snippet` (or `body`), `published_at` (ISO 8601), `engagement` (object
+    of numeric fields like `upvotes`, `comments`, `points`), `author`,
+    `container`, `source_native_id` (or `id`).
+  schema:
+    type: array
+    items:
+      type: object
+      required: [source, items]
+      properties:
+        source:
+          type: string
+          description: Source name (reddit / hackernews / github / ...).
+        items:
+          type: array
+          description: Items returned by that source's search tool, in rank order.
+          items:
+            type: object
+            required: [url]
+            properties:
+              title:
+                type: string
+                description: Human-readable headline.
+              url:
+                type: string
+                description: Canonical URL — required, used as the dedup key.
+              snippet:
+                type: string
+                description: Optional summary / body excerpt.
+              published_at:
+                type: string
+                description: ISO-8601 timestamp used for freshness scoring.
+              engagement:
+                type: object
+                description: Numeric counters (upvotes / comments / points / likes). Summed flat for scoring.
+                additionalProperties:
+                  type: number
+              author:
+                type: string
+              container:
+                type: string
+                description: Subreddit, repo, channel, etc.
+              source_native_id:
+                type: string
+- name: cluster
+  param_type: boolean
+  description: |
+    Whether to group near-duplicate items by title-similarity (Jaccard ≥ 0.5)
+    in the output `clusters` array. Default true.
+  default: 'true'
+- name: limit
+  param_type: integer
+  description: Max items in the merged output after dedup + ranking. Default 60.
+  default: '60'
+- name: source_weights
+  param_type: object
+  description: |
+    Optional JSON object mapping source name → RRF weight multiplier. Keys
+    must match the envelope `source` strings exactly (case-sensitive).
+    Defaults all sources to 1.0. Higher weight = items from that source
+    rank earlier on RRF position ties. Example `{"reddit": 1.2,
+    "hackernews": 1.0, "github": 0.8}` — reddit ranks slightly above HN
+    on ties; github items are downweighted.
+  schema:
+    type: object
+    description: Source-name → weight multiplier.
+    additionalProperties:
+      type: number
+      minimum: 0
+implementation:
+  type: compiled
+  provider_name: catchup_merge
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - research
+  - merge
+  - retrieval
+  composition_category: research
+  sandbox: none

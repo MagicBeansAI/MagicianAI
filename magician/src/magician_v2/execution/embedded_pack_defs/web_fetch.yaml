@@ -1,0 +1,38 @@
+name: web_fetch
+description: Compatibility facade for reading a public URL through the configured, policy-bound content retrieval controller. Uses scoped cache, SSRF-safe transport, local extraction, typed quality checks, deadlines, and authority limits. It never falls back to an ungoverned direct fetch.
+version: "1.0.0"
+guide: |
+  Tool name: `web_fetch`
+
+  Compatibility tool for callers that still use `web_fetch`. The URL is
+  read through the same controller as `content_read`; no secondary LLM is
+  invoked. `prompt` is preserved as `retrieval.compatibility_prompt` for the
+  caller's context; it does not alter controller selection or extraction.
+
+  Prefer `content_search` followed by `content_read` for new research flows.
+  Dynamic, login-gated, and JavaScript-only pages return typed boundaries;
+  browser or authenticated access requires a separate explicit action.
+parameters:
+  - name: url
+    required: true
+    param_type: string
+    description: The URL to fetch. Must be a fully-formed URL.
+  - name: prompt
+    required: true
+    param_type: string
+    description: Prompt describing what information to extract from the fetched page.
+  - name: working_set_title
+    required: false
+    param_type: string
+    description: Optional title for a durable scoped evidence snapshot. Automatic capture is controlled by trusted server policy; this title is explicit opt-in for other callers.
+implementation:
+  type: compiled
+  provider_name: web_fetch
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 25
+  categories:
+    - web
+    - read
+  composition_category: action
+  sandbox: none

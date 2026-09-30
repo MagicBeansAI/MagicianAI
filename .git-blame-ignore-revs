@@ -1,0 +1,5 @@
+# Format-only commits, skipped by blame. Once per clone:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub honours this file automatically.
+# 2026-09-02 style: make the tree stable-rustfmt-clean
+092e802ad836d8edfcdc1deb2918666c8798d86d

@@ -1,0 +1,21 @@
+{
+  "type": "no_entry",
+  "aliases": ["prohibited", "forbidden"],
+  "version": 1,
+  "defaults": { "size": 40 },
+  "draw": [
+    {
+      "op": "circle",
+      "cx": "cx",
+      "cy": "cy",
+      "r": "r|size",
+      "color": "#ff3b30"
+    },
+    {
+      "op": "line",
+      "from": ["cx-(r|size)*0.70710678", "cy-(r|size)*0.70710678"],
+      "to": ["cx+(r|size)*0.70710678", "cy+(r|size)*0.70710678"],
+      "color": "#ff3b30"
+    }
+  ]
+}

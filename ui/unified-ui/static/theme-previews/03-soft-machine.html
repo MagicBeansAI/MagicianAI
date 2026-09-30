@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Theme 3: Soft Machine - Magician UI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       THEME 3: SOFT MACHINE
+       Warm, Approachable AI - Friendly but sophisticated
+       ============================================ */
+
+    :root {
+      /* Core palette - warm naturals */
+      --bg-cream: #fefdfb;
+      --bg-warm: #f8f6f2;
+      --bg-soft: #f3f0ea;
+      --bg-card: #ffffff;
+
+      /* Text - warm charcoal */
+      --text-dark: #2d2a26;
+      --text-body: #4a4540;
+      --text-muted: #8a847a;
+      --text-faint: #c4beb4;
+
+      /* Primary accent - coral/salmon */
+      --accent-coral: #e85d5d;
+      --accent-coral-bright: #ff6b6b;
+      --accent-coral-soft: #fff0f0;
+      --accent-coral-hover: #d04f4f;
+
+      /* Secondary accent - sage */
+      --accent-sage: #6b9080;
+      --accent-sage-soft: #e8f0ec;
+
+      /* Tertiary - warm purple */
+      --accent-plum: #8b7ec8;
+      --accent-plum-soft: #f0edf8;
+
+      /* Status colors */
+      --success: #5fa67a;
+      --success-soft: #e8f5ed;
+      --warning: #d4a34a;
+      --warning-soft: #fdf6e8;
+      --error: #d4574a;
+      --error-soft: #fdecea;
+
+      /* Borders */
+      --border-soft: #ebe7e0;
+      --border-default: #ddd8cf;
+
+      /* Shadows */
+      --shadow-sm: 0 2px 8px rgba(45, 42, 38, 0.06);
+      --shadow-md: 0 4px 20px rgba(45, 42, 38, 0.08);
+      --shadow-lg: 0 8px 40px rgba(45, 42, 38, 0.1);
+      --shadow-glow: 0 0 0 4px rgba(232, 93, 93, 0.15);
+
+      /* Typography */
+      --font-main: 'Plus Jakarta Sans', -apple-system, sans-serif;
+
+      /* Spacing */
+      --space-xs: 0.25rem;
+      --space-sm: 0.5rem;
+      --space-md: 1rem;
+      --space-lg: 1.5rem;
+      --space-xl: 2rem;
+      --space-2xl: 3rem;
+      --space-3xl: 5rem;
+
+      /* Radii - rounded, soft */
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 20px;
+      --radius-xl: 28px;
+      --radius-full: 9999px;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: var(--font-main);
+      background: var(--bg-cream);
+      color: var(--text-dark);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* Subtle pattern background */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(232, 93, 93, 0.03) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(107, 144, 128, 0.03) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: var(--space-xl);
+    }
+
+    /* ===== HEADER ===== */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--space-lg) 0;
+      margin-bottom: var(--space-2xl);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, var(--accent-coral), var(--accent-plum));
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 1.1rem;
+    }
+
+    nav {
+      display: flex;
+      gap: var(--space-sm);
+      background: var(--bg-soft);
+      padding: var(--space-xs);
+      border-radius: var(--radius-full);
+    }
+
+    nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      padding: var(--space-sm) var(--space-md);
+      border-radius: var(--radius-full);
+      transition: all 0.25s ease;
+    }
+
+    nav a:hover {
+      color: var(--text-dark);
+    }
+
+    nav a.active {
+      background: var(--bg-card);
+      color: var(--text-dark);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ===== HERO ===== */
+    .hero {
+      text-align: center;
+      padding: var(--space-3xl) 0;
+      margin-bottom: var(--space-2xl);
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-sm);
+      background: var(--accent-coral-soft);
+      color: var(--accent-coral);
+      padding: var(--space-sm) var(--space-md);
+      border-radius: var(--radius-full);
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: var(--space-lg);
+    }
+
+    .hero h1 {
+      font-size: 3.5rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: var(--space-md);
+      color: var(--text-dark);
+    }
+
+    .hero h1 .highlight {
+      background: linear-gradient(135deg, var(--accent-coral), var(--accent-plum));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero p {
+      font-size: 1.2rem;
+      color: var(--text-body);
+      max-width: 500px;
+      margin: 0 auto;
+      line-height: 1.7;
+    }
+
+    /* ===== INPUT AREA ===== */
+    .input-area {
+      background: var(--bg-card);
+      border: 2px solid var(--border-soft);
+      border-radius: var(--radius-xl);
+      padding: var(--space-xl);
+      max-width: 600px;
+      margin: 0 auto var(--space-3xl);
+      box-shadow: var(--shadow-md);
+      transition: all 0.3s ease;
+    }
+
+    .input-area:focus-within {
+      border-color: var(--accent-coral);
+      box-shadow: var(--shadow-glow), var(--shadow-md);
+    }
+
+    .input-label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: var(--space-sm);
+    }
+
+    .input-wrapper {
+      display: flex;
+      gap: var(--space-md);
+      align-items: center;
+    }
+
+    .input-field input {
+      flex: 1;
+      background: var(--bg-soft);
+      border: none;
+      border-radius: var(--radius-lg);
+      padding: var(--space-md) var(--space-lg);
+      color: var(--text-dark);
+      font-family: var(--font-main);
+      font-size: 1rem;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .input-field input::placeholder {
+      color: var(--text-faint);
+    }
+
+    .input-field input:focus {
+      background: var(--bg-warm);
+    }
+
+    /* ===== BUTTONS ===== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-sm);
+      padding: var(--space-md) var(--space-xl);
+      border-radius: var(--radius-lg);
+      font-family: var(--font-main);
+      font-size: 0.9rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-coral), var(--accent-coral-hover));
+      color: white;
+      box-shadow: 0 4px 14px rgba(232, 93, 93, 0.3);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(232, 93, 93, 0.35);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      background: var(--bg-soft);
+      color: var(--text-dark);
+    }
+
+    .btn-secondary:hover {
+      background: var(--border-soft);
+    }
+
+    .btn-icon {
+      width: 48px;
+      height: 48px;
+      padding: 0;
+      border-radius: var(--radius-md);
+    }
+
+    /* ===== SECTION ===== */
+    .section {
+      margin-bottom: var(--space-3xl);
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: var(--space-lg);
+    }
+
+    .section-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+
+    .section-subtitle {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    /* ===== TASK CARDS ===== */
+    .task-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: var(--space-lg);
+    }
+
+    .task-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-lg);
+      padding: var(--space-lg);
+      box-shadow: var(--shadow-sm);
+      transition: all 0.3s ease;
+    }
+
+    .task-card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-lg);
+      border-color: transparent;
+    }
+
+    .task-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: var(--space-md);
+    }
+
+    .task-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      flex-shrink: 0;
+    }
+
+    .task-icon.browser {
+      background: var(--accent-plum-soft);
+    }
+
+    .task-icon.analysis {
+      background: var(--accent-sage-soft);
+    }
+
+    .task-icon.monitor {
+      background: var(--accent-coral-soft);
+    }
+
+    .task-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text-dark);
+      margin-bottom: var(--space-xs);
+    }
+
+    .task-description {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      line-height: 1.6;
+      margin-bottom: var(--space-md);
+    }
+
+    .task-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .task-meta {
+      display: flex;
+      gap: var(--space-sm);
+    }
+
+    /* ===== BADGES ===== */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: var(--radius-full);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .badge-success {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .badge-warning {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .badge-error {
+      background: var(--error-soft);
+      color: var(--error);
+    }
+
+    .badge-neutral {
+      background: var(--bg-soft);
+      color: var(--text-muted);
+    }
+
+    .badge-coral {
+      background: var(--accent-coral-soft);
+      color: var(--accent-coral);
+    }
+
+    .badge-sage {
+      background: var(--accent-sage-soft);
+      color: var(--accent-sage);
+    }
+
+    .badge-plum {
+      background: var(--accent-plum-soft);
+      color: var(--accent-plum);
+    }
+
+    /* Animated dot */
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.2); opacity: 0.7; }
+    }
+
+    /* ===== PROGRESS BAR ===== */
+    .progress-bar {
+      height: 6px;
+      background: var(--bg-soft);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-coral), var(--accent-plum));
+      border-radius: var(--radius-full);
+      transition: width 0.5s ease;
+    }
+
+    /* ===== TIMELINE ===== */
+    .timeline {
+      background: var(--bg-card);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .timeline-header {
+      padding: var(--space-md) var(--space-lg);
+      border-bottom: 1px solid var(--border-soft);
+      font-weight: 600;
+      font-size: 0.9rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .timeline-item {
+      display: flex;
+      gap: var(--space-md);
+      padding: var(--space-md) var(--space-lg);
+      transition: background 0.2s ease;
+    }
+
+    .timeline-item:hover {
+      background: var(--bg-warm);
+    }
+
+    .timeline-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.9rem;
+      flex-shrink: 0;
+    }
+
+    .timeline-icon.success { background: var(--success-soft); }
+    .timeline-icon.pending { background: var(--warning-soft); }
+    .timeline-icon.info { background: var(--accent-plum-soft); }
+
+    .timeline-content {
+      flex: 1;
+    }
+
+    .timeline-title {
+      font-weight: 500;
+      font-size: 0.9rem;
+      margin-bottom: 2px;
+    }
+
+    .timeline-detail {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .timeline-time {
+      font-size: 0.75rem;
+      color: var(--text-faint);
+      flex-shrink: 0;
+    }
+
+    /* ===== COLOR PALETTE ===== */
+    .palette-section {
+      margin-top: var(--space-3xl);
+      padding-top: var(--space-2xl);
+      border-top: 1px solid var(--border-soft);
+    }
+
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: var(--space-md);
+    }
+
+    .color-swatch {
+      background: var(--bg-card);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .color-preview {
+      height: 70px;
+    }
+
+    .color-info {
+      padding: var(--space-sm) var(--space-md);
+    }
+
+    .color-name {
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    .color-value {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    /* ===== TYPOGRAPHY SHOWCASE ===== */
+    .type-showcase {
+      margin-top: var(--space-3xl);
+      padding-top: var(--space-2xl);
+      border-top: 1px solid var(--border-soft);
+    }
+
+    .type-sample {
+      margin-bottom: var(--space-xl);
+    }
+
+    .type-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: var(--space-sm);
+    }
+
+    .type-display {
+      font-size: 3rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text-dark);
+    }
+
+    .type-heading {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-dark);
+    }
+
+    .type-body {
+      font-size: 1rem;
+      color: var(--text-body);
+      max-width: 550px;
+      line-height: 1.7;
+    }
+
+    .type-small {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    /* ===== FOOTER ===== */
+    footer {
+      margin-top: var(--space-3xl);
+      padding-top: var(--space-xl);
+      border-top: 1px solid var(--border-soft);
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    /* ===== FLOATING ELEMENTS (decorative) ===== */
+    .floating-shapes {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      z-index: 0;
+      overflow: hidden;
+    }
+
+    .shape {
+      position: absolute;
+      border-radius: 50%;
+      animation: float 20s ease-in-out infinite;
+    }
+
+    .shape-1 {
+      width: 300px;
+      height: 300px;
+      background: radial-gradient(circle, rgba(232, 93, 93, 0.05), transparent 70%);
+      top: 10%;
+      right: 10%;
+      animation-delay: 0s;
+    }
+
+    .shape-2 {
+      width: 200px;
+      height: 200px;
+      background: radial-gradient(circle, rgba(107, 144, 128, 0.05), transparent 70%);
+      bottom: 20%;
+      left: 5%;
+      animation-delay: -7s;
+    }
+
+    .shape-3 {
+      width: 250px;
+      height: 250px;
+      background: radial-gradient(circle, rgba(139, 126, 200, 0.04), transparent 70%);
+      top: 50%;
+      left: 50%;
+      animation-delay: -14s;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      25% { transform: translate(20px, -20px) scale(1.05); }
+      50% { transform: translate(-10px, 10px) scale(0.95); }
+      75% { transform: translate(-20px, -10px) scale(1.02); }
+    }
+  </style>
+</head>
+<body>
+  <div class="floating-shapes">
+    <div class="shape shape-1"></div>
+    <div class="shape shape-2"></div>
+    <div class="shape shape-3"></div>
+  </div>
+
+  <div class="container">
+    <header>
+      <div class="logo">
+        <div class="logo-icon">✦</div>
+        magician
+      </div>
+      <nav>
+        <a href="#" class="active">Tasks</a>
+        <a href="#">Tools</a>
+        <a href="#">History</a>
+        <a href="#">Settings</a>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <div class="hero-badge">
+        <span>✨</span>
+        AI-Powered Automation
+      </div>
+      <h1><span class="highlight">done.</span></h1>
+      <p>Tell us what you need. We'll handle the rest with care, precision, and a touch of magic.</p>
+    </section>
+
+    <div class="input-area">
+      <label class="input-label">What can I help you with today?</label>
+      <div class="input-wrapper">
+        <div class="input-field" style="flex: 1;">
+          <input type="text" placeholder="Describe your task...">
+        </div>
+        <button class="btn btn-primary btn-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M5 12h14M12 5l7 7-7 7"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <section class="section">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">Your Tasks</h2>
+          <p class="section-subtitle">3 active, 12 completed today</p>
+        </div>
+        <button class="btn btn-secondary">View All</button>
+      </div>
+
+      <div class="task-grid">
+        <div class="task-card">
+          <div class="task-header">
+            <div class="task-icon browser">🌐</div>
+            <span class="badge badge-success">
+              <span class="pulse-dot"></span>
+              Running
+            </span>
+          </div>
+          <h3 class="task-title">Scrape product prices from Amazon</h3>
+          <p class="task-description">Navigate to Amazon, search for "mechanical keyboard", extract prices from first 10 results.</p>
+          <div class="progress-bar" style="margin-bottom: var(--space-md);">
+            <div class="progress-fill" style="width: 78%;"></div>
+          </div>
+          <div class="task-footer">
+            <div class="task-meta">
+              <span class="badge badge-plum">Browser</span>
+              <span class="badge badge-neutral">12 steps</span>
+            </div>
+            <span style="font-size: 0.8rem; color: var(--text-muted);">78%</span>
+          </div>
+        </div>
+
+        <div class="task-card">
+          <div class="task-header">
+            <div class="task-icon analysis">📊</div>
+            <span class="badge badge-warning">
+              <span class="pulse-dot"></span>
+              Pending
+            </span>
+          </div>
+          <h3 class="task-title">Generate weekly report</h3>
+          <p class="task-description">Compile analytics data from the past 7 days and format into a summary.</p>
+          <div class="task-footer">
+            <div class="task-meta">
+              <span class="badge badge-sage">Analysis</span>
+              <span class="badge badge-neutral">5 steps</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="task-card">
+          <div class="task-header">
+            <div class="task-icon monitor">🔔</div>
+            <span class="badge badge-error">Failed</span>
+          </div>
+          <h3 class="task-title">Monitor server health</h3>
+          <p class="task-description">Check all production servers and alert if CPU usage exceeds 80%.</p>
+          <div class="task-footer">
+            <div class="task-meta">
+              <span class="badge badge-coral">Monitoring</span>
+            </div>
+            <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.75rem;">Retry</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <h2 class="section-title">Activity</h2>
+      </div>
+
+      <div class="timeline">
+        <div class="timeline-header">
+          <span>Execution Log</span>
+          <span class="badge badge-neutral">Live</span>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-icon success">✓</div>
+          <div class="timeline-content">
+            <div class="timeline-title">Navigated to amazon.com</div>
+            <div class="timeline-detail">Page loaded successfully</div>
+          </div>
+          <div class="timeline-time">2s ago</div>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-icon info">🔍</div>
+          <div class="timeline-content">
+            <div class="timeline-title">Searching for "mechanical keyboard"</div>
+            <div class="timeline-detail">Typed query, pressed Enter</div>
+          </div>
+          <div class="timeline-time">5s ago</div>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-icon pending">⏳</div>
+          <div class="timeline-content">
+            <div class="timeline-title">Waiting for results</div>
+            <div class="timeline-detail">Timeout: 10s</div>
+          </div>
+          <div class="timeline-time">8s ago</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Color Palette -->
+    <section class="palette-section">
+      <div class="section-header">
+        <h2 class="section-title">Color Palette</h2>
+      </div>
+      <div class="palette-grid">
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #fefdfb;"></div>
+          <div class="color-info">
+            <div class="color-name">Cream</div>
+            <div class="color-value">#fefdfb</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #2d2a26;"></div>
+          <div class="color-info">
+            <div class="color-name">Charcoal</div>
+            <div class="color-value">#2d2a26</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #e85d5d;"></div>
+          <div class="color-info">
+            <div class="color-name">Coral</div>
+            <div class="color-value">#e85d5d</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #6b9080;"></div>
+          <div class="color-info">
+            <div class="color-name">Sage</div>
+            <div class="color-value">#6b9080</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #8b7ec8;"></div>
+          <div class="color-info">
+            <div class="color-name">Plum</div>
+            <div class="color-value">#8b7ec8</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #5fa67a;"></div>
+          <div class="color-info">
+            <div class="color-name">Success</div>
+            <div class="color-value">#5fa67a</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Typography Showcase -->
+    <section class="type-showcase">
+      <div class="section-header">
+        <h2 class="section-title">Typography</h2>
+        <span class="section-subtitle">Plus Jakarta Sans</span>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Display</div>
+        <div class="type-display">Task Automation</div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Heading</div>
+        <div class="type-heading">Execute complex workflows with natural language</div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Body</div>
+        <div class="type-body">Magician breaks down your requests into atomic steps, orchestrates browser automation, and delivers results. It's like having a helpful assistant who never gets tired.</div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Small</div>
+        <div class="type-small">Last updated 2 minutes ago • 12 steps completed</div>
+      </div>
+    </section>
+
+    <footer>
+      <p>Theme Preview: Soft Machine — Warm, Approachable AI</p>
+    </footer>
+  </div>
+</body>
+</html>

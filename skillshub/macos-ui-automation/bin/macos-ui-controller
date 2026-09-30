@@ -1,0 +1,1342 @@
+#!/usr/bin/env python3
+"""Resilient, local-first native controller for `cua-driver` primitive calls.
+
+The Magician primitive runner calls one command for every native action.  The
+raw `cua-driver call ...` CLI cannot start daemon lifecycle commands and does
+not self-heal the common "No cached AX state" failure. This controller keeps the
+tool surface stable while handling those host-level details in one process.
+
+Local-first relay
+-----------------
+Use a local Windows, Linux or macOS driver when a desktop session or running
+daemon is available. Headless containers relay to the desktop gateway, even
+if their image includes a driver binary. The gateway URL defaults to loopback
+so the private container relay also works with the runtime's clean environment.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from typing import Any
+
+
+DAEMON_START_TIMEOUT_SECS = 6.0
+DEFAULT_HOST_GATEWAY_URL = "http://127.0.0.1:3017"
+HOST_GATEWAY_TIMEOUT_SECS = 65.0
+MAX_HOST_GATEWAY_RESPONSE_BYTES = 10 * 1024 * 1024
+
+
+def read_bounded_response(response) -> bytes:
+    raw = response.read(MAX_HOST_GATEWAY_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_HOST_GATEWAY_RESPONSE_BYTES:
+        raise ValueError("host gateway response exceeds local size limit")
+    return raw
+
+
+def ensure_home_for_driver() -> None:
+    """Give the driver a HOME when the governed runtime withheld one.
+
+    The runtime runs this controller with a portable environment that carries
+    no HOME (PATH, locale, TERM, TZ only). cua-driver finds its daemon socket
+    (`~/Library/Caches/cua-driver/cua-driver.sock`) and its settings
+    (`~/.cua-driver/`) through HOME, so without it every call reported "Cua
+    Driver daemon is not running" while the daemon was up, and the telemetry
+    notice reappeared on each call. The signed-in user's home from the passwd
+    database is the same directory the daemon itself runs under.
+    """
+    if os.environ.get("HOME") or sys.platform == "win32":
+        return
+    try:
+        import pwd
+
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError):
+        return
+    if home:
+        os.environ["HOME"] = home
+
+
+def run(cmd: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    ensure_home_for_driver()
+    return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
+
+
+def driver_binary() -> str | None:
+    """Find the official install even before the app's PATH has been refreshed."""
+    name = "cua-driver.exe" if sys.platform == "win32" else "cua-driver"
+    candidates = [os.environ.get("MAGICIAN_CUA_DRIVER_BIN"), shutil.which(name)]
+    if sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA")
+        if root:
+            candidates += [str(Path(root) / folder / name) for folder in
+                           ("Programs/Cua/cua-driver/bin", "Programs/trycua/cua-driver-rs/bin")]
+    else:
+        candidates.append(str(Path.home() / ".local/bin" / name))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.abspath(candidate)
+    return None
+
+
+def has_desktop_session() -> bool:
+    if sys.platform == "darwin":
+        return True
+    if sys.platform == "linux":
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if sys.platform == "win32":
+        import ctypes
+        session = ctypes.c_ulong()
+        return bool(ctypes.windll.kernel32.ProcessIdToSessionId(
+            os.getpid(), ctypes.byref(session)) and session.value != 0)
+    return False
+
+
+def local_cua_driver_available() -> bool:
+    return driver_binary() is not None and (has_desktop_session() or daemon_status().returncode == 0)
+
+
+def driver_command(*args: str) -> list[str]:
+    binary = driver_binary()
+    if binary is None:
+        raise FileNotFoundError("CuaDriver is not installed on this desktop; run setup-cua-driver")
+    return [binary, *args]
+
+
+def host_gateway_url() -> str:
+    value = os.environ.get("MAGICIAN_HOST_GATEWAY_URL", "").strip()
+    return value or DEFAULT_HOST_GATEWAY_URL
+
+
+def relay_to_host_gateway(action: str, args_json: str) -> int:
+    """Relay one action to the Tauri host gateway's `/host/ax/<action>` proxy.
+
+    Posts the SAME raw args JSON the local path passes to `cua-driver call`.
+    The gateway shells `cua-driver` on the host and returns
+    `{ok, stdout, stderr, exit_code}` — we re-emit its stdout/stderr verbatim so
+    the skill sees identical output to the local path, and propagate exit_code.
+    """
+    base = host_gateway_url().rstrip("/")
+    url = f"{base}/host/ax/{action}"
+    payload = (args_json or "{}").encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=HOST_GATEWAY_TIMEOUT_SECS) as response:
+            raw = read_bounded_response(response).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as error:
+        try:
+            body = read_bounded_response(error).decode("utf-8", errors="replace")
+        except ValueError:
+            body = "host gateway error response exceeds local size limit"
+        print(
+            f"host gateway /host/ax/{action} returned HTTP {error.code}: {body}",
+            file=sys.stderr,
+        )
+        return 1
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except (urllib.error.URLError, OSError) as error:
+        print(
+            "cua-driver not found locally and host gateway unreachable at "
+            f"{base} ({error}); install CuaDriver locally or run the desktop app",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        # Unexpected non-JSON body — surface it raw so the failure is diagnosable.
+        print(raw, end="")
+        return 1
+
+    stdout = parsed.get("stdout") or ""
+    stderr = parsed.get("stderr") or ""
+    if stdout:
+        print(stdout, end="")
+    if stderr:
+        print(stderr, end="", file=sys.stderr)
+    exit_code = parsed.get("exit_code")
+    if isinstance(exit_code, int):
+        return exit_code
+    return 0 if parsed.get("ok") else 1
+
+
+def parse_request() -> tuple[str, str, str | None]:
+    """Read the one runtime-validated canonical JSON request from stdin."""
+    try:
+        request = json.load(sys.stdin)
+    except (json.JSONDecodeError, UnicodeError) as error:
+        print(f"invalid canonical request: {error}", file=sys.stderr)
+        raise SystemExit(64) from error
+    if not isinstance(request, dict):
+        print("canonical request must be an object", file=sys.stderr)
+        raise SystemExit(64)
+    action = request.get("action_name")
+    args_json = request.get("args_json", "{}")
+    screenshot_out_file = request.get("screenshot_out_file") or None
+    if not isinstance(action, str) or not action:
+        print("missing action_name", file=sys.stderr)
+        raise SystemExit(64)
+    if not isinstance(args_json, str):
+        print("args_json must be a string", file=sys.stderr)
+        raise SystemExit(64)
+    if screenshot_out_file is not None and not isinstance(screenshot_out_file, str):
+        print("screenshot_out_file must be a string", file=sys.stderr)
+        raise SystemExit(64)
+    return action, args_json, screenshot_out_file
+
+
+def daemon_status() -> subprocess.CompletedProcess[str]:
+    try:
+        return run(driver_command("status"), timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return subprocess.CompletedProcess(["cua-driver", "status"], 1, "", str(error))
+
+
+def ensure_daemon() -> bool:
+    if daemon_status().returncode == 0:
+        return True
+
+    if not has_desktop_session():
+        print("Start CuaDriver in the signed-in graphical desktop session, or use the desktop relay.", file=sys.stderr)
+        return False
+
+    started = False
+    if sys.platform == "darwin" and os.path.isdir("/Applications/CuaDriver.app"):
+        # The .app owns the TCC grants. Starting via `open` is the supported path.
+        open_result = run(["/usr/bin/open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"], timeout=10)
+        started = open_result.returncode == 0
+
+    deadline = time.monotonic() + DAEMON_START_TIMEOUT_SECS
+    while started and time.monotonic() < deadline:
+        if daemon_status().returncode == 0:
+            return True
+        time.sleep(0.35)
+
+    if not started:
+        # Last-resort fallback for environments where the .app is unavailable.
+        with open(os.devnull, "wb") as devnull:
+            detach = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+                      if sys.platform == "win32" else {"start_new_session": True})
+            subprocess.Popen(
+                driver_command("serve"),
+                stdin=subprocess.DEVNULL,
+                stdout=devnull,
+                stderr=devnull,
+                **detach,
+            )
+        deadline = time.monotonic() + DAEMON_START_TIMEOUT_SECS
+        while time.monotonic() < deadline:
+            if daemon_status().returncode == 0:
+                return True
+            time.sleep(0.35)
+
+    return daemon_status().returncode == 0
+
+
+def print_completed(result: subprocess.CompletedProcess[str]) -> None:
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+
+
+def json_status() -> dict[str, Any]:
+    status = daemon_status()
+    return {
+        "running": status.returncode == 0,
+        "stdout": status.stdout.strip(),
+        "stderr": status.stderr.strip(),
+    }
+
+
+# Tools that take a `session` in cua-driver 0.28.2. Each `cua-driver call` is its
+# own transport, so a call without a label runs in a fresh implicit session and
+# whatever it set (the agent cursor's enablement, motion and theme) is gone by
+# the next call — cursor tuning for Tutor/Copilot silently did nothing. The
+# driver's guidance for multi-call work is a short public label repeated on
+# every call that accepts one, so the controller supplies it when the caller
+# does not. `end_session` is left alone: an ended name is never revived by
+# ordinary actions, so ending the shared label must be an explicit choice.
+SESSION_ENV = "MAGICIAN_CUA_SESSION"
+DEFAULT_SESSION = "magician"
+SESSION_TOOLS = frozenset({
+    "browser_click", "browser_dialog", "browser_download", "browser_navigate",
+    "browser_pointer", "browser_prepare", "browser_set_input_files", "browser_type",
+    "click", "clipboard_read", "clipboard_write", "double_click", "drag",
+    "escalate_session", "get_agent_cursor_state", "get_browser_state",
+    "get_cursor_position", "get_desktop_state", "get_screen_size", "get_session",
+    "get_session_state", "get_window_state", "hotkey", "invoke_menu", "move_cursor",
+    "press_key", "right_click", "scroll", "set_agent_cursor_enabled",
+    "set_agent_cursor_motion", "set_agent_cursor_theme", "set_value",
+    "set_window_frame", "start_session", "type_text", "verify_state",
+})
+
+
+def ended_session_name(result: subprocess.CompletedProcess[str]) -> str | None:
+    """The session a call was rejected for having ended, if that is the error."""
+    match = re.search(r"session '([^']+)' has ended", f"{result.stdout}\n{result.stderr}")
+    return match.group(1) if match else None
+
+
+def revive_default_session(
+    action: str, args_json: str, session_args: str, result: subprocess.CompletedProcess[str],
+) -> bool:
+    """Revive the controller's own shared label when the driver ended it.
+
+    The driver ends an idle session on its own, and an ended name is rejected
+    until `start_session` revives it. The shared label is this controller's
+    default, not a caller's choice, so when a call it labelled is refused for
+    that reason it is revived once and the call retried. A session the caller
+    named — including one the agent started itself — is left to the caller.
+    Without this, every labelled call failed after the first idle gap, and the
+    runtime's act→observe snapshots with them.
+    """
+    if action in ("start_session", "end_session") or session_args == args_json:
+        return False
+    try:
+        label = json.loads(session_args).get("session")
+    except (json.JSONDecodeError, AttributeError):
+        return False
+    if not label or ended_session_name(result) != label:
+        return False
+    revived = run(driver_command("call", "start_session", json.dumps({"session": label})))
+    return revived.returncode == 0
+
+
+def with_session(action: str, args_json: str) -> str:
+    """Add the shared session label to a call that accepts one and names none."""
+    if action not in SESSION_TOOLS:
+        return args_json
+    try:
+        args = json.loads(args_json or "{}")
+    except json.JSONDecodeError:
+        return args_json
+    if not isinstance(args, dict) or args.get("session"):
+        return args_json
+    args["session"] = os.environ.get(SESSION_ENV, "").strip() or DEFAULT_SESSION
+    return json.dumps(args, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# Compact AX tree view
+#
+# `get_window_state` returns the whole accessibility tree as markdown. A
+# WorkFlowy window came back as 734 lines / 70 KB (~17k tokens): 324 unlabeled
+# `AXGroup` containers and the same `actions=[AXShowMenu, AXScrollToVisible]`
+# suffix on 695 of the lines. The agentic loop projects a tool result to ~6k
+# tokens and pages the rest through `read_result`, one decision per page, so a
+# look at one window cost four decisions — and the models started dumping the
+# JSON to /tmp and grepping it with python instead. The view args below are
+# consumed here (the driver never sees them) and the tree is compacted before
+# it leaves this process; element indices are the driver's own, untouched.
+# ---------------------------------------------------------------------------
+
+VIEW_ARG_KEYS = ("filter", "query", "roles", "max_lines")
+DEFAULT_TREE_VIEW = "labelled"
+ACTIONABLE_ROLES = {
+    "AXButton", "AXLink", "AXTextArea", "AXTextField", "AXCheckBox", "AXRadioButton",
+    "AXPopUpButton", "AXMenuItem", "AXMenuBarItem", "AXMenuButton", "AXTab", "AXSlider",
+    "AXComboBox", "AXIncrementor", "AXDisclosureTriangle", "AXStaticText", "AXHeading",
+    "AXCell", "AXRow", "AXSearchField", "AXSecureTextField",
+}
+_NODE_RE = None
+
+
+def _node_re():
+    global _NODE_RE
+    if _NODE_RE is None:
+        import re
+        _NODE_RE = re.compile(r"^(?P<indent>\s*)- \[(?P<index>\d+)\] (?P<role>AX\w+)(?P<rest>.*)$")
+    return _NODE_RE
+
+
+def split_view_args(args_json: str) -> tuple[str, dict[str, Any]]:
+    """Separate the compact-view args from the args the driver receives."""
+    try:
+        args = json.loads(args_json or "{}")
+    except json.JSONDecodeError:
+        return args_json, {}
+    if not isinstance(args, dict):
+        return args_json, {}
+    view = {key: args.pop(key) for key in VIEW_ARG_KEYS if key in args}
+    return json.dumps(args, separators=(",", ":")), view
+
+
+def _node_label(rest: str) -> str:
+    import re
+    rest = re.sub(r"\s*actions=\[[^\]]*\]\s*$", "", rest)
+    return rest.strip()
+
+
+def compact_tree_markdown(tree: str, view: dict[str, Any]) -> str:
+    """Return the tree the agent should read for `view`; `filter: "full"` is the raw tree."""
+    import re
+    mode = str(view.get("filter") or DEFAULT_TREE_VIEW)
+    query = str(view.get("query") or "").strip().lower()
+    roles = view.get("roles") if isinstance(view.get("roles"), list) else None
+    max_lines = view.get("max_lines") if isinstance(view.get("max_lines"), int) and view.get("max_lines") > 0 else None
+    if mode == "full" and not query and not roles and not max_lines:
+        return tree
+
+    lines = tree.splitlines()
+    node_re = _node_re()
+    parsed = []
+    for line in lines:
+        match = node_re.match(line)
+        parsed.append((line, match))
+    total = sum(1 for _, m in parsed if m)
+
+    # The action suffix worth keeping is the one that is NOT on nearly every node.
+    suffixes: dict[str, int] = {}
+    for _, m in parsed:
+        if m:
+            found = re.search(r"actions=\[[^\]]*\]", m.group("rest"))
+            if found:
+                suffixes[found.group(0)] = suffixes.get(found.group(0), 0) + 1
+    ubiquitous = {sfx for sfx, count in suffixes.items() if total and count * 2 >= total}
+
+    def informative(m) -> bool:
+        role = m.group("role")
+        label = _node_label(m.group("rest"))
+        if roles is not None:
+            return role in roles
+        if mode == "full":
+            return True
+        if label:
+            return True
+        return role in ACTIONABLE_ROLES and role not in {"AXStaticText", "AXCell", "AXRow", "AXHeading"}
+
+    kept: list[str] = []
+    keep_children_deeper_than: int | None = None
+    # (indent, label) of the last kept node, to drop the static text that merely
+    # repeats its parent's title (`AXLink (Inbox)` → `AXStaticText = "Inbox"`).
+    last_kept: tuple[int, str] | None = None
+    for line, m in parsed:
+        if not m:
+            continue
+        indent = len(m.group("indent"))
+        label = _node_label(m.group("rest"))
+        if query:
+            if keep_children_deeper_than is not None and indent > keep_children_deeper_than:
+                pass  # a child of a match
+            elif query in label.lower():
+                keep_children_deeper_than = indent
+            else:
+                keep_children_deeper_than = None
+                continue
+        if not informative(m):
+            continue
+        if (
+            mode != "full"
+            and roles is None
+            and m.group("role") == "AXStaticText"
+            and last_kept is not None
+            and indent > last_kept[0]
+            and label.startswith("= ")
+            and label[2:].strip('"') == last_kept[1]
+        ):
+            continue
+        rest = m.group("rest")
+        for sfx in ubiquitous:
+            rest = rest.replace(" " + sfx, "").replace(sfx, "")
+        # One space per level: the raw tree's two-space indent at depth 15+ is
+        # a third of every line's bytes.
+        level = indent // 2
+        kept.append(f"{' ' * level}- [{m.group('index')}] {m.group('role')}{rest.rstrip()}")
+        title = label
+        if title.startswith("(") and title.endswith(")"):
+            title = title[1:-1]
+        elif title.startswith("= "):
+            title = title[2:].strip('"')
+        last_kept = (indent, title)
+
+    truncated = False
+    if max_lines is not None and len(kept) > max_lines:
+        kept = kept[:max_lines]
+        truncated = True
+    shown = len(kept)
+    view_name = "roles" if roles is not None else ("query" if query else mode)
+    summary = (
+        f"# tree: {total} nodes, {shown} shown (view={view_name}"
+        + (", truncated" if truncated else "")
+        + '); pass args {"filter":"full"} for the raw tree, "query":"text" to focus, "roles":[...] to pick roles'
+    )
+    return "\n".join([summary, *kept])
+
+
+# ---------------------------------------------------------------------------
+# The tree the model reads is rendered from the structured elements
+#
+# cua-driver 0.28 returns both `elements` (index, token, role, label, value,
+# selected, enabled, frame, actions — "new fields only on the structured
+# side") and its own `tree_markdown`, whose lines now carry an attribute
+# bracket (`[id=… actions=[…]]`) the markdown compaction above treats as a
+# label, so a System Settings window's "labelled" view showed all 212 nodes:
+# 40 unlabeled rows and the whole menu bar (106 lines) among them. At 17 KB
+# the tree exceeded the runtime's 8 KB scalar budget and was omitted from
+# the model's page entirely, while the 42 KB `elements` array won the
+# record budget with its first seven rows — every full snapshot reached the
+# model as seven elements and no tree, which is why it asked for a narrowed
+# `query` view before every click. The view below is rendered from
+# `elements` (ids merged in from the markdown), menus collapse to their
+# menu-bar items, `selected` and disabled states show, and the elements
+# themselves leave the reply for the snapshot sidecar on disk.
+# ---------------------------------------------------------------------------
+
+STRUCTURAL_ROLES = {"AXStaticText", "AXCell", "AXRow", "AXHeading"}
+MENU_ROLES = {"AXMenu", "AXMenuItem"}
+
+
+MAX_SHOWN_ACTIONS = 6
+
+
+def _short_actions(actions: Any) -> tuple[str, ...]:
+    """`AXPress` → `press`; a custom action's descriptor dump (`Name:Move
+    previous\nTarget:0x0\nSelector:(null)` on a toolbar item) is not a name."""
+    if not isinstance(actions, list):
+        return ()
+    out = []
+    for action in actions:
+        if not isinstance(action, str) or any(c.isspace() for c in action) or ":" in action:
+            continue
+        out.append(action[2:].lower() if action.startswith("AX") else action.lower())
+    return tuple(out[:MAX_SHOWN_ACTIONS])
+
+
+_MD_ROW_RE = None
+
+
+def _md_row_re():
+    global _MD_ROW_RE
+    if _MD_ROW_RE is None:
+        import re
+        _MD_ROW_RE = re.compile(r"^(?P<indent>\s*)- (?:\[(?P<index>\d+)\] )?(?P<role>AX\w+)(?P<rest>.*)$")
+    return _MD_ROW_RE
+
+
+def _trailing_bracket_start(text: str) -> int | None:
+    """The offset of the `[` opening a trailing `[id=… help="…" actions=[…]]` block."""
+    if not text.endswith("]"):
+        return None
+    depth = 0
+    for offset in range(len(text) - 1, -1, -1):
+        char = text[offset]
+        if char == "]":
+            depth += 1
+        elif char == "[":
+            depth -= 1
+            if depth == 0:
+                inner = text[offset + 1:]
+                if inner.startswith(("id=", "help=", "actions=")):
+                    return offset
+                return None
+    return None
+
+
+def parse_markdown_rows(tree: str) -> list[dict[str, Any]]:
+    """The driver's markdown as rows: indexed elements and the text-only nodes between them.
+
+    `- [83] AXButton (Auto) [help="…" actions=[press]]`, `- [100] AXPopUpButton =
+    "Automatic" [id=HighlightColorPicker actions=[press]]`, `- AXStaticText =
+    "Multicolour"`, `- AXHeading (Theme)`. The unindexed rows are what the pane
+    says — headings, the labels beside controls, the current value under a
+    picker — and are not in `elements`, which lists only what can be acted on.
+    """
+    import re
+    rows: list[dict[str, Any]] = []
+    for line in (tree or "").splitlines():
+        match = _md_row_re().match(line)
+        if not match:
+            continue
+        rest = match.group("rest").strip()
+        ident = ""
+        actions: list[str] = []
+        start = _trailing_bracket_start(rest)
+        if start is not None:
+            attrs = rest[start + 1:-1]
+            rest = rest[:start].rstrip()
+            found = re.search(r"(?:^|\s)id=(\S+)", attrs)
+            if found:
+                ident = found.group(1)
+            found = re.search(r"actions=\[([^\]]*)\]", attrs)
+            if found:
+                actions = [a.strip() for a in found.group(1).split(",") if a.strip()]
+        label = ""
+        value = ""
+        valued = re.match(r'^= "(?P<value>.*)"(?:\s+\((?P<label>.*)\))?$', rest, re.S)
+        if valued:
+            value = valued.group("value")
+            label = valued.group("label") or ""
+        elif len(rest) >= 2 and rest[0] == "(" and rest[-1] == ")":
+            label = rest[1:-1]
+        elif len(rest) >= 2 and rest[0] == '"' and rest[-1] == '"':
+            label = rest[1:-1]
+        else:
+            label = rest
+        index = match.group("index")
+        rows.append(
+            {
+                "depth": len(match.group("indent")) // 2,
+                "index": int(index) if index is not None else None,
+                "role": match.group("role"),
+                "label": label,
+                "value": value,
+                "id": ident,
+                "actions": actions,
+            }
+        )
+    return rows
+
+
+def element_ids_from_markdown(tree: str) -> dict[int, str]:
+    """`element_index → id` from the driver's markdown; `elements` carry no identifier."""
+    return {row["index"]: row["id"] for row in parse_markdown_rows(tree) if row["index"] is not None and row["id"]}
+
+
+def _tree_rows(elements: list[dict[str, Any]], tree: str | None) -> list[dict[str, Any]]:
+    """The rows to render, in the markdown's order with each element's state merged
+    in by index; from the elements alone when the driver sent no markdown."""
+    by_index: dict[int, dict[str, Any]] = {}
+    for element in elements:
+        if isinstance(element, dict) and isinstance(element.get("element_index"), int):
+            by_index[element["element_index"]] = element
+    rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for row in parse_markdown_rows(tree or ""):
+        element = by_index.get(row["index"]) if row["index"] is not None else None
+        if element is not None:
+            seen.add(row["index"])
+            merged = dict(row)
+            if isinstance(element.get("depth"), int):
+                merged["depth"] = element["depth"]
+            label = element.get("label")
+            if label not in (None, ""):
+                merged["label"] = str(label)
+            value = element.get("value")
+            if value not in (None, ""):
+                merged["value"] = str(value)
+            merged["actions"] = _short_actions(element.get("actions")) or tuple(row["actions"])
+            merged["element"] = element
+            rows.append(merged)
+        else:
+            row = dict(row)
+            row["actions"] = tuple(row["actions"])
+            row["element"] = None
+            rows.append(row)
+    if rows:
+        return rows
+    for element in elements:
+        if not isinstance(element, dict) or not isinstance(element.get("element_index"), int):
+            continue
+        label = element.get("label")
+        value = element.get("value")
+        rows.append(
+            {
+                "depth": element.get("depth") if isinstance(element.get("depth"), int) else 0,
+                "index": element["element_index"],
+                "role": str(element.get("role") or ""),
+                "label": str(label) if label not in (None, "") else "",
+                "value": "" if value is None else str(value),
+                "id": "",
+                "actions": _short_actions(element.get("actions")),
+                "element": element,
+            }
+        )
+    return rows
+
+
+def render_elements_tree(
+    elements: list[dict[str, Any]], view: dict[str, Any], tree: str | None = None
+) -> str:
+    """The compact tree for `view`: the driver's markdown order, each element's state."""
+    mode = str(view.get("filter") or DEFAULT_TREE_VIEW)
+    query = str(view.get("query") or "").strip().lower()
+    roles = view.get("roles") if isinstance(view.get("roles"), list) else None
+    max_lines = view.get("max_lines") if isinstance(view.get("max_lines"), int) and view.get("max_lines") > 0 else None
+    total = len(elements)
+
+    collapse_menus = mode != "full" and not query and roles is None
+    kept: list[dict[str, Any]] = []
+    hidden_menu_items = 0
+    menu_depth: int | None = None
+    keep_children_deeper_than: int | None = None
+    last_kept: tuple[int, str] | None = None
+    for row in _tree_rows(elements, tree):
+        depth = row["depth"]
+        role = row["role"]
+        label = row["label"]
+        value = "" if row["value"] == label else row["value"]
+        element = row["element"] or {}
+        selected = element.get("selected") is True
+
+        if collapse_menus:
+            if menu_depth is not None and depth > menu_depth and role in MENU_ROLES:
+                hidden_menu_items += role == "AXMenuItem"
+                continue
+            menu_depth = depth if role == "AXMenuBarItem" else None
+
+        text = " ".join(part for part in (label, value, row["id"]) if part).lower()
+        if query:
+            if keep_children_deeper_than is not None and depth > keep_children_deeper_than:
+                pass  # a descendant of a match
+            elif query in text:
+                keep_children_deeper_than = depth
+            else:
+                keep_children_deeper_than = None
+                continue
+        if roles is not None:
+            if role not in roles:
+                continue
+        elif mode != "full" and not label and not value and not row["id"] and not selected:
+            # An unlabeled node stays only when it is a control; a selected
+            # row stays too, as the mark of which sidebar entry is current.
+            if row["index"] is None or role not in ACTIONABLE_ROLES or role in STRUCTURAL_ROLES:
+                continue
+        if (
+            mode != "full"
+            and roles is None
+            and role == "AXStaticText"
+            and last_kept is not None
+            and depth > last_kept[0]
+            and (value or label) == last_kept[1]
+        ):
+            continue
+        kept.append({**row, "value": value})
+        last_kept = (depth, label or value)
+
+    # A role's usual action set is implied by the role (a button presses, a
+    # menu item cancels/presses/picks); only a line whose set differs from
+    # its role's most common one prints it (`press,showmenu` on a back button).
+    per_role: dict[str, dict[tuple[str, ...], int]] = {}
+    for row in kept:
+        if row["index"] is None:
+            continue
+        counts = per_role.setdefault(row["role"], {})
+        counts[row["actions"]] = counts.get(row["actions"], 0) + 1
+    # On a tie the smaller set is the usual one, so the odd control is the
+    # one that prints its actions.
+    usual = {
+        role: max(counts, key=lambda key: (counts[key], -len(key)))
+        for role, counts in per_role.items()
+    }
+
+    lines: list[str] = []
+    for row in kept:
+        element = row["element"] or {}
+        head = f"[{row['index']}] " if row["index"] is not None else ""
+        line = f"{' ' * row['depth']}- {head}{row['role']}"
+        if row["label"]:
+            line += f" ({row['label']})"
+        if row["value"] and not (row["value"] in ("0", "1") and "selected" in element):
+            line += f' = "{row["value"]}"'
+        if element.get("selected") is True:
+            line += " *selected*"
+        if element.get("enabled") is False:
+            line += " (disabled)"
+        if row["id"] and not row["label"]:
+            line += f" id={row['id']}"
+        if row["index"] is not None and row["actions"] and row["actions"] != usual.get(row["role"]):
+            line += f" actions=[{','.join(row['actions'])}]"
+        lines.append(line)
+
+    truncated = False
+    if max_lines is not None and len(lines) > max_lines:
+        lines = lines[:max_lines]
+        truncated = True
+    view_name = "roles" if roles is not None else ("query" if query else mode)
+    notes = [f"view={view_name}"]
+    if hidden_menu_items:
+        notes.append(f"{hidden_menu_items} menu items collapsed under the menu-bar items")
+    if truncated:
+        notes.append("truncated")
+    summary = (
+        f"# tree: {total} elements, {len(lines)} lines shown ({'; '.join(notes)}); "
+        'a line without [N] is text, not a target; click by {"snapshot_id":…,"element_index":N} or "element_token"; '
+        'args {"filter":"full"} for every node, "query":"text" to focus (menu items included), '
+        '"roles":[...] to pick roles'
+    )
+    return "\n".join([summary, *lines])
+
+
+ADDRESSING_NOTE = (
+    "Address an element by `element_token`, or by `snapshot_id` together with `element_index` "
+    "(a bare element_index is refused). The tree lists every element the view kept with the "
+    "driver's own indexes; the structured `elements` (frames, tokens, selected/enabled) are in "
+    "`snapshot_file`, not inline."
+)
+
+
+def write_snapshot_file(payload: dict[str, Any], snapshot_out_file: str) -> bool:
+    """The complete structured snapshot on disk, for the judge and for anyone needing frames."""
+    body = {key: value for key, value in payload.items() if key != "screenshot_png_b64"}
+    try:
+        os.makedirs(os.path.dirname(snapshot_out_file) or ".", exist_ok=True)
+        with open(snapshot_out_file, "w", encoding="utf-8") as handle:
+            json.dump(body, handle, separators=(",", ":"))
+    except OSError as error:
+        print(f"snapshot sidecar not written, elements stay inline: {error}", file=sys.stderr)
+        return False
+    return True
+
+
+def compact_get_window_state(stdout: str, view: dict[str, Any], snapshot_out_file: str | None = None) -> str:
+    """Shape a `get_window_state` reply for the model; anything else passes through.
+
+    The tree is rendered from `elements` when the driver returns them (else its
+    markdown is compacted), the complete snapshot goes to `snapshot_out_file`
+    and, unless the raw `filter: "full"` view was asked for, `elements` leave
+    the reply — they never fit the model's page and `snapshot_file` has them.
+    """
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return stdout
+    if not isinstance(payload, dict):
+        return stdout
+    elements = payload.get("elements") if isinstance(payload.get("elements"), list) else None
+    tree = payload.get("tree_markdown") if isinstance(payload.get("tree_markdown"), str) else None
+    if elements is None and tree is None:
+        return stdout
+    mode = str(view.get("filter") or DEFAULT_TREE_VIEW)
+    raw_view = mode == "full" and not view.get("query") and view.get("roles") is None and not view.get("max_lines")
+    if snapshot_out_file and write_snapshot_file(payload, snapshot_out_file):
+        payload["snapshot_file"] = snapshot_out_file
+    if not raw_view:
+        if elements is not None:
+            payload["tree_markdown"] = render_elements_tree(elements, view, tree)
+        elif tree is not None:
+            payload["tree_markdown"] = compact_tree_markdown(tree, view)
+        if elements is not None and payload.get("snapshot_file"):
+            del payload["elements"]
+            payload["_note"] = ADDRESSING_NOTE
+    payload["tree_view"] = mode if not view.get("query") and view.get("roles") is None else ("query" if view.get("query") else "roles")
+    return json.dumps(payload, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# The window screenshot rides on disk, not inline
+#
+# `get_window_state` always returns a screenshot of the window, and without
+# `--screenshot-out-file` the driver inlines it as `screenshot_png_b64`: ~350 KB
+# of base64 for a 1568×905 window, ahead of `tree_markdown` in the JSON. The
+# agentic loop projects a tool result to ~6k tokens and pages the rest, so the
+# model's first page was the start of a base64 string and the tree was pages
+# away — and no image reached the model at all, since the decision seam attaches
+# a capture only from a file. The phone lane hit the same wall (its screenshot
+# block pushed the result past the inline threshold and every decision read
+# `has_images=false`). So every snapshot is captured to a file: the caller's
+# `screenshot_out_file` when given, else one under the captures directory, and
+# the reply names it as `screenshot_file` beside `screenshot_width`/`_height`
+# (the click space) — the driver omits the base64 when it writes the file.
+# ---------------------------------------------------------------------------
+
+CAPTURES_DIR_ENV = "MAGICIAN_DESKTOP_CAPTURES_DIR"
+SNAPSHOT_ACTIONS_WITH_SCREENSHOT = {"get_window_state"}
+# Other captures that inline base64 unless given a file: a full-display
+# `get_desktop_state` is ~1.8 MB of it on a Retina display, and `zoom` returns
+# a JPEG crop. Filed like a window snapshot, but with no AX sidecar.
+CAPTURE_ONLY_ACTIONS = {"get_desktop_state": ".png", "zoom": ".jpg"}
+
+
+def default_captures_dir() -> str:
+    configured = os.environ.get(CAPTURES_DIR_ENV, "").strip()
+    if configured:
+        return configured
+    return os.path.join(os.path.expanduser("~"), ".cua-driver", "magician-captures")
+
+
+def default_capture_stem(action: str, args_json: str) -> str | None:
+    """The captures-directory stem for a snapshot of a window (`.png` / `.json`); None otherwise."""
+    if action not in SNAPSHOT_ACTIONS_WITH_SCREENSHOT:
+        return None
+    try:
+        args = json.loads(args_json or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(args, dict):
+        return None
+    pid = args.get("pid")
+    window_id = args.get("window_id")
+    if not isinstance(pid, int) or not isinstance(window_id, int):
+        return None
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f"{int(time.time() * 1000) % 1000:03d}Z"
+    return os.path.join(default_captures_dir(), f"{stamp}-{pid}-{window_id}")
+
+
+def default_screenshot_out_file(action: str, args_json: str) -> str | None:
+    """A capture path for a snapshot that names a window, or for a capture-only action."""
+    if action in CAPTURE_ONLY_ACTIONS:
+        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f"{int(time.time() * 1000) % 1000:03d}Z"
+        return os.path.join(default_captures_dir(), f"{stamp}-{action}{CAPTURE_ONLY_ACTIONS[action]}")
+    stem = default_capture_stem(action, args_json)
+    if stem is None:
+        return None
+    try:
+        args = json.loads(args_json or "{}")
+    except json.JSONDecodeError:
+        return None
+    if isinstance(args, dict) and args.get("include_screenshot") is False:
+        return None
+    return stem + ".png"
+
+
+def snapshot_out_file_for(action: str, args_json: str, screenshot_out_file: str | None) -> str | None:
+    """The sidecar beside the screenshot, or under the captures directory when there is none."""
+    if screenshot_out_file:
+        return os.path.splitext(screenshot_out_file)[0] + ".json"
+    stem = default_capture_stem(action, args_json)
+    return stem + ".json" if stem else None
+
+
+def name_screenshot_file(stdout: str, screenshot_out_file: str) -> str:
+    """Add `screenshot_file` to a JSON reply whose capture went to disk."""
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return stdout
+    if not isinstance(payload, dict) or not os.path.isfile(screenshot_out_file):
+        return stdout
+    # Only a reply that carries a capture names the file: a tree-only snapshot
+    # must not point at a file an earlier call left there. A window or desktop
+    # capture reports `screenshot_width`; a `zoom` crop reports `mime_type`.
+    if not ("screenshot_width" in payload or "mime_type" in payload
+            or any(key.endswith("_b64") for key in payload)):
+        return stdout
+    for key in [key for key in payload if key.endswith("_b64")]:
+        payload.pop(key)
+    payload["screenshot_file"] = screenshot_out_file
+    if "mime_type" not in payload:
+        payload.setdefault("screenshot_mime_type", "image/png")
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def call_cua(action: str, args_json: str, screenshot_out_file: str | None) -> subprocess.CompletedProcess[str]:
+    view: dict[str, Any] = {}
+    if action == "get_window_state":
+        args_json, view = split_view_args(args_json)
+    if not screenshot_out_file:
+        screenshot_out_file = default_screenshot_out_file(action, args_json)
+    cmd = driver_command("call", action, args_json)
+    if screenshot_out_file:
+        try:
+            os.makedirs(os.path.dirname(screenshot_out_file) or ".", exist_ok=True)
+        except OSError as error:
+            print(f"capture directory unavailable, screenshot stays inline: {error}", file=sys.stderr)
+            screenshot_out_file = None
+    if screenshot_out_file:
+        cmd.extend(["--screenshot-out-file", screenshot_out_file])
+    result = run(cmd)
+    if action == "get_window_state" and result.returncode == 0 and result.stdout:
+        snapshot_out_file = snapshot_out_file_for(action, args_json, screenshot_out_file)
+        result.stdout = compact_get_window_state(result.stdout, view, snapshot_out_file)
+        if screenshot_out_file:
+            result.stdout = name_screenshot_file(result.stdout, screenshot_out_file)
+    elif action in CAPTURE_ONLY_ACTIONS and result.returncode == 0 and result.stdout and screenshot_out_file:
+        result.stdout = name_screenshot_file(result.stdout, screenshot_out_file)
+    return result
+
+
+# An element address is scoped to the snapshot that minted it: a bare
+# `element_index` is refused (`snapshot_id_required`), and an id or token from
+# an older snapshot fails closed. The controller used to refresh
+# `get_window_state` and resend the same arguments — but the refresh mints a new
+# `snapshot_id`, so the resend still carried the old one and failed again, after
+# an AX walk of up to 20 s. Only the caller can re-address the element.
+STALE_ADDRESS_MARKERS = ("No cached AX state", "snapshot_id_required", "stale_element_token", "stale snapshot")
+
+
+def explain_stale_address(result: subprocess.CompletedProcess[str]) -> None:
+    combined = f"{result.stdout}\n{result.stderr}"
+    if any(marker in combined for marker in STALE_ADDRESS_MARKERS):
+        result.stderr = (f"{result.stderr.rstrip()}\nRe-run get_window_state for this pid/window_id "
+                         "and resend with its new snapshot_id + element_index (or element_token).\n")
+
+
+# An action name the driver does not have is rejected by its authorization
+# layer as `Permission denied: tool 'activate_app' has no reviewed risk
+# classification` — an unknown tool has no classification, so the message reads
+# like a policy gate on a real capability rather than a typo. A bench run's
+# agent invented `activate_app` and then `focus_window` (neither is a
+# cua-driver tool; `bring_to_front` is the only focusing tool and it both
+# activates the app and focuses the window), read the refusal as a permission
+# problem, had nothing else to try, and stalled with a browser it could not
+# foreground. The refusal now says the name is unknown and, where the intent is
+# obvious, names the tool that does the job.
+UNKNOWN_ACTION_ALTERNATIVES = {
+    "activate_app": "bring_to_front",
+    "focus_window": "bring_to_front",
+    "focus_app": "bring_to_front",
+    "raise_window": "bring_to_front",
+    "screenshot": "get_window_state (its reply carries `screenshot_file`)",
+    "type": "type_text",
+    "key_press": "press_key",
+    "menu": "invoke_menu",
+}
+
+
+def known_driver_tools() -> set[str]:
+    """The driver's own tool list, or an empty set when it cannot be read."""
+    try:
+        listed = run(driver_command("list-tools"), timeout=20)
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return set()
+    if listed.returncode != 0:
+        return set()
+    return {
+        line.split(":", 1)[0].strip()
+        for line in listed.stdout.splitlines()
+        if line.strip() and not line.startswith(" ")
+    }
+
+
+def explain_unknown_action(action: str, result: subprocess.CompletedProcess[str]) -> None:
+    """Rewrite an unknown-tool refusal so it reads as the typo it is."""
+    combined = f"{result.stdout}\n{result.stderr}"
+    if "has no reviewed risk classification" not in combined:
+        return
+    known = known_driver_tools()
+    if known and action in known:
+        return  # a real tool the policy genuinely gated: leave the driver's words alone
+    hint = f"`{action}` is not a cua-driver tool"
+    alternative = UNKNOWN_ACTION_ALTERNATIVES.get(action)
+    if alternative:
+        hint += f" — use `{alternative}` instead"
+    elif known:
+        hint += f". Available: {', '.join(sorted(known))}"
+    result.stderr = f"{result.stderr.rstrip()}\n{hint}.\n"
+
+
+# ---------------------------------------------------------------------------
+# Invocation log
+#
+# One line per call when `MAGICIAN_BENCH_LOG` names a file, so a run's tool
+# use can be counted the same way whichever agentic engine drove it — the
+# Magician loop, or a CLI agent shelling out to this controller. Text an
+# action types is never written: only its length.
+# ---------------------------------------------------------------------------
+
+BENCH_LOG_ENV = "MAGICIAN_BENCH_LOG"
+BENCH_RUN_ENV = "MAGICIAN_BENCH_RUN"
+REDACTED_ARG_KEYS = ("text", "value")
+# The governed runtime hands this controller a portable environment (PATH,
+# locale, TERM, TZ), and a skill's `config/.env` resolves only the secret
+# references its manifest declares — so an env var cannot reach a call the
+# Magician loop made, while a CLI agent shelling out here inherits one
+# freely. A file beside the driver's own state is readable either way, which
+# is what lets one run's tool use be counted the same whichever engine drove
+# it. Absent file and unset env: nothing is logged.
+BENCH_CONFIG_FILE = "magician-bench.json"
+
+
+def bench_settings() -> tuple[str, str]:
+    """`(log path, run tag)`; env wins over the config file, `("", …)` = off."""
+    log = os.environ.get(BENCH_LOG_ENV, "").strip()
+    run = os.environ.get(BENCH_RUN_ENV, "").strip()
+    if log:
+        return log, run
+    path = os.path.join(os.path.dirname(default_captures_dir()), BENCH_CONFIG_FILE)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return "", run
+    if not isinstance(config, dict):
+        return "", run
+    configured = config.get("log")
+    if not isinstance(configured, str) or not configured.strip():
+        return "", run
+    tag = config.get("run")
+    return configured.strip(), (run or (tag if isinstance(tag, str) else ""))
+
+
+def redacted_args(args_json: str) -> Any:
+    try:
+        args = json.loads(args_json or "{}")
+    except json.JSONDecodeError:
+        return {"unparsed_chars": len(args_json or "")}
+    if not isinstance(args, dict):
+        return {"non_object": True}
+    out = {}
+    for key, value in args.items():
+        if key in REDACTED_ARG_KEYS and isinstance(value, str):
+            out[key] = f"<redacted:{len(value)} chars>"
+        elif isinstance(value, (dict, list)):
+            out[key] = f"<{type(value).__name__}>"
+        else:
+            out[key] = value
+    return out
+
+
+def log_invocation(action: str, args_json: str, started: float, exit_code: int) -> None:
+    path, run = bench_settings()
+    if not path:
+        return
+    entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+        "run": run,
+        "action": action,
+        "args": redacted_args(args_json),
+        "ms": int((time.monotonic() - started) * 1000),
+        "exit_code": exit_code,
+    }
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    except OSError:
+        pass  # the log is telemetry; never fail a call for it
+
+
+def main() -> int:
+    started = time.monotonic()
+    action, args_json, screenshot_out_file = parse_request()
+    try:
+        exit_code = dispatch(action, args_json, screenshot_out_file)
+    except SystemExit as exit_request:
+        log_invocation(action, args_json, started, int(exit_request.code or 0))
+        raise
+    log_invocation(action, args_json, started, exit_code)
+    return exit_code
+
+
+# ---------------------------------------------------------------------------
+# A window by its app
+#
+# `get_window_state` needs a window_id, but an app's pid is often all a step
+# has: `launch_app` returns one, and a `hotkey`/`press_key` names only the
+# app. `list_windows` then lists every window the app owns, hidden helpers
+# included (TextEdit reports five off-screen 64x64 and 1312x26 windows beside
+# its document), and snapshotting one of those reads nothing. So a pid-only
+# `get_window_state` reads the app's main window: on screen, layer 0, the
+# largest, front-most first on a tie. An app with no on-screen window fails
+# plainly rather than reading a hidden one.
+# ---------------------------------------------------------------------------
+
+def main_window_id(windows: list[dict[str, Any]]) -> int | None:
+    def area(window: dict[str, Any]) -> float:
+        bounds = window.get("bounds") or {}
+        return float(bounds.get("width") or 0) * float(bounds.get("height") or 0)
+
+    shown = [
+        w for w in windows
+        if w.get("is_on_screen") and (w.get("layer") or 0) == 0 and isinstance(w.get("window_id"), int)
+    ]
+    if not shown:
+        return None
+    best = max(shown, key=lambda w: (area(w), w.get("z_index") or 0))
+    return best["window_id"]
+
+
+def with_main_window(args_json: str) -> tuple[str, int | None, str | None]:
+    """`(args_json, pid, error)`: a pid-only request gains its app's main
+    window_id; any other request is returned unchanged with pid None."""
+    try:
+        args = json.loads(args_json or "{}")
+    except json.JSONDecodeError:
+        return args_json, None, None
+    if not isinstance(args, dict) or args.get("window_id") is not None:
+        return args_json, None, None
+    pid = args.get("pid")
+    if not isinstance(pid, int):
+        return args_json, None, None
+    listed = run(driver_command("call", "list_windows", json.dumps({"pid": pid})), timeout=30)
+    try:
+        windows = json.loads(listed.stdout).get("windows") or []
+    except (json.JSONDecodeError, AttributeError):
+        windows = []
+    window_id = main_window_id(windows) if listed.returncode == 0 else None
+    if window_id is None:
+        return args_json, pid, f"app pid {pid} has no on-screen window to read (list_windows found {len(windows)}, none on screen)"
+    args["window_id"] = window_id
+    return json.dumps(args, separators=(",", ":")), pid, None
+
+
+def name_window(stdout: str, pid: int, window_id: int) -> str:
+    """Say which window a pid-only snapshot read, so later steps address it."""
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return stdout
+    if not isinstance(payload, dict):
+        return stdout
+    payload.setdefault("pid", pid)
+    payload.setdefault("window_id", window_id)
+    payload["window_chosen"] = "main window of the app (pid-only request)"
+    return json.dumps(payload, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# The driver's own tool schemas, published for the host
+#
+# The agent sees one `call` tool whose `args_json` is opaque; the driver's MCP
+# `tools/list` is the only place each action's parameters are declared (with
+# their `required` lists). The host's step judge reads them from this file to
+# learn which arguments each action takes, so it carries no copy of the
+# driver's surface. Rewritten whenever the driver's version changes; a failed
+# refresh leaves the previous file and never fails the call it rides on.
+# ---------------------------------------------------------------------------
+
+DRIVER_TOOLS_FILE = "magician-driver-tools.json"
+DRIVER_TOOLS_ENV = "MAGICIAN_CUA_DRIVER_TOOLS"
+
+
+# Bumped when the published shape changes, so a file written for the same
+# driver version by an older controller is rewritten (2: `read_only`).
+DRIVER_TOOLS_FORMAT = 2
+
+
+def driver_tools_path() -> str:
+    configured = os.environ.get(DRIVER_TOOLS_ENV, "").strip()
+    if configured:
+        return configured
+    return os.path.join(os.path.dirname(default_captures_dir()), DRIVER_TOOLS_FILE)
+
+
+def driver_version() -> str | None:
+    try:
+        result = run(driver_command("--version"), timeout=10)
+    except (OSError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    text = (result.stdout or "").strip()
+    return text or None
+
+
+def driver_tool_list() -> list[dict[str, Any]] | None:
+    """The driver's MCP `tools/list`: name, description, inputSchema."""
+    try:
+        process = subprocess.Popen(
+            driver_command("mcp"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True,
+        )
+    except (OSError, FileNotFoundError):
+        return None
+    try:
+        def send(message: dict[str, Any]) -> None:
+            process.stdin.write(json.dumps(message) + "\n")
+            process.stdin.flush()
+
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "magician-controller", "version": "1"}}})
+        process.stdout.readline()
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        reply = json.loads(process.stdout.readline() or "{}")
+        tools = (reply.get("result") or {}).get("tools")
+        return tools if isinstance(tools, list) else None
+    except (OSError, ValueError):
+        return None
+    finally:
+        process.kill()
+
+
+def refresh_driver_tools() -> None:
+    path = driver_tools_path()
+    version = driver_version()
+    if version is None:
+        return
+    try:
+        with open(path, encoding="utf-8") as handle:
+            published = json.load(handle)
+            if (published.get("driver_version") == version
+                    and published.get("format") == DRIVER_TOOLS_FORMAT):
+                return
+    except (OSError, ValueError, AttributeError):
+        pass
+    tools = driver_tool_list()
+    if not tools:
+        return
+    # `read_only` is the driver's own MCP `readOnlyHint`: a tool that only
+    # reads (get_window_state, list_windows, verify_state...) is not a step
+    # the host's step judge takes, since the loop observes after every act.
+    payload = {"driver_version": version, "format": DRIVER_TOOLS_FORMAT, "tools": [
+        {"name": t.get("name"), "description": t.get("description", ""),
+         "input_schema": t.get("inputSchema") or {},
+         "read_only": (t.get("annotations") or {}).get("readOnlyHint") is True}
+        for t in tools if isinstance(t, dict) and t.get("name")
+    ]}
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        temporary = f"{path}.{os.getpid()}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+def dispatch(action: str, args_json: str, screenshot_out_file: str | None) -> int:
+
+    # Installation alone does not make a headless container a GUI provider.
+    # Prefer a local desktop/daemon, otherwise use the private desktop relay.
+    #
+    # `--screenshot-out-file` cannot be honored over the relay: the path is in
+    # the caller's (container) filesystem, which the host can't write to. The
+    # gateway forwards only the JSON action; screenshot capture for grounding
+    # uses the separate `/host/screen/capture` route. So pixel-capture actions
+    # that depend on writing a local file are host-only for now.
+    if not local_cua_driver_available():
+        return relay_to_host_gateway(action, args_json)
+
+    if action == "serve":
+        running = ensure_daemon()
+        status = json_status()
+        status["started_or_already_running"] = running
+        print(json.dumps(status, separators=(",", ":")))
+        return 0 if running else 1
+
+    if action == "status":
+        print(json.dumps(json_status(), separators=(",", ":")))
+        return 0
+
+    if action == "stop":
+        result = run(driver_command("stop"), timeout=10)
+        print_completed(result)
+        return result.returncode
+
+    # Every `cua-driver call` goes through the daemon in 0.28, reads included.
+    if not ensure_daemon():
+        return 1
+    refresh_driver_tools()
+
+    chosen_for: int | None = None
+    if action == "get_window_state":
+        args_json, chosen_for, error = with_main_window(args_json)
+        if error:
+            print(error, file=sys.stderr)
+            return 1
+
+    session_args = with_session(action, args_json)
+    result = call_cua(action, session_args, screenshot_out_file)
+    if result.returncode != 0 and revive_default_session(action, args_json, session_args, result):
+        result = call_cua(action, session_args, screenshot_out_file)
+    if result.returncode == 0:
+        if chosen_for is not None:
+            result.stdout = name_window(result.stdout, chosen_for, json.loads(args_json)["window_id"])
+        print_completed(result)
+        return 0
+
+    explain_unknown_action(action, result)
+    explain_stale_address(result)
+    print_completed(result)
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,5 @@
+// Copy this file to Signing.local.xcconfig (gitignored) and set your own
+// Apple Team ID (Xcode → Settings → Accounts, or developer.apple.com →
+// Membership). Then run `xcodegen generate` in magios/ or just build —
+// Signing.xcconfig picks this file up automatically.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID

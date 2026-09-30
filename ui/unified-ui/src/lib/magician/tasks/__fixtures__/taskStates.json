@@ -1,0 +1,681 @@
+{
+	"note": "Task shapes the two task surfaces really receive, for taskVerdict.corpus.eval.test.ts. `wireStatus` is the status as the backend writes it (TaskListItemV3.status is TaskState.status verbatim), NOT a client-side TaskStatus — the loader runs it through the store's own normaliser, exactly as the store and the internal adapter do. `terminal` is the backend's own answer (`is_terminal_task_status`: completed | failed | cancelled | archived), captured so the verdict's finality can be checked against it rather than against itself. `attention` is a sentence naming the ask when this shape is blocked on a person, and null when it is not.",
+	"now": "2026-07-29T12:00:00.000Z",
+	"clock": {
+		"fresh progress": "2026-07-29T11:59:10.000Z (50s before now)",
+		"normal-task stall": "2026-07-29T11:48:00.000Z (12m before now)",
+		"internal-task stall": "2026-07-29T11:46:30.000Z (13m 30s before now)",
+		"internal run started": "2026-07-29T11:30:00.000Z",
+		"internal run completed": "2026-07-29T11:33:12.000Z (3m 12s of run)",
+		"internal run still going": "2026-07-29T11:52:00.000Z (8m and counting)",
+		"synthesis gave up": "2026-07-29T11:35:00.000Z (25m blocked)"
+	},
+	"shapes": [
+		{
+			"id": "task-running-planned",
+			"kind": "task",
+			"shape": "A planned run advancing through step 2 of 3.",
+			"wireStatus": "running",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_9f2c1ab7",
+				"title": "Quarterly revenue summary",
+				"description": "Summarise Q2 revenue from the exports",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:40:00.000Z",
+				"updatedAt": "2026-07-29T11:59:10.000Z",
+				"hasPlan": true,
+				"planStatus": "approved",
+				"latestPlanId": "plan_2ce70b4d",
+				"approvedPlanId": "plan_2ce70b4d",
+				"activeExecutionId": "exec_71d0c3ae",
+				"lastProgressAt": "2026-07-29T11:59:10.000Z",
+				"planSteps": [
+					{
+						"id": "step_1",
+						"description": "Read the revenue exports",
+						"status": "completed",
+						"duration_ms": 3000
+					},
+					{ "id": "step_2", "description": "Summarise the quarter", "status": "in_progress" },
+					{ "id": "step_3", "description": "Render the chart", "status": "pending" }
+				]
+			},
+			"outputs": []
+		},
+		{
+			"id": "task-running-unplanned",
+			"kind": "task",
+			"shape": "A run with no plan and no step title at all — the shape whose only identifying strings are opaque ids.",
+			"wireStatus": "running",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_5b0e93cc",
+				"title": "Check the deploy",
+				"description": "Ad-hoc run, never planned",
+				"tags": [],
+				"source": "execution",
+				"createdAt": "2026-07-29T11:57:00.000Z",
+				"updatedAt": "2026-07-29T11:59:10.000Z",
+				"executionId": "exec_c40af218",
+				"lastProgressAt": "2026-07-29T11:59:10.000Z"
+			},
+			"outputs": null
+		},
+		{
+			"id": "task-running-stalled",
+			"kind": "task",
+			"shape": "Still running on the wire, but nothing has advanced for 12 minutes.",
+			"wireStatus": "running",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_31d6a0f5",
+				"title": "Reindex the archive",
+				"description": "Long crawl over the archive",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:20:00.000Z",
+				"updatedAt": "2026-07-29T11:59:40.000Z",
+				"activeExecutionId": "exec_8a1e5b06",
+				"currentStepTitle": "Crawling page 41",
+				"lastProgressAt": "2026-07-29T11:48:00.000Z",
+				"planSteps": [
+					{ "id": "step_1", "description": "Enumerate the archive", "status": "completed" },
+					{ "id": "step_2", "description": "Crawl each page", "status": "in_progress" }
+				]
+			},
+			"outputs": []
+		},
+		{
+			"id": "task-ready-plan-awaiting-answer",
+			"kind": "task",
+			"shape": "A draft plan that cannot be approved until its clarification is answered.",
+			"wireStatus": "ready",
+			"terminal": false,
+			"attention": "the draft plan's clarification question",
+			"task": {
+				"id": "task_c7e41b20",
+				"title": "Compare supplier margins",
+				"description": "Margin comparison across suppliers",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:55:00.000Z",
+				"updatedAt": "2026-07-29T11:56:00.000Z",
+				"hasPlan": true,
+				"planStatus": "draft",
+				"latestPlanId": "plan_ab4d9e37",
+				"pendingQuestions": [
+					{ "id": "q_1", "question": "Which quarter should the comparison cover?" }
+				]
+			},
+			"outputs": null
+		},
+		{
+			"id": "task-waiting-for-user",
+			"kind": "task",
+			"shape": "A run paused mid-flight on a question to the operator.",
+			"wireStatus": "waiting_for_user",
+			"terminal": false,
+			"attention": "the run's mid-flight question to the operator",
+			"task": {
+				"id": "task_6ad8f412",
+				"title": "File the expense report",
+				"description": "Submit last month's expenses",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:44:00.000Z",
+				"updatedAt": "2026-07-29T11:58:00.000Z",
+				"activeExecutionId": "exec_2f9b6d51",
+				"currentStepTitle": "Choosing the cost centre",
+				"lastProgressAt": "2026-07-29T11:57:30.000Z",
+				"pendingQuestions": [
+					{ "id": "q_2", "question": "Charge this to Operations or to Research?" }
+				]
+			},
+			"outputs": null
+		},
+		{
+			"id": "task-failed-with-error",
+			"kind": "task",
+			"shape": "A run that failed with a message the backend recorded.",
+			"wireStatus": "failed",
+			"terminal": true,
+			"attention": null,
+			"task": {
+				"id": "task_0e5c78a3",
+				"title": "Import the price list",
+				"description": "Load the supplier price list",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:30:00.000Z",
+				"updatedAt": "2026-07-29T11:41:00.000Z",
+				"activeExecutionId": "exec_9c3b7e10",
+				"errorMessage": "Could not read prices.csv — no such file in the workspace",
+				"lastProgressAt": "2026-07-29T11:40:20.000Z",
+				"planSteps": [
+					{ "id": "step_1", "description": "Locate the price list", "status": "failed" }
+				]
+			},
+			"outputs": []
+		},
+		{
+			"id": "task-failed-no-error",
+			"kind": "task",
+			"shape": "A failure the backend recorded no message for — the fallback sentence's only real caller.",
+			"wireStatus": "failed",
+			"terminal": true,
+			"attention": null,
+			"task": {
+				"id": "task_a2740fe6",
+				"title": "Sync the calendar",
+				"description": "Pull the week's events",
+				"tags": [],
+				"source": "execution",
+				"createdAt": "2026-07-29T11:12:00.000Z",
+				"updatedAt": "2026-07-29T11:15:00.000Z",
+				"executionId": "exec_45de0f9b"
+			},
+			"outputs": []
+		},
+		{
+			"id": "task-cancelled-mid-run",
+			"kind": "task",
+			"shape": "Stopped by the operator while a step was in flight.",
+			"wireStatus": "cancelled",
+			"terminal": true,
+			"attention": null,
+			"task": {
+				"id": "task_bd93c105",
+				"title": "Rebuild the search index",
+				"description": "Full reindex",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T10:50:00.000Z",
+				"updatedAt": "2026-07-29T11:02:00.000Z",
+				"activeExecutionId": "exec_1b8fa276",
+				"lastProgressAt": "2026-07-29T11:01:40.000Z",
+				"planSteps": [
+					{ "id": "step_1", "description": "Drop the old index", "status": "completed" },
+					{ "id": "step_2", "description": "Rebuild from source", "status": "in_progress" },
+					{ "id": "step_3", "description": "Warm the cache", "status": "pending" },
+					{ "id": "step_4", "description": "Swap the alias", "status": "pending" }
+				]
+			},
+			"outputs": []
+		},
+		{
+			"id": "task-completed-with-outputs",
+			"kind": "task",
+			"shape": "A finished run that wrote a document and two images.",
+			"wireStatus": "completed",
+			"terminal": true,
+			"attention": null,
+			"task": {
+				"id": "task_e18b6c74",
+				"title": "Weekly ops digest",
+				"description": "Roll up the week",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T09:00:00.000Z",
+				"updatedAt": "2026-07-29T09:14:00.000Z",
+				"activeExecutionId": "exec_dc60a83f",
+				"lastProgressAt": "2026-07-29T09:13:50.000Z",
+				"planSteps": [
+					{ "id": "step_1", "description": "Gather the week's runs", "status": "completed" },
+					{ "id": "step_2", "description": "Write the digest", "status": "completed" }
+				]
+			},
+			"outputs": [
+				{ "relative_path": "digest/weekly.md", "media_type": "text/markdown" },
+				{ "relative_path": "charts/throughput.png", "media_type": "image/png" },
+				{ "relative_path": "charts/latency.png", "media_type": "image/png" }
+			]
+		},
+		{
+			"id": "task-pending-never-planned",
+			"kind": "task",
+			"shape": "Written to the store and nothing else has happened to it.",
+			"wireStatus": "pending",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_74f0ab29",
+				"title": "Draft the offsite agenda",
+				"description": "Agenda for the September offsite",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:58:30.000Z",
+				"updatedAt": "2026-07-29T11:58:30.000Z"
+			},
+			"outputs": null
+		},
+		{
+			"id": "task-planning",
+			"kind": "task",
+			"shape": "The planner is running; no plan steps exist yet.",
+			"wireStatus": "planning",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_3c9d5e8b",
+				"title": "Migrate the invoices",
+				"description": "Move invoices onto the new schema",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:59:00.000Z",
+				"updatedAt": "2026-07-29T11:59:30.000Z",
+				"hasPlan": true,
+				"planStatus": "planning"
+			},
+			"outputs": null
+		},
+		{
+			"id": "task-deferred-precondition",
+			"kind": "task",
+			"shape": "A precondition was not met, so a retry is scheduled.",
+			"wireStatus": "deferred",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_f60c2d17",
+				"title": "Publish the changelog",
+				"description": "Publish once the release lands",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T10:00:00.000Z",
+				"updatedAt": "2026-07-29T11:30:00.000Z",
+				"retryAt": 1785328200000
+			},
+			"outputs": null
+		},
+		{
+			"id": "task-sleeping-monitor",
+			"kind": "task",
+			"shape": "A monitor between fires. The wire says `sleeping`; the client reads it as deferred.",
+			"wireStatus": "sleeping",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_8ea41b30",
+				"title": "Watch the error budget",
+				"description": "Hourly monitor over the error budget",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-28T09:00:00.000Z",
+				"updatedAt": "2026-07-29T11:00:00.000Z",
+				"monitorRevision": 4,
+				"lastProgressAt": "2026-07-29T11:00:00.000Z"
+			},
+			"outputs": []
+		},
+		{
+			"id": "task-waiting-for-children",
+			"kind": "task",
+			"shape": "Blocked on delegated children, which the client reads as still running.",
+			"wireStatus": "waiting_for_children",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_27ba0c95",
+				"title": "Company-wide capacity review",
+				"description": "Fan out to each team's agent",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:35:00.000Z",
+				"updatedAt": "2026-07-29T11:59:20.000Z",
+				"activeExecutionId": "exec_63c9e0d7",
+				"currentStepTitle": "Waiting on three delegated reviews",
+				"lastProgressAt": "2026-07-29T11:59:10.000Z"
+			},
+			"outputs": null
+		},
+		{
+			"id": "task-paused-by-user",
+			"kind": "task",
+			"shape": "Suspended on purpose. The client reads it as paused, and the panel adapter keeps it paused all the way to the verdict.",
+			"wireStatus": "paused_by_user",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_1fa07d84",
+				"title": "Backfill the ledger",
+				"description": "Long backfill, paused for the maintenance window",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T08:00:00.000Z",
+				"updatedAt": "2026-07-29T11:20:00.000Z",
+				"activeExecutionId": "exec_50e7b2c1",
+				"lastProgressAt": "2026-07-29T11:19:30.000Z"
+			},
+			"outputs": []
+		},
+		{
+			"id": "task-paused",
+			"kind": "task",
+			"shape": "The same suspension, spelled the way the task record itself spells it.",
+			"wireStatus": "paused",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_92c6e5ba",
+				"title": "Re-run the pricing model",
+				"description": "Paused halfway through",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T10:30:00.000Z",
+				"updatedAt": "2026-07-29T11:10:00.000Z",
+				"activeExecutionId": "exec_ac1d84f0",
+				"lastProgressAt": "2026-07-29T11:09:15.000Z"
+			},
+			"outputs": []
+		},
+		{
+			"id": "task-waiting-for-confirmation",
+			"kind": "task",
+			"shape": "Awaiting a confirmation the task record carries no question for, so nothing marks it as blocked.",
+			"wireStatus": "waiting_for_confirmation",
+			"terminal": false,
+			"attention": null,
+			"task": {
+				"id": "task_dd5f1e63",
+				"title": "Delete the stale exports",
+				"description": "Destructive step awaiting confirmation",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-29T11:50:00.000Z",
+				"updatedAt": "2026-07-29T11:58:45.000Z",
+				"activeExecutionId": "exec_7e0b3af9",
+				"lastProgressAt": "2026-07-29T11:58:40.000Z"
+			},
+			"outputs": null
+		},
+		{
+			"id": "task-archived-monitor",
+			"kind": "task",
+			"shape": "A monitor soft-deleted by the backend. `archived` is a terminal task status, and the client's normaliser, the adapter and the verdict all keep it terminal.",
+			"wireStatus": "archived",
+			"terminal": true,
+			"attention": null,
+			"task": {
+				"id": "task_4b7ce902",
+				"title": "Watch the legacy queue",
+				"description": "Monitor retired last week",
+				"tags": [],
+				"source": "task",
+				"createdAt": "2026-07-20T09:00:00.000Z",
+				"updatedAt": "2026-07-27T16:00:00.000Z",
+				"monitorRevision": 11,
+				"lastProgressAt": "2026-07-27T15:59:00.000Z"
+			},
+			"outputs": []
+		},
+		{
+			"id": "internal-running",
+			"kind": "internal",
+			"shape": "A chat-spawned run, eight minutes in and advancing.",
+			"wireStatus": "running",
+			"terminal": false,
+			"attention": null,
+			"row": {
+				"id": "task_b3016fda",
+				"title": "Generate the header image",
+				"description": "Runtime-spawned image generation",
+				"agent_id": "image_smith",
+				"created_at": "2026-07-29T11:51:40.000Z",
+				"updated_at": "2026-07-29T11:59:10.000Z",
+				"lifecycle": "internal",
+				"chat_session_id": "chat_5d1e7a08",
+				"active_root_execution_id": "exec_0d7f31c6",
+				"last_progress_at": "2026-07-29T11:59:10.000Z"
+			},
+			"details": {
+				"task": { "refs": { "outputs": [] } },
+				"executions": [
+					{
+						"state": {
+							"execution_id": "exec_0d7f31c6",
+							"status": "running",
+							"started_at": "2026-07-29T11:52:00.000Z"
+						},
+						"refs": {},
+						"artifacts": []
+					}
+				]
+			}
+		},
+		{
+			"id": "internal-stalled",
+			"kind": "internal",
+			"shape": "Still running on the wire, with no progress for 13m 30s.",
+			"wireStatus": "running",
+			"terminal": false,
+			"attention": null,
+			"row": {
+				"id": "task_ce82004d",
+				"title": "Crawl the vendor docs",
+				"description": "Runtime-spawned browser run",
+				"agent_id": "browser_scout",
+				"created_at": "2026-07-29T11:40:00.000Z",
+				"updated_at": "2026-07-29T11:59:50.000Z",
+				"lifecycle": "internal",
+				"active_root_execution_id": "exec_39ab7e52",
+				"last_progress_at": "2026-07-29T11:46:30.000Z"
+			},
+			"details": {
+				"task": { "refs": { "outputs": [] } },
+				"executions": [
+					{
+						"state": {
+							"execution_id": "exec_39ab7e52",
+							"status": "running",
+							"started_at": "2026-07-29T11:41:00.000Z"
+						},
+						"refs": {},
+						"artifacts": []
+					}
+				]
+			}
+		},
+		{
+			"id": "internal-completed-with-output",
+			"kind": "internal",
+			"shape": "A finished internal run with a real elapsed time and one output.",
+			"wireStatus": "completed",
+			"terminal": true,
+			"attention": null,
+			"row": {
+				"id": "task_7d2ae9b1",
+				"title": "Summarise the thread",
+				"description": "Runtime-spawned summarisation",
+				"agent_id": "summariser",
+				"created_at": "2026-07-29T11:29:00.000Z",
+				"updated_at": "2026-07-29T11:33:12.000Z",
+				"lifecycle": "internal",
+				"latest_root_execution_id": "exec_ff41c80e",
+				"last_progress_at": "2026-07-29T11:33:10.000Z"
+			},
+			"details": {
+				"task": {
+					"refs": {
+						"outputs": [{ "relative_path": "summary/thread.md", "media_type": "text/markdown" }]
+					}
+				},
+				"executions": [
+					{
+						"state": {
+							"execution_id": "exec_ff41c80e",
+							"status": "completed",
+							"started_at": "2026-07-29T11:30:00.000Z",
+							"completed_at": "2026-07-29T11:33:12.000Z"
+						},
+						"refs": {},
+						"artifacts": []
+					}
+				]
+			}
+		},
+		{
+			"id": "internal-synthesis-failed",
+			"kind": "internal",
+			"shape": "The run finished, then output synthesis exhausted its retries 25 minutes ago.",
+			"wireStatus": "completed",
+			"terminal": true,
+			"attention": "output synthesis exhausted its retries and needs a person to retry it",
+			"row": {
+				"id": "task_ae0c6f35",
+				"title": "Extract the invoice totals",
+				"description": "Runtime-spawned extraction",
+				"agent_id": "extractor",
+				"created_at": "2026-07-29T11:28:00.000Z",
+				"updated_at": "2026-07-29T11:35:00.000Z",
+				"lifecycle": "internal",
+				"latest_root_execution_id": "exec_6c05a9d3",
+				"synthesis_failed_execution_id": "exec_6c05a9d3",
+				"last_progress_at": "2026-07-29T11:31:00.000Z"
+			},
+			"details": {
+				"task": { "refs": { "outputs": [] } },
+				"executions": [
+					{
+						"state": {
+							"execution_id": "exec_6c05a9d3",
+							"status": "completed",
+							"started_at": "2026-07-29T11:28:30.000Z",
+							"completed_at": "2026-07-29T11:31:00.000Z",
+							"synthesis_failed": { "failed_at": "2026-07-29T11:35:00.000Z" }
+						},
+						"refs": {},
+						"artifacts": []
+					}
+				]
+			}
+		},
+		{
+			"id": "internal-synthesis-pending",
+			"kind": "internal",
+			"shape": "Terminal on disk, but the outputs are still being written in a background spawn.",
+			"wireStatus": "completed",
+			"terminal": true,
+			"attention": null,
+			"row": {
+				"id": "task_20e7c4b8",
+				"title": "Diff the two schemas",
+				"description": "Runtime-spawned diff",
+				"agent_id": "differ",
+				"created_at": "2026-07-29T11:54:00.000Z",
+				"updated_at": "2026-07-29T11:58:00.000Z",
+				"lifecycle": "internal",
+				"latest_root_execution_id": "exec_b912e60a",
+				"synthesis_pending": true,
+				"last_progress_at": "2026-07-29T11:57:50.000Z"
+			},
+			"details": {
+				"task": { "refs": { "outputs": [] } },
+				"executions": [
+					{
+						"state": {
+							"execution_id": "exec_b912e60a",
+							"status": "completed",
+							"started_at": "2026-07-29T11:54:30.000Z",
+							"completed_at": "2026-07-29T11:58:00.000Z"
+						},
+						"refs": {},
+						"artifacts": []
+					}
+				]
+			}
+		},
+		{
+			"id": "internal-failed",
+			"kind": "internal",
+			"shape": "A failed internal run. Neither the row nor the execution record carries error text.",
+			"wireStatus": "failed",
+			"terminal": true,
+			"attention": null,
+			"row": {
+				"id": "task_5c8b71e4",
+				"title": "Fetch the exchange rates",
+				"description": "Runtime-spawned fetch",
+				"agent_id": "fetcher",
+				"created_at": "2026-07-29T11:18:00.000Z",
+				"updated_at": "2026-07-29T11:19:40.000Z",
+				"lifecycle": "internal",
+				"latest_root_execution_id": "exec_e207d6ba",
+				"last_progress_at": "2026-07-29T11:19:30.000Z"
+			},
+			"details": {
+				"task": { "refs": { "outputs": [] } },
+				"executions": [
+					{
+						"state": {
+							"execution_id": "exec_e207d6ba",
+							"status": "failed",
+							"started_at": "2026-07-29T11:18:20.000Z",
+							"completed_at": "2026-07-29T11:19:40.000Z"
+						},
+						"refs": {},
+						"artifacts": []
+					}
+				]
+			}
+		},
+		{
+			"id": "internal-cancelled",
+			"kind": "internal",
+			"shape": "An internal run the operator stopped from the workspace.",
+			"wireStatus": "cancelled",
+			"terminal": true,
+			"attention": null,
+			"row": {
+				"id": "task_af36092e",
+				"title": "Transcribe the recording",
+				"description": "Runtime-spawned transcription",
+				"agent_id": "transcriber",
+				"created_at": "2026-07-29T10:44:00.000Z",
+				"updated_at": "2026-07-29T10:52:20.000Z",
+				"lifecycle": "internal",
+				"latest_root_execution_id": "exec_18cd7f40",
+				"last_progress_at": "2026-07-29T10:52:00.000Z"
+			},
+			"details": {
+				"task": { "refs": { "outputs": [] } },
+				"executions": [
+					{
+						"state": {
+							"execution_id": "exec_18cd7f40",
+							"status": "cancelled",
+							"started_at": "2026-07-29T10:44:20.000Z",
+							"ended_at": "2026-07-29T10:52:20.000Z"
+						},
+						"refs": {},
+						"artifacts": []
+					}
+				]
+			}
+		},
+		{
+			"id": "internal-details-unread",
+			"kind": "internal",
+			"shape": "A panel opened a moment ago: the row has arrived, `/details` has not answered.",
+			"wireStatus": "running",
+			"terminal": false,
+			"attention": null,
+			"row": {
+				"id": "task_66e1d3ca",
+				"title": "Resize the attachments",
+				"description": "Runtime-spawned batch",
+				"agent_id": "resizer",
+				"created_at": "2026-07-29T11:56:00.000Z",
+				"updated_at": "2026-07-29T11:59:30.000Z",
+				"lifecycle": "internal",
+				"active_root_execution_id": "exec_d5b40e79",
+				"last_progress_at": "2026-07-29T11:59:20.000Z"
+			},
+			"details": null
+		}
+	]
+}

@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Theme 2: Editorial Precision - Magician UI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       THEME 2: EDITORIAL PRECISION
+       Refined Swiss Design - Magazine quality
+       ============================================ */
+
+    :root {
+      /* Core palette - warm neutrals */
+      --bg-cream: #faf9f7;
+      --bg-warm: #f5f4f0;
+      --bg-card: #ffffff;
+      --bg-elevated: #ffffff;
+
+      /* Text - rich contrast */
+      --text-ink: #1a1a1a;
+      --text-secondary: #5c5c5c;
+      --text-muted: #8a8a8a;
+      --text-faint: #b8b8b8;
+
+      /* Accent - bold amber */
+      --accent-amber: #d97706;
+      --accent-amber-bright: #f59e0b;
+      --accent-amber-soft: #fef3c7;
+
+      /* Secondary accent */
+      --accent-teal: #0d9488;
+      --accent-teal-soft: #ccfbf1;
+
+      /* Status colors */
+      --success: #059669;
+      --success-soft: #d1fae5;
+      --warning: #d97706;
+      --warning-soft: #fef3c7;
+      --error: #dc2626;
+      --error-soft: #fee2e2;
+
+      /* Borders */
+      --border-light: #e8e6e1;
+      --border-medium: #d4d2cd;
+      --border-dark: #1a1a1a;
+
+      /* Typography */
+      --font-serif: 'Instrument Serif', Georgia, serif;
+      --font-sans: 'Inter', -apple-system, sans-serif;
+
+      /* Spacing */
+      --space-xs: 0.25rem;
+      --space-sm: 0.5rem;
+      --space-md: 1rem;
+      --space-lg: 1.5rem;
+      --space-xl: 2.5rem;
+      --space-2xl: 4rem;
+      --space-3xl: 6rem;
+
+      /* Radii - minimal */
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-lg: 8px;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-cream);
+      color: var(--text-ink);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: var(--space-xl);
+    }
+
+    /* ===== HEADER ===== */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--space-lg) 0;
+      border-bottom: 1px solid var(--border-light);
+      margin-bottom: var(--space-3xl);
+    }
+
+    .logo {
+      font-family: var(--font-serif);
+      font-size: 1.75rem;
+      font-weight: 400;
+      color: var(--text-ink);
+      letter-spacing: -0.02em;
+    }
+
+    .logo em {
+      font-style: italic;
+    }
+
+    nav {
+      display: flex;
+      gap: var(--space-xl);
+    }
+
+    nav a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      padding-bottom: 2px;
+      border-bottom: 1.5px solid transparent;
+      transition: all 0.2s ease;
+    }
+
+    nav a:hover {
+      color: var(--text-ink);
+    }
+
+    nav a.active {
+      color: var(--text-ink);
+      border-bottom-color: var(--accent-amber);
+    }
+
+    /* ===== HERO ===== */
+    .hero {
+      text-align: center;
+      padding: var(--space-3xl) 0;
+      margin-bottom: var(--space-2xl);
+      max-width: 700px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .hero-eyebrow {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--accent-amber);
+      margin-bottom: var(--space-md);
+    }
+
+    .hero h1 {
+      font-family: var(--font-serif);
+      font-size: 4.5rem;
+      font-weight: 400;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      margin-bottom: var(--space-lg);
+      color: var(--text-ink);
+    }
+
+    .hero h1 em {
+      font-style: italic;
+    }
+
+    .hero p {
+      font-size: 1.125rem;
+      color: var(--text-secondary);
+      max-width: 480px;
+      margin: 0 auto;
+      line-height: 1.7;
+    }
+
+    /* ===== INPUT AREA ===== */
+    .input-area {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-md);
+      padding: var(--space-lg);
+      max-width: 650px;
+      margin: 0 auto var(--space-3xl);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+
+    .input-wrapper {
+      display: flex;
+      gap: var(--space-md);
+      align-items: flex-end;
+    }
+
+    .input-field {
+      flex: 1;
+    }
+
+    .input-field label {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: var(--space-sm);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .input-field input {
+      width: 100%;
+      background: var(--bg-cream);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-sm);
+      padding: 0.875rem var(--space-md);
+      color: var(--text-ink);
+      font-family: var(--font-sans);
+      font-size: 1rem;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .input-field input::placeholder {
+      color: var(--text-faint);
+    }
+
+    .input-field input:focus {
+      border-color: var(--text-ink);
+      background: var(--bg-card);
+    }
+
+    /* ===== BUTTONS ===== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: 0.875rem var(--space-lg);
+      border-radius: var(--radius-sm);
+      font-family: var(--font-sans);
+      font-size: 0.875rem;
+      font-weight: 600;
+      border: 1.5px solid transparent;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+
+    .btn-primary {
+      background: var(--text-ink);
+      color: white;
+      border-color: var(--text-ink);
+    }
+
+    .btn-primary:hover {
+      background: #333;
+      border-color: #333;
+    }
+
+    .btn-secondary {
+      background: var(--bg-card);
+      color: var(--text-ink);
+      border-color: var(--border-medium);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--text-ink);
+    }
+
+    .btn-accent {
+      background: var(--accent-amber);
+      color: white;
+      border-color: var(--accent-amber);
+    }
+
+    .btn-accent:hover {
+      background: var(--accent-amber-bright);
+      border-color: var(--accent-amber-bright);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+      border-color: transparent;
+    }
+
+    .btn-ghost:hover {
+      color: var(--text-ink);
+    }
+
+    /* ===== SECTION ===== */
+    .section {
+      margin-bottom: var(--space-3xl);
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: var(--space-lg);
+      padding-bottom: var(--space-md);
+      border-bottom: 1px solid var(--border-light);
+    }
+
+    .section-title {
+      font-family: var(--font-serif);
+      font-size: 1.5rem;
+      font-weight: 400;
+      color: var(--text-ink);
+    }
+
+    .section-count {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    /* ===== TASK CARDS ===== */
+    .task-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      background: var(--border-light);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+
+    .task-card {
+      background: var(--bg-card);
+      padding: var(--space-lg);
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: var(--space-lg);
+      align-items: start;
+      transition: background 0.2s ease;
+    }
+
+    .task-card:hover {
+      background: var(--bg-warm);
+    }
+
+    .task-number {
+      font-family: var(--font-serif);
+      font-size: 1.5rem;
+      font-style: italic;
+      color: var(--text-faint);
+      width: 40px;
+    }
+
+    .task-content {
+      flex: 1;
+    }
+
+    .task-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text-ink);
+      margin-bottom: var(--space-xs);
+    }
+
+    .task-description {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      line-height: 1.6;
+      margin-bottom: var(--space-md);
+    }
+
+    .task-meta {
+      display: flex;
+      gap: var(--space-md);
+      flex-wrap: wrap;
+    }
+
+    .task-status {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: var(--space-sm);
+    }
+
+    /* ===== BADGES ===== */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-xs);
+      padding: var(--space-xs) var(--space-sm);
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+
+    .badge-success {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .badge-warning {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .badge-error {
+      background: var(--error-soft);
+      color: var(--error);
+    }
+
+    .badge-neutral {
+      background: var(--bg-warm);
+      color: var(--text-secondary);
+    }
+
+    .badge-outline {
+      background: transparent;
+      border: 1px solid var(--border-medium);
+      color: var(--text-secondary);
+    }
+
+    /* Status indicator */
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    /* ===== TWO COLUMN LAYOUT ===== */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: var(--space-2xl);
+    }
+
+    /* ===== TIMELINE ===== */
+    .timeline {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+
+    .timeline-header {
+      padding: var(--space-md) var(--space-lg);
+      border-bottom: 1px solid var(--border-light);
+      font-weight: 600;
+      font-size: 0.8rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .timeline-item {
+      display: flex;
+      gap: var(--space-md);
+      padding: var(--space-md) var(--space-lg);
+      border-bottom: 1px solid var(--border-light);
+    }
+
+    .timeline-item:last-child {
+      border-bottom: none;
+    }
+
+    .timeline-marker {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      flex-shrink: 0;
+      background: var(--bg-warm);
+      color: var(--text-secondary);
+    }
+
+    .timeline-marker.success {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .timeline-marker.pending {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .timeline-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .timeline-title {
+      font-weight: 500;
+      font-size: 0.9rem;
+      margin-bottom: 2px;
+    }
+
+    .timeline-detail {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .timeline-time {
+      font-size: 0.75rem;
+      color: var(--text-faint);
+      flex-shrink: 0;
+    }
+
+    /* ===== STATS BAR ===== */
+    .stats-bar {
+      display: flex;
+      gap: var(--space-2xl);
+      padding: var(--space-lg);
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-md);
+      margin-bottom: var(--space-2xl);
+    }
+
+    .stat-item {
+      flex: 1;
+    }
+
+    .stat-value {
+      font-family: var(--font-serif);
+      font-size: 2rem;
+      font-weight: 400;
+      color: var(--text-ink);
+      margin-bottom: var(--space-xs);
+    }
+
+    .stat-value.accent {
+      color: var(--accent-amber);
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    /* ===== COLOR PALETTE ===== */
+    .palette-section {
+      margin-top: var(--space-3xl);
+      padding-top: var(--space-2xl);
+      border-top: 1px solid var(--border-light);
+    }
+
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: var(--space-md);
+    }
+
+    .color-swatch {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+
+    .color-preview {
+      height: 70px;
+    }
+
+    .color-info {
+      padding: var(--space-sm);
+    }
+
+    .color-name {
+      font-size: 0.75rem;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+
+    .color-value {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    /* ===== TYPOGRAPHY SHOWCASE ===== */
+    .type-showcase {
+      margin-top: var(--space-3xl);
+      padding-top: var(--space-2xl);
+      border-top: 1px solid var(--border-light);
+    }
+
+    .type-sample {
+      margin-bottom: var(--space-xl);
+    }
+
+    .type-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: var(--space-sm);
+    }
+
+    .type-display {
+      font-family: var(--font-serif);
+      font-size: 3.5rem;
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }
+
+    .type-display em {
+      font-style: italic;
+    }
+
+    .type-heading {
+      font-family: var(--font-sans);
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .type-body {
+      font-size: 1rem;
+      color: var(--text-secondary);
+      max-width: 550px;
+      line-height: 1.7;
+    }
+
+    .type-caption {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-weight: 600;
+    }
+
+    /* ===== FOOTER ===== */
+    footer {
+      margin-top: var(--space-3xl);
+      padding-top: var(--space-xl);
+      border-top: 1px solid var(--border-light);
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo"><em>magician</em></div>
+      <nav>
+        <a href="#" class="active">Mission Control</a>
+        <a href="#">Tools</a>
+        <a href="#">History</a>
+        <a href="#">Settings</a>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <div class="hero-eyebrow">Task Automation</div>
+      <h1><em>done.</em></h1>
+      <p>Describe what you want accomplished. We'll orchestrate the steps, automate the browser, and deliver results.</p>
+    </section>
+
+    <div class="input-area">
+      <div class="input-wrapper">
+        <div class="input-field" style="flex: 1;">
+          <label>What would you like done?</label>
+          <input type="text" placeholder="Enter your task description...">
+        </div>
+        <button class="btn btn-primary">Execute</button>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-item">
+        <div class="stat-value">247</div>
+        <div class="stat-label">Tasks Completed</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value accent">3</div>
+        <div class="stat-label">Currently Running</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">98.2%</div>
+        <div class="stat-label">Success Rate</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">12s</div>
+        <div class="stat-label">Avg. Completion</div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">Active Tasks</h2>
+          <span class="section-count">3 running</span>
+        </div>
+
+        <div class="task-list">
+          <div class="task-card">
+            <div class="task-number">01</div>
+            <div class="task-content">
+              <h3 class="task-title">Scrape product prices from Amazon</h3>
+              <p class="task-description">Navigate to Amazon, search for "mechanical keyboard", extract prices and ratings from first 10 results.</p>
+              <div class="task-meta">
+                <span class="badge badge-outline">Browser</span>
+                <span class="badge badge-outline">12 steps</span>
+              </div>
+            </div>
+            <div class="task-status">
+              <span class="badge badge-success">
+                <span class="status-indicator"></span>
+                Running
+              </span>
+              <span class="badge badge-neutral">78%</span>
+            </div>
+          </div>
+
+          <div class="task-card">
+            <div class="task-number">02</div>
+            <div class="task-content">
+              <h3 class="task-title">Generate weekly analytics report</h3>
+              <p class="task-description">Compile data from the past 7 days and format into a summary document.</p>
+              <div class="task-meta">
+                <span class="badge badge-outline">Analysis</span>
+                <span class="badge badge-outline">5 steps</span>
+              </div>
+            </div>
+            <div class="task-status">
+              <span class="badge badge-warning">
+                <span class="status-indicator"></span>
+                Pending
+              </span>
+            </div>
+          </div>
+
+          <div class="task-card">
+            <div class="task-number">03</div>
+            <div class="task-content">
+              <h3 class="task-title">Monitor server health status</h3>
+              <p class="task-description">Check all production servers and alert if CPU exceeds 80%.</p>
+              <div class="task-meta">
+                <span class="badge badge-outline">Monitoring</span>
+              </div>
+            </div>
+            <div class="task-status">
+              <span class="badge badge-error">
+                <span class="status-indicator"></span>
+                Failed
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside>
+        <div class="timeline">
+          <div class="timeline-header">Execution Log</div>
+          <div class="timeline-item">
+            <div class="timeline-marker success">✓</div>
+            <div class="timeline-content">
+              <div class="timeline-title">Navigated to amazon.com</div>
+              <div class="timeline-detail">https://www.amazon.com</div>
+            </div>
+            <div class="timeline-time">2s</div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-marker success">✓</div>
+            <div class="timeline-content">
+              <div class="timeline-title">Entered search query</div>
+              <div class="timeline-detail">"mechanical keyboard"</div>
+            </div>
+            <div class="timeline-time">5s</div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-marker pending">...</div>
+            <div class="timeline-content">
+              <div class="timeline-title">Waiting for results</div>
+              <div class="timeline-detail">Timeout: 10000ms</div>
+            </div>
+            <div class="timeline-time">8s</div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Color Palette -->
+    <section class="palette-section">
+      <div class="section-header">
+        <h2 class="section-title">Color Palette</h2>
+      </div>
+      <div class="palette-grid">
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #faf9f7;"></div>
+          <div class="color-info">
+            <div class="color-name">Cream</div>
+            <div class="color-value">#faf9f7</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #1a1a1a;"></div>
+          <div class="color-info">
+            <div class="color-name">Ink</div>
+            <div class="color-value">#1a1a1a</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #d97706;"></div>
+          <div class="color-info">
+            <div class="color-name">Amber</div>
+            <div class="color-value">#d97706</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #0d9488;"></div>
+          <div class="color-info">
+            <div class="color-name">Teal</div>
+            <div class="color-value">#0d9488</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #059669;"></div>
+          <div class="color-info">
+            <div class="color-name">Success</div>
+            <div class="color-value">#059669</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #dc2626;"></div>
+          <div class="color-info">
+            <div class="color-name">Error</div>
+            <div class="color-value">#dc2626</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Typography Showcase -->
+    <section class="type-showcase">
+      <div class="section-header">
+        <h2 class="section-title">Typography</h2>
+        <span class="section-count">Instrument Serif + Inter</span>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Display / Serif</div>
+        <div class="type-display">Task <em>Automation</em></div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Heading / Sans</div>
+        <div class="type-heading">Execute complex workflows with natural language</div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Body</div>
+        <div class="type-body">Magician breaks down your requests into atomic steps, orchestrates browser automation, and delivers results. All powered by advanced AI models with enterprise-grade reliability.</div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Caption / Label</div>
+        <div class="type-caption">Last updated 2 minutes ago</div>
+      </div>
+    </section>
+
+    <footer>
+      <p>Theme Preview: Editorial Precision — Refined Swiss Design</p>
+    </footer>
+  </div>
+</body>
+</html>

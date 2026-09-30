@@ -1,0 +1,30 @@
+name: get_agent_details
+description: Look up what a reachable agent can do before delegating to it — returns its guide, effective canonical tool names, and current delegation/handover targets. Lean by design; for heavy runtime detail use inspect_agent instead.
+version: "1.0.0"
+guide: |
+  Tool name: `get_agent_details`
+
+  The delegation roster lists each agent by name + description only. Call
+  this to pull a target's concrete capabilities before delegating or handing
+  over: its guide (persona), the canonical tool names (`<pack>__<action>`) it
+  can reach, and its current effective delegation and handover targets.
+
+  Use it when a delegation / handover decision is ambiguous and the
+  one-line description is not enough. For deep runtime detail (recent tasks,
+  episodes, live status) use `inspect_agent` instead.
+parameters:
+  - name: agent_id
+    required: true
+    param_type: string
+    description: ID of the agent to inspect (e.g. a delegation target's agent_id).
+implementation:
+  type: compiled
+  provider_name: get_agent_details
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - meta
+    - introspection
+  composition_category: action
+  sandbox: none

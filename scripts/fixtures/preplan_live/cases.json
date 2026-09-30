@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "clarification_attention_approval",
+      "title": "Clarification projection and plan approval",
+      "description": "Create a short two-step plan to draft and publish a three-sentence release note for independent software teams. The budget is zero and the channel is the product changelog. Do not assume the publication date: ask the owner for that missing decision before producing the plan. Do not perform the publication.",
+      "expected_min_clarifications": 1,
+      "expected_min_replans": 0,
+      "approval_sequence": ["approve"],
+      "answer_rules": [
+        {
+          "contains_any": ["date", "when", "timeline", "launch"],
+          "answer": "Publish on 2026-09-15."
+        }
+      ],
+      "default_answer": "Use the supplied two-step scope, record any assumption explicitly, and do not publish anything."
+    },
+    {
+      "id": "reject_replan_approval",
+      "title": "Immutable rejection, replan, and approval",
+      "description": "Create a short two-step plan to draft and review a three-sentence release note for independent software teams, for publication on 2026-09-15 in the product changelog. Include an owner and one measurable review exit criterion. Do not perform the publication.",
+      "expected_min_clarifications": 0,
+      "expected_min_replans": 1,
+      "approval_sequence": ["reject", "approve"],
+      "answer_rules": [],
+      "default_answer": "Use the supplied scope and state any remaining assumption explicitly."
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "name": "observe_writer",
+  "version": "1.0.0",
+  "content": [
+    "You are running on a schedule to build work-evidence from {producer_label}. This is a METADATA-ONLY capture: never store message bodies, full event descriptions, or any sensitive content — titles/subjects, participants, and counts only.",
+    "",
+    "For EACH of these accounts: {accounts}",
+    "1. Use the {skill} skill (account = the account alias) to read the last {window_days} day(s) of activity for that account.",
+    "2. For each account, roll its activity up per day into ONE metadata-only summary: {fields_hint}.",
+    "3. Persist it by calling `update_memory_tier` with tier = \"{tier}\" and a `fields` object whose single key is \"{key_prefix}:<account>:<YYYY-MM-DD>\" mapping to an object: { \"account\": \"<account>\", \"day\": \"<YYYY-MM-DD>\", \"source_type\": \"{source_type}\", {fields_keys}, \"summary\": \"<one factual sentence — what the person did, no contents>\" }.",
+    "",
+    "Skip an account/day with no real activity (don't write an empty row). Keep it strictly metadata: subjects/titles, sender/attendee names or domains, and counts — never bodies or details.",
+    "",
+    "4. FINAL STEP — after all rows are written, call `distill_evidence` with producer = \"{producer}\". This promotes the rows you just wrote into reviewable work-evidence. Then briefly report which accounts and days you rolled up."
+  ],
+  "variables": [
+    { "name": "producer", "description": "The evidence-producer lane name passed to distill_evidence ('email' | 'calendar').", "required": true, "default_value": null, "examples": ["email"] },
+    { "name": "producer_label", "description": "Human label, e.g. 'your email' or 'your calendar'.", "required": true, "default_value": null, "examples": ["your email"] },
+    { "name": "accounts", "description": "Comma-separated account aliases the user chose to observe.", "required": true, "default_value": null, "examples": ["work, business"] },
+    { "name": "skill", "description": "The reader skill ('gmail' | 'calendar').", "required": true, "default_value": null, "examples": ["gmail"] },
+    { "name": "window_days", "description": "Look-back window in days.", "required": true, "default_value": "1", "examples": ["1"] },
+    { "name": "tier", "description": "User-memory tier to write rows into.", "required": true, "default_value": null, "examples": ["user.email_evidence"] },
+    { "name": "key_prefix", "description": "Row key prefix ('email' | 'cal').", "required": true, "default_value": null, "examples": ["email"] },
+    { "name": "source_type", "description": "Row source_type ('email_capture' | 'calendar_capture').", "required": true, "default_value": null, "examples": ["email_capture"] },
+    { "name": "fields_hint", "description": "Prose describing the metadata to collect.", "required": true, "default_value": null, "examples": ["the subjects, sender names/domains, and the thread count"] },
+    { "name": "fields_keys", "description": "The metadata JSON keys for the row.", "required": true, "default_value": null, "examples": ["\"subjects\": [..], \"senders\": [..], \"thread_count\": N"] }
+  ],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Generic scheduled-writer task description for the email/calendar observe connectors. Rendered by observe_connectors_api::ensure_schedule with the chosen accounts; run by executive-assistant on the user's cadence. Reads via the gmail/calendar skill, persists metadata-only rows via update_memory_tier into user.email_evidence/user.calendar_evidence, which the generic tier_distill then turns into evidence.",
+    "author": "magician",
+    "created_at": "2026-06-20T00:00:00Z",
+    "changelog": "v1.0.0: Initial generic observe-writer task description (email/calendar).",
+    "tags": ["work-evidence-graph", "observe", "email", "calendar", "writer"],
+    "estimated_tokens": 280
+  }
+}

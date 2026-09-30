@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base Magdroid Theme (Ocean Depths Dark Immersive) -->
+    <style name="Theme.Magdroid" parent="Theme.Material3.Light.NoActionBar">
+        <!-- Primary Brand Colors -->
+        <item name="colorPrimary">@color/md_theme_light_primary</item>
+        <item name="colorOnPrimary">@color/md_theme_light_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/md_theme_light_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/md_theme_light_onPrimaryContainer</item>
+
+        <!-- Secondary Brand Colors -->
+        <item name="colorSecondary">@color/md_theme_light_secondary</item>
+        <item name="colorOnSecondary">@color/md_theme_light_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/md_theme_light_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/md_theme_light_onSecondaryContainer</item>
+
+        <!-- Tertiary Colors -->
+        <item name="colorTertiary">@color/md_theme_light_tertiary</item>
+        <item name="colorOnTertiary">@color/md_theme_light_onTertiary</item>
+        <item name="colorTertiaryContainer">@color/md_theme_light_tertiaryContainer</item>
+        <item name="colorOnTertiaryContainer">@color/md_theme_light_onTertiaryContainer</item>
+
+        <!-- Error Colors -->
+        <item name="colorError">@color/md_theme_light_error</item>
+        <item name="colorOnError">@color/md_theme_light_onError</item>
+        <item name="colorErrorContainer">@color/md_theme_light_errorContainer</item>
+        <item name="colorOnErrorContainer">@color/md_theme_light_onErrorContainer</item>
+
+        <!-- Background Colors -->
+        <item name="android:colorBackground">@color/md_theme_light_background</item>
+        <item name="colorOnBackground">@color/md_theme_light_onBackground</item>
+
+        <!-- Surface Colors -->
+        <item name="colorSurface">@color/md_theme_light_surface</item>
+        <item name="colorOnSurface">@color/md_theme_light_onSurface</item>
+        <item name="colorSurfaceVariant">@color/md_theme_light_surfaceVariant</item>
+        <item name="colorOnSurfaceVariant">@color/md_theme_light_onSurfaceVariant</item>
+
+        <!-- Outline Colors -->
+        <item name="colorOutline">@color/md_theme_light_outline</item>
+        <item name="colorOutlineVariant">@color/md_theme_light_outlineVariant</item>
+
+        <!-- Inverse Colors -->
+        <item name="colorSurfaceInverse">@color/md_theme_light_inverseSurface</item>
+        <item name="colorOnSurfaceInverse">@color/md_theme_light_inverseOnSurface</item>
+        <item name="colorPrimaryInverse">@color/md_theme_light_inversePrimary</item>
+
+        <!-- StatusBar & NavigationBar -->
+        <item name="android:statusBarColor">@color/md_theme_light_background</item>
+        <item name="android:navigationBarColor">@color/md_theme_light_background</item>
+        <!-- Correct launch-time contrast. ChatActivity replaces these with the
+             resolved in-app palette as soon as Compose is attached. -->
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+
+        <!-- Window Properties -->
+        <item name="android:windowBackground">@color/md_theme_light_background</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+
+        <!-- Material Shape Theme -->
+        <item name="shapeAppearanceSmallComponent">@style/ShapeAppearance.Magdroid.SmallComponent</item>
+        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.Magdroid.MediumComponent</item>
+        <item name="shapeAppearanceLargeComponent">@style/ShapeAppearance.Magdroid.LargeComponent</item>
+
+        <!-- Text Appearance -->
+        <item name="textAppearanceHeadlineLarge">@style/TextAppearance.Magdroid.HeadlineLarge</item>
+        <item name="textAppearanceHeadlineMedium">@style/TextAppearance.Magdroid.HeadlineMedium</item>
+        <item name="textAppearanceHeadlineSmall">@style/TextAppearance.Magdroid.HeadlineSmall</item>
+        <item name="textAppearanceBodyLarge">@style/TextAppearance.Magdroid.BodyLarge</item>
+        <item name="textAppearanceBodyMedium">@style/TextAppearance.Magdroid.BodyMedium</item>
+        <item name="textAppearanceBodySmall">@style/TextAppearance.Magdroid.BodySmall</item>
+    </style>
+
+    <!-- Dark Theme (identical to base for Ocean Depths) -->
+    <style name="Theme.Magdroid.Dark" parent="Theme.Material3.Light.NoActionBar">
+        <!-- Primary Brand Colors -->
+        <item name="colorPrimary">@color/md_theme_dark_primary</item>
+        <item name="colorOnPrimary">@color/md_theme_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/md_theme_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/md_theme_dark_onPrimaryContainer</item>
+
+        <!-- Secondary Brand Colors -->
+        <item name="colorSecondary">@color/md_theme_dark_secondary</item>
+        <item name="colorOnSecondary">@color/md_theme_dark_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/md_theme_dark_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/md_theme_dark_onSecondaryContainer</item>
+
+        <!-- Tertiary Colors -->
+        <item name="colorTertiary">@color/md_theme_dark_tertiary</item>
+        <item name="colorOnTertiary">@color/md_theme_dark_onTertiary</item>
+        <item name="colorTertiaryContainer">@color/md_theme_dark_tertiaryContainer</item>
+        <item name="colorOnTertiaryContainer">@color/md_theme_dark_onTertiaryContainer</item>
+
+        <!-- Error Colors -->
+        <item name="colorError">@color/md_theme_dark_error</item>
+        <item name="colorOnError">@color/md_theme_dark_onError</item>
+        <item name="colorErrorContainer">@color/md_theme_dark_errorContainer</item>
+        <item name="colorOnErrorContainer">@color/md_theme_dark_onErrorContainer</item>
+
+        <!-- Background Colors -->
+        <item name="android:colorBackground">@color/md_theme_dark_background</item>
+        <item name="colorOnBackground">@color/md_theme_dark_onBackground</item>
+
+        <!-- Surface Colors -->
+        <item name="colorSurface">@color/md_theme_dark_surface</item>
+        <item name="colorOnSurface">@color/md_theme_dark_onSurface</item>
+        <item name="colorSurfaceVariant">@color/md_theme_dark_surfaceVariant</item>
+        <item name="colorOnSurfaceVariant">@color/md_theme_dark_onSurfaceVariant</item>
+
+        <!-- Outline Colors -->
+        <item name="colorOutline">@color/md_theme_dark_outline</item>
+        <item name="colorOutlineVariant">@color/md_theme_dark_outlineVariant</item>
+
+        <!-- Inverse Colors -->
+        <item name="colorSurfaceInverse">@color/md_theme_dark_inverseSurface</item>
+        <item name="colorOnSurfaceInverse">@color/md_theme_dark_inverseOnSurface</item>
+        <item name="colorPrimaryInverse">@color/md_theme_dark_inversePrimary</item>
+
+        <!-- StatusBar & NavigationBar -->
+        <item name="android:statusBarColor">@color/md_theme_dark_surface</item>
+        <item name="android:navigationBarColor">@color/md_theme_dark_surface</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+
+        <!-- Window Properties -->
+        <item name="android:windowBackground">@color/md_theme_dark_background</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+
+        <!-- Material Shape Theme -->
+        <item name="shapeAppearanceSmallComponent">@style/ShapeAppearance.Magdroid.SmallComponent</item>
+        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.Magdroid.MediumComponent</item>
+        <item name="shapeAppearanceLargeComponent">@style/ShapeAppearance.Magdroid.LargeComponent</item>
+
+        <!-- Text Appearance -->
+        <item name="textAppearanceHeadlineLarge">@style/TextAppearance.Magdroid.HeadlineLarge</item>
+        <item name="textAppearanceHeadlineMedium">@style/TextAppearance.Magdroid.HeadlineMedium</item>
+        <item name="textAppearanceHeadlineSmall">@style/TextAppearance.Magdroid.HeadlineSmall</item>
+        <item name="textAppearanceBodyLarge">@style/TextAppearance.Magdroid.BodyLarge</item>
+        <item name="textAppearanceBodyMedium">@style/TextAppearance.Magdroid.BodyMedium</item>
+        <item name="textAppearanceBodySmall">@style/TextAppearance.Magdroid.BodySmall</item>
+    </style>
+
+    <!-- Shape Appearances (Wave-inspired curved corners) -->
+    <style name="ShapeAppearance.Magdroid.SmallComponent" parent="ShapeAppearance.Material3.SmallComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">@dimen/corner_radius_small</item>
+    </style>
+
+    <style name="ShapeAppearance.Magdroid.MediumComponent" parent="ShapeAppearance.Material3.MediumComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">@dimen/corner_radius_medium</item>
+    </style>
+
+    <style name="ShapeAppearance.Magdroid.LargeComponent" parent="ShapeAppearance.Material3.LargeComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">@dimen/corner_radius_large</item>
+    </style>
+
+    <!-- Dialog Theme with Ocean Depths aesthetics -->
+    <style name="Theme.Magdroid.Dialog" parent="ThemeOverlay.Material3.Dialog">
+        <item name="colorPrimary">@color/md_theme_light_primary</item>
+        <item name="colorSecondary">@color/md_theme_light_secondary</item>
+        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.Magdroid.MediumComponent</item>
+    </style>
+
+    <!-- Bottom Sheet Theme -->
+    <style name="Theme.Magdroid.BottomSheet" parent="ThemeOverlay.Material3.BottomSheetDialog">
+        <item name="colorPrimary">@color/md_theme_light_primary</item>
+        <item name="colorSecondary">@color/md_theme_light_secondary</item>
+        <item name="shapeAppearanceLargeComponent">@style/ShapeAppearance.Magdroid.LargeComponent</item>
+    </style>
+</resources>

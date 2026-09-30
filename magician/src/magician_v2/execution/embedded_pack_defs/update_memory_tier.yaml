@@ -1,0 +1,49 @@
+name: update_memory_tier
+description: Merge a `fields` object into the named memory tier on the calling agent. Handles both user-scope tiers (`preferences`, `profile`) and agent-scope tiers defined in the agent's `memory_tiers`.
+version: "1.0.0"
+guide: |
+  Tool name: `update_memory_tier`
+
+  Use when you've learned something durable about the user, the
+  environment, or your own internal state and want to persist it into a
+  specific memory tier. Existing fields are merged (deep-merge) rather
+  than replaced.
+
+  Inputs:
+  - `tier` (required) — tier name. Either an agent-defined tier (e.g.
+    `personality_profile`, `environment_knowledge`) or a user-scope tier
+    (e.g. `user.preferences`, `user.profile`). Bare names like
+    `preferences` are treated as user-scope tiers.
+  - `fields` (required) — object whose keys are merged into the tier.
+    Values may be scalars or nested objects; the merge is recursive.
+
+  Output:
+  - `status: "ok"` plus the merged tier snapshot on success.
+  - `status: "error"` with `reason` on validation / I/O failure.
+
+  Notes:
+  - For per-preference key/value writes prefer `save_preference` — it
+    wraps the field in the standard `{key, value, confidence, source_type,
+    rationale, updated_at}` shape used across the system.
+  - If the named tier doesn't exist on the agent and isn't a user-scope
+    tier, this returns an error rather than silently creating one.
+parameters:
+  - name: tier
+    required: true
+    param_type: string
+    description: Tier name. `user.<name>` selects a user-scope tier; bare names default to agent-scope tiers when defined.
+  - name: fields
+    required: true
+    param_type: object
+    description: Object whose keys are deep-merged into the named tier.
+implementation:
+  type: compiled
+  provider_name: update_memory_tier
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - memory
+    - write
+  composition_category: action
+  sandbox: none

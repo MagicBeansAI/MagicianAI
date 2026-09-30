@@ -1,0 +1,103 @@
+name: thinking_maps_data
+description: Read-only scoped reads over the first-party Live Thinking Map substrate — list one bounded page of map manifest summaries and read one exact map snapshot. The second host-read port for Apps (the plan-2.5 learning-read pattern generalized; the Phase 4 Brainstorm verdict's re-open condition).
+version: "1.1.0"
+guide: |-
+  Tool name: `thinking_maps_data`
+
+  Read-only access to the owner's Live Thinking Maps in the current
+  principal/workspace scope. The substrate is the same durable store the
+  first-party `/thinking-maps` REST API serves — per-map directories under
+  `scopes/<principal>/<workspace>/thinking_maps/<map_id>/` with an atomic
+  `manifest.json` head record and a `snapshot.json` materialization — so this
+  tool is a projection of the single source, never a second authority.
+
+  Actions (exactly two; nothing else is executable):
+
+  - `list_maps {lifecycle?, limit?, after_map_id?}` — one bounded page of
+    map summaries (map_id, title, lifecycle, latest_revision, updated_at),
+    most recently updated first. `limit` is capped at 25; the default page
+    is 10. Without a `lifecycle` filter, soft-deleted maps are excluded
+    (they are durable tombstones); `lifecycle: deleted` selects them
+    explicitly. Huge scopes are scanned in map-id order under a fixed
+    window; when a page was cut short by that window the result carries
+    `scan_truncated: true` and `next_cursor`, and passing that cursor as
+    `after_map_id` on the next call resumes strictly past it — paging
+    walks the entire scope.
+  - `read_map {map_id}` — one exact map snapshot: the full typed
+    ThinkingMap (nodes, edges, clarifications, proposals) at its current
+    revision, wire-identical to the first-party GET response.
+
+  The runtime scope is executor-owned: `__principal`/`__workspace` are
+  injected by the runtime and an unscoped call is denied. `principal`/
+  `workspace` parameters may only assert the injected scope and can never
+  switch it. Map mutation (create, apply, patch, delete) stays on the
+  first-party API; this tool has no write path.
+
+  Typical flow: `list_maps` to find the map id, then `read_map` for the full
+  board.
+parameters:
+  - name: action
+    param_type: string
+    description: Optional direct action name for non-inner-loop callers. Inner-loop calls set this automatically.
+    enum_values:
+      - list_maps
+      - read_map
+  - name: principal
+    param_type: string
+    description: Optional assertion that must match the runtime-injected principal; it can never switch scope.
+  - name: workspace
+    param_type: string
+    description: Optional assertion that must match the runtime-injected workspace; it can never switch scope.
+  - name: lifecycle
+    param_type: string
+    description: Optional exact lifecycle filter for list_maps — active, paused, archived, or deleted. Omit for the visible (non-deleted) default.
+    enum_values:
+      - active
+      - paused
+      - archived
+      - deleted
+  - name: limit
+    param_type: integer
+    description: Page size for list_maps. Default 10, hard-capped at 25.
+  - name: after_map_id
+    param_type: string
+    description: Optional keyset cursor for list_maps — resume the scan strictly past this map id (the previous page's next_cursor). Positioning is by map-id order, so a cursor naming a deleted map still resumes correctly.
+  - name: map_id
+    param_type: string
+    description: Exact map id for read_map.
+native_action_schemas:
+  list_maps:
+    description: List one bounded page of scoped thinking-map summaries, most recently updated first. Soft-deleted maps are hidden unless lifecycle=deleted selects the tombstones.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - principal
+      - workspace
+      - lifecycle
+      - limit
+      - after_map_id
+    required: []
+  read_map:
+    description: Read one exact scoped thinking-map snapshot — the full typed map at its current revision, wire-identical to the first-party GET.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - map_id
+      - principal
+      - workspace
+    required:
+      - map_id
+implementation:
+  type: primitive
+  provider_name: thinking_maps_data
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - thinking_maps
+    - host_read
+  composition_category: observation
+  sandbox: none

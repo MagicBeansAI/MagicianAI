@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Machine-wide rustc concurrency gate.
+
+rustc has no RSS cap. Cargo's `jobs` / `CARGO_BUILD_JOBS` cap is per invocation,
+so two or three concurrent `cargo` processes each spawn `hw.ncpu` compilers and
+OOM a 32 GiB host.
+
+Install as `RUSTC_WRAPPER` or Cargo `build.rustc-wrapper`. Cargo invokes this
+as `wrapper rustc [args...]`. Real compiles take a flock slot for their
+lifetime; `rustc -vV` / `--print` / `--version` probes skip the gate so Cargo
+startup does not serialize.
+
+Environment:
+  RUSTC_JOB_GATE_SLOTS  max concurrent compiles (default 4)
+  RUSTC_JOB_GATE_DIR    directory for slot lock files
+  RUSTC_JOB_GATE_NEXT   next wrapper (e.g. sccache). Empty string disables.
+                        Unset → use sccache if it is on PATH.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+DEFAULT_SLOTS = 4
+POLL_SECONDS = 0.05
+
+_PROBE_EXACT = frozenset(
+    {
+        "-vV",
+        "-V",
+        "--version",
+        "-h",
+        "--help",
+        "--explain",
+    }
+)
+
+
+def is_compile_invocation(rustc_args: list[str]) -> bool:
+    """Return True when this rustc line should occupy a concurrency slot."""
+    for arg in rustc_args:
+        if arg in _PROBE_EXACT:
+            return False
+        if arg.startswith("--explain="):
+            return False
+        if arg == "--print" or arg.startswith("--print="):
+            return False
+    return True
+
+
+def slot_dir() -> str:
+    configured = os.environ.get("RUSTC_JOB_GATE_DIR")
+    if configured:
+        return configured
+    tmp = os.environ.get("TMPDIR", "/tmp")
+    return os.path.join(tmp, f"rustc-job-gate-{os.getuid()}")
+
+
+def slot_count() -> int:
+    raw = os.environ.get("RUSTC_JOB_GATE_SLOTS", str(DEFAULT_SLOTS))
+    try:
+        n = int(raw)
+    except ValueError as exc:
+        raise SystemExit(f"rustc-job-gate: RUSTC_JOB_GATE_SLOTS={raw!r} is not an int") from exc
+    if n < 1:
+        raise SystemExit("rustc-job-gate: RUSTC_JOB_GATE_SLOTS must be >= 1")
+    return n
+
+
+def _is_self(path: str) -> bool:
+    if not path:
+        return False
+    self = os.path.realpath(sys.argv[0])
+    try:
+        return os.path.realpath(path) == self
+    except OSError:
+        return os.path.abspath(path) == os.path.abspath(sys.argv[0])
+
+
+def next_hop(rustc_argv: list[str]) -> list[str]:
+    """Build the exec argv: optional wrapper, then rustc + args."""
+    if "RUSTC_JOB_GATE_NEXT" in os.environ:
+        nxt = os.environ["RUSTC_JOB_GATE_NEXT"].strip()
+    else:
+        nxt = shutil.which("sccache") or ""
+    if nxt and not _is_self(nxt):
+        return [nxt, *rustc_argv]
+    return rustc_argv
+
+
+def _clear_cloexec(fd: int) -> None:
+    flags = fcntl.fcntl(fd, fcntl.F_GETFD)
+    fcntl.fcntl(fd, fcntl.F_SETFD, flags & ~fcntl.FD_CLOEXEC)
+
+
+def acquire_slot(n_slots: int, directory: str):
+    """Block until a slot flock is held. Return the open file (keep it alive)."""
+    os.makedirs(directory, exist_ok=True)
+    files = []
+    for i in range(n_slots):
+        path = os.path.join(directory, f"slot-{i}")
+        # Binary append so the file exists; we never write it.
+        files.append(open(path, "ab+"))
+    try:
+        while True:
+            for handle in files:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                for other in files:
+                    if other is not handle:
+                        other.close()
+                _clear_cloexec(handle.fileno())
+                return handle
+            time.sleep(POLL_SECONDS)
+    except BaseException:
+        for handle in files:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        raise
+
+
+def run_chained_wrapper(hop: list[str]) -> int:
+    """Keep the slot in this parent, outside a cache daemon's inherited fds."""
+    child = None
+    pending_signal = None
+
+    def forward(signum, _frame):
+        nonlocal pending_signal
+        pending_signal = signum
+        if child is not None:
+            child.send_signal(signum)
+
+    previous = {
+        sig: signal.signal(sig, forward)
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    }
+    try:
+        # Cargo's jobserver fds must survive, just as they do through exec.
+        # Only our slot is marked close-on-exec by the caller.
+        child = subprocess.Popen(hop, close_fds=False)
+        if pending_signal is not None:
+            child.send_signal(pending_signal)
+        code = child.wait()
+        return code if code >= 0 else 128 - code
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        sys.stderr.write(
+            "usage: rustc-job-gate <rustc> [args...]\n"
+            "Set as RUSTC_WRAPPER / build.rustc-wrapper; Cargo supplies rustc.\n"
+        )
+        return 2
+
+    rustc_argv = argv[1:]
+    hop = next_hop(rustc_argv)
+    if is_compile_invocation(rustc_argv[1:]):
+        # Must stay referenced until exec so GC cannot close the flock fd.
+        # CLOEXEC is cleared inside acquire_slot so the lock survives exec.
+        _held_slot = acquire_slot(slot_count(), slot_dir())
+    else:
+        _held_slot = None
+    if _held_slot is not None and hop != rustc_argv:
+        # sccache can start a long-lived daemon. Passing the slot through
+        # exec lets that daemon retain it after the compile finishes and
+        # permanently blocks a one-slot gate. Direct rustc still uses exec.
+        os.set_inheritable(_held_slot.fileno(), False)
+        return run_chained_wrapper(hop)
+    os.execvp(hop[0], hop)
+    return 127
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except OSError as exc:
+        sys.stderr.write(f"rustc-job-gate: {exc}\n")
+        sys.exit(127)

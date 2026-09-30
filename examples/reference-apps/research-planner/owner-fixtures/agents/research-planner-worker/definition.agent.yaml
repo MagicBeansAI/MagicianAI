@@ -1,0 +1,17 @@
+agent_id: research-planner-worker
+version: 1
+name: Research Planner Worker
+description: Typed child-task fixture that documents the current agent_as_tool contract.
+persona: Return one concise research plan matching the declared result object; do not delegate, browse, mutate state, or emit a transcript.
+tools: [content_read]
+app_tool:
+  input:
+    type: object
+    fields:
+      request: { type: text, required: true }
+  result:
+    type: object
+    fields:
+      answer: { type: markdown, required: true }
+  max_input_bytes: 16384
+  max_result_bytes: 32768

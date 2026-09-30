@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_no_coding_lead",
+  "version": "1.0.0",
+  "content": [
+    "I can't start a build: no coding lead is configured for this deployment (`coding.lead_agent_id` in magician-config.yaml is unset).",
+    "",
+    "`@vibedev` will not pick an owner for a coding run on its own — an arbitrary agent would accept the task and then be unable to do it. Set the lead in config and try again."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply when a `@vibedev` chat turn cannot resolve an owner because coding.lead_agent_id is unset. No task is created. Fail-closed: the cockpit can fall back to a client-sent agent id, but the chat rail has no client value to fall back to and must not invent one.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` unconfigured-coding-lead refusal.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply", "refusal"],
+    "estimated_tokens": 70
+  }
+}

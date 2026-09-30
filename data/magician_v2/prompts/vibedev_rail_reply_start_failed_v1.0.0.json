@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_start_failed",
+  "version": "1.0.0",
+  "content": [
+    "I couldn't start the build: {reason}",
+    "",
+    "Nothing was left running — any task created for this attempt has been removed, so retrying `@vibedev` will not produce a duplicate."
+  ],
+  "variables": ["reason"],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply when a `@vibedev` chat turn failed to create or dispatch its run. Create+dispatch is atomic for the rail: a dispatch failure removes the just-created task before this reply, so the promise made here is the behaviour the caller implements.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` start-failure reply.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply", "refusal"],
+    "estimated_tokens": 55
+  }
+}

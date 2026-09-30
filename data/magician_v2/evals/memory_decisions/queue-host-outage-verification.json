@@ -1,0 +1,45 @@
+{
+  "operations": [
+    {
+      "operation": "memory_conflict_review",
+      "answered_by": "kev-4b-mlx",
+      "expected_label": "keep_both",
+      "actual_label": "keep_both",
+      "confidence": 0.6781,
+      "eligible_heads": [],
+      "outcome": "deferred_below_0.75",
+      "decision_foreground_latency_ms": 4000
+    },
+    {
+      "operation": "memory_utility_review",
+      "answered_by": "kev-4b-mlx",
+      "expected_label": "load_bearing",
+      "actual_label": "load_bearing",
+      "confidence": 0.6283,
+      "eligible_heads": [],
+      "outcome": "deferred_below_0.75",
+      "decision_foreground_latency_ms": 624
+    },
+    {
+      "operation": "procedure_feedback",
+      "answered_by": "kev-4b-mlx",
+      "expected_label": "useful",
+      "actual_label": "useful",
+      "confidence": 0.8898,
+      "eligible_heads": [
+        "deprecation_recommended",
+        "verdict"
+      ],
+      "outcome": "applied",
+      "decision_foreground_latency_ms": 872
+    }
+  ],
+  "correct_labels": 3,
+  "accepted_and_applied": 1,
+  "deferred": 2,
+  "thresholds_changed": false,
+  "all_positive_workflow_assertions_passed": false,
+  "gated_llm_classification_fallbacks": 0,
+  "physical_receipts_reconciled": true,
+  "qualification_claim": false
+}

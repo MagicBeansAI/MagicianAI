@@ -1,0 +1,35 @@
+{
+  "name": "expression evaluation — min() over a derived text_len, with arithmetic",
+  "note": "This pins the INTERPRETER's expression evaluation, not the shipped callout. The recipe below is the pre-2026-08-01 callout, kept because `text_len` and `min()` evaluate identically on every renderer. The shipped callout now sizes itself from MEASURED text (`text_w`/`text_h`/`text_rise`), and measurement is deliberately platform-specific — the web measures glyphs against its own font and anchors labels on the baseline, iOS measures with UIFont and anchors them centred. So the real callout cannot have one exact cross-platform golden box, and pretending otherwise here would pin a number that is wrong on one of the two.",
+  "recipe": {
+    "type": "callout",
+    "draw": [
+      {
+        "op": "rect",
+        "x": "x-8",
+        "y": "y-18",
+        "w": "min(260,text_len*9+16)",
+        "h": 36,
+        "radius": 9,
+        "fill": true,
+        "stroke": false,
+        "color": "#000000",
+        "opacity": 0.78,
+        "threshold": 0
+      },
+      { "op": "label", "at": ["x", "y"], "text": "text", "anchor": "leading" }
+    ]
+  },
+  "shape": { "type": "callout", "x": 100, "y": 50, "text": "Next" },
+  "space": { "width": 2048, "height": 1152 },
+  "expected": [
+    {
+      "op": "rect",
+      "closed": true,
+      "points": [
+        [92, 32],
+        [144, 68]
+      ]
+    }
+  ]
+}

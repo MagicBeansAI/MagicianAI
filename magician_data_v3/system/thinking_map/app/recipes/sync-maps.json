@@ -1,0 +1,322 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "lifecycle": {
+              "value_type": 1,
+              "required": false
+            },
+            "limit": {
+              "value_type": 2,
+              "required": false
+            },
+            "map_id": {
+              "value_type": 3,
+              "required": false
+            }
+          }
+        },
+        {
+          "kind": "enum",
+          "values": [
+            "active",
+            "archived",
+            "deleted",
+            "paused"
+          ]
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:8e5206801e6cca7ae75145936d9f3bc262f1a0a338161f47805f8b424de4edd1",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:8e5206801e6cca7ae75145936d9f3bc262f1a0a338161f47805f8b424de4edd1",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "reconcile",
+          "declaration": {
+            "tool": "thinking_maps_data",
+            "action": "list_maps",
+            "parameters": {
+              "limit": 25
+            },
+            "input_parameters": {
+              "limit": "limit",
+              "lifecycle": "lifecycle"
+            },
+            "sources": {
+              "snapshot": {
+                "tool": "thinking_maps_data",
+                "action": "read_map",
+                "primitive_ref": "primitive:platform:45599395b93ba55e8d9568cd9ed4b3dd33812515a7ac00ab6315803d3ce20f75",
+                "action_ref": "primitive-action:platform:239e87301a54ae41728e6f1640c15fc4a0e5d27e80d0fbbed1ffa8e09f5ad559",
+                "parameters": {},
+                "input_parameters": {
+                  "map_id": "map_id"
+                },
+                "when_input_present": "map_id",
+                "rows": {
+                  "kind": "document"
+                }
+              }
+            },
+            "rows_field": "maps",
+            "next_cursor_field": "next_cursor",
+            "truncated_field": "scan_truncated",
+            "max_source_rows": 25,
+            "max_existing_rows": 5000,
+            "targets": [
+              {
+                "entity": "thinking_map_summary",
+                "key_field": "map_id",
+                "source_key": "map_id",
+                "fields": {
+                  "title": {
+                    "kind": "source",
+                    "field": "title",
+                    "fallback": null
+                  },
+                  "lifecycle": {
+                    "kind": "source",
+                    "field": "lifecycle",
+                    "fallback": null
+                  },
+                  "latest_revision": {
+                    "kind": "source",
+                    "field": "latest_revision",
+                    "fallback": null
+                  },
+                  "updated_at": {
+                    "kind": "source",
+                    "field": "updated_at",
+                    "fallback": null
+                  },
+                  "synced_at": {
+                    "kind": "timestamp"
+                  }
+                },
+                "update_fields": [
+                  "title",
+                  "lifecycle",
+                  "latest_revision",
+                  "updated_at",
+                  "synced_at"
+                ],
+                "seeds": [],
+                "retirement": null
+              },
+              {
+                "entity": "thinking_map_snapshot",
+                "source": "snapshot",
+                "key_field": "map_id",
+                "source_key": "map_id",
+                "fields": {
+                  "title": {
+                    "kind": "source",
+                    "field": "title",
+                    "fallback": null
+                  },
+                  "lifecycle": {
+                    "kind": "source",
+                    "field": "lifecycle",
+                    "fallback": null
+                  },
+                  "revision": {
+                    "kind": "source",
+                    "field": "revision",
+                    "fallback": null
+                  },
+                  "snapshot": {
+                    "kind": "source_document",
+                    "max_bytes": 262144
+                  },
+                  "synced_at": {
+                    "kind": "timestamp"
+                  }
+                },
+                "update_fields": [
+                  "title",
+                  "lifecycle",
+                  "revision",
+                  "snapshot",
+                  "synced_at"
+                ],
+                "seeds": [],
+                "retirement": null
+              }
+            ]
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "primitive_ref": "primitive:platform:45599395b93ba55e8d9568cd9ed4b3dd33812515a7ac00ab6315803d3ce20f75",
+          "action_ref": "primitive-action:platform:8fd09ea049432662655925615f160f1dc966fa92003ea97531c3861115b3e25f",
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 2,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 2
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

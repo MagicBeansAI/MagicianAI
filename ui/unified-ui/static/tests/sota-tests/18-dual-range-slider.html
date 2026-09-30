@@ -1,0 +1,1664 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Dual Range Slider (Comprehensive)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #e91e63, #c2185b);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+
+        /* Dual Range Slider Styles */
+        .dual-slider-container {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        .dual-slider-label {
+            font-weight: 600;
+            margin-bottom: 15px;
+            display: block;
+        }
+        .dual-slider {
+            position: relative;
+            height: 40px;
+            margin: 20px 0;
+            touch-action: none; /* Prevent browser gestures during slider drag */
+            user-select: none; /* Prevent text selection during drag */
+        }
+        .dual-slider-track {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 100%;
+            height: 8px;
+            background: #ddd;
+            border-radius: 4px;
+        }
+        .dual-slider-range {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            height: 8px;
+            background: linear-gradient(90deg, #e91e63, #9c27b0);
+            border-radius: 4px;
+        }
+        .dual-slider-thumb {
+            position: absolute;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 24px;
+            height: 24px;
+            background: white;
+            border: 3px solid #e91e63;
+            border-radius: 50%;
+            cursor: grab;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            z-index: 10;
+            will-change: left;
+            touch-action: none; /* Prevent browser scroll/zoom gestures */
+        }
+        .dual-slider-thumb:hover:not(.dragging) {
+            transform: translate(-50%, -50%) scale(1.1);
+            box-shadow: 0 3px 10px rgba(0,0,0,0.3);
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+        .dual-slider-thumb:active,
+        .dual-slider-thumb.dragging {
+            cursor: grabbing;
+            transform: translate(-50%, -50%) scale(1.15);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            transition: none !important;
+        }
+        .dual-slider-thumb.min-thumb {
+            border-color: #e91e63;
+        }
+        .dual-slider-thumb.max-thumb {
+            border-color: #9c27b0;
+        }
+        .dual-slider-values {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+        .dual-slider-values span {
+            background: #e9ecef;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        .dual-slider-values .min-value { color: #e91e63; }
+        .dual-slider-values .max-value { color: #9c27b0; }
+        .dual-slider-values .range-display {
+            color: #333;
+            background: #fff3cd;
+        }
+
+        /* Shadow DOM host */
+        .shadow-host {
+            margin: 20px 0;
+            border: 2px solid #6c757d;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .shadow-host-label {
+            font-size: 12px;
+            color: #6c757d;
+            margin-bottom: 10px;
+        }
+
+        /* Iframe container */
+        .iframe-container {
+            margin: 20px 0;
+        }
+        .iframe-container iframe {
+            width: 100%;
+            height: 280px;
+            border: 2px solid #adb5bd;
+            border-radius: 8px;
+        }
+
+        /* Result display */
+        .result-display {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-top: 15px;
+            font-family: monospace;
+        }
+        .result-display.success {
+            background: #d4edda;
+            border-color: #28a745;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="test-header">
+        <h1>Test: Dual Range Slider (Comprehensive)</h1>
+        <p>Tests dual-handle range sliders for selecting min/max ranges in main document, shadow DOM, and iframes</p>
+        <div class="results-summary" style="margin-top: 15px; display: flex; gap: 20px;">
+            <span>✓ Passed: <strong id="passed-count">0</strong></span>
+            <span>✗ Failed: <strong id="failed-count">0</strong></span>
+            <span>○ Pending: <strong id="pending-count">6</strong></span>
+        </div>
+    </div>
+
+    <!-- Test 1: Main Document Dual Range Slider -->
+    <div class="test-case" id="test-1" data-test-id="18-dual-slider-main">
+        <div class="test-case-header">
+            <h2 class="test-case-title">1. Main Document - Price Range Selector</h2>
+            <span class="test-case-id">dual-slider-main</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Adjust the price range slider to select a range of $200-$700. Drag the left (min) handle to ~$200 and the right (max) handle to ~$700.
+        </div>
+
+        <div class="dual-slider-container">
+            <span class="dual-slider-label">Price Range Filter:</span>
+            <div class="dual-slider" id="price-slider" data-testid="price-range-slider">
+                <div class="dual-slider-track"></div>
+                <div class="dual-slider-range" id="price-range"></div>
+                <div class="dual-slider-thumb min-thumb" id="price-min-thumb"
+                     data-testid="price-min-handle"                      aria-label="Minimum price handle" role="slider"
+                     aria-valuemin="0" aria-valuemax="1000" aria-valuenow="100"></div>
+                <div class="dual-slider-thumb max-thumb" id="price-max-thumb"
+                     data-testid="price-max-handle"                      aria-label="Maximum price handle" role="slider"
+                     aria-valuemin="0" aria-valuemax="1000" aria-valuenow="500"></div>
+            </div>
+            <div class="dual-slider-values">
+                <span class="min-value">Min: $<span id="price-min-value">100</span></span>
+                <span class="range-display">Range: $<span id="price-range-display">100 - 500</span></span>
+                <span class="max-value">Max: $<span id="price-max-value">500</span></span>
+            </div>
+        </div>
+
+        <div class="result-display" id="test-1-result">Current Range: $100 - $500 (Target: $200 - $700)</div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="min-value">Min value should be approximately $200 (±$50)</li>
+                <li data-check="max-value">Max value should be approximately $700 (±$50)</li>
+                <li data-check="range-valid">Min should always be less than Max</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 2: Shadow DOM Dual Range Slider -->
+    <div class="test-case" id="test-2" data-test-id="18-dual-slider-shadow">
+        <div class="test-case-header">
+            <h2 class="test-case-title">2. Shadow DOM - Age Range Selector</h2>
+            <span class="test-case-id">dual-slider-shadow</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Inside the Shadow DOM, adjust the age range to 25-45 years. Drag the left handle to ~25 and the right handle to ~45.
+        </div>
+
+        <div class="shadow-host-label">Shadow DOM Container:</div>
+        <div class="shadow-host" id="shadow-slider-host"></div>
+
+        <div class="result-display" id="test-2-result">Status: Waiting for shadow DOM slider interaction...</div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="shadow-min">Min age should be approximately 25 (±5)</li>
+                <li data-check="shadow-max">Max age should be approximately 45 (±5)</li>
+                <li data-check="shadow-range">The range display should update in real-time</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 3: Iframe Dual Range Slider -->
+    <div class="test-case" id="test-3" data-test-id="18-dual-slider-iframe">
+        <div class="test-case-header">
+            <h2 class="test-case-title">3. Iframe - Time Range Selector</h2>
+            <span class="test-case-id">dual-slider-iframe</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Inside the iframe, set the time range to 9:00 AM - 5:00 PM (9-17 in 24h format). Drag the handles accordingly.
+        </div>
+
+        <div class="iframe-container">
+            <iframe id="slider-iframe" srcdoc="
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <style>
+                        body {
+                            font-family: -apple-system, sans-serif;
+                            padding: 20px;
+                            margin: 0;
+                            background: #fafafa;
+                        }
+                        .iframe-slider-container {
+                            background: white;
+                            padding: 20px;
+                            border-radius: 8px;
+                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                        }
+                        .slider-title {
+                            font-weight: 600;
+                            margin-bottom: 15px;
+                            color: #333;
+                        }
+                        .dual-slider {
+                            position: relative;
+                            height: 40px;
+                            margin: 20px 0;
+                        }
+                        .dual-slider-track {
+                            position: absolute;
+                            top: 50%;
+                            transform: translateY(-50%);
+                            width: 100%;
+                            height: 8px;
+                            background: #ddd;
+                            border-radius: 4px;
+                        }
+                        .dual-slider-range {
+                            position: absolute;
+                            top: 50%;
+                            transform: translateY(-50%);
+                            height: 8px;
+                            background: linear-gradient(90deg, #2196f3, #00bcd4);
+                            border-radius: 4px;
+                        }
+                        .dual-slider-thumb {
+                            position: absolute;
+                            top: 50%;
+                            transform: translate(-50%, -50%);
+                            width: 24px;
+                            height: 24px;
+                            background: white;
+                            border: 3px solid #2196f3;
+                            border-radius: 50%;
+                            cursor: grab;
+                            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+                            z-index: 10;
+                            will-change: left;
+                            touch-action: none;
+                        }
+                        .dual-slider-thumb:active,
+                        .dual-slider-thumb.dragging {
+                            cursor: grabbing;
+                            transform: translate(-50%, -50%) scale(1.15);
+                            transition: none !important;
+                        }
+                        .dual-slider-thumb.max-thumb {
+                            border-color: #00bcd4;
+                        }
+                        .slider-values {
+                            display: flex;
+                            justify-content: space-between;
+                            margin-top: 10px;
+                            font-size: 14px;
+                        }
+                        .slider-values span {
+                            background: #e3f2fd;
+                            padding: 4px 12px;
+                            border-radius: 4px;
+                            font-weight: 600;
+                        }
+                        .result {
+                            margin-top: 15px;
+                            padding: 10px;
+                            background: #fff;
+                            border: 1px solid #ddd;
+                            border-radius: 4px;
+                            font-family: monospace;
+                        }
+                        .result.success {
+                            background: #d4edda;
+                            border-color: #28a745;
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class='iframe-slider-container'>
+                        <div class='slider-title'>Working Hours Selection (24h format)</div>
+                        <div class='dual-slider' id='time-slider'>
+                            <div class='dual-slider-track'></div>
+                            <div class='dual-slider-range' id='time-range'></div>
+                            <div class='dual-slider-thumb min-thumb' id='time-min-thumb'
+                                 data-testid='time-min-handle' draggable='true'></div>
+                            <div class='dual-slider-thumb max-thumb' id='time-max-thumb'
+                                 data-testid='time-max-handle' draggable='true'></div>
+                        </div>
+                        <div class='slider-values'>
+                            <span>Start: <span id='time-min-value'>6:00</span></span>
+                            <span>End: <span id='time-max-value'>12:00</span></span>
+                        </div>
+                    </div>
+                    <div class='result' id='iframe-result'>Current: 6:00 - 12:00 (Target: 9:00 - 17:00)</div>
+                    <script>
+                        (function() {
+                            const slider = document.getElementById('time-slider');
+                            const range = document.getElementById('time-range');
+                            const minThumb = document.getElementById('time-min-thumb');
+                            const maxThumb = document.getElementById('time-max-thumb');
+                            const minValueEl = document.getElementById('time-min-value');
+                            const maxValueEl = document.getElementById('time-max-value');
+                            const result = document.getElementById('iframe-result');
+
+                            let minValue = 6;  // 6:00 AM
+                            let maxValue = 12; // 12:00 PM
+                            const rangeMin = 0;
+                            const rangeMax = 24;
+                            let isDragging = null;
+
+                            function formatTime(hour) {
+                                return hour + ':00';
+                            }
+
+                            function updateSlider() {
+                                const sliderWidth = slider.offsetWidth;
+                                const minPercent = ((minValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+                                const maxPercent = ((maxValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+
+                                minThumb.style.left = minPercent + '%';
+                                maxThumb.style.left = maxPercent + '%';
+                                range.style.left = minPercent + '%';
+                                range.style.width = (maxPercent - minPercent) + '%';
+
+                                minValueEl.textContent = formatTime(minValue);
+                                maxValueEl.textContent = formatTime(maxValue);
+
+                                result.textContent = 'Current: ' + formatTime(minValue) + ' - ' + formatTime(maxValue) + ' (Target: 9:00 - 17:00)';
+
+                                // Check success condition
+                                if (minValue >= 8 && minValue <= 10 && maxValue >= 16 && maxValue <= 18) {
+                                    result.textContent = 'SUCCESS: Time range set to ' + formatTime(minValue) + ' - ' + formatTime(maxValue);
+                                    result.classList.add('success');
+                                    window.parent.postMessage({ type: 'iframe-slider-success', min: minValue, max: maxValue }, '*');
+                                } else {
+                                    result.classList.remove('success');
+                                }
+                            }
+
+                            function getValueFromPosition(clientX) {
+                                const rect = slider.getBoundingClientRect();
+                                const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                                return Math.round(rangeMin + percent * (rangeMax - rangeMin));
+                            }
+
+                            function handleDrag(e) {
+                                if (!isDragging) return;
+                                e.preventDefault();
+                                const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                                const newValue = getValueFromPosition(clientX);
+
+                                if (isDragging === 'min') {
+                                    minValue = Math.min(newValue, maxValue - 1);
+                                } else {
+                                    maxValue = Math.max(newValue, minValue + 1);
+                                }
+                                updateSlider();
+                            }
+
+                            function startDrag(e, type) {
+                                e.preventDefault();
+                                isDragging = type;
+                                document.body.style.cursor = 'grabbing';
+                                (type === 'min' ? minThumb : maxThumb).classList.add('dragging');
+                                document.addEventListener('mousemove', handleDrag);
+                                document.addEventListener('touchmove', handleDrag, { passive: false });
+                                document.addEventListener('mouseup', stopDrag);
+                                document.addEventListener('touchend', stopDrag);
+                            }
+
+                            function stopDrag() {
+                                if (isDragging) {
+                                    (isDragging === 'min' ? minThumb : maxThumb).classList.remove('dragging');
+                                }
+                                isDragging = null;
+                                document.body.style.cursor = '';
+                                document.removeEventListener('mousemove', handleDrag);
+                                document.removeEventListener('touchmove', handleDrag);
+                                document.removeEventListener('mouseup', stopDrag);
+                                document.removeEventListener('touchend', stopDrag);
+                            }
+
+                            minThumb.addEventListener('mousedown', (e) => startDrag(e, 'min'));
+                            maxThumb.addEventListener('mousedown', (e) => startDrag(e, 'max'));
+                            minThumb.addEventListener('touchstart', (e) => startDrag(e, 'min'), { passive: false });
+                            maxThumb.addEventListener('touchstart', (e) => startDrag(e, 'max'), { passive: false });
+
+                            updateSlider();
+                        })();
+                    </script>
+</body>
+                </html>
+            "></iframe>
+        </div>
+
+        <div class="result-display" id="test-3-result">Status: Waiting for iframe slider interaction...</div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="iframe-start">Start time should be approximately 9:00 (±1 hour)</li>
+                <li data-check="iframe-end">End time should be approximately 17:00 (±1 hour)</li>
+                <li data-check="iframe-success">The iframe result should show SUCCESS</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 4: Misleading draggable="true" with mouse events only -->
+    <div class="test-case" id="test-4" data-test-id="18-dual-slider-misleading">
+        <div class="test-case-header">
+            <h2 class="test-case-title">4. Misleading draggable - Mouse Events Only</h2>
+            <span class="test-case-id">dual-slider-misleading</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> This slider has draggable="true" but NO drag event listeners - only mousedown/mousemove/mouseup. Set the rating range to 3-8 stars. The system must detect this and use mouse events instead of HTML5 drag.
+        </div>
+
+        <div class="dual-slider-container" style="background: #fff3e0;">
+            <span class="dual-slider-label">⚠️ Rating Filter (Tricky: has draggable="true" but uses mouse events):</span>
+            <div class="dual-slider" id="rating-slider" data-testid="rating-range-slider">
+                <div class="dual-slider-track"></div>
+                <div class="dual-slider-range" id="rating-range" style="background: linear-gradient(90deg, #ff9800, #f44336);"></div>
+                <div class="dual-slider-thumb min-thumb" id="rating-min-thumb"
+                     data-testid="rating-min-handle" draggable="true"
+                     style="border-color: #ff9800;"
+                     aria-label="Minimum rating handle" role="slider"
+                     aria-valuemin="1" aria-valuemax="10" aria-valuenow="1"></div>
+                <div class="dual-slider-thumb max-thumb" id="rating-max-thumb"
+                     data-testid="rating-max-handle" draggable="true"
+                     style="border-color: #f44336;"
+                     aria-label="Maximum rating handle" role="slider"
+                     aria-valuemin="1" aria-valuemax="10" aria-valuenow="5"></div>
+            </div>
+            <div class="dual-slider-values">
+                <span class="min-value" style="color: #ff9800;">Min: <span id="rating-min-value">1</span>★</span>
+                <span class="range-display">Range: <span id="rating-range-display">1 - 5</span>★</span>
+                <span class="max-value" style="color: #f44336;">Max: <span id="rating-max-value">5</span>★</span>
+            </div>
+        </div>
+
+        <div class="result-display" id="test-4-result">Current Range: 1★ - 5★ (Target: 3★ - 8★)</div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="rating-min">Min rating should be approximately 3 (±1)</li>
+                <li data-check="rating-max">Max rating should be approximately 8 (±1)</li>
+                <li data-check="mouse-fallback">System must detect draggable="true" is misleading and use mouse events</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-4">
+            <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 5: Misleading draggable="true" in Shadow DOM -->
+    <div class="test-case" id="test-5" data-test-id="18-dual-slider-misleading-shadow">
+        <div class="test-case-header">
+            <h2 class="test-case-title">5. Shadow DOM - Misleading draggable (Mouse Events Only)</h2>
+            <span class="test-case-id">dual-slider-misleading-shadow</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Inside the Shadow DOM, this slider has draggable="true" but NO drag event listeners. Set the temperature range to 15°C - 28°C. The system must detect this and use mouse events.
+        </div>
+
+        <div class="shadow-host-label">Shadow DOM Container (Misleading draggable):</div>
+        <div class="shadow-host" id="shadow-misleading-host" style="border-color: #ff9800;"></div>
+
+        <div class="result-display" id="test-5-result">Status: Waiting for shadow DOM slider interaction...</div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="shadow-temp-min">Min temperature should be approximately 15°C (±3)</li>
+                <li data-check="shadow-temp-max">Max temperature should be approximately 28°C (±3)</li>
+                <li data-check="shadow-mouse-fallback">System must detect draggable="true" is misleading and use mouse events</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-5">
+            <button class="status-btn reset" type="button" data-status-reset="test-5">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test 6: Misleading draggable="true" in Iframe -->
+    <div class="test-case" id="test-6" data-test-id="18-dual-slider-misleading-iframe">
+        <div class="test-case-header">
+            <h2 class="test-case-title">6. Iframe - Misleading draggable (Mouse Events Only)</h2>
+            <span class="test-case-id">dual-slider-misleading-iframe</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Inside the iframe, this slider has draggable="true" but NO drag event listeners. Set the volume range to 20% - 80%. The system must detect this and use mouse events.
+        </div>
+
+        <div class="iframe-container">
+            <iframe id="misleading-slider-iframe" srcdoc="
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <style>
+                        body {
+                            font-family: -apple-system, sans-serif;
+                            padding: 20px;
+                            margin: 0;
+                            background: #fff3e0;
+                        }
+                        .iframe-slider-container {
+                            background: white;
+                            padding: 20px;
+                            border-radius: 8px;
+                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                        }
+                        .slider-title {
+                            font-weight: 600;
+                            margin-bottom: 5px;
+                            color: #333;
+                        }
+                        .slider-warning {
+                            font-size: 12px;
+                            color: #ff9800;
+                            margin-bottom: 15px;
+                        }
+                        .dual-slider {
+                            position: relative;
+                            height: 40px;
+                            margin: 20px 0;
+                        }
+                        .dual-slider-track {
+                            position: absolute;
+                            top: 50%;
+                            transform: translateY(-50%);
+                            width: 100%;
+                            height: 8px;
+                            background: #ddd;
+                            border-radius: 4px;
+                        }
+                        .dual-slider-range {
+                            position: absolute;
+                            top: 50%;
+                            transform: translateY(-50%);
+                            height: 8px;
+                            background: linear-gradient(90deg, #ff9800, #f44336);
+                            border-radius: 4px;
+                        }
+                        .dual-slider-thumb {
+                            position: absolute;
+                            top: 50%;
+                            transform: translate(-50%, -50%);
+                            width: 24px;
+                            height: 24px;
+                            background: white;
+                            border: 3px solid #ff9800;
+                            border-radius: 50%;
+                            cursor: grab;
+                            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+                            z-index: 10;
+                            will-change: left;
+                            touch-action: none;
+                        }
+                        .dual-slider-thumb:active,
+                        .dual-slider-thumb.dragging {
+                            cursor: grabbing;
+                            transform: translate(-50%, -50%) scale(1.15);
+                            transition: none !important;
+                        }
+                        .dual-slider-thumb.max-thumb {
+                            border-color: #f44336;
+                        }
+                        .slider-values {
+                            display: flex;
+                            justify-content: space-between;
+                            margin-top: 10px;
+                            font-size: 14px;
+                        }
+                        .slider-values span {
+                            background: #fff3e0;
+                            padding: 4px 12px;
+                            border-radius: 4px;
+                            font-weight: 600;
+                        }
+                        .result {
+                            margin-top: 15px;
+                            padding: 10px;
+                            background: #fff;
+                            border: 1px solid #ddd;
+                            border-radius: 4px;
+                            font-family: monospace;
+                        }
+                        .result.success {
+                            background: #d4edda;
+                            border-color: #28a745;
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class='iframe-slider-container'>
+                        <div class='slider-title'>Volume Range (Misleading draggable='true')</div>
+                        <div class='slider-warning'>⚠️ Has draggable='true' but uses mouse events only</div>
+                        <div class='dual-slider' id='volume-slider'>
+                            <div class='dual-slider-track'></div>
+                            <div class='dual-slider-range' id='volume-range'></div>
+                            <div class='dual-slider-thumb min-thumb' id='volume-min-thumb'
+                                 data-testid='volume-min-handle' draggable='true'></div>
+                            <div class='dual-slider-thumb max-thumb' id='volume-max-thumb'
+                                 data-testid='volume-max-handle' draggable='true'></div>
+                        </div>
+                        <div class='slider-values'>
+                            <span>Min: <span id='volume-min-value'>0</span>%</span>
+                            <span>Max: <span id='volume-max-value'>50</span>%</span>
+                        </div>
+                    </div>
+                    <div class='result' id='iframe-result'>Current: 0% - 50% (Target: 20% - 80%)</div>
+                    <script>
+                        (function() {
+                            const slider = document.getElementById('volume-slider');
+                            const range = document.getElementById('volume-range');
+                            const minThumb = document.getElementById('volume-min-thumb');
+                            const maxThumb = document.getElementById('volume-max-thumb');
+                            const minValueEl = document.getElementById('volume-min-value');
+                            const maxValueEl = document.getElementById('volume-max-value');
+                            const result = document.getElementById('iframe-result');
+
+                            let minValue = 0;
+                            let maxValue = 50;
+                            const rangeMin = 0;
+                            const rangeMax = 100;
+                            let isDragging = null;
+
+                            function updateSlider() {
+                                const minPercent = ((minValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+                                const maxPercent = ((maxValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+
+                                minThumb.style.left = minPercent + '%';
+                                maxThumb.style.left = maxPercent + '%';
+                                range.style.left = minPercent + '%';
+                                range.style.width = (maxPercent - minPercent) + '%';
+
+                                minValueEl.textContent = minValue;
+                                maxValueEl.textContent = maxValue;
+
+                                result.textContent = 'Current: ' + minValue + '% - ' + maxValue + '% (Target: 20% - 80%)';
+
+                                // Check success condition
+                                if (minValue >= 15 && minValue <= 25 && maxValue >= 75 && maxValue <= 85) {
+                                    result.textContent = 'SUCCESS: Volume range set to ' + minValue + '% - ' + maxValue + '%';
+                                    result.classList.add('success');
+                                    window.parent.postMessage({ type: 'iframe-misleading-slider-success', min: minValue, max: maxValue }, '*');
+                                } else {
+                                    result.classList.remove('success');
+                                }
+                            }
+
+                            function getValueFromPosition(clientX) {
+                                const rect = slider.getBoundingClientRect();
+                                const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                                return Math.round(rangeMin + percent * (rangeMax - rangeMin));
+                            }
+
+                            function handleDrag(e) {
+                                if (!isDragging) return;
+                                e.preventDefault();
+                                const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                                const newValue = getValueFromPosition(clientX);
+
+                                if (isDragging === 'min') {
+                                    minValue = Math.min(newValue, maxValue - 5);
+                                } else {
+                                    maxValue = Math.max(newValue, minValue + 5);
+                                }
+                                updateSlider();
+                            }
+
+                            function startDrag(e, type) {
+                                e.preventDefault();
+                                isDragging = type;
+                                document.body.style.cursor = 'grabbing';
+                                (type === 'min' ? minThumb : maxThumb).classList.add('dragging');
+                            }
+
+                            function stopDrag() {
+                                if (isDragging) {
+                                    (isDragging === 'min' ? minThumb : maxThumb).classList.remove('dragging');
+                                }
+                                isDragging = null;
+                                document.body.style.cursor = '';
+                            }
+
+                            // Performance fix: Only add listeners when drag starts, remove when it ends
+                            function startDragWithListeners(e, type) {
+                                startDrag(e, type);
+                                document.addEventListener('mousemove', handleDrag);
+                                document.addEventListener('touchmove', handleDrag, { passive: false });
+                                document.addEventListener('mouseup', stopDragAndCleanup);
+                                document.addEventListener('touchend', stopDragAndCleanup);
+                            }
+
+                            function stopDragAndCleanup() {
+                                stopDrag();
+                                document.removeEventListener('mousemove', handleDrag);
+                                document.removeEventListener('touchmove', handleDrag);
+                                document.removeEventListener('mouseup', stopDragAndCleanup);
+                                document.removeEventListener('touchend', stopDragAndCleanup);
+                            }
+
+                            // IMPORTANT: Only mouse events - NO drag event listeners!
+                            // The thumbs have draggable='true' to mislead
+                            minThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'min'));
+                            maxThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'max'));
+                            minThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'min'), { passive: false });
+                            maxThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'max'), { passive: false });
+
+                            updateSlider();
+                        })();
+                    </script>
+                </body>
+                </html>
+            "></iframe>
+        </div>
+
+        <div class="result-display" id="test-6-result">Status: Waiting for iframe slider interaction...</div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="iframe-vol-min">Min volume should be approximately 20% (±5)</li>
+                <li data-check="iframe-vol-max">Max volume should be approximately 80% (±5)</li>
+                <li data-check="iframe-mouse-fallback">System must detect draggable="true" is misleading and use mouse events</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-6">
+            <button class="status-btn reset" type="button" data-status-reset="test-6">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // Test 1: Main Document Dual Range Slider
+        function initPriceSlider() {
+            const slider = document.getElementById('price-slider');
+            const range = document.getElementById('price-range');
+            const minThumb = document.getElementById('price-min-thumb');
+            const maxThumb = document.getElementById('price-max-thumb');
+            const minValueEl = document.getElementById('price-min-value');
+            const maxValueEl = document.getElementById('price-max-value');
+            const rangeDisplay = document.getElementById('price-range-display');
+            const result = document.getElementById('test-1-result');
+
+            let minValue = 100;
+            let maxValue = 500;
+            const rangeMin = 0;
+            const rangeMax = 1000;
+            let isDragging = null;
+
+            function updateSlider() {
+                const minPercent = ((minValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+                const maxPercent = ((maxValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+
+                minThumb.style.left = minPercent + '%';
+                maxThumb.style.left = maxPercent + '%';
+                range.style.left = minPercent + '%';
+                range.style.width = (maxPercent - minPercent) + '%';
+
+                minValueEl.textContent = minValue;
+                maxValueEl.textContent = maxValue;
+                rangeDisplay.textContent = minValue + ' - ' + maxValue;
+
+                minThumb.setAttribute('aria-valuenow', minValue);
+                maxThumb.setAttribute('aria-valuenow', maxValue);
+
+                result.textContent = 'Current Range: $' + minValue + ' - $' + maxValue + ' (Target: $200 - $700)';
+
+                // Check success condition (within ±50 of target)
+                const minOk = minValue >= 150 && minValue <= 250;
+                const maxOk = maxValue >= 650 && maxValue <= 750;
+                if (minOk && maxOk) {
+                    result.textContent = 'SUCCESS: Price range set to $' + minValue + ' - $' + maxValue;
+                    result.classList.add('success');
+                    if (typeof window.setCheckState === 'function') {
+                        window.setCheckState('18-dual-slider-main', 'min-value', 'pass');
+                        window.setCheckState('18-dual-slider-main', 'max-value', 'pass');
+                        if (minValue < maxValue) {
+                            window.setCheckState('18-dual-slider-main', 'range-valid', 'pass');
+                        }
+                    }
+                } else {
+                    result.classList.remove('success');
+                }
+            }
+
+            function getValueFromPosition(clientX) {
+                const rect = slider.getBoundingClientRect();
+                const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                return Math.round((rangeMin + percent * (rangeMax - rangeMin)) / 10) * 10; // Round to nearest 10
+            }
+
+            function handleDrag(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                const newValue = getValueFromPosition(clientX);
+
+                if (isDragging === 'min') {
+                    minValue = Math.min(newValue, maxValue - 10);
+                } else {
+                    maxValue = Math.max(newValue, minValue + 10);
+                }
+                updateSlider();
+            }
+
+            function startDrag(e, type) {
+                e.preventDefault();
+                isDragging = type;
+                document.body.style.cursor = 'grabbing';
+                (type === 'min' ? minThumb : maxThumb).classList.add('dragging');
+            }
+
+            function stopDrag() {
+                if (isDragging) {
+                    (isDragging === 'min' ? minThumb : maxThumb).classList.remove('dragging');
+                }
+                isDragging = null;
+                document.body.style.cursor = '';
+            }
+
+            function startDragWithListeners(e, type) {
+                startDrag(e, type);
+                document.addEventListener('mousemove', handleDrag);
+                document.addEventListener('touchmove', handleDrag, { passive: false });
+                document.addEventListener('mouseup', stopDragAndCleanup);
+                document.addEventListener('touchend', stopDragAndCleanup);
+            }
+
+            function stopDragAndCleanup() {
+                stopDrag();
+                document.removeEventListener('mousemove', handleDrag);
+                document.removeEventListener('touchmove', handleDrag);
+                document.removeEventListener('mouseup', stopDragAndCleanup);
+                document.removeEventListener('touchend', stopDragAndCleanup);
+            }
+
+            minThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'min'));
+            maxThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'max'));
+            minThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'min'), { passive: false });
+            maxThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'max'), { passive: false });
+
+            updateSlider();
+        }
+
+        // Test 2: Shadow DOM Dual Range Slider
+        function initShadowSlider() {
+            const host = document.getElementById('shadow-slider-host');
+            const shadow = host.attachShadow({ mode: 'open' });
+
+            shadow.innerHTML = `
+                <style>
+                    .shadow-slider-container {
+                        background: #f8f9fa;
+                        padding: 20px;
+                        border-radius: 8px;
+                    }
+                    .slider-title {
+                        font-weight: 600;
+                        margin-bottom: 15px;
+                        color: #333;
+                    }
+                    .dual-slider {
+                        position: relative;
+                        height: 40px;
+                        margin: 20px 0;
+                    }
+                    .dual-slider-track {
+                        position: absolute;
+                        top: 50%;
+                        transform: translateY(-50%);
+                        width: 100%;
+                        height: 8px;
+                        background: #ddd;
+                        border-radius: 4px;
+                    }
+                    .dual-slider-range {
+                        position: absolute;
+                        top: 50%;
+                        transform: translateY(-50%);
+                        height: 8px;
+                        background: linear-gradient(90deg, #4caf50, #8bc34a);
+                        border-radius: 4px;
+                    }
+                    .dual-slider-thumb {
+                        position: absolute;
+                        top: 50%;
+                        transform: translate(-50%, -50%);
+                        width: 24px;
+                        height: 24px;
+                        background: white;
+                        border: 3px solid #4caf50;
+                        border-radius: 50%;
+                        cursor: grab;
+                        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+                        z-index: 10;
+                        will-change: left;
+                        touch-action: none;
+                    }
+                    .dual-slider-thumb:active,
+                    .dual-slider-thumb.dragging {
+                        cursor: grabbing;
+                        transform: translate(-50%, -50%) scale(1.15);
+                        transition: none !important;
+                    }
+                    .dual-slider-thumb.max-thumb {
+                        border-color: #8bc34a;
+                    }
+                    .slider-values {
+                        display: flex;
+                        justify-content: space-between;
+                        margin-top: 10px;
+                        font-size: 14px;
+                    }
+                    .slider-values span {
+                        background: #e8f5e9;
+                        padding: 4px 12px;
+                        border-radius: 4px;
+                        font-weight: 600;
+                    }
+                </style>
+                <div class="shadow-slider-container">
+                    <div class="slider-title">Age Range Filter</div>
+                    <div class="dual-slider" id="age-slider">
+                        <div class="dual-slider-track"></div>
+                        <div class="dual-slider-range" id="age-range"></div>
+                        <div class="dual-slider-thumb min-thumb" id="age-min-thumb"
+                             data-testid="age-min-handle" draggable="true"></div>
+                        <div class="dual-slider-thumb max-thumb" id="age-max-thumb"
+                             data-testid="age-max-handle" draggable="true"></div>
+                    </div>
+                    <div class="slider-values">
+                        <span>Min Age: <span id="age-min-value">18</span></span>
+                        <span>Max Age: <span id="age-max-value">35</span></span>
+                    </div>
+                </div>
+            `;
+
+            const slider = shadow.getElementById('age-slider');
+            const range = shadow.getElementById('age-range');
+            const minThumb = shadow.getElementById('age-min-thumb');
+            const maxThumb = shadow.getElementById('age-max-thumb');
+            const minValueEl = shadow.getElementById('age-min-value');
+            const maxValueEl = shadow.getElementById('age-max-value');
+            const result = document.getElementById('test-2-result');
+
+            let minValue = 18;
+            let maxValue = 35;
+            const rangeMin = 18;
+            const rangeMax = 65;
+            let isDragging = null;
+
+            function updateSlider() {
+                const minPercent = ((minValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+                const maxPercent = ((maxValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+
+                minThumb.style.left = minPercent + '%';
+                maxThumb.style.left = maxPercent + '%';
+                range.style.left = minPercent + '%';
+                range.style.width = (maxPercent - minPercent) + '%';
+
+                minValueEl.textContent = minValue;
+                maxValueEl.textContent = maxValue;
+
+                result.textContent = 'Current Age Range: ' + minValue + ' - ' + maxValue + ' (Target: 25 - 45)';
+
+                // Check success condition (within ±5 of target)
+                const minOk = minValue >= 20 && minValue <= 30;
+                const maxOk = maxValue >= 40 && maxValue <= 50;
+                if (minOk && maxOk) {
+                    result.textContent = 'SUCCESS: Age range set to ' + minValue + ' - ' + maxValue;
+                    result.classList.add('success');
+                    if (typeof window.setCheckState === 'function') {
+                        window.setCheckState('18-dual-slider-shadow', 'shadow-min', 'pass');
+                        window.setCheckState('18-dual-slider-shadow', 'shadow-max', 'pass');
+                        window.setCheckState('18-dual-slider-shadow', 'shadow-range', 'pass');
+                    }
+                } else {
+                    result.classList.remove('success');
+                }
+            }
+
+            function getValueFromPosition(clientX) {
+                const rect = slider.getBoundingClientRect();
+                const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                return Math.round(rangeMin + percent * (rangeMax - rangeMin));
+            }
+
+            function handleDrag(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                const newValue = getValueFromPosition(clientX);
+
+                if (isDragging === 'min') {
+                    minValue = Math.min(newValue, maxValue - 1);
+                } else {
+                    maxValue = Math.max(newValue, minValue + 1);
+                }
+                updateSlider();
+            }
+
+            function startDrag(e, type) {
+                e.preventDefault();
+                isDragging = type;
+                document.body.style.cursor = 'grabbing';
+                (type === 'min' ? minThumb : maxThumb).classList.add('dragging');
+            }
+
+            function stopDrag() {
+                if (isDragging) {
+                    (isDragging === 'min' ? minThumb : maxThumb).classList.remove('dragging');
+                }
+                isDragging = null;
+                document.body.style.cursor = '';
+            }
+
+            function startDragWithListeners(e, type) {
+                startDrag(e, type);
+                shadow.addEventListener('mousemove', handleDrag);
+                shadow.addEventListener('touchmove', handleDrag, { passive: false });
+                document.addEventListener('mousemove', handleDrag);
+                document.addEventListener('touchmove', handleDrag, { passive: false });
+                document.addEventListener('mouseup', stopDragAndCleanup);
+                document.addEventListener('touchend', stopDragAndCleanup);
+            }
+
+            function stopDragAndCleanup() {
+                stopDrag();
+                shadow.removeEventListener('mousemove', handleDrag);
+                shadow.removeEventListener('touchmove', handleDrag);
+                document.removeEventListener('mousemove', handleDrag);
+                document.removeEventListener('touchmove', handleDrag);
+                document.removeEventListener('mouseup', stopDragAndCleanup);
+                document.removeEventListener('touchend', stopDragAndCleanup);
+            }
+
+            minThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'min'));
+            maxThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'max'));
+            minThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'min'), { passive: false });
+            maxThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'max'), { passive: false });
+
+            updateSlider();
+        }
+
+        // Test 4: Misleading draggable="true" - uses mouse events only, NO drag event listeners
+        // This tests that the system detects draggable="true" is misleading and falls back to mouse events
+        function initRatingSlider() {
+            const slider = document.getElementById('rating-slider');
+            const range = document.getElementById('rating-range');
+            const minThumb = document.getElementById('rating-min-thumb');
+            const maxThumb = document.getElementById('rating-max-thumb');
+            const minValueEl = document.getElementById('rating-min-value');
+            const maxValueEl = document.getElementById('rating-max-value');
+            const rangeDisplay = document.getElementById('rating-range-display');
+            const result = document.getElementById('test-4-result');
+
+            let minValue = 1;
+            let maxValue = 5;
+            const rangeMin = 1;
+            const rangeMax = 10;
+            let isDragging = null;
+
+            function updateSlider() {
+                const minPercent = ((minValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+                const maxPercent = ((maxValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+
+                minThumb.style.left = minPercent + '%';
+                maxThumb.style.left = maxPercent + '%';
+                range.style.left = minPercent + '%';
+                range.style.width = (maxPercent - minPercent) + '%';
+
+                minValueEl.textContent = minValue;
+                maxValueEl.textContent = maxValue;
+                rangeDisplay.textContent = minValue + ' - ' + maxValue;
+
+                minThumb.setAttribute('aria-valuenow', minValue);
+                maxThumb.setAttribute('aria-valuenow', maxValue);
+
+                result.textContent = 'Current Range: ' + minValue + '★ - ' + maxValue + '★ (Target: 3★ - 8★)';
+
+                // Check success condition (within ±1 of target)
+                const minOk = minValue >= 2 && minValue <= 4;
+                const maxOk = maxValue >= 7 && maxValue <= 9;
+                if (minOk && maxOk) {
+                    result.textContent = 'SUCCESS: Rating range set to ' + minValue + '★ - ' + maxValue + '★';
+                    result.classList.add('success');
+                    if (typeof window.setCheckState === 'function') {
+                        window.setCheckState('18-dual-slider-misleading', 'rating-min', 'pass');
+                        window.setCheckState('18-dual-slider-misleading', 'rating-max', 'pass');
+                        // Reaching the target values is only possible via the mouse-event
+                        // handlers (no HTML5 drag listeners exist), so success proves the
+                        // misleading draggable="true" was bypassed in favor of mouse events.
+                        window.setCheckState('18-dual-slider-misleading', 'mouse-fallback', 'pass');
+                    }
+                } else {
+                    result.classList.remove('success');
+                }
+            }
+
+            function getValueFromPosition(clientX) {
+                const rect = slider.getBoundingClientRect();
+                const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                return Math.round(rangeMin + percent * (rangeMax - rangeMin));
+            }
+
+            function handleDrag(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                const newValue = getValueFromPosition(clientX);
+
+                if (isDragging === 'min') {
+                    minValue = Math.min(newValue, maxValue - 1);
+                } else {
+                    maxValue = Math.max(newValue, minValue + 1);
+                }
+                updateSlider();
+            }
+
+            function startDrag(e, type) {
+                e.preventDefault();
+                isDragging = type;
+                document.body.style.cursor = 'grabbing';
+                (type === 'min' ? minThumb : maxThumb).classList.add('dragging');
+            }
+
+            function stopDrag() {
+                if (isDragging) {
+                    (isDragging === 'min' ? minThumb : maxThumb).classList.remove('dragging');
+                }
+                isDragging = null;
+                document.body.style.cursor = '';
+            }
+
+            // IMPORTANT: Only mouse events - NO drag event listeners!
+            // The thumbs have draggable="true" to mislead, but we only listen for mouse events
+            function startDragWithListeners(e, type) {
+                startDrag(e, type);
+                document.addEventListener('mousemove', handleDrag);
+                document.addEventListener('touchmove', handleDrag, { passive: false });
+                document.addEventListener('mouseup', stopDragAndCleanup);
+                document.addEventListener('touchend', stopDragAndCleanup);
+            }
+
+            function stopDragAndCleanup() {
+                stopDrag();
+                document.removeEventListener('mousemove', handleDrag);
+                document.removeEventListener('touchmove', handleDrag);
+                document.removeEventListener('mouseup', stopDragAndCleanup);
+                document.removeEventListener('touchend', stopDragAndCleanup);
+            }
+
+            minThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'min'));
+            maxThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'max'));
+            minThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'min'), { passive: false });
+            maxThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'max'), { passive: false });
+
+            updateSlider();
+        }
+
+        // Test 5: Shadow DOM Misleading draggable - uses mouse events only, NO drag event listeners
+        function initMisleadingShadowSlider() {
+            const host = document.getElementById('shadow-misleading-host');
+            const shadow = host.attachShadow({ mode: 'open' });
+
+            shadow.innerHTML = `
+                <style>
+                    .shadow-slider-container {
+                        background: #fff3e0;
+                        padding: 20px;
+                        border-radius: 8px;
+                    }
+                    .slider-title {
+                        font-weight: 600;
+                        margin-bottom: 5px;
+                        color: #333;
+                    }
+                    .slider-warning {
+                        font-size: 12px;
+                        color: #ff9800;
+                        margin-bottom: 15px;
+                    }
+                    .dual-slider {
+                        position: relative;
+                        height: 40px;
+                        margin: 20px 0;
+                    }
+                    .dual-slider-track {
+                        position: absolute;
+                        top: 50%;
+                        transform: translateY(-50%);
+                        width: 100%;
+                        height: 8px;
+                        background: #ddd;
+                        border-radius: 4px;
+                    }
+                    .dual-slider-range {
+                        position: absolute;
+                        top: 50%;
+                        transform: translateY(-50%);
+                        height: 8px;
+                        background: linear-gradient(90deg, #ff9800, #f44336);
+                        border-radius: 4px;
+                    }
+                    .dual-slider-thumb {
+                        position: absolute;
+                        top: 50%;
+                        transform: translate(-50%, -50%);
+                        width: 24px;
+                        height: 24px;
+                        background: white;
+                        border: 3px solid #ff9800;
+                        border-radius: 50%;
+                        cursor: grab;
+                        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+                        z-index: 10;
+                        will-change: left;
+                        touch-action: none;
+                    }
+                    .dual-slider-thumb:active,
+                    .dual-slider-thumb.dragging {
+                        cursor: grabbing;
+                        transform: translate(-50%, -50%) scale(1.15);
+                        transition: none !important;
+                    }
+                    .dual-slider-thumb.max-thumb {
+                        border-color: #f44336;
+                    }
+                    .slider-values {
+                        display: flex;
+                        justify-content: space-between;
+                        margin-top: 10px;
+                        font-size: 14px;
+                    }
+                    .slider-values span {
+                        background: #fff3e0;
+                        padding: 4px 12px;
+                        border-radius: 4px;
+                        font-weight: 600;
+                    }
+                </style>
+                <div class="shadow-slider-container">
+                    <div class="slider-title">Temperature Range Filter</div>
+                    <div class="slider-warning">⚠️ Has draggable="true" but uses mouse events only</div>
+                    <div class="dual-slider" id="temp-slider">
+                        <div class="dual-slider-track"></div>
+                        <div class="dual-slider-range" id="temp-range"></div>
+                        <div class="dual-slider-thumb min-thumb" id="temp-min-thumb"
+                             data-testid="temp-min-handle" draggable="true"></div>
+                        <div class="dual-slider-thumb max-thumb" id="temp-max-thumb"
+                             data-testid="temp-max-handle" draggable="true"></div>
+                    </div>
+                    <div class="slider-values">
+                        <span>Min: <span id="temp-min-value">5</span>°C</span>
+                        <span>Max: <span id="temp-max-value">20</span>°C</span>
+                    </div>
+                </div>
+            `;
+
+            const slider = shadow.getElementById('temp-slider');
+            const range = shadow.getElementById('temp-range');
+            const minThumb = shadow.getElementById('temp-min-thumb');
+            const maxThumb = shadow.getElementById('temp-max-thumb');
+            const minValueEl = shadow.getElementById('temp-min-value');
+            const maxValueEl = shadow.getElementById('temp-max-value');
+            const result = document.getElementById('test-5-result');
+
+            let minValue = 5;
+            let maxValue = 20;
+            const rangeMin = 0;
+            const rangeMax = 40;
+            let isDragging = null;
+
+            function updateSlider() {
+                const minPercent = ((minValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+                const maxPercent = ((maxValue - rangeMin) / (rangeMax - rangeMin)) * 100;
+
+                minThumb.style.left = minPercent + '%';
+                maxThumb.style.left = maxPercent + '%';
+                range.style.left = minPercent + '%';
+                range.style.width = (maxPercent - minPercent) + '%';
+
+                minValueEl.textContent = minValue;
+                maxValueEl.textContent = maxValue;
+
+                result.textContent = 'Current Temperature Range: ' + minValue + '°C - ' + maxValue + '°C (Target: 15°C - 28°C)';
+
+                // Check success condition (within ±3 of target)
+                const minOk = minValue >= 12 && minValue <= 18;
+                const maxOk = maxValue >= 25 && maxValue <= 31;
+                if (minOk && maxOk) {
+                    result.textContent = 'SUCCESS: Temperature range set to ' + minValue + '°C - ' + maxValue + '°C';
+                    result.classList.add('success');
+                    if (typeof window.setCheckState === 'function') {
+                        window.setCheckState('18-dual-slider-misleading-shadow', 'shadow-temp-min', 'pass');
+                        window.setCheckState('18-dual-slider-misleading-shadow', 'shadow-temp-max', 'pass');
+                        // Target values are only reachable through the mouse-event handlers
+                        // (no HTML5 drag listeners exist), so success proves the misleading
+                        // draggable="true" was bypassed in favor of mouse events.
+                        window.setCheckState('18-dual-slider-misleading-shadow', 'shadow-mouse-fallback', 'pass');
+                    }
+                } else {
+                    result.classList.remove('success');
+                }
+            }
+
+            function getValueFromPosition(clientX) {
+                const rect = slider.getBoundingClientRect();
+                const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                return Math.round(rangeMin + percent * (rangeMax - rangeMin));
+            }
+
+            function handleDrag(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                const newValue = getValueFromPosition(clientX);
+
+                if (isDragging === 'min') {
+                    minValue = Math.min(newValue, maxValue - 1);
+                } else {
+                    maxValue = Math.max(newValue, minValue + 1);
+                }
+                updateSlider();
+            }
+
+            function startDrag(e, type) {
+                e.preventDefault();
+                isDragging = type;
+                document.body.style.cursor = 'grabbing';
+                (type === 'min' ? minThumb : maxThumb).classList.add('dragging');
+            }
+
+            function stopDrag() {
+                if (isDragging) {
+                    (isDragging === 'min' ? minThumb : maxThumb).classList.remove('dragging');
+                }
+                isDragging = null;
+                document.body.style.cursor = '';
+            }
+
+            // IMPORTANT: Only mouse events - NO drag event listeners!
+            // The thumbs have draggable="true" to mislead, but we only listen for mouse events
+            function startDragWithListeners(e, type) {
+                startDrag(e, type);
+                shadow.addEventListener('mousemove', handleDrag);
+                shadow.addEventListener('touchmove', handleDrag, { passive: false });
+                document.addEventListener('mousemove', handleDrag);
+                document.addEventListener('touchmove', handleDrag, { passive: false });
+                document.addEventListener('mouseup', stopDragAndCleanup);
+                document.addEventListener('touchend', stopDragAndCleanup);
+            }
+
+            function stopDragAndCleanup() {
+                stopDrag();
+                shadow.removeEventListener('mousemove', handleDrag);
+                shadow.removeEventListener('touchmove', handleDrag);
+                document.removeEventListener('mousemove', handleDrag);
+                document.removeEventListener('touchmove', handleDrag);
+                document.removeEventListener('mouseup', stopDragAndCleanup);
+                document.removeEventListener('touchend', stopDragAndCleanup);
+            }
+
+            minThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'min'));
+            maxThumb.addEventListener('mousedown', (e) => startDragWithListeners(e, 'max'));
+            minThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'min'), { passive: false });
+            maxThumb.addEventListener('touchstart', (e) => startDragWithListeners(e, 'max'), { passive: false });
+
+            updateSlider();
+        }
+
+        // Test 3 & 6: Iframe message listeners
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'iframe-slider-success') {
+                const result = document.getElementById('test-3-result');
+                result.textContent = 'SUCCESS: Iframe time range set to ' + event.data.min + ':00 - ' + event.data.max + ':00';
+                result.classList.add('success');
+                // The iframe only posts this message inside its own success branch
+                // (start 8-10h, end 16-18h), so receiving it proves the genuine target.
+                if (typeof window.setCheckState === 'function') {
+                    window.setCheckState('18-dual-slider-iframe', 'iframe-start', 'pass');
+                    window.setCheckState('18-dual-slider-iframe', 'iframe-end', 'pass');
+                    window.setCheckState('18-dual-slider-iframe', 'iframe-success', 'pass');
+                }
+            }
+            if (event.data && event.data.type === 'iframe-misleading-slider-success') {
+                const result = document.getElementById('test-6-result');
+                result.textContent = 'SUCCESS: Iframe volume range set to ' + event.data.min + '% - ' + event.data.max + '%';
+                result.classList.add('success');
+                // The iframe only posts this message inside its own success branch
+                // (min 15-25%, max 75-85%) reached via mouse events only, so receiving
+                // it proves the target was met and the misleading draggable was bypassed.
+                if (typeof window.setCheckState === 'function') {
+                    window.setCheckState('18-dual-slider-misleading-iframe', 'iframe-vol-min', 'pass');
+                    window.setCheckState('18-dual-slider-misleading-iframe', 'iframe-vol-max', 'pass');
+                    window.setCheckState('18-dual-slider-misleading-iframe', 'iframe-mouse-fallback', 'pass');
+                }
+            }
+        });
+
+        // Status controls
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                if (status) {
+                    testCase.dataset.status = status;
+                } else {
+                    delete testCase.dataset.status;
+                }
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Initialize visible status summary
+
+        // Initialize all tests
+        document.addEventListener('DOMContentLoaded', () => {
+            initPriceSlider();
+            initShadowSlider();
+            initRatingSlider();
+            initMisleadingShadowSlider();
+            updateResultsSummary();
+        });
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

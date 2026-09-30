@@ -1,0 +1,1 @@
+{"compile":"ok","steps":1,"inputs":["q"],"data_flows":0,"write_steps":0,"answer_fields":["title"],"template":"find the selected item","replay":{"inputs":{"q":"blue"},"answer":{"title":"Blue item"}},"must_not_contain":[],"known_failing":null}

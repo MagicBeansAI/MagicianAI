@@ -1,0 +1,9 @@
+{
+  "utterances": [
+    "Please remember that my permanent home is in Delhi.",
+    "I have moved permanently to Mumbai. Please update my home city: Mumbai replaces Delhi."
+  ],
+  "earlier_current": "Delhi",
+  "final_current": "Mumbai",
+  "recall_query": "Which city is the owner's permanent home now?"
+}

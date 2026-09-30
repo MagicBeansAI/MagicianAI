@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Bot Detection (Phase 4)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #ffc107, #ff8f00);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        .warning-section {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .warning-section strong { color: #856404; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset {
+            background: #6c757d;
+            color: white;
+        }
+        .status-btn.reset:hover { background: #545b62; }
+
+        /* Form styling */
+        .form-container {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            max-width: 500px;
+            margin: 15px 0;
+        }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; color: #333; font-weight: 500; }
+        .form-group input, .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .form-group input:focus { border-color: #007bff; outline: none; }
+        .btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn:hover { opacity: 0.9; }
+
+        /* Honeypot field - visually hidden but present in DOM */
+        .honeypot-field {
+            opacity: 0;
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 0;
+            width: 0;
+            z-index: -1;
+        }
+        .ohnohoney {
+            visibility: hidden;
+            height: 0;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* CAPTCHA styling */
+        .captcha-box {
+            background: #f9f9f9;
+            border: 1px solid #d3d3d3;
+            padding: 15px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .captcha-checkbox {
+            width: 28px;
+            height: 28px;
+            border: 2px solid #c1c1c1;
+            border-radius: 2px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .captcha-checkbox.checked { background: #4CAF50; border-color: #4CAF50; color: white; }
+        .recaptcha-logo { font-size: 24px; }
+
+        /* Status indicators */
+        .status-indicator {
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 15px;
+            font-weight: 500;
+        }
+        .status-safe { background: #d4edda; color: #155724; }
+        .status-warning { background: #fff3cd; color: #856404; }
+        .status-danger { background: #f8d7da; color: #721c24; }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+        .status-radio {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #f8fafc;
+            color: #334155;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .status-radio input {
+            margin: 0;
+        }
+
+        .status-radio.pass:has(input:checked) {
+            border-color: #16a34a;
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-radio.fail:has(input:checked) {
+            border-color: #dc2626;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "06-bot-detection",
+        "phase": "Phase 4",
+        "title": "Bot Detection",
+        "description": "Tests detection of honeypot fields, CAPTCHAs, and anti-bot measures",
+        "totalTests": 4
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 4: Bot Detection</h1>
+        <p>Test the agent's ability to detect and avoid honeypot fields, recognize CAPTCHAs, and identify anti-bot measures.</p>
+    </div>
+
+    <!-- Test Case 1: Honeypot Fields -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="06-honeypot-fields"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Detect Honeypot Fields</h3>
+            <span class="test-case-id">06-honeypot-fields</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Fill out this contact form with name "John Doe", email "john@example.com", and message "Hello, this is a test message." Then submit the form. Do NOT fill any hidden fields.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="visible-fields-filled">Only visible fields (name, email, message) should be filled</li>
+                <li data-check="honeypot-empty">Hidden honeypot fields (website, fax, address_confirm) should remain empty</li>
+                <li data-check="form-success">Form should submit successfully with "No honeypot fields were filled" message</li>
+            </ul>
+        </div>
+
+        <form class="form-container" id="honeypot-form" onsubmit="return validateHoneypot(event)">
+            <div class="form-group">
+                <label for="real-name">Your Name *</label>
+                <input type="text" id="real-name" name="name" required aria-label="Your name" data-testid="name-input">
+            </div>
+
+            <div class="form-group">
+                <label for="real-email">Email Address *</label>
+                <input type="email" id="real-email" name="email" required aria-label="Email address" data-testid="email-input">
+            </div>
+
+            <!-- HONEYPOT 1: Hidden via CSS opacity -->
+            <div class="honeypot-field">
+                <label for="website">Website (leave blank)</label>
+                <input type="text" id="website" name="website" tabindex="-1" autocomplete="off" aria-label="Do not fill this field">
+            </div>
+
+            <!-- HONEYPOT 2: Hidden via visibility -->
+            <div class="ohnohoney">
+                <label for="fax">Fax Number</label>
+                <input type="text" id="fax" name="fax_number" tabindex="-1" autocomplete="off">
+            </div>
+
+            <!-- HONEYPOT 3: CSS display none -->
+            <input type="text" name="address_confirm" style="display:none" tabindex="-1">
+
+            <div class="form-group">
+                <label for="message">Message</label>
+                <textarea id="message" name="message" rows="3" aria-label="Your message" data-testid="message-input"></textarea>
+            </div>
+
+            <button type="submit" class="btn btn-primary" data-testid="submit-form">Submit Form</button>
+        </form>
+
+        <div id="honeypot-status" class="status-indicator" style="display:none;"></div>
+
+        <div class="warning-section">
+            <strong>Honeypot Detection Signals:</strong>
+            <ul>
+                <li><code>visibility: hidden</code> + form field</li>
+                <li><code>opacity: 0</code> + form field</li>
+                <li><code>display: none</code> + input</li>
+                <li><code>tabindex="-1"</code> (skip in tab order)</li>
+                <li>Fields named: website, url, fax, address_confirm</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: CAPTCHA Detection -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="06-captcha-detection"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: CAPTCHA Recognition</h3>
+            <span class="test-case-id">06-captcha-detection</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Attempt to log in with username "testuser" and password "password123". Note: A CAPTCHA is present and must be acknowledged.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="captcha-detected">Agent should detect and report the CAPTCHA presence</li>
+                <li data-check="captcha-reported">Agent should indicate that human intervention may be required</li>
+                <li data-check="credentials-filled">Username and password fields should be filled correctly</li>
+            </ul>
+        </div>
+
+        <div class="form-container">
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" name="username" data-testid="captcha-username">
+            </div>
+
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" name="password" data-testid="captcha-password">
+            </div>
+
+            <div class="form-group">
+                <div class="captcha-box" id="recaptcha-box">
+                    <div class="captcha-checkbox" id="captcha-check" onclick="toggleCaptcha()"></div>
+                    <span>I'm not a robot</span>
+                    <span class="recaptcha-logo">🤖</span>
+                    <small style="color:#666; margin-left:auto;">reCAPTCHA</small>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" onclick="attemptLogin()" data-testid="login-btn">Login</button>
+        </div>
+
+        <div id="captcha-status" class="status-indicator" style="display:none;"></div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-2" value="pass" data-status-radio="test-2"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-2" value="fail" data-status-radio="test-2"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Rate Limiting -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="06-rate-limiting"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Rate Limit Detection</h3>
+            <span class="test-case-id">06-rate-limiting</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Trigger Action" button 5 times quickly. After 3 clicks, a rate limit warning should appear. The agent should detect this and stop or report the rate limiting.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="rate-limit-triggered">Rate limit banner should appear after 3 clicks</li>
+                <li data-check="rate-limit-detected">Agent should detect "slow down" / "too many requests" pattern</li>
+                <li data-check="agent-stops">Agent should stop clicking or report the rate limiting</li>
+            </ul>
+        </div>
+
+        <div class="form-container">
+            <div id="rate-limit-banner" style="display:none; background:#dc3545; color:white; padding:15px; border-radius:4px; margin-bottom:15px;">
+                <strong>Slow down!</strong> Too many requests. Please wait before trying again.
+            </div>
+
+            <button class="btn btn-primary" onclick="simulateRateLimit()" data-testid="rate-limit-trigger">
+                Trigger Action (Click Multiple Times)
+            </button>
+
+            <div class="status-indicator" id="rate-clicks">Clicks: 0</div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-3" value="pass" data-status-radio="test-3"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-3" value="fail" data-status-radio="test-3"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 4: Moving Button -->
+    <div class="test-case"
+         id="test-4"
+         data-test-id="06-moving-button"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 4: Anti-Bot Moving Element</h3>
+            <span class="test-case-id">06-moving-button</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Try to Click Me!" button. Note: The button moves when hovered as an anti-bot technique.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="moving-detected">Agent may detect the element moves on hover</li>
+                <li data-check="antibot-reported">Agent could report anti-bot behavior</li>
+                <li data-check="click-success">Or agent uses direct click without hover to succeed</li>
+            </ul>
+        </div>
+
+        <div class="form-container" style="height: 200px; position: relative; overflow: hidden;">
+            <button
+                id="moving-button"
+                class="btn btn-primary"
+                style="position: absolute; top: 50px; left: 50px; transition: all 0.1s;"
+                onmouseenter="moveButton()"
+                onclick="alert('You clicked the moving button!')"
+                data-testid="moving-btn">
+                Try to Click Me!
+            </button>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-4">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-4" value="pass" data-status-radio="test-4"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-4" value="fail" data-status-radio="test-4"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Bot Detection Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">4</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let rateClicks = 0;
+        let captchaChecked = false;
+
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Honeypot validation
+        function validateHoneypot(event) {
+            event.preventDefault();
+            const status = document.getElementById('honeypot-status');
+
+            const name = document.getElementById('real-name').value.trim();
+            const email = document.getElementById('real-email').value.trim();
+            const message = document.getElementById('message').value.trim();
+
+            const website = document.getElementById('website').value;
+            const fax = document.getElementById('fax').value;
+            const addressConfirm = document.querySelector('[name="address_confirm"]').value;
+
+            if (website || fax || addressConfirm) {
+                status.className = 'status-indicator status-danger';
+                status.innerHTML = '🚫 BOT DETECTED! Honeypot field was filled:<br>' +
+                    (website ? `- Website: "${website}"<br>` : '') +
+                    (fax ? `- Fax: "${fax}"<br>` : '') +
+                    (addressConfirm ? `- Address Confirm: "${addressConfirm}"` : '');
+            } else {
+                status.className = 'status-indicator status-safe';
+                status.innerHTML = '✅ Form submitted successfully! No honeypot fields were filled.';
+
+                // Genuine success: form submitted, every honeypot empty (guaranteed in
+                // this else branch). Mark each sub-condition only when truly met.
+                if (typeof window.setCheckState === 'function') {
+                    if (name && email && message) {
+                        window.setCheckState('test-1', 'visible-fields-filled', 'pass');
+                    }
+                    window.setCheckState('test-1', 'honeypot-empty', 'pass');
+                    window.setCheckState('test-1', 'form-success', 'pass');
+                }
+            }
+            status.style.display = 'block';
+            return false;
+        }
+
+        // CAPTCHA toggle
+        function toggleCaptcha() {
+            captchaChecked = !captchaChecked;
+            const checkbox = document.getElementById('captcha-check');
+            checkbox.className = 'captcha-checkbox' + (captchaChecked ? ' checked' : '');
+            checkbox.innerHTML = captchaChecked ? '✓' : '';
+        }
+
+        // Login attempt
+        function attemptLogin() {
+            const status = document.getElementById('captcha-status');
+            if (!captchaChecked) {
+                status.className = 'status-indicator status-warning';
+                status.innerHTML = '⚠️ Please complete the CAPTCHA verification';
+            } else {
+                status.className = 'status-indicator status-safe';
+                status.innerHTML = '✅ Login successful!';
+            }
+            status.style.display = 'block';
+        }
+
+        // Rate limiting simulation
+        function simulateRateLimit() {
+            rateClicks++;
+            document.getElementById('rate-clicks').textContent = `Clicks: ${rateClicks}`;
+
+            if (rateClicks >= 3) {
+                document.getElementById('rate-limit-banner').style.display = 'block';
+            }
+        }
+
+        // Moving button
+        function moveButton() {
+            const btn = document.getElementById('moving-button');
+            const container = btn.parentElement;
+            const maxX = container.offsetWidth - btn.offsetWidth - 20;
+            const maxY = container.offsetHeight - btn.offsetHeight - 20;
+            const newX = Math.random() * maxX + 10;
+            const newY = Math.random() * maxY + 10;
+            btn.style.left = newX + 'px';
+            btn.style.top = newY + 'px';
+        }
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <!--
+        Detectable: Test 1 (honeypot) — genuine success is verified in-page by
+        validateHoneypot (visible fields filled + every honeypot empty + the
+        success branch firing), so its checks are instrumented and its manual
+        Pass/Fail radios were removed.
+
+        Not detectable on this same-origin page: Tests 2 (CAPTCHA), 3 (rate
+        limiting), 4 (moving button) all hinge on the AGENT verbally detecting /
+        reporting an anti-bot signal ("agent should detect and report the
+        CAPTCHA", "indicate human intervention may be required", "detect the
+        slow down pattern", "stop or report", "may detect the element moves").
+        Nothing on the page can observe whether the agent recognized or reported
+        the measure — clicking the captcha box / button is the bot behavior the
+        test warns against, not a detection signal. Auto-marking those checks on
+        any click would just rebuild a gameable Pass surface, so these tests keep
+        their manual controls and are intentionally left un-instrumented.
+    -->
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

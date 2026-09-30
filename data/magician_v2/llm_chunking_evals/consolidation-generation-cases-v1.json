@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "suite_id": "ollama-logical-context-consolidation-generation-v1",
+  "enabled": false,
+  "activation": "explicit_live_eval_only",
+  "execution_target": {
+    "provider": "ollama",
+    "model": "gemma4:12b",
+    "physical_context_tokens": 32768,
+    "thinking": false,
+    "online_comparison_is_non_authoritative": true
+  },
+  "source_fixture": "fixtures/consolidation-sources-v1.json",
+  "purpose": "Judge consolidation generation directly; this suite is not a retrieval or lifecycle-memory suite.",
+  "repeat_policy": {
+    "deterministic": 1,
+    "live_quality": 5
+  },
+  "global_assertions": {
+    "final_schema_valid": true,
+    "invented_source_ids": 0,
+    "duplicate_source_ids": 0,
+    "synthetic_secret_leaks": 0,
+    "forbidden_output_substrings": [
+      "SYNTHETIC_SECRET_DO_NOT_EMIT",
+      "sk-fixture-not-a-real-key-000000",
+      "fixture://callback/session-1234"
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "entity-bounded-durable-and-transient-filtering",
+      "operation": "memory_entity_extraction",
+      "adapter": "memory_entities_v1",
+      "scenario_id": "bounded_mixed_signal",
+      "assertions": {
+        "required_canonical_names": ["Project Atlas", "Priya Nair"],
+        "required_entity_types": ["project", "person"],
+        "required_fact_fragments": ["Northstar review workflow"],
+        "forbidden_entity_fragments": ["session-1234", "not-a-real-key"],
+        "source_coverage": "all_durable_sources_accounted_for"
+      }
+    },
+    {
+      "case_id": "entity-multi-chunk-boundary-invariance",
+      "operation": "memory_entity_extraction",
+      "adapter": "memory_entities_v1",
+      "scenario_id": "multi_chunk_mixed_signal_96k",
+      "assertions": {
+        "required_canonical_names": ["Project Atlas", "Priya Nair"],
+        "entity_upserts_idempotent": true,
+        "semantic_result_matches_bounded_case": "entity-bounded-durable-and-transient-filtering",
+        "source_coverage": "exact"
+      }
+    },
+    {
+      "case_id": "environment-bounded-reusable-workflow",
+      "operation": "memory_environment_knowledge_extraction",
+      "adapter": "memory_environment_v1",
+      "scenario_id": "bounded_mixed_signal",
+      "assertions": {
+        "required_fact_fragments": [
+          "make run-fixture-service",
+          "direct binary launch",
+          "fixture://local-service/health"
+        ],
+        "required_relationship": "make target succeeds after direct launch fails",
+        "forbidden_fact_fragments": ["session-1234", "not-a-real-key"],
+        "source_coverage": "all_reusable_sources_accounted_for"
+      }
+    },
+    {
+      "case_id": "environment-multi-chunk-deterministic-upsert",
+      "operation": "memory_environment_knowledge_extraction",
+      "adapter": "memory_environment_v1",
+      "scenario_id": "multi_chunk_mixed_signal_96k",
+      "assertions": {
+        "required_keys": ["workflow:fixture-service-start", "security:secret-filter"],
+        "environment_upserts_idempotent": true,
+        "source_coverage": "exact",
+        "boundary_invariant": true
+      }
+    },
+    {
+      "case_id": "episode-quality-bounded-signal-separation",
+      "operation": "memory_episode_quality_classification",
+      "adapter": "memory_episode_quality_v1",
+      "scenario_id": "bounded_mixed_signal",
+      "assertions": {
+        "classification_by_template": {
+          "durable_project_fact": ["high_signal"],
+          "reusable_local_workflow": ["high_signal", "mixed_signal"],
+          "runtime_noise": ["progress_only_or_low_signal"],
+          "synthetic_redaction_trap": ["high_signal", "mixed_signal"]
+        },
+        "every_source_has_one_classification": true,
+        "unknown_source_ids_rejected": true
+      }
+    },
+    {
+      "case_id": "episode-quality-multi-chunk-completeness",
+      "operation": "memory_episode_quality_classification",
+      "adapter": "memory_episode_quality_v1",
+      "scenario_id": "multi_chunk_mixed_signal_96k",
+      "assertions": {
+        "expected_source_count": 48,
+        "every_source_has_one_classification": true,
+        "classification_by_template_matches_case": "episode-quality-bounded-signal-separation",
+        "boundary_invariant": true
+      }
+    },
+    {
+      "case_id": "utility-review-bounded-causal-labels",
+      "operation": "memory_temperature_utility_review",
+      "adapter": "memory_utility_review_v1",
+      "utility_review_template_id": "utility_review_mixed",
+      "assertions": {
+        "labels_by_candidate_key": {
+          "mem:workflow:fixture-service-start": ["load_bearing", "useful"],
+          "mem:stale:fixture-direct-launch": ["stale", "harmful"],
+          "mem:irrelevant:fixture-color": ["irrelevant"]
+        },
+        "every_candidate_has_one_label": true,
+        "unknown_candidate_keys_rejected": true,
+        "reasons_grounded_in_run": true
+      }
+    },
+    {
+      "case_id": "evidence-bounded-promote-versus-skip",
+      "operation": "distill_evidence",
+      "adapter": "evidence_distill_v1",
+      "scenario_id": "bounded_mixed_signal",
+      "assertions": {
+        "promote_templates": ["durable_project_fact", "reusable_local_workflow", "synthetic_redaction_trap"],
+        "skip_templates": ["runtime_noise"],
+        "required_entity_keys": ["project:atlas", "person:priya-nair"],
+        "required_facets": ["work"],
+        "every_source_has_one_proposal": true,
+        "source_grounding": "exact"
+      }
+    },
+    {
+      "case_id": "evidence-oversized-single-episode-grounding",
+      "operation": "distill_evidence",
+      "adapter": "evidence_distill_v1",
+      "scenario_id": "oversized_single_episode_48k",
+      "assertions": {
+        "expected_source_count": 1,
+        "required_fact_fragments": ["make run-fixture-service", "direct binary launch"],
+        "one_final_proposal_per_parent_source": true,
+        "recursive_segments_not_exposed_as_durable_ids": true,
+        "source_grounding": "exact"
+      }
+    },
+    {
+      "case_id": "archive-bounded-membership-and-order",
+      "operation": "memory_archive_summary",
+      "adapter": "memory_archive_v1",
+      "scenario_id": "bounded_mixed_signal",
+      "assertions": {
+        "every_source_appears_exactly_once": true,
+        "chronological_order_preserved": true,
+        "timestamp_range_valid": true,
+        "required_fact_fragments": ["Project Atlas", "make run-fixture-service"],
+        "runtime_noise_not_promoted_as_durable_fact": true
+      }
+    },
+    {
+      "case_id": "archive-near-limit-hierarchical-membership",
+      "operation": "memory_archive_summary",
+      "adapter": "memory_archive_v1",
+      "scenario_id": "near_logical_limit_250k",
+      "assertions": {
+        "expected_source_count": 128,
+        "every_source_appears_exactly_once": true,
+        "chronological_order_preserved": true,
+        "hierarchical_reduction_required": true,
+        "no_intermediate_chunk_id_is_durable": true
+      }
+    },
+    {
+      "case_id": "framework-over-logical-limit-rejected-before-provider",
+      "operation": "framework_preflight",
+      "adapter": "all_registered_adapters",
+      "scenario_id": "over_logical_limit_270k",
+      "assertions": {
+        "error_type": "LogicalContextWindowExceeded",
+        "provider_call_count": 0,
+        "repair_call_count": 0,
+        "fallback_call_count": 0,
+        "durable_write_count": 0
+      }
+    }
+  ]
+}

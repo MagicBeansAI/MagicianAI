@@ -1,0 +1,99 @@
+name: android_act
+description: Do one thing on the Android phone — tap, type, swipe, drag, press a key, open a link, or wait for the screen. Take a snapshot first to find what to act on, and again after to confirm it worked.
+version: "1.1.0"
+guide: |
+  Tool name: `android_act`
+
+  Performs a single action. Always `android_snapshot` first: coordinates come
+  from a control's `bounds` in that snapshot, and bounds move between screens.
+
+  Actions:
+
+  - `tap` — needs `x` and `y`, the centre of the control's bounds.
+  - `long_press` — same coordinates, held.
+  - `type` — needs `text`. Types into whatever field currently has focus, so
+    `tap` the field first. This is deliberate: empty login, phone-number and OTP
+    fields carry no label to address them by, and focus is the only way in.
+  - `swipe` — from `x`,`y` to `to_x`,`to_y`. Use for scrolling.
+  - `key` — a named key via `key`, or the shorthands `back`, `home`, `enter`.
+  - `double_tap` — `x`, `y`, tapped twice (zoom a map, like a photo).
+  - `drag` — hold at `x`,`y` and move to `to_x`,`to_y` (sliders, reordering,
+    drag-and-drop); `swipe` is the quick flick for scrolling.
+  - `pinch` — at `x`,`y` with `scale`: above 1 zooms in, below 1 zooms out.
+  - `open_url` — `url` (a web address or an app deep link) in its handler.
+  - `set_clipboard` — puts `text` on the clipboard; `key` `paste` pastes it
+    into the focused field (for text `type` mangles: emoji, symbols).
+  - `system` — `name` one of `recents`, `notifications`, `quick_settings`.
+  - `wait_for` / `wait_gone` — until an element with `text`, `resource_id` or
+    `content_desc` appears / disappears (`timeout_ms`, default 5000); answers
+    `found`.
+  - `wait_idle` — until the screen stops changing (`timeout_ms`).
+  - `scroll_to` — scroll a list until an element with `text`, `resource_id` or
+    `content_desc` is on screen (`direction` up/down, `max_scrolls`).
+
+  Act once, then snapshot to see what happened. Do not queue several actions
+  against one snapshot; the first will have changed the screen the rest assumed.
+
+  A refusal is not a transport failure. `device_refused_action` means the phone
+  ran your request and would not do it — retrying unchanged will fail again.
+  `device_timeout` or `device_disconnected` are worth one retry.
+parameters:
+  - name: action
+    required: true
+    param_type: string
+    description: "tap, long_press, double_tap, type, swipe, drag, pinch, key, back, home, enter, open_url, set_clipboard, system, wait_for, wait_gone, wait_idle, or scroll_to."
+  - name: x
+    param_type: integer
+    description: Horizontal position, from the control's bounds in a snapshot.
+  - name: y
+    param_type: integer
+    description: Vertical position, from the control's bounds in a snapshot.
+  - name: to_x
+    param_type: integer
+    description: Swipe destination, horizontal.
+  - name: to_y
+    param_type: integer
+    description: Swipe destination, vertical.
+  - name: text
+    param_type: string
+    description: Text to type. Goes to the focused field, so tap the field first.
+  - name: key
+    param_type: string
+    description: "Key name when action is `key`: back, home, recents, enter, delete, tab, space, escape, paste."
+  - name: url
+    param_type: string
+    description: Web address or deep link for `open_url`.
+  - name: scale
+    param_type: number
+    description: "`pinch` scale: above 1 zooms in, below 1 zooms out."
+  - name: name
+    param_type: string
+    description: "`system` action: recents, notifications, or quick_settings."
+  - name: resource_id
+    param_type: string
+    description: Element resource id for `wait_for`, `wait_gone`, `scroll_to`.
+  - name: content_desc
+    param_type: string
+    description: Element content description for `wait_for`, `wait_gone`, `scroll_to`.
+  - name: direction
+    param_type: string
+    description: "`scroll_to` direction: up or down."
+  - name: max_scrolls
+    param_type: integer
+    description: "`scroll_to` limit on scrolls."
+  - name: timeout_ms
+    param_type: integer
+    description: Wait limit for `wait_for`, `wait_gone`, `wait_idle`, `scroll_to`.
+  - name: device
+    param_type: string
+    description: Which phone, when more than one is connected.
+implementation:
+  type: compiled
+  provider_name: android_act
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 45
+  categories:
+    - android
+  composition_category: action
+  sandbox: none

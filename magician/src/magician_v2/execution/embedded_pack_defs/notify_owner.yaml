@@ -1,0 +1,49 @@
+name: notify_owner
+description: Send a non-blocking briefing or escalation to the harness owner.
+version: "1.2.0"
+guide: |
+  Tool name: `notify_owner`
+
+  Use this to surface important context to the human owner without pausing the harness cycle.
+  Delivery is non-blocking and routed through the existing user request system.
+
+  Use:
+  - `briefing` for concise status updates
+  - `escalation` when the owner should notice a risk or blocker
+parameters:
+  - name: port_id
+    param_type: string
+    description: Required reviewed notification port for authenticated app workflows; ignored by non-app callers.
+  - name: message
+    required: true
+    param_type: string
+    description: Message body delivered to the owner.
+  - name: title
+    param_type: string
+    description: Optional short title.
+  - name: kind
+    param_type: string
+    description: Notification type.
+    enum_values: [briefing, escalation]
+    default: "briefing"
+  - name: severity
+    param_type: string
+    description: Notification severity.
+    enum_values: [info, warning, critical]
+    default: "info"
+  - name: timeout_secs
+    param_type: integer
+    description: Optional acknowledgement timeout for non-app callers, capped at 86400; authenticated app workflows use the reviewed port TTL.
+    default: "86400"
+implementation:
+  type: compiled
+  provider_name: notify_owner
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - harness
+    - communication
+    - owner
+  composition_category: communication
+  sandbox: none

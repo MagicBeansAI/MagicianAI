@@ -1,0 +1,287 @@
+{
+  "engine_instance": "01M3J496R8P7B951AWH621KTGH",
+  "policy_revision": "521a9f86031bc472350a15fac6d46237f4c4a6ed36308ba3e4c996a8a1bb1f59",
+  "contract_version": 4,
+  "action_contract_version": 4,
+  "operations": [
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "8ac51c7777d1bd40006bf1a5693bb8735cded56edc15c2289650157daffd22b0",
+        "pack": "evidence_promote",
+        "pack_version": "1.1.0"
+      },
+      "name": "evidence_promote",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000,
+          "queue_budget_ms": 0
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "ebc0efb205fd55ba36c55f141773bc0984e8656ec9758b41f22c350d4591179e",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_applicability",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "ebc0efb205fd55ba36c55f141773bc0984e8656ec9758b41f22c350d4591179e",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_attach",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "e2b3c61510ca8e87181c0b6dd0fc619897e5666158d8cd3b518ede0a1883fc30",
+        "pack": "memory_conflict_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_conflict_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "9099f474da4d3d85157e60f0ec1e77278a992ca3e898c8b1f9bde6dacf24d129",
+        "pack": "memory_connection_gate",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_connection_gate",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "e4690c906340bf753075bda689386e5db096c4b1a73116cbf79428273db82894",
+        "pack": "memory_episode_quality",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_episode_quality",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "8d930d80456796551672ad28e0af4779ca430c084514395cfd73163edf494f23",
+        "pack": "memory_lifecycle_relation",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_lifecycle_relation",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 8192,
+          "max_request_bytes": 131072,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "98aa17fadd273b15c4481a045c87cd9e0a5a702a32f6b853a95cf26edd72e042",
+        "pack": "memory_utility_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_utility_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 1,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 30000,
+          "queue_budget_ms": 30000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "64187793af6b3b6700067df8275e8a29c3cf7ddc405fd72b343d05e693c5d4d5",
+        "pack": "procedure_feedback",
+        "pack_version": "1.0.0"
+      },
+      "name": "procedure_feedback",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    }
+  ]
+}

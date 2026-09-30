@@ -1,0 +1,17 @@
+{
+  "positive_workflow_assertion": "FAILED; lower-confidence local answers correctly deferred",
+  "positive_workflow_outcomes": [
+    {
+      "error": "compatible facts mishandled: MemoryContradictionSweepSummary { scanned_targets: 2, reviewed: 1, superseded: 0, keep_existing: 0, keep_both: 0, missing_decisions: 1, skipped_targets: [], changed_targets: [] }",
+      "latency_ms": 4083,
+      "operation": "memory_conflict_review",
+      "passed": false,
+      "result": null
+    }
+  ],
+  "receipt_reconciliation": true,
+  "capture_gaps": 0,
+  "local_calls": 1,
+  "known_local_api_cost_usd": 0,
+  "unpriced_calls": 1
+}

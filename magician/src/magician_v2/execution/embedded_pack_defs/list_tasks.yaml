@@ -1,0 +1,33 @@
+name: list_tasks
+description: List tasks in the current scope. Optional `status_filter` narrows to a single lifecycle status (running / planning / paused / completed / failed / cancelled / pending).
+version: "1.0.0"
+guide: |
+  Tool name: `list_tasks`
+
+  Returns `[{task_id, title, status, agent_id, ui_thread_id}]` for the
+  active scope. Use to answer "what tasks do I have?" or to find a
+  task_id before calling `get_task_details` / `refine_task` /
+  `update_task` / `stop_task` / `delete_task`.
+
+  Inputs:
+  - `status_filter` (optional) — case-insensitive lifecycle status to
+    filter by (e.g. `running`, `completed`, `paused`). Omit for all.
+
+  Pair with `get_active_executions` if you only care about in-flight
+  work; `list_tasks` returns terminal-state tasks too.
+parameters:
+  - name: status_filter
+    param_type: string
+    description: Optional lifecycle status filter (case-insensitive). Omit for all tasks.
+    default: ""
+implementation:
+  type: compiled
+  provider_name: list_tasks
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - tasks
+    - introspection
+  composition_category: action
+  sandbox: none

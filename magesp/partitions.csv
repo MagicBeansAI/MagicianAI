@@ -1,0 +1,7 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# 16MB flash. The app grew past the 1MB default once WiFi, the HTTP server
+# and mbedTLS were linked in; 4MB leaves room for the audio path and OTA later.
+nvs,      data, nvs,     ,        0x6000,
+phy_init, data, phy,     ,        0x1000,
+factory,  app,  factory, ,        4M,
+storage,  data, spiffs,  ,        4M,

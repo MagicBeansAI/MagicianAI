@@ -1,0 +1,24 @@
+[package]
+name = "decision-engine-contract"
+version = "0.4.2"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Wire contract between the decision engine and its hosts: typed decisions, shared tool actions, planner proposals, and a Unix-socket client."
+
+[features]
+default = []
+# The host-side client (Unix socket, HTTP/1.1). Off by default so the
+# engine itself and anything that only needs the types stays serde-only.
+client = ["dep:tokio", "dep:hyper", "dep:hyper-util", "dep:http-body-util"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "time", "rt"], optional = true }
+hyper = { version = "1", features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }

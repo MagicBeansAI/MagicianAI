@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Magician — Plane View</title>
+  <style>
+    :root {
+      --bg: #0d1117; --panel: #12161e; --border: #272e3a; --ink: #e8edf4;
+      --muted: #8d97a8; --accent: #6ea8ff; --accent-soft: rgba(110,168,255,.14);
+    }
+    body[data-theme="light"] {
+      --bg: #f7f8fa; --panel: #ffffff; --border: #dde2ea; --ink: #161b26;
+      --muted: #646f80; --accent: #2563eb; --accent-soft: rgba(37,99,235,.12);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    #plane { position: fixed; inset: 0; }
+    header { position: fixed; top: 0; left: 0; right: 0; z-index: 30; display: flex; align-items: center;
+      gap: 12px; padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .title { font-weight: 700; font-size: 14px; white-space: nowrap; }
+    .spacer { flex: 1; }
+    #search { width: min(420px, 45vw); padding: 7px 12px; font-size: 13px; border: 1px solid var(--border);
+      border-radius: 10px; background: var(--bg); color: var(--ink); }
+    #search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    #results { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); width: min(520px, 80vw);
+      max-height: 320px; overflow-y: auto; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 6px; z-index: 40; }
+    .result { display: flex; justify-content: space-between; gap: 10px; padding: 8px 10px; font-size: 13px;
+      border-radius: 8px; cursor: pointer; }
+    .result:hover { background: var(--accent-soft); }
+    .result .kind { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; }
+    a.link { color: var(--accent); text-decoration: none; font-size: 13px; white-space: nowrap; }
+    a.link:hover { text-decoration: underline; }
+    button.hud { font-size: 12.5px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--ink); cursor: pointer; }
+    button.hud:hover { border-color: var(--accent); color: var(--accent); }
+    #meta { font-size: 11.5px; color: var(--muted); font-family: ui-monospace, monospace; white-space: nowrap; }
+    #inspector { position: fixed; top: 58px; right: 14px; width: min(360px, calc(100vw - 28px));
+      max-height: calc(100% - 80px); overflow-y: auto; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px; z-index: 25; display: none; }
+    #inspector.visible { display: block; }
+    #inspector h2 { margin: 8px 0 4px; font-size: 16px; }
+    #inspector .kind-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em;
+      color: var(--accent); background: var(--accent-soft); padding: 3px 10px; border-radius: 999px; }
+    #inspector p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; word-break: break-all; }
+    #inspector dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0 0;
+      font-size: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+    #inspector dt { color: var(--muted); }
+    #inspector dd { margin: 0; font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; }
+    #inspector .close { position: absolute; top: 10px; right: 12px; border: none; background: none;
+      font-size: 18px; color: var(--muted); cursor: pointer; }
+    .status { position: fixed; top: 52px; left: 12px; z-index: 22; font-size: 12px; color: var(--muted);
+      background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--border);
+      border-radius: 8px; padding: 4px 10px; max-width: min(560px, 70vw); display: none; }
+    .status:empty { display: none; }
+    .status:not(:empty) { display: block; }
+    .legend { position: fixed; left: 12px; bottom: 44px; z-index: 22; display: flex; flex-wrap: wrap;
+      gap: 6px; max-width: min(640px, 60vw); }
+    .legend .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+      padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); cursor: pointer;
+      background: color-mix(in srgb, var(--panel) 88%, transparent); color: var(--ink); }
+    .legend .chip.off { opacity: 0.4; text-decoration: line-through; }
+    .legend .chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+    select.hud { font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--ink); }
+    #hint { position: fixed; left: 14px; bottom: 12px; font-size: 12px; color: var(--muted); z-index: 20;
+      background: color-mix(in srgb, var(--panel) 85%, transparent); border: 1px solid var(--border);
+      border-radius: 10px; padding: 6px 12px; pointer-events: none; }
+    #hint strong { color: var(--ink); }
+    #loading { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center;
+      justify-content: center; background: var(--bg); z-index: 50; font-size: 14px; }
+    #loading code { background: color-mix(in srgb, var(--panel) 90%, transparent); border: 1px solid var(--border);
+      border-radius: 6px; padding: 2px 8px; font-size: 12.5px; }
+    .spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid var(--border);
+      border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body data-theme="dark">
+  <div id="plane"></div>
+  <header>
+    <span class="title">Plane View</span>
+    <input id="search" type="search" placeholder="Search nodes…  ( / )" autocomplete="off" spellcheck="false" />
+    <div id="results" hidden></div>
+    <span class="spacer"></span>
+    <span id="meta">Loading…</span>
+    <a class="link" href="explorer.html">Explorer</a>
+    <a class="link" href="c4.html">Architecture</a>
+    <a class="link" href="graph3d.html">3D View</a>
+    <button class="hud" id="show-all" title="Light up every node (the Load Full of the old explorer — instant here)">Load Full</button>
+    <button class="hud" id="collapse-all" title="Collapse branches, clear blast/impact/search">Collapse</button>
+    <button class="hud" id="blast" title="Highlight the neighborhood of the selected node">Blast</button>
+    <select id="blast-hops" title="Blast hop depth" class="hud">
+      <option value="1">1 hop</option>
+      <option value="2" selected>2 hops</option>
+      <option value="3">3 hops</option>
+      <option value="4">4 hops</option>
+    </select>
+    <button class="hud" id="impact" title="Highlight subtrees under files changed vs the base ref">Impact</button>
+    <select id="impact-base" title="Impact base ref" class="hud">
+      <option value="origin/master">origin/master</option>
+      <option value="master">master</option>
+      <option value="HEAD~1">HEAD~1</option>
+    </select>
+    <button class="hud" id="theme">Theme</button>
+  </header>
+  <div id="status" class="status"></div>
+  <nav id="legend" class="legend" title="Click a kind to show/hide it"></nav>
+  <aside id="inspector">
+    <button class="close" id="inspector-close">×</button>
+    <span class="kind-badge" id="i-kind"></span>
+    <h2 id="i-label"></h2>
+    <p id="i-path"></p>
+    <dl id="i-facts"></dl>
+    <div style="margin-top:12px"><a class="link" id="i-explorer" href="#" target="_blank" rel="noopener">Open in Explorer ↗</a></div>
+  </aside>
+  <div id="hint"><strong>drag</strong> pan · <strong>scroll</strong> zoom · <strong>click</strong> expand/inspect · <strong>/</strong> search · <strong>0</strong> fit</div>
+  <div id="loading"><div class="spin"></div><span id="loading-text">Fetching graph data…</span>
+    <span>Run <code>make graph-index</code> if this never finishes.</span></div>
+
+  <script src="vendor/three.min.js"></script>
+  <script src="graph3d_fast.js"></script>
+  <script src="plane.js"></script>
+</body>
+</html>

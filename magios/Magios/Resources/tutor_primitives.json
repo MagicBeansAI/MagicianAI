@@ -1,0 +1,609 @@
+[
+  {
+    "type": "angle_marker",
+    "aliases": [
+      "arc",
+      "perpendicular_marker",
+      "parallel_marker"
+    ],
+    "version": 2,
+    "defaults": {
+      "size": 36,
+      "start_angle": 0,
+      "end_angle": 90
+    },
+    "draw": [
+      {
+        "op": "arc",
+        "cx": "cx",
+        "cy": "cy",
+        "r": "r|size",
+        "rx": "rx|r|size",
+        "ry": "ry|r|size",
+        "from": "start_angle",
+        "to": "end_angle"
+      }
+    ]
+  },
+  {
+    "type": "area_fill",
+    "version": 1,
+    "draw": [
+      {
+        "op": "polygon",
+        "points": "points|d",
+        "fill": true
+      }
+    ]
+  },
+  {
+    "type": "arrow",
+    "aliases": [
+      "vector_arrow",
+      "force_arrow",
+      "component_vector",
+      "pointer_arrow",
+      "flow_edge"
+    ],
+    "version": 1,
+    "draw": [
+      {
+        "op": "line",
+        "from": [
+          "sx",
+          "sy"
+        ],
+        "to": [
+          "ex",
+          "ey"
+        ]
+      },
+      {
+        "op": "arrowhead",
+        "from": [
+          "sx",
+          "sy"
+        ],
+        "to": [
+          "ex",
+          "ey"
+        ]
+      },
+      {
+        "op": "label",
+        "at": [
+          "mx",
+          "my-14"
+        ],
+        "text": "text",
+        "anchor": "center",
+        "threshold": 0.75
+      }
+    ]
+  },
+  {
+    "type": "bracket",
+    "aliases": [
+      "square_bracket"
+    ],
+    "version": 1,
+    "defaults": {
+      "size": 12,
+      "length": 120
+    },
+    "draw": [
+      {
+        "op": "polyline",
+        "points": [
+          [
+            "x+size",
+            "y"
+          ],
+          [
+            "x",
+            "y"
+          ],
+          [
+            "x",
+            "y+(h|height|length)"
+          ],
+          [
+            "x+size",
+            "y+(h|height|length)"
+          ]
+        ]
+      }
+    ]
+  },
+  {
+    "type": "callout",
+    "version": 2,
+    "draw": [
+      {
+        "op": "rect",
+        "x": "x-8",
+        "y": "y-text_rise-6",
+        "w": "text_w+16",
+        "h": "text_h+12",
+        "radius": 9,
+        "fill": true,
+        "stroke": false,
+        "color": "#000000",
+        "opacity": 0.78,
+        "threshold": 0
+      },
+      {
+        "op": "label",
+        "at": [
+          "x",
+          "y"
+        ],
+        "text": "text",
+        "anchor": "leading"
+      }
+    ]
+  },
+  {
+    "type": "checkmark",
+    "aliases": [
+      "check",
+      "tick"
+    ],
+    "version": 1,
+    "defaults": {
+      "size": 28
+    },
+    "draw": [
+      {
+        "op": "polyline",
+        "points": [
+          [
+            "x",
+            "y+size*0.5"
+          ],
+          [
+            "x+size*0.4",
+            "y+size"
+          ],
+          [
+            "x+size",
+            "y"
+          ]
+        ],
+        "color": "#3ddc84"
+      }
+    ]
+  },
+  {
+    "type": "circle",
+    "version": 1,
+    "draw": [
+      {
+        "op": "circle",
+        "cx": "cx",
+        "cy": "cy",
+        "r": "r"
+      }
+    ]
+  },
+  {
+    "type": "cone",
+    "version": 1,
+    "defaults": {
+      "ry_ratio": 0.3
+    },
+    "draw": [
+      {
+        "op": "arc",
+        "cx": "cx",
+        "cy": "cy+h/2",
+        "rx": "r",
+        "ry": "r*ry_ratio",
+        "from": 0,
+        "to": 360
+      },
+      {
+        "op": "line",
+        "from": [
+          "cx-r",
+          "cy+h/2"
+        ],
+        "to": [
+          "cx",
+          "cy-h/2"
+        ]
+      },
+      {
+        "op": "line",
+        "from": [
+          "cx+r",
+          "cy+h/2"
+        ],
+        "to": [
+          "cx",
+          "cy-h/2"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "cursive_text",
+    "version": 1,
+    "defaults": {
+      "font_size": 92
+    },
+    "draw": [
+      {
+        "op": "cursive_label",
+        "at": [
+          "x",
+          "y"
+        ],
+        "text": "text|d",
+        "size": "font_size",
+        "anchor": "leading"
+      }
+    ]
+  },
+  {
+    "type": "curve",
+    "version": 1,
+    "draw": [
+      {
+        "op": "bezier",
+        "from": [
+          "sx",
+          "sy"
+        ],
+        "to": [
+          "ex",
+          "ey"
+        ],
+        "c1": [
+          "c1x",
+          "c1y"
+        ],
+        "c2": [
+          "c2x",
+          "c2y"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "dimension_line",
+    "aliases": [
+      "dimension"
+    ],
+    "version": 1,
+    "defaults": {
+      "size": 10
+    },
+    "draw": [
+      {
+        "op": "line",
+        "from": [
+          "sx",
+          "sy"
+        ],
+        "to": [
+          "ex",
+          "ey"
+        ]
+      },
+      {
+        "op": "line",
+        "from": [
+          "sx-(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+          "sy-((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+        ],
+        "to": [
+          "sx+(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+          "sy+((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+        ]
+      },
+      {
+        "op": "line",
+        "from": [
+          "ex-(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+          "ey-((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+        ],
+        "to": [
+          "ex+(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+          "ey+((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+        ]
+      },
+      {
+        "op": "label",
+        "at": [
+          "mx",
+          "my-14"
+        ],
+        "text": "text",
+        "anchor": "center",
+        "threshold": 0.75
+      }
+    ]
+  },
+  {
+    "type": "field_line",
+    "aliases": [
+      "trajectory"
+    ],
+    "version": 1,
+    "draw": [
+      {
+        "op": "line",
+        "from": [
+          "sx",
+          "sy"
+        ],
+        "to": [
+          "ex",
+          "ey"
+        ],
+        "dashed": true
+      },
+      {
+        "op": "label",
+        "at": [
+          "mx",
+          "my-14"
+        ],
+        "text": "text",
+        "anchor": "center",
+        "threshold": 0.75
+      }
+    ]
+  },
+  {
+    "type": "highlight",
+    "version": 1,
+    "draw": [
+      {
+        "op": "rect",
+        "x": "x",
+        "y": "y",
+        "w": "w|width",
+        "h": "h|height",
+        "radius": 8,
+        "fill": true
+      }
+    ]
+  },
+  {
+    "type": "label",
+    "aliases": [
+      "unit_label",
+      "timeline_tick",
+      "formula"
+    ],
+    "version": 1,
+    "draw": [
+      {
+        "op": "label",
+        "at": [
+          "x",
+          "y"
+        ],
+        "text": "text",
+        "anchor": "leading"
+      }
+    ]
+  },
+  {
+    "type": "line",
+    "aliases": [
+      "axis",
+      "side_label",
+      "measurement_tick"
+    ],
+    "version": 1,
+    "draw": [
+      {
+        "op": "line",
+        "from": [
+          "sx",
+          "sy"
+        ],
+        "to": [
+          "ex",
+          "ey"
+        ]
+      },
+      {
+        "op": "label",
+        "at": [
+          "mx",
+          "my-14"
+        ],
+        "text": "text",
+        "anchor": "center",
+        "threshold": 0.75
+      }
+    ]
+  },
+  {
+    "type": "no_entry",
+    "aliases": [
+      "prohibited",
+      "forbidden"
+    ],
+    "version": 1,
+    "defaults": {
+      "size": 40
+    },
+    "draw": [
+      {
+        "op": "circle",
+        "cx": "cx",
+        "cy": "cy",
+        "r": "r|size",
+        "color": "#ff3b30"
+      },
+      {
+        "op": "line",
+        "from": [
+          "cx-(r|size)*0.70710678",
+          "cy-(r|size)*0.70710678"
+        ],
+        "to": [
+          "cx+(r|size)*0.70710678",
+          "cy+(r|size)*0.70710678"
+        ],
+        "color": "#ff3b30"
+      }
+    ]
+  },
+  {
+    "type": "path",
+    "aliases": [
+      "polyline",
+      "handwriting",
+      "freehand"
+    ],
+    "version": 1,
+    "draw": [
+      {
+        "op": "polyline",
+        "points": "points|d"
+      }
+    ]
+  },
+  {
+    "type": "polygon",
+    "version": 1,
+    "draw": [
+      {
+        "op": "polygon",
+        "points": "points|d"
+      }
+    ]
+  },
+  {
+    "type": "rect",
+    "aliases": [
+      "rectangle",
+      "free_body_body",
+      "code_highlight",
+      "stack_frame",
+      "heap_object",
+      "state_box",
+      "flow_node",
+      "memory_cell"
+    ],
+    "version": 1,
+    "draw": [
+      {
+        "op": "rect",
+        "x": "x",
+        "y": "y",
+        "w": "w|width",
+        "h": "h|height",
+        "radius": 6
+      },
+      {
+        "op": "label",
+        "at": [
+          "x+(w|width)/2",
+          "y+(h|height)/2"
+        ],
+        "text": "text",
+        "anchor": "center",
+        "threshold": 0.5
+      }
+    ]
+  },
+  {
+    "type": "right_angle_marker",
+    "version": 1,
+    "defaults": {
+      "size": 28
+    },
+    "draw": [
+      {
+        "op": "polyline",
+        "points": [
+          [
+            "(x|cx)+size",
+            "y|cy"
+          ],
+          [
+            "(x|cx)+size",
+            "(y|cy)+size"
+          ],
+          [
+            "x|cx",
+            "(y|cy)+size"
+          ]
+        ]
+      }
+    ]
+  },
+  {
+    "type": "sector",
+    "version": 1,
+    "defaults": {
+      "start_angle": 0
+    },
+    "draw": [
+      {
+        "op": "arc",
+        "cx": "cx",
+        "cy": "cy",
+        "r": "r",
+        "from": "start_angle",
+        "to": "end_angle|start_angle+360*size/r"
+      },
+      {
+        "op": "line",
+        "from": [
+          "cx",
+          "cy"
+        ],
+        "to": [
+          "cx+cos(deg(start_angle))*r",
+          "cy+sin(deg(start_angle))*r"
+        ]
+      },
+      {
+        "op": "line",
+        "from": [
+          "cx",
+          "cy"
+        ],
+        "to": [
+          "cx+cos(deg(end_angle|start_angle+360*size/r))*r",
+          "cy+sin(deg(end_angle|start_angle+360*size/r))*r"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "square_on_segment",
+    "version": 1,
+    "draw": [
+      {
+        "op": "polygon",
+        "points": [
+          [
+            "sx",
+            "sy"
+          ],
+          [
+            "ex",
+            "ey"
+          ],
+          [
+            "ex-(ey-sy)*side_sign",
+            "ey+(ex-sx)*side_sign"
+          ],
+          [
+            "sx-(ey-sy)*side_sign",
+            "sy+(ex-sx)*side_sign"
+          ]
+        ]
+      }
+    ]
+  }
+]

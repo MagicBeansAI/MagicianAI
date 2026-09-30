@@ -1,0 +1,63 @@
+{
+  "method": "Post-hoc rescore of identical recorded outputs; no new inference, no threshold/config change; small exploratory batch, not independent calibration evidence.",
+  "cases": 20,
+  "heads": 46,
+  "thresholds": [
+    {
+      "threshold": 0.7,
+      "accepted_heads": 34,
+      "wrong_accepted_heads": [
+        {
+          "case": "H08",
+          "question": "score",
+          "confidence": 0.7055,
+          "actual": 4,
+          "expected": 6
+        }
+      ],
+      "fully_eligible_cases": [
+        "H04",
+        "H05",
+        "H07",
+        "H09",
+        "H10",
+        "H11",
+        "H12",
+        "H14",
+        "H15",
+        "H18",
+        "H20"
+      ],
+      "wrong_fully_eligible_cases": []
+    },
+    {
+      "threshold": 0.75,
+      "accepted_heads": 31,
+      "wrong_accepted_heads": [],
+      "fully_eligible_cases": [
+        "H04",
+        "H05",
+        "H09",
+        "H10",
+        "H12",
+        "H14",
+        "H15",
+        "H18",
+        "H20"
+      ],
+      "wrong_fully_eligible_cases": []
+    },
+    {
+      "threshold": 0.9,
+      "accepted_heads": 20,
+      "wrong_accepted_heads": [],
+      "fully_eligible_cases": [
+        "H04",
+        "H09",
+        "H10",
+        "H12"
+      ],
+      "wrong_fully_eligible_cases": []
+    }
+  ]
+}

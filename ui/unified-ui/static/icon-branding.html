@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Magican — Brand Guidelines &amp; Asset Reference</title>
+  <link rel="icon" href="favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --coral: #FF6B6B;
+      --coral-hover: #FA5252;
+      --peach: #FFA07A;
+      --ink: #1A1612;
+      --ink-muted: #555555;
+      --cream: #FAF8F5;
+      --card-bg: #FFFFFF;
+      --border-subtle: rgba(0, 0, 0, 0.08);
+      --shimmer-speed: 11s;
+      --stage-bg: #FAF8F5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #F4F3EF;
+      color: var(--ink);
+      margin: 0;
+      padding: 0;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Top Sticky Navigation */
+    .top-nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1.15rem;
+      text-decoration: none;
+      color: var(--ink);
+    }
+    .nav-logo-mark {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      background: var(--coral);
+      color: white;
+      display: grid;
+      place-items: center;
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .nav-links {
+      display: flex;
+      gap: 1.25rem;
+    }
+    .nav-links a {
+      color: #666;
+      text-decoration: none;
+      font-size: 0.88rem;
+      font-weight: 500;
+      transition: color 0.15s;
+    }
+    .nav-links a:hover {
+      color: var(--coral);
+    }
+
+    /* Main Container */
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 6rem;
+    }
+
+    /* Header */
+    .header-block {
+      text-align: center;
+      margin-bottom: 4rem;
+    }
+    .header-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 14px;
+      border-radius: 20px;
+      background: rgba(255, 107, 107, 0.12);
+      color: var(--coral);
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 1rem;
+    }
+    .header-title {
+      font-size: clamp(2.4rem, 5vw, 3.6rem);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1.15;
+      margin: 0 0 0.75rem;
+    }
+    .header-desc {
+      font-size: 1.15rem;
+      color: #666;
+      max-width: 640px;
+      margin: 0 auto;
+      line-height: 1.5;
+    }
+
+    /* Section Components */
+    .section {
+      margin-bottom: 4.5rem;
+      scroll-margin-top: 5rem;
+    }
+    .section-header {
+      margin-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 0.75rem;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+    }
+    .section-title {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-num {
+      color: var(--coral);
+      font-size: 1.2rem;
+      font-weight: 800;
+    }
+    .section-tag {
+      font-size: 0.82rem;
+      color: #888;
+      font-weight: 500;
+    }
+
+    /* 1. PALETTES */
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 1.25rem;
+    }
+    .color-card {
+      background: var(--card-bg);
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.03);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .color-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+    }
+    .color-swatch {
+      height: 110px;
+      width: 100%;
+      position: relative;
+    }
+    .color-details {
+      padding: 1.1rem;
+    }
+    .color-name {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+    .color-role {
+      font-size: 0.76rem;
+      color: #777;
+      margin-bottom: 0.75rem;
+      line-height: 1.35;
+      min-height: 2.2rem;
+    }
+    .color-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: #444;
+      background: #f8f8f6;
+      padding: 6px 8px;
+      border-radius: 6px;
+    }
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+    }
+    .meta-val {
+      font-weight: 600;
+      color: #111;
+    }
+
+    /* 2. TYPOGRAPHY */
+    .type-specimen-card {
+      background: var(--card-bg);
+      border-radius: 20px;
+      padding: 2.25rem;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.04);
+      margin-bottom: 1.5rem;
+    }
+    .type-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      border-bottom: 1px solid #f0f0f0;
+      padding-bottom: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .type-family {
+      font-size: 2.4rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+    .type-designer {
+      font-size: 0.88rem;
+      color: #777;
+    }
+    .type-alphabet {
+      font-size: clamp(1.4rem, 2.5vw, 1.8rem);
+      letter-spacing: 0.02em;
+      color: #333;
+      margin-bottom: 1.5rem;
+      line-height: 1.4;
+    }
+    .type-weights-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+    }
+    .type-weight-box {
+      padding: 1.25rem;
+      border-radius: 12px;
+      background: #FAF9F6;
+      border: 1px solid rgba(0,0,0,0.04);
+    }
+    .weight-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--coral);
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      display: block;
+    }
+    .weight-sample {
+      font-size: 1.8rem;
+      line-height: 1.2;
+      margin-bottom: 0.5rem;
+    }
+    .weight-usage {
+      font-size: 0.8rem;
+      color: #666;
+    }
+
+    /* 3. HERO & SHIMMER */
+    .hero-workbench-card {
+      background: var(--card-bg);
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.04);
+      padding: 2rem;
+    }
+    .workbench-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      background: #FAF9F6;
+      padding: 0.85rem 1.25rem;
+      border-radius: 12px;
+      margin-bottom: 1.5rem;
+    }
+    .ctrl-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .ctrl-label {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #555;
+    }
+    .btn-toggle-group {
+      display: flex;
+      background: #E8E7E2;
+      padding: 2px;
+      border-radius: 8px;
+      gap: 2px;
+    }
+    .btn-toggle-group button {
+      border: none;
+      background: transparent;
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-family: 'Outfit', sans-serif;
+      font-weight: 500;
+      color: #555;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-toggle-group button.active {
+      background: white;
+      color: #111;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .hero-live-stage {
+      background: var(--stage-bg);
+      border-radius: 16px;
+      padding: 4rem 2rem 3.5rem;
+      text-align: center;
+      border: 1px solid rgba(0,0,0,0.06);
+      transition: background 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-live-stage.is-dark {
+      background: #141312;
+      border-color: #242220;
+    }
+
+    .hero-live-title {
+      margin: 0;
+      font-family: 'Outfit', sans-serif;
+      font-size: clamp(3.6rem, 9vw, 6rem);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1.25;
+      padding-bottom: 0.16em;
+      overflow: visible;
+      /* Softer sunset sweep: Deep Ink 0-34% -> Coral 48% -> Peach 54% -> Deep Ink 66-100% */
+      background-image: linear-gradient(
+        105deg,
+        #1a1612 0%,
+        #1a1612 34%,
+        #FF6B6B 48%,
+        #FFA07A 54%,
+        #1a1612 66%,
+        #1a1612 100%
+      );
+      background-size: 220% 100%;
+      background-position: 100% 50%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      animation: hs-shimmer var(--shimmer-speed) ease-in-out infinite;
+    }
+
+    .hero-live-stage.is-dark .hero-live-title {
+      background-image: linear-gradient(
+        105deg,
+        #ffffff 0%,
+        #ffffff 34%,
+        #FF6B6B 48%,
+        #FFA07A 54%,
+        #ffffff 66%,
+        #ffffff 100%
+      );
+    }
+
+    .hero-live-sub {
+      font-size: clamp(1.05rem, 2vw, 1.3rem);
+      color: #666;
+      font-weight: 500;
+      margin: 0.25rem 0 0;
+      letter-spacing: -0.01em;
+      transition: color 0.3s;
+    }
+    .hero-live-stage.is-dark .hero-live-sub {
+      color: #999;
+    }
+
+    @keyframes hs-shimmer {
+      0%, 100% {
+        background-position: 100% 50%;
+      }
+      50% {
+        background-position: 0% 50%;
+      }
+    }
+
+    .shimmer-spec-box {
+      margin-top: 1.5rem;
+      background: #FAF9F6;
+      border-radius: 12px;
+      padding: 1.25rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      color: #444;
+      line-height: 1.6;
+      overflow-x: auto;
+    }
+
+    /* 4. APP ICONS */
+    .icon-showcase {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    .icon-card {
+      background: var(--card-bg);
+      border-radius: 18px;
+      padding: 1.75rem;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.03);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+    .icon-preview-wrap {
+      width: 160px;
+      height: 160px;
+      border-radius: 36px;
+      box-shadow: 0 12px 36px rgba(255, 107, 107, 0.22), 0 4px 12px rgba(0,0,0,0.06);
+      overflow: hidden;
+      margin-bottom: 1.25rem;
+      transition: transform 0.2s;
+    }
+    .icon-preview-wrap:hover {
+      transform: scale(1.04);
+    }
+    .icon-preview-wrap img {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .icon-card-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin: 0 0 0.35rem;
+    }
+    .icon-card-desc {
+      font-size: 0.82rem;
+      color: #666;
+      margin: 0 0 1rem;
+      max-width: 280px;
+    }
+
+    /* macOS Dock Bar Preview */
+    .dock-mockup {
+      background: rgba(30, 30, 36, 0.95);
+      backdrop-filter: blur(20px);
+      border-radius: 24px;
+      padding: 1.25rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1.75rem;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.3);
+      margin-bottom: 2rem;
+      overflow-x: auto;
+    }
+    .dock-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .dock-item-icon {
+      width: 68px;
+      height: 68px;
+      border-radius: 16px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+      transition: transform 0.2s;
+    }
+    .dock-item-icon:hover {
+      transform: translateY(-8px) scale(1.1);
+    }
+    .dock-label {
+      color: #bbb;
+      font-size: 0.7rem;
+      font-weight: 500;
+    }
+
+    /* Specs Table */
+    .specs-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card-bg);
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border-subtle);
+      font-size: 0.85rem;
+    }
+    .specs-table th, .specs-table td {
+      padding: 0.9rem 1.15rem;
+      text-align: left;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .specs-table th {
+      background: #fafafa;
+      font-weight: 600;
+      color: #555;
+    }
+    .specs-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* 5. FAVICON & SYSTEM MARKS */
+    .marks-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    .mark-card {
+      background: var(--card-bg);
+      border-radius: 18px;
+      padding: 1.75rem;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.03);
+    }
+    .mark-display-box {
+      background: #FAF9F6;
+      border-radius: 14px;
+      height: 140px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.25rem;
+      gap: 2rem;
+    }
+
+    /* Browser Tab Mockup */
+    .browser-bar-mock {
+      background: #E5E5EB;
+      border-radius: 10px 10px 0 0;
+      padding: 8px 12px 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 1.5rem;
+      overflow-x: auto;
+    }
+    .b-tab {
+      background: white;
+      border-radius: 8px 8px 0 0;
+      padding: 7px 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: #333;
+      box-shadow: 0 -1px 3px rgba(0,0,0,0.05);
+      white-space: nowrap;
+    }
+    .b-tab.active {
+      background: #FFF5F5;
+      font-weight: 600;
+      color: #C93B3B;
+    }
+
+    /* In-App TopBar Mock */
+    .topbar-mock {
+      background: white;
+      border-radius: 12px;
+      padding: 8px 16px;
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+    }
+    .tb-brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .tb-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--coral);
+      color: white;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .tb-name {
+      font-weight: 400;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+    }
+
+    /* Copy Button */
+    .copy-chip {
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(0,0,0,0.05);
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: background 0.15s;
+    }
+    .copy-chip:hover {
+      background: rgba(255, 107, 107, 0.18);
+      color: var(--coral);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Sticky Bar -->
+  <nav class="top-nav">
+    <a href="#" class="nav-brand">
+      <div class="nav-logo-mark">
+        <svg width="16" height="16" viewBox="0 0 64 64" fill="currentColor">
+          <path d="M11 45.44V19.10H19.29V45.44ZM27.85 45.44V30.05Q27.85 28.04 26.63 26.93Q25.42 25.82 23.63 25.82Q22.38 25.82 21.41 26.34Q20.43 26.85 19.86 27.77Q19.29 28.69 19.29 30.05L16.09 28.64Q16.09 25.50 17.45 23.25Q18.80 21.00 21.13 19.78Q23.46 18.56 26.39 18.56Q29.15 18.56 31.35 19.81Q33.54 21.05 34.85 23.27Q36.15 25.50 36.15 28.59V45.44ZM44.71 45.44V30.05Q44.71 28.04 43.49 26.93Q42.27 25.82 40.48 25.82Q39.23 25.82 38.26 26.34Q37.28 26.85 36.71 27.77Q36.15 28.69 36.15 30.05L31.38 29.40Q31.49 26.04 32.98 23.63Q34.47 21.22 36.93 19.89Q39.40 18.56 42.49 18.56Q45.52 18.56 47.88 19.83Q50.24 21.11 51.62 23.46Q53 25.82 53 29.13V45.44Z"/>
+        </svg>
+      </div>
+      <span>magican</span>
+    </a>
+    <div class="nav-links">
+      <a href="#palette">Palette</a>
+      <a href="#typography">Typography</a>
+      <a href="#hero">Hero Shimmer</a>
+      <a href="#app-icons">App Icons</a>
+      <a href="#favicon-marks">Favicon &amp; Marks</a>
+    </div>
+  </nav>
+
+  <div class="container">
+
+    <!-- Header Block -->
+    <header class="header-block">
+      <div class="header-badge">Brand Guidelines &amp; Identity System</div>
+      <h1 class="header-title">Magican Visual System</h1>
+      <p class="header-desc">
+        Unified brand identity across Desktop (Tauri macOS/Windows), Mobile (iOS/Android), and Web UI.
+        Featuring Outfit geometric typography, the signature Brand Coral palette, and the softer sunset sweep.
+      </p>
+    </header>
+
+    <!-- ============================================================ -->
+    <!-- 1. BRAND COLOR PALETTE -->
+    <!-- ============================================================ -->
+    <section id="palette" class="section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span class="section-num">01</span>
+          <span>Color Palette</span>
+        </h2>
+        <span class="section-tag">5 Core Tones</span>
+      </div>
+
+      <div class="palette-grid">
+        <!-- 1. Brand Coral -->
+        <div class="color-card">
+          <div class="color-swatch" style="background: #FF6B6B;"></div>
+          <div class="color-details">
+            <div class="color-name">Brand Coral</div>
+            <div class="color-role">Primary identity, app icon background, favicon, primary CTA</div>
+            <div class="color-meta">
+              <div class="meta-row"><span>HEX</span><span class="meta-val copy-chip" onclick="copyText('#FF6B6B')">#FF6B6B</span></div>
+              <div class="meta-row"><span>RGB</span><span class="meta-val">255, 107, 107</span></div>
+              <div class="meta-row"><span>CSS</span><span class="meta-val">--coral</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Sunset Peach -->
+        <div class="color-card">
+          <div class="color-swatch" style="background: #FFA07A;"></div>
+          <div class="color-details">
+            <div class="color-name">Sunset Peach</div>
+            <div class="color-role">Hero shimmer highlight sweep, warm accent glow</div>
+            <div class="color-meta">
+              <div class="meta-row"><span>HEX</span><span class="meta-val copy-chip" onclick="copyText('#FFA07A')">#FFA07A</span></div>
+              <div class="meta-row"><span>RGB</span><span class="meta-val">255, 160, 122</span></div>
+              <div class="meta-row"><span>CSS</span><span class="meta-val">--peach</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Deep Ink -->
+        <div class="color-card">
+          <div class="color-swatch" style="background: #1A1612;"></div>
+          <div class="color-details">
+            <div class="color-name">Deep Ink</div>
+            <div class="color-role">High-contrast headline base, dark typographic ground</div>
+            <div class="color-meta">
+              <div class="meta-row"><span>HEX</span><span class="meta-val copy-chip" onclick="copyText('#1A1612')">#1A1612</span></div>
+              <div class="meta-row"><span>RGB</span><span class="meta-val">26, 22, 18</span></div>
+              <div class="meta-row"><span>CSS</span><span class="meta-val">--ink</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Landing Cream -->
+        <div class="color-card">
+          <div class="color-swatch" style="background: #FAF8F5; border-bottom: 1px solid rgba(0,0,0,0.06);"></div>
+          <div class="color-details">
+            <div class="color-name">Landing Cream</div>
+            <div class="color-role">Marketing &amp; landing ground, warm card surfaces</div>
+            <div class="color-meta">
+              <div class="meta-row"><span>HEX</span><span class="meta-val copy-chip" onclick="copyText('#FAF8F5')">#FAF8F5</span></div>
+              <div class="meta-row"><span>RGB</span><span class="meta-val">250, 248, 245</span></div>
+              <div class="meta-row"><span>CSS</span><span class="meta-val">--cream</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Pure White -->
+        <div class="color-card">
+          <div class="color-swatch" style="background: #FFFFFF; border-bottom: 1px solid rgba(0,0,0,0.06);"></div>
+          <div class="color-details">
+            <div class="color-name">Pure White</div>
+            <div class="color-role">Glyph mark contrast on Coral, card elevations</div>
+            <div class="color-meta">
+              <div class="meta-row"><span>HEX</span><span class="meta-val copy-chip" onclick="copyText('#FFFFFF')">#FFFFFF</span></div>
+              <div class="meta-row"><span>RGB</span><span class="meta-val">255, 255, 255</span></div>
+              <div class="meta-row"><span>CSS</span><span class="meta-val">--bg-card</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- 2. BRAND TYPOGRAPHY -->
+    <!-- ============================================================ -->
+    <section id="typography" class="section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span class="section-num">02</span>
+          <span>Typography System</span>
+        </h2>
+        <span class="section-tag">Outfit by Rodrigo Fuenzalida</span>
+      </div>
+
+      <div class="type-specimen-card">
+        <div class="type-header">
+          <div>
+            <div class="type-family">Outfit</div>
+            <div class="type-designer">Official Brand Typeface · Geometric Sans-Serif with friendly human proportions</div>
+          </div>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:0.8rem; color:#888;">
+            OFL 1.1 Vendored
+          </div>
+        </div>
+
+        <div class="type-alphabet">
+          abcdefghijklmnopqrstuvwxyz<br>
+          ABCDEFGHIJKLMNOPQRSTUVWXYZ<br>
+          0123456789 &amp; — . : ! ?
+        </div>
+
+        <div class="type-weights-grid">
+          <!-- Regular 400 -->
+          <div class="type-weight-box">
+            <span class="weight-tag">WEIGHT 400 · REGULAR</span>
+            <div class="weight-sample" style="font-weight: 400;">magican</div>
+            <div class="weight-usage">
+              <strong>Adopted for:</strong> App Wordmark Icons across macOS, Windows, iOS, and Android. Clean counters, uncluttered at small scales.
+            </div>
+          </div>
+
+          <!-- Bold 700 -->
+          <div class="type-weight-box">
+            <span class="weight-tag">WEIGHT 700 · BOLD</span>
+            <div class="weight-sample" style="font-weight: 700;">magican</div>
+            <div class="weight-usage">
+              <strong>Adopted for:</strong> Homepage hero title, in-app topbar wordmark, and prominent display moments. Punchy, confident, and solid.
+            </div>
+          </div>
+
+          <!-- Medium 500 -->
+          <div class="type-weight-box">
+            <span class="weight-tag">WEIGHT 500 · MEDIUM</span>
+            <div class="weight-sample" style="font-weight: 500;">Superpowers for work</div>
+            <div class="weight-usage">
+              <strong>Adopted for:</strong> Subtitles, taglines ("Superpowers for Work, Play and all your side quests"), and UI navigation tabs.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- 3. HOMEPAGE HERO SHIMMER -->
+    <!-- ============================================================ -->
+    <section id="hero" class="section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span class="section-num">03</span>
+          <span>Homepage Hero: Softer Sunset Sweep</span>
+        </h2>
+        <span class="section-tag">Live Adopted CSS Animation</span>
+      </div>
+
+      <div class="hero-workbench-card">
+        <!-- Controls -->
+        <div class="workbench-controls">
+          <div class="ctrl-group">
+            <span class="ctrl-label">Sweep Speed:</span>
+            <div class="btn-toggle-group" id="speedBtns">
+              <button class="active" onclick="setShimmerSpeed('11s', this)">11s (Live Subtle)</button>
+              <button onclick="setShimmerSpeed('4s', this)">4s (Clear Wave)</button>
+              <button onclick="setShimmerSpeed('2s', this)">2s (Fast Glint)</button>
+            </div>
+          </div>
+
+          <div class="ctrl-group">
+            <span class="ctrl-label">Stage Ground:</span>
+            <div class="btn-toggle-group" id="groundBtns">
+              <button class="active" onclick="setGround('#FAF8F5', false, this)">Landing Cream</button>
+              <button onclick="setGround('#FFFFFF', false, this)">Pure White</button>
+              <button onclick="setGround('#141312', true, this)">Night Sky</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Stage -->
+        <div class="hero-live-stage" id="liveStage">
+          <h1 class="hero-live-title" id="liveHeroTitle">magican</h1>
+          <p class="hero-live-sub">Superpowers for Work, Play and all your side quests</p>
+        </div>
+
+        <!-- Spec Code -->
+        <div class="shimmer-spec-box">
+<span style="color:#888;">/* Adopted Softer Sunset Sweep CSS */</span>
+.hs-title {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  background-image: linear-gradient(
+    105deg,
+    #1a1612 0%,
+    #1a1612 34%,
+    <span style="color:#FF6B6B;">#FF6B6B 48%</span>, /* Brand Coral */
+    <span style="color:#FFA07A;">#FFA07A 54%</span>, /* Sunset Peach */
+    #1a1612 66%,
+    #1a1612 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: hs-shimmer 11s ease-in-out infinite;
+}
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- 4. APP WORDMARK ICONS -->
+    <!-- ============================================================ -->
+    <section id="app-icons" class="section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span class="section-num">04</span>
+          <span>App Wordmark Icons</span>
+        </h2>
+        <span class="section-tag">Outfit Regular · 86% Canvas Fill</span>
+      </div>
+
+      <!-- Dock Preview Mockup -->
+      <h3 style="font-size:1.05rem; margin-bottom:0.75rem;">macOS / Desktop Dock Environment (136px)</h3>
+      <div class="dock-mockup">
+        <div class="dock-item">
+          <img class="dock-item-icon" src="app-icon-wordmark.png" alt="Magican App Icon">
+          <span class="dock-label">magican</span>
+        </div>
+        <div class="dock-item" style="opacity:0.4;">
+          <div class="dock-item-icon" style="background:#444; border-radius:16px;"></div>
+          <span class="dock-label">Terminal</span>
+        </div>
+        <div class="dock-item" style="opacity:0.4;">
+          <div class="dock-item-icon" style="background:#225588; border-radius:16px;"></div>
+          <span class="dock-label">Safari</span>
+        </div>
+        <div class="dock-item" style="opacity:0.4;">
+          <div class="dock-item-icon" style="background:#552244; border-radius:16px;"></div>
+          <span class="dock-label">Notes</span>
+        </div>
+      </div>
+
+      <!-- Icon Cards -->
+      <div class="icon-showcase">
+        <div class="icon-card">
+          <div class="icon-preview-wrap">
+            <img src="app-icon-wordmark.png" alt="Desktop Tauri Icon">
+          </div>
+          <h3 class="icon-card-title">Desktop Icon (Tauri)</h3>
+          <p class="icon-card-desc">Opaque squircle with transparent macOS rounded-rect margins. Rendered into PNG (1024 to 128), ICNS, and ICO.</p>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:0.75rem; color:#888;">desktop/src-tauri/icons/</div>
+        </div>
+
+        <div class="icon-card">
+          <div class="icon-preview-wrap" style="border-radius:0;">
+            <img src="app-icon-wordmark.png" alt="iOS App Icon" style="border-radius:0;">
+          </div>
+          <h3 class="icon-card-title">Mobile Icon (iOS Magios)</h3>
+          <p class="icon-card-desc">Full bleed 1024×1024 opaque square. iOS automatically applies system squircle mask.</p>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:0.75rem; color:#888;">magios/.../AppIcon.appiconset/</div>
+        </div>
+
+        <div class="icon-card">
+          <div class="icon-preview-wrap" style="border-radius:50%;">
+            <img src="app-icon-wordmark.png" alt="Android Launcher Icon" style="border-radius:50%;">
+          </div>
+          <h3 class="icon-card-title">Mobile Icon (Android Magdroid)</h3>
+          <p class="icon-card-desc">Adaptive and legacy round icons generated across all density mipmaps (mdpi to xxxhdpi).</p>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:0.75rem; color:#888;">magdroid/.../res/mipmap-*/</div>
+        </div>
+      </div>
+
+      <!-- Specifications Table -->
+      <table class="specs-table">
+        <thead>
+          <tr>
+            <th>Parameter</th>
+            <th>Specification</th>
+            <th>Design Rationale</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Typeface</strong></td>
+            <td><code>Outfit-Regular.ttf</code> (Weight 400)</td>
+            <td>Geometric lightness preserves crisp character counters even inside small dock/launcher footprints.</td>
+          </tr>
+          <tr>
+            <td><strong>Wordmark Scale</strong></td>
+            <td><code>880px</code> painted width on 1024px canvas (86% fill)</td>
+            <td>Maximizes visual presence and authority without clipping against squircle corner curvature.</td>
+          </tr>
+          <tr>
+            <td><strong>Colorway</strong></td>
+            <td>Coral <code>#FF6B6B</code> ground + Cream <code>#FDFCF8</code> text</td>
+            <td>High contrast (4.8:1), warm, energetic, instantly recognizable.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- 5. FAVICON & SYSTEM MARKS -->
+    <!-- ============================================================ -->
+    <section id="favicon-marks" class="section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span class="section-num">05</span>
+          <span>Favicon &amp; System Marks</span>
+        </h2>
+        <span class="section-tag">Single Letter 'm' · High Legibility</span>
+      </div>
+
+      <!-- Browser Tab Mockup -->
+      <h3 style="font-size:1.05rem; margin-bottom:0.75rem;">Browser Tab Integration Preview</h3>
+      <div class="browser-bar-mock">
+        <div class="b-tab active">
+          <svg width="16" height="16" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="20" fill="#FF6B6B"/><path d="M11 45.44V19.10H19.29V45.44ZM27.85 45.44V30.05Q27.85 28.04 26.63 26.93Q25.42 25.82 23.63 25.82Q22.38 25.82 21.41 26.34Q20.43 26.85 19.86 27.77Q19.29 28.69 19.29 30.05L16.09 28.64Q16.09 25.50 17.45 23.25Q18.80 21.00 21.13 19.78Q23.46 18.56 26.39 18.56Q29.15 18.56 31.35 19.81Q33.54 21.05 34.85 23.27Q36.15 25.50 36.15 28.59V45.44ZM44.71 45.44V30.05Q44.71 28.04 43.49 26.93Q42.27 25.82 40.48 25.82Q39.23 25.82 38.26 26.34Q37.28 26.85 36.71 27.77Q36.15 28.69 36.15 30.05L31.38 29.40Q31.49 26.04 32.98 23.63Q34.47 21.22 36.93 19.89Q39.40 18.56 42.49 18.56Q45.52 18.56 47.88 19.83Q50.24 21.11 51.62 23.46Q53 25.82 53 29.13V45.44Z" fill="white"/></svg>
+          <span>Magican — Superpowers for Work, Play...</span>
+        </div>
+        <div class="b-tab">
+          <div style="width:14px; height:14px; border-radius:50%; background:#ccc;"></div>
+          <span>GitHub — magicbeanbs100x/magician</span>
+        </div>
+        <div class="b-tab">
+          <div style="width:14px; height:14px; border-radius:50%; background:#ccc;"></div>
+          <span>Vite Dev Server (:5173)</span>
+        </div>
+      </div>
+
+      <div class="marks-grid">
+        <!-- Favicon -->
+        <div class="mark-card">
+          <div class="mark-display-box">
+            <!-- 64px -->
+            <svg width="64" height="64" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="20" fill="#FF6B6B"/><path d="M11 45.44V19.10H19.29V45.44ZM27.85 45.44V30.05Q27.85 28.04 26.63 26.93Q25.42 25.82 23.63 25.82Q22.38 25.82 21.41 26.34Q20.43 26.85 19.86 27.77Q19.29 28.69 19.29 30.05L16.09 28.64Q16.09 25.50 17.45 23.25Q18.80 21.00 21.13 19.78Q23.46 18.56 26.39 18.56Q29.15 18.56 31.35 19.81Q33.54 21.05 34.85 23.27Q36.15 25.50 36.15 28.59V45.44ZM44.71 45.44V30.05Q44.71 28.04 43.49 26.93Q42.27 25.82 40.48 25.82Q39.23 25.82 38.26 26.34Q37.28 26.85 36.71 27.77Q36.15 28.69 36.15 30.05L31.38 29.40Q31.49 26.04 32.98 23.63Q34.47 21.22 36.93 19.89Q39.40 18.56 42.49 18.56Q45.52 18.56 47.88 19.83Q50.24 21.11 51.62 23.46Q53 25.82 53 29.13V45.44Z" fill="white"/></svg>
+            <!-- 32px -->
+            <svg width="32" height="32" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="20" fill="#FF6B6B"/><path d="M11 45.44V19.10H19.29V45.44ZM27.85 45.44V30.05Q27.85 28.04 26.63 26.93Q25.42 25.82 23.63 25.82Q22.38 25.82 21.41 26.34Q20.43 26.85 19.86 27.77Q19.29 28.69 19.29 30.05L16.09 28.64Q16.09 25.50 17.45 23.25Q18.80 21.00 21.13 19.78Q23.46 18.56 26.39 18.56Q29.15 18.56 31.35 19.81Q33.54 21.05 34.85 23.27Q36.15 25.50 36.15 28.59V45.44ZM44.71 45.44V30.05Q44.71 28.04 43.49 26.93Q42.27 25.82 40.48 25.82Q39.23 25.82 38.26 26.34Q37.28 26.85 36.71 27.77Q36.15 28.69 36.15 30.05L31.38 29.40Q31.49 26.04 32.98 23.63Q34.47 21.22 36.93 19.89Q39.40 18.56 42.49 18.56Q45.52 18.56 47.88 19.83Q50.24 21.11 51.62 23.46Q53 25.82 53 29.13V45.44Z" fill="white"/></svg>
+            <!-- 16px -->
+            <svg width="16" height="16" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="20" fill="#FF6B6B"/><path d="M11 45.44V19.10H19.29V45.44ZM27.85 45.44V30.05Q27.85 28.04 26.63 26.93Q25.42 25.82 23.63 25.82Q22.38 25.82 21.41 26.34Q20.43 26.85 19.86 27.77Q19.29 28.69 19.29 30.05L16.09 28.64Q16.09 25.50 17.45 23.25Q18.80 21.00 21.13 19.78Q23.46 18.56 26.39 18.56Q29.15 18.56 31.35 19.81Q33.54 21.05 34.85 23.27Q36.15 25.50 36.15 28.59V45.44ZM44.71 45.44V30.05Q44.71 28.04 43.49 26.93Q42.27 25.82 40.48 25.82Q39.23 25.82 38.26 26.34Q37.28 26.85 36.71 27.77Q36.15 28.69 36.15 30.05L31.38 29.40Q31.49 26.04 32.98 23.63Q34.47 21.22 36.93 19.89Q39.40 18.56 42.49 18.56Q45.52 18.56 47.88 19.83Q50.24 21.11 51.62 23.46Q53 25.82 53 29.13V45.44Z" fill="white"/></svg>
+          </div>
+          <h3 style="font-size:1.1rem; margin:0 0 0.35rem;">Vector Favicon (SVG)</h3>
+          <p style="font-size:0.82rem; color:#666; margin:0;">
+            Enlarged 42px width small lowercase <code>m</code>. Centered geometrically without outer halo circle for maximum browser tab legibility.
+          </p>
+        </div>
+
+        <!-- In-App Header Mark -->
+        <div class="mark-card">
+          <div class="mark-display-box" style="padding:1rem;">
+            <div class="topbar-mock" style="width:100%;">
+              <div class="tb-brand">
+                <div class="tb-mark">
+                  <svg width="18" height="18" viewBox="0 0 64 64" fill="currentColor">
+                    <path d="M11 45.44V19.10H19.29V45.44ZM27.85 45.44V30.05Q27.85 28.04 26.63 26.93Q25.42 25.82 23.63 25.82Q22.38 25.82 21.41 26.34Q20.43 26.85 19.86 27.77Q19.29 28.69 19.29 30.05L16.09 28.64Q16.09 25.50 17.45 23.25Q18.80 21.00 21.13 19.78Q23.46 18.56 26.39 18.56Q29.15 18.56 31.35 19.81Q33.54 21.05 34.85 23.27Q36.15 25.50 36.15 28.59V45.44ZM44.71 45.44V30.05Q44.71 28.04 43.49 26.93Q42.27 25.82 40.48 25.82Q39.23 25.82 38.26 26.34Q37.28 26.85 36.71 27.77Q36.15 28.69 36.15 30.05L31.38 29.40Q31.49 26.04 32.98 23.63Q34.47 21.22 36.93 19.89Q39.40 18.56 42.49 18.56Q45.52 18.56 47.88 19.83Q50.24 21.11 51.62 23.46Q53 25.82 53 29.13V45.44Z"/>
+                  </svg>
+                </div>
+                <div class="tb-name">magican</div>
+              </div>
+              <div style="font-size:0.75rem; color:#888; font-family:'JetBrains Mono';">v0.0.778</div>
+            </div>
+          </div>
+          <h3 style="font-size:1.1rem; margin:0 0 0.35rem;">In-App Header Mark</h3>
+          <p style="font-size:0.82rem; color:#666; margin:0;">
+            30×30 squircle with centered Outfit <code>m</code> beside the non-bold <code>magican</code> wordmark in the application topbar.
+          </p>
+        </div>
+
+        <!-- macOS Tray Icon -->
+        <div class="mark-card">
+          <div class="mark-display-box" style="background:#222;">
+            <div style="display:flex; align-items:center; gap:12px; color:#fff; font-size:0.85rem;">
+              <span style="display:inline-block; width:18px; height:18px; background:white; -webkit-mask: url('favicon.svg') no-repeat center; mask: url('favicon.svg') no-repeat center;"></span>
+              <span>18px Native Menu Bar Template</span>
+            </div>
+          </div>
+          <h3 style="font-size:1.1rem; margin:0 0 0.35rem;">macOS Menu Bar Tray Mask</h3>
+          <p style="font-size:0.82rem; color:#666; margin:0;">
+            18×18 binary template mask with alpha &le; 4 on border pixels. Tested &amp; verified by native cargo tray test.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    function setShimmerSpeed(speed, btn) {
+      document.documentElement.style.setProperty('--shimmer-speed', speed);
+      document.querySelectorAll('#speedBtns button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    }
+
+    function setGround(bg, isDark, btn) {
+      document.documentElement.style.setProperty('--stage-bg', bg);
+      const stage = document.getElementById('liveStage');
+      if (isDark) stage.classList.add('is-dark');
+      else stage.classList.remove('is-dark');
+      document.querySelectorAll('#groundBtns button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    }
+
+    function copyText(val) {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(val);
+      }
+    }
+  </script>
+</body>
+</html>

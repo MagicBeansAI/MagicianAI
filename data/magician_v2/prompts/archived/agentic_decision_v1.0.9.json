@@ -1,0 +1,245 @@
+{
+  "name": "agentic_decision",
+  "version": "1.0.9",
+  "content": [
+    "## GOAL",
+    "{goal}",
+    "",
+    "## SUCCESS CRITERIA",
+    "{success_criteria}",
+    "",
+    "## CURRENT STATE ({state_type})",
+    "{state_description}",
+    "",
+    "{taskplan_section}",
+    "{history_section}",
+    "{hint_section}",
+    "{input_context}",
+    "{delegation_section}",
+    "{capabilities_section}",
+    "{task_context}",
+    "{task_state_section}",
+    "{environment_knowledge_section}",
+    "## YOUR DECISION",
+    "",
+    "Analyze the current state and determine:",
+    "",
+    "IMPORTANT: Before choosing any action, check whether the success criteria are ALREADY met by the current observable state. If the data you need is visible in the state description, declare goal_reached immediately — do NOT use evaluate or other actions to 're-extract' information already present. The goal describes WHAT to achieve, not HOW — treat any method in the goal text as a suggestion.",
+    "",
+    "1. If the goal is ACHIEVED based on the current state and success criteria, respond:",
+    "   {\"decision\": \"goal_reached\", \"artifacts\": []}",
+    "",
+    "   To return collected data or results, include artifacts (base64 or plain text):",
+    "   {\"decision\": \"goal_reached\", \"artifacts\": [{\"name\": \"result.json\", \"content_type\": \"application/json\", \"data\": \"{\\\"key\\\": \\\"value\\\"}\"}]}",
+    "   To produce a dashboardable artifact that the system can auto-render as a visual surface, set artifact_type:",
+    "   {\"decision\": \"goal_reached\", \"artifacts\": [{\"name\": \"metrics.json\", \"content_type\": \"application/json\", \"artifact_type\": \"custom:metric_set\", \"data\": \"{\\\"items\\\": [{\\\"label\\\": \\\"Total\\\", \\\"value\\\": \\\"42\\\"}]}\"}]}",
+    "   Dashboardable artifact_type values: custom:metric_set (metrics grid), custom:record_table (data table), custom:activity_feed (activity list), custom:summary_note (markdown summary).",
+    "   IMPORTANT: Do NOT use file write actions to produce result data. Use artifacts instead — they are stored in memory and survive without filesystem access.",
+    "",
+    "2. If you CANNOT proceed (error state, impossible goal), respond:",
+    "   {\"decision\": \"cannot_proceed\", \"reason\": \"explanation\"}",
+    "",
+    "3. If you need to EXECUTE an action, respond with ONE of:",
+    "",
+    "   For Browser (NAV-ONLY mode - no element targeting):",
+    "   {\"decision\": \"execute\", \"action_type\": \"browser\", \"tool_name\": \"navigate\", \"parameters\": {\"url\": \"https://example.com\"}}",
+    "   {\"decision\": \"execute\", \"action_type\": \"browser\", \"tool_name\": \"scroll\", \"parameters\": {\"direction\": \"down\", \"amount\": 300}}",
+    "   {\"decision\": \"execute\", \"action_type\": \"browser\", \"tool_name\": \"press_key\", \"parameters\": {\"key\": \"Enter\"}}",
+    "   {\"decision\": \"execute\", \"action_type\": \"browser\", \"tool_name\": \"evaluate\", \"parameters\": {\"function\": \"document.title\", \"expects_page_change\": false}}",
+    "   {\"decision\": \"execute\", \"action_type\": \"browser\", \"tool_name\": \"observe\", \"parameters\": {}}",
+    "   {\"decision\": \"execute\", \"action_type\": \"browser\", \"tool_name\": \"wait_for_network_idle\", \"parameters\": {\"timeout_ms\": 5000}}",
+    "   {\"decision\": \"execute\", \"action_type\": \"browser\", \"tool_name\": \"handle_dialog\", \"parameters\": {\"accept\": true}}",
+    "",
+    "   IMPORTANT: This is NAV-ONLY mode. Element-targeted actions (click, type, hover, etc.) are NOT available.",
+    "   - Use navigate to go to URLs",
+    "   - Use scroll to move through the page",
+    "   - Use press_key for keyboard input (Enter, Escape, Tab, ArrowDown, etc.)",
+    "   - Use evaluate to run JavaScript (set expects_page_change: false for read-only, true for mutations)",
+    "   - Use handle_dialog to accept/dismiss browser dialogs (alert, confirm, prompt)",
+    "",
+    "   For File:",
+    "   {\"decision\": \"execute\", \"action_type\": \"file\", \"operation\": \"read\", \"path\": \"/path/to/file\"}",
+    "   {\"decision\": \"execute\", \"action_type\": \"file\", \"operation\": \"write\", \"path\": \"/path/to/file\", \"content\": \"file contents\"}",
+    "",
+    "   For HTTP:",
+    "   {\"decision\": \"execute\", \"action_type\": \"http\", \"method\": \"GET\", \"url\": \"https://api.example.com/data\"}",
+    "   {\"decision\": \"execute\", \"action_type\": \"http\", \"method\": \"POST\", \"url\": \"https://api.example.com/data\", \"body\": \"{}\"}",
+    "",
+    "   For Bash:",
+    "   {\"decision\": \"execute\", \"action_type\": \"bash\", \"command\": \"ls -la\"}",
+    "",
+    "4. If you need USER INPUT to proceed (only when you CANNOT determine from observation), use need_user_input:",
+    "",
+    "   For credentials (you see a login form with password field):",
+    "   {\"decision\": \"need_user_input\", \"question\": \"Please enter your password\", \"input_type\": \"password\", \"hint\": \"The password field on the login form\"}",
+    "",
+    "   For confirmation (destructive action):",
+    "   {\"decision\": \"need_user_input\", \"question\": \"Delete this file permanently?\", \"input_type\": \"confirmation\", \"hint\": \"This cannot be undone\"}",
+    "",
+    "   For external action (CAPTCHA, MFA, QR code scan):",
+    "   {\"decision\": \"need_user_input\", \"question\": \"Please solve the CAPTCHA\", \"input_type\": \"external_action\", \"hint\": \"Complete the verification on the page\"}",
+    "",
+    "   For choice (multiple options visible, unclear which to select):",
+    "   {\"decision\": \"need_user_input\", \"question\": \"Which account?\", \"input_type\": \"choice\", \"options\": [{\"id\": \"personal\", \"label\": \"Personal\"}, {\"id\": \"work\", \"label\": \"Work\"}]}",
+    "",
+    "   WHEN TO ASK vs WHEN TO PROCEED:",
+    "",
+    "   ASK only when you SEE something that requires user action:",
+    "   - Login form with password field visible (user MUST provide credentials)",
+    "   - CAPTCHA/MFA challenge appears on screen (user MUST solve it)",
+    "   - QR code to scan with phone visible (user MUST scan)",
+    "   - Destructive action confirmation dialog (delete, purchase)",
+    "   - Multiple accounts/profiles shown and unclear which to use",
+    "",
+    "   DON'T ASK - just observe and proceed:",
+    "   - Whether user is logged in (you can SEE this from the page)",
+    "   - What page type is displayed (you can SEE this)",
+    "   - Whether a form exists (you can SEE this)",
+    "   - Any state that is visible in the current observation",
+    "   - Value is in USER-PROVIDED VALUES section (already resolved)",
+    "",
+    "   Available input_type values: text, password, choice, multi_choice, confirmation, external_action, file_path, guidance",
+    "",
+    "5. If your task's PRECONDITION IS NOT YET MET and you should retry later, DEFER the execution:",
+    "",
+    "   {\"decision\": \"execute\", \"action_type\": \"http\", \"method\": \"POST\", \"url\": \"{api_base}/tasks/{task_id}/defer\", \"body\": \"{\\\"retry_after_minutes\\\": 60, \\\"reason\\\": \\\"Only 6 hours logged, need 8 before clocking out\\\"}\"}",
+    "",
+    "   Where {api_base} and {task_id} come from the TASK CONTEXT section above.",
+    "",
+    "   USE THIS WHEN:",
+    "   - A time-based condition hasn't been reached yet (e.g., \"need 8 hours logged but only 6 so far\")",
+    "   - An external state hasn't changed yet (e.g., \"report not yet published, check again in 30 min\")",
+    "   - A prerequisite will be satisfied later but isn't ready now",
+    "",
+    "   DO NOT USE THIS FOR:",
+    "   - Goals that are impossible (use cannot_proceed)",
+    "   - Goals already achieved (use goal_reached)",
+    "   - Information needed from the user (use need_user_input)",
+    "",
+    "   The system automatically retries your task after the delay. Choose retry_after_minutes wisely:",
+    "   - 15-30 min for fast-changing conditions (emails, approvals)",
+    "   - 30-60 min for slow-changing conditions (hours logged, reports)",
+    "   - Your SINGLE response for a defer decision should be the execute/http POST /defer action above.",
+    "   - Do NOT also return goal_reached in the same turn; the runtime handles the deferral.",
+    "",
+    "Respond with ONLY the JSON decision."
+  ],
+  "variables": [
+    {
+      "name": "goal",
+      "description": "The goal to achieve in the agentic execution",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Login to the application",
+        "Navigate to checkout page"
+      ]
+    },
+    {
+      "name": "success_criteria",
+      "description": "Criteria that define when the goal is achieved",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "URL contains /dashboard",
+        "Success message visible"
+      ]
+    },
+    {
+      "name": "state_type",
+      "description": "Type of environment state (Browser, Filesystem, Http, Shell)",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Browser",
+        "Filesystem"
+      ]
+    },
+    {
+      "name": "state_description",
+      "description": "Human-readable description of current environment state",
+      "required": true,
+      "default_value": null,
+      "examples": []
+    },
+    {
+      "name": "taskplan_section",
+      "description": "Current taskplan markdown content, injected when strategy is taskplan. Empty otherwise.",
+      "required": false,
+      "default_value": "",
+      "examples": []
+    },
+    {
+      "name": "history_summary",
+      "description": "Summary of previous iterations in the agentic loop",
+      "required": true,
+      "default_value": "No actions executed yet.",
+      "examples": []
+    },
+    {
+      "name": "history_section",
+      "description": "Rendered execution-history section for non-taskplan prompts. Empty when taskplan projection already includes runtime summary.",
+      "required": false,
+      "default_value": "",
+      "examples": []
+    },
+    {
+      "name": "hint_section",
+      "description": "Optional hint from planner about suggested first action",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## HINT\nThe planner suggested starting with: Navigate to login page"
+      ]
+    },
+    {
+      "name": "input_context",
+      "description": "Section showing user-provided values that have been resolved.",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## USER-PROVIDED VALUES\n  - password: [REDACTED]"
+      ]
+    },
+    {
+      "name": "task_context",
+      "description": "Task execution context with task_id, execution_id, and API base URL. Empty when not executing a task.",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## TASK CONTEXT\nYou are executing task_id: abc123\nexecution_id: def456\nAPI base: http://localhost:3002/api/magician/v2"
+      ]
+    },
+    {
+      "name": "task_state_section",
+      "description": "Persisted task state JSON from previous runs. Empty on first run or non-task executions.",
+      "required": false,
+      "default_value": ""
+    },
+    {
+      "name": "environment_knowledge_section",
+      "description": "Prior environment knowledge from memory — learned patterns, blockers, and successful interaction sequences for matched environments. Empty when no prior knowledge exists.",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "## WHAT YOU ALREADY KNOW ABOUT THIS ENVIRONMENT\n\n### browser:github.com/login/*\n**What worked**: Click sign-in button then enter credentials\n**Known blockers**: cookie_banner: dismiss first\n"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "General",
+    "description": "Decision prompt for the agentic observe-decide-execute loop (NAV-ONLY mode). This prompt is used when the SoM path is not available (blank pages, non-browser contexts). Only page-level actions are allowed: navigate, scroll, press_key, evaluate, observe, wait_for_network_idle, handle_dialog. Element-targeted actions (click, type, hover) require the SoM path.",
+    "author": "magician",
+    "created_at": "2025-01-21T00:00:00Z",
+    "changelog": "v1.0.0: Initial version with target_description for lazy selector resolution. v1.0.1: Added nuanced blocking element handling. v1.0.2: BREAKING - Removed element-targeted actions (click/type/hover) that were incorrectly documented. This is NAV-ONLY mode; element actions require SoM path. Added press_key, evaluate with expects_page_change, handle_dialog. v1.0.4: Added {capabilities_section} variable for dynamic capability tool awareness. v1.0.5: Added {task_context} variable and defer_execution guidance for tasks with unmet preconditions that should be retried later. v1.0.7: Added artifact format documentation to goal_reached — use artifacts for result data instead of file writes. v1.0.9: Documented optional artifact_type field for dashboardable artifacts (custom:metric_set, custom:record_table, custom:activity_feed, custom:summary_note).",
+    "tags": [
+      "agentic",
+      "execution",
+      "decision",
+      "nav-only",
+      "non-som",
+      "observation-first"
+    ],
+    "estimated_tokens": 1000
+  }
+}

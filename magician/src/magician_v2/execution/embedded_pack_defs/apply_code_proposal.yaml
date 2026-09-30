@@ -1,0 +1,45 @@
+name: apply_code_proposal
+description: Apply a staged code-change proposal (from run_coding_task) to the project working tree, so an authorized autonomous run can accumulate and verify its own changes.
+version: "1.0.0"
+guide: |
+  Tool name: `apply_code_proposal`
+
+  Apply a `CodeChangeProposal` that `run_coding_task` staged. Pass the
+  `proposal_id` returned by `run_coding_task` (it returns
+  `status: pending_approval` with the id).
+
+  Why it matters: `run_coding_task` runs Pi in a shadow workspace that is
+  **re-synced from the real working tree at the start of every turn**. A
+  proposal that is never applied is therefore wiped on the next turn — so an
+  unattended run cannot accumulate progress unless it applies each turn's
+  change. Applying writes the change to the real working tree, so the next
+  `run_coding_task` turn carries it forward.
+
+  Optionally pass `paths` to apply only some files. Idempotent: if the proposal
+  is already applied or rejected, this is a no-op and returns
+  `already_applied: true`.
+
+  Use this ONLY when authorized to apply your own changes (an Autopilot /
+  unattended run). In normal interactive runs the operator applies proposals
+  through the review UI.
+parameters:
+  - name: proposal_id
+    required: true
+    param_type: string
+    description: The proposal id returned by run_coding_task (status pending_approval).
+  - name: paths
+    required: false
+    param_type: array
+    description: Optional subset of file paths to apply; omit to apply the whole proposal.
+implementation:
+  type: compiled
+  provider_name: apply_code_proposal
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories:
+    - coding
+    - filesystem
+    - write
+  composition_category: action
+  sandbox: none

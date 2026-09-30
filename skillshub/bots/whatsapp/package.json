@@ -1,0 +1,25 @@
+{
+  "name": "@magician/bot-whatsapp",
+  "version": "0.2.4",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "npm --prefix ../.. run build -w @magician/bot-sdk && node ../build_bundle.mjs --external @ibrahimwithi/wu-cli",
+    "check": "npm --prefix ../.. run build -w @magician/bot-sdk && tsc -p tsconfig.json --noEmit",
+    "start": "node --env-file=${ENV_FILE:-.env.development} dist/index.js",
+    "test": "npm --prefix ../.. run build -w @magician/bot-sdk && tsc -p tsconfig.json && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@ibrahimwithi/wu-cli": "^0.1.20",
+    "@magician/bot-sdk": "file:../sdk",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6"
+  }
+}

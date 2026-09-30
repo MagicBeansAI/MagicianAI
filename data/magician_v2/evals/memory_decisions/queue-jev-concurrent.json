@@ -1,0 +1,834 @@
+{
+  "summary": {
+    "requests": 12,
+    "answered": 12,
+    "elapsed_ms": 1039,
+    "physical_calls": 12,
+    "models": [
+      "jev-1.13.0"
+    ],
+    "queued_calls": 6,
+    "max_queue_wait_ms": 653,
+    "input_tokens": 6924,
+    "output_tokens": 948,
+    "unknown_cache_calls": 12
+  },
+  "request": {
+    "contract_version": 4,
+    "operation": "memory_utility_review",
+    "state": {
+      "context": null,
+      "item": {
+        "evidence": "Memory says the verified invoice reference is INV-583. The completed task asked for that exact reference; the final answer quoted INV-583 from the memory and matched the source."
+      }
+    },
+    "locality": "cloud",
+    "choice_candidates": {}
+  },
+  "rows": [
+    {
+      "id": 0,
+      "elapsed_ms": 700,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YQGT25TSRXXX4S4FND22",
+            "retry_group_id": "01M3J3YQGSJ8HT427WY6NQ19XZ",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753242,
+            "completed_at_ms": 1790535753911,
+            "latency_ms": 669,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.97,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.02
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 670
+      }
+    },
+    {
+      "id": 1,
+      "elapsed_ms": 698,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YQGXHCT69WM90ACVZ9CW",
+            "retry_group_id": "01M3J3YQGXS04XFD9Y8A88G2MG",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753245,
+            "completed_at_ms": 1790535753913,
+            "latency_ms": 667,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.97,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.02
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 668
+      }
+    },
+    {
+      "id": 2,
+      "elapsed_ms": 695,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YQGZHE1JA3BWPY3MGWW2",
+            "retry_group_id": "01M3J3YQGZ5VFVHJG2Q2YW8S8N",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753247,
+            "completed_at_ms": 1790535753913,
+            "latency_ms": 665,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.98,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.01
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 665
+      }
+    },
+    {
+      "id": 3,
+      "elapsed_ms": 992,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YR5RRFNV92BDC80V19RK",
+            "retry_group_id": "01M3J3YR5RH3NADV7BF85ZV7SN",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753912,
+            "completed_at_ms": 1790535754213,
+            "latency_ms": 300,
+            "queue_wait_ms": 647,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.97,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.02
+              },
+              "confidence": 0.95
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 948
+      }
+    },
+    {
+      "id": 4,
+      "elapsed_ms": 692,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YQH16SAZ1SW75VT44RBE",
+            "retry_group_id": "01M3J3YQH1B1Z462CSHB0KP12Y",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753249,
+            "completed_at_ms": 1790535753913,
+            "latency_ms": 664,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.98,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.01
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 664
+      }
+    },
+    {
+      "id": 5,
+      "elapsed_ms": 691,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YQH0175KDQ0CW9XT531N",
+            "retry_group_id": "01M3J3YQH07HV3CZMGMPA37V5A",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753248,
+            "completed_at_ms": 1790535753913,
+            "latency_ms": 664,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.97,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.02
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 664
+      }
+    },
+    {
+      "id": 6,
+      "elapsed_ms": 686,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YQH5H46Z3V679PK1SGJ6",
+            "retry_group_id": "01M3J3YQH51DBYNZX05NVAJ17W",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753253,
+            "completed_at_ms": 1790535753911,
+            "latency_ms": 657,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.98,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.01
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 658
+      }
+    },
+    {
+      "id": 7,
+      "elapsed_ms": 992,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YR5RGVVFCED1PPZTNEPV",
+            "retry_group_id": "01M3J3YR5RENK7XG9780BA09WP",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753912,
+            "completed_at_ms": 1790535754224,
+            "latency_ms": 311,
+            "queue_wait_ms": 653,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.97,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.02
+              },
+              "confidence": 0.95
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 965
+      }
+    },
+    {
+      "id": 8,
+      "elapsed_ms": 961,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YR5T7HWJ1PR5V4WGCY44",
+            "retry_group_id": "01M3J3YR5TFMN8QMC89DRJKEA8",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753914,
+            "completed_at_ms": 1790535754199,
+            "latency_ms": 285,
+            "queue_wait_ms": 646,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.98,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.01
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 932
+      }
+    },
+    {
+      "id": 9,
+      "elapsed_ms": 963,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YR5TKZEQ45QKTW7S4G3G",
+            "retry_group_id": "01M3J3YR5TTP45FQHA21C502NX",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753914,
+            "completed_at_ms": 1790535754203,
+            "latency_ms": 289,
+            "queue_wait_ms": 640,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.98,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.01
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 930
+      }
+    },
+    {
+      "id": 10,
+      "elapsed_ms": 1003,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YR5TP313891T5ZF6PD78",
+            "retry_group_id": "01M3J3YR5T3YJ0B80PGWBQ6KC4",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753914,
+            "completed_at_ms": 1790535754248,
+            "latency_ms": 333,
+            "queue_wait_ms": 645,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.97,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.02
+              },
+              "confidence": 0.95
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 980
+      }
+    },
+    {
+      "id": 11,
+      "elapsed_ms": 980,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J3YR5TR6E3EMDTAQX0TAG1",
+            "retry_group_id": "01M3J3YR5TDBFV5PVJZQT3J3ZR",
+            "attempt": 1,
+            "operation": "memory_utility_review",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790535753914,
+            "completed_at_ms": 1790535754233,
+            "latency_ms": 318,
+            "queue_wait_ms": 639,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 577,
+            "output_tokens": 79,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.97,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.01,
+                "useful": 0.02
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 577,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 959
+      }
+    }
+  ]
+}

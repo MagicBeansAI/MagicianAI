@@ -1,0 +1,499 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "audience_id": {
+              "value_type": 1,
+              "required": true
+            },
+            "audience_kind": {
+              "value_type": 2,
+              "required": true
+            },
+            "ingest_id": {
+              "value_type": 3,
+              "required": true
+            },
+            "outwardness_reason": {
+              "value_type": 4,
+              "required": true
+            },
+            "speaker_mapping_json": {
+              "value_type": 5,
+              "required": true
+            },
+            "transcript_text": {
+              "value_type": 6,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "markdown",
+          "max_bytes": 262144
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:80ff9a1e986edda9331bfc1fb4e7fc0ff1c932bb81e90f255a1b40bce220342f",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:80ff9a1e986edda9331bfc1fb4e7fc0ff1c932bb81e90f255a1b40bce220342f",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {},
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/ingest_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/transcript_text"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/speaker_mapping_json"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/audience_kind"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/audience_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/outwardness_reason"
+                },
+                {
+                  "kind": "linked_text_rows",
+                  "value": 5,
+                  "schema": {
+                    "dictionary_field": "speakers",
+                    "rows_field": "utterances",
+                    "link_field": "speaker",
+                    "text_field": "text",
+                    "max_keys": 64,
+                    "max_rows": 1000,
+                    "max_bytes": 262144
+                  }
+                },
+                {
+                  "kind": "literal",
+                  "value": 131072
+                },
+                {
+                  "kind": "byte_length",
+                  "value": 4
+                },
+                {
+                  "kind": "less_than",
+                  "left": 10,
+                  "right": 11
+                },
+                {
+                  "kind": "not",
+                  "value": 12
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 14
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/ingest_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 16,
+                  "right": 3
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/transcript_text"
+                },
+                {
+                  "kind": "equal",
+                  "left": 18,
+                  "right": 4
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/speaker_mapping_json"
+                },
+                {
+                  "kind": "equal",
+                  "left": 20,
+                  "right": 5
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/audience_kind"
+                },
+                {
+                  "kind": "equal",
+                  "left": 22,
+                  "right": 6
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/audience_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 24,
+                  "right": 7
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/outwardness_reason"
+                },
+                {
+                  "kind": "equal",
+                  "left": 26,
+                  "right": 8
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    17,
+                    19,
+                    21,
+                    23,
+                    25,
+                    27
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 15
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    29,
+                    28
+                  ]
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "ingest",
+                  "parts": [
+                    3
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": "recorded"
+                },
+                {
+                  "kind": "not",
+                  "value": 15
+                },
+                {
+                  "kind": "literal",
+                  "value": "This transcript-ingest request is already recorded."
+                },
+                {
+                  "kind": "literal",
+                  "value": "Recorded the transcript-ingest request for host application."
+                },
+                {
+                  "kind": "if",
+                  "condition": 15,
+                  "then_value": 34,
+                  "else_value": 35
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "existing",
+                "entity": "ingest_request",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "ingest_id",
+                    "transcript_text",
+                    "speaker_mapping_json",
+                    "audience_kind",
+                    "audience_id",
+                    "outwardness_reason"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "ingest_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 3
+                }
+              }
+            ],
+            "query_when": {},
+            "guards": [
+              {
+                "require": 9,
+                "reason": "invalid_linked_transcript_rows"
+              },
+              {
+                "require": 13,
+                "reason": "transcript_too_large"
+              },
+              {
+                "require": 30,
+                "reason": "ingest_identity_conflict"
+              }
+            ],
+            "mutations": [
+              {
+                "entity": "ingest_request",
+                "for_each": null,
+                "when": 33,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 31,
+                  "fields": {
+                    "ingest_id": 3,
+                    "transcript_text": 4,
+                    "speaker_mapping_json": 5,
+                    "audience_kind": 6,
+                    "audience_id": 7,
+                    "outwardness_reason": 8,
+                    "actor_ref": 0,
+                    "act_ref": 0,
+                    "apply_state": 32,
+                    "submitted_at": 1
+                  }
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64,
+            "summary": 36
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

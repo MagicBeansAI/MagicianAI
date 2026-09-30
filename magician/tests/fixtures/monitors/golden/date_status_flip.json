@@ -1,0 +1,107 @@
+{
+  "name": "date_status_flip",
+  "description": "Status-page incident: the same stable item flips its status fact (investigating → resolved). The fact change lives in the entities, so the content fingerprint changes and the item classifies `updated` (covers §7.2 date/status/amount flips and reversals).",
+  "notification_policy": "material_changes",
+  "notify_initial_baseline": false,
+  "steps": [
+    {
+      "label": "baseline: incident investigating",
+      "execution_id": "exec_flip_1",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_flip_1",
+        "monitor_revision": 3,
+        "started_at": "2026-07-22T09:00:00Z",
+        "completed_at": "2026-07-22T09:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://status.example/history",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 1
+          }
+        ],
+        "counts": { "scanned": 1, "new": 0, "updated": 0, "unchanged": 1, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:incident-482",
+            "title": "Incident 482: elevated API error rate",
+            "canonical_url": "https://status.example/incidents/482",
+            "source": "https://status.example/history",
+            "observed_at": "2026-07-22T09:00:30Z",
+            "published_at": "2026-07-22T05:00:00Z",
+            "summary": "Incident 482 is being investigated.",
+            "why_it_matters": "Tracked incident status.",
+            "entities": ["status: investigating"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_3001",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_3001",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "baseline",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": true,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 1, "updated": 0, "unchanged": 0, "possibly_removed": 0 }
+      }
+    },
+    {
+      "label": "incident status flips to resolved",
+      "execution_id": "exec_flip_2",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_flip_2",
+        "monitor_revision": 3,
+        "started_at": "2026-07-23T09:00:00Z",
+        "completed_at": "2026-07-23T09:01:00Z",
+        "status": "changed",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://status.example/history",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 1
+          }
+        ],
+        "counts": { "scanned": 1, "new": 0, "updated": 1, "unchanged": 0, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:incident-482",
+            "title": "Incident 482: elevated API error rate",
+            "canonical_url": "https://status.example/incidents/482",
+            "source": "https://status.example/history",
+            "observed_at": "2026-07-23T09:00:30Z",
+            "published_at": "2026-07-22T05:00:00Z",
+            "summary": "Incident 482 has been resolved.",
+            "why_it_matters": "The tracked incident status flipped.",
+            "entities": ["status: resolved"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_3002",
+            "classification": "updated"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_3002",
+        "change_fingerprint": "chg_model_claim_3002"
+      },
+      "expect": {
+        "status": "changed",
+        "material": true,
+        "would_notify": true,
+        "update_recorded": true,
+        "projects_to_changed": true,
+        "change_fingerprint_present": true,
+        "counts": { "new": 0, "updated": 1, "unchanged": 0, "possibly_removed": 0 },
+        "classifications": { "native:incident-482": "updated" }
+      }
+    }
+  ]
+}

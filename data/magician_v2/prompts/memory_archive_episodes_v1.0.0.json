@@ -1,0 +1,62 @@
+{
+  "name": "memory_archive_episodes",
+  "version": "1.0.0",
+  "content": [
+    "Create archive summaries from the following old episodic memory entries.",
+    "",
+    "## Source Episodes ({episode_count} episodes)",
+    "{source_json}",
+    "",
+    "## Instructions",
+    "1. Read through all episodes and group related ones into coherent task blocks",
+    "2. For each group, create a concise archive summary (1-2 sentences)",
+    "3. Record the time range, key entities involved, and outcome",
+    "4. Generate search keywords that would help retrieve this summary in the future",
+    "5. Aim for high compression: summaries should be 10-20x smaller than the originals",
+    "",
+    "## Grouping Rules",
+    "- Episodes within the same task/workflow should be grouped together",
+    "- If a task spans multiple sessions, group by session boundaries",
+    "- Standalone episodes get their own archive entry",
+    "- Maximum 20 episodes per archive group",
+    "",
+    "## Keyword Selection",
+    "Include keywords covering:",
+    "- Tool names used (e.g., calendar, browser, email)",
+    "- Action types (e.g., created, deleted, searched, navigated)",
+    "- Domain topics (e.g., scheduling, coding, research)",
+    "- Outcome indicators (e.g., success, failure, timeout)",
+    "- Entity names (people, projects, files)",
+    "",
+    "Return the JSON object as specified by your system prompt.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized array of old episodic memory entries to archive",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"id\": \"ep_042\", \"content\": \"Navigated to calendar app\", \"timestamp\": \"2026-02-15T09:00:00Z\"}, {\"id\": \"ep_043\", \"content\": \"Created team standup event\", \"timestamp\": \"2026-02-15T09:02:00Z\"}]"
+      ]
+    },
+    {
+      "name": "episode_count",
+      "description": "Number of episodes in the source data",
+      "required": true,
+      "default_value": "0",
+      "examples": ["10", "50", "200"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to create compressed, searchable archive summaries from old episodic memory entries. Supports grouping, keyword extraction, and high compression ratios.",
+    "author": "magician",
+    "created_at": "2026-03-04T00:00:00Z",
+    "changelog": "v1.0.0: Initial episode archival user prompt for memory consolidation pipeline.",
+    "tags": ["memory", "consolidation", "episode-archival", "compression"],
+    "estimated_tokens": 250
+  }
+}

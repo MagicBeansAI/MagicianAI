@@ -1,0 +1,4 @@
+report_id,owner,status,window
+case-a-http-export,ops-platform,ready,2026-03-11T09:00:00Z
+case-a-http-export,ops-platform,ready,2026-03-11T09:30:00Z
+case-a-http-export,ops-platform,ready,2026-03-11T10:00:00Z

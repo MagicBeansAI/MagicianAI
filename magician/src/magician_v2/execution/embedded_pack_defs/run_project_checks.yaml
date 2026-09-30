@@ -1,0 +1,40 @@
+name: run_project_checks
+description: Run the project's build/test/lint/typecheck in its workspace and return pass/fail + output, so an autonomous run can verify it is green and fix failures.
+version: "1.0.0"
+guide: |
+  Tool name: `run_project_checks`
+
+  Runs the project's detected checks in its cache-warm shadow workspace and
+  returns `{ all_ok, results: [{ kind, command, ok, exit_code, timed_out,
+  output_tail }] }`.
+
+  Detection: Node projects map `package.json` scripts
+  (`build`/`test`/`lint`/`typecheck`, with `check`/`tsc` counting as typecheck)
+  per package manager; Rust uses `cargo check`/`test`/`clippy`; Python uses
+  `pytest`.
+
+  Pass `repo_path` (the same selector as `run_coding_task`; defaults to ".") and
+  an optional `kind` (`build` | `test` | `lint` | `typecheck`; omit to run all
+  detected checks). Use it after `apply_code_proposal` to confirm a change is
+  green; on a failure read `output_tail`, make a focused fix, and re-run until
+  `all_ok` is true.
+parameters:
+  - name: repo_path
+    required: false
+    param_type: string
+    description: Project directory (same selector as run_coding_task). Defaults to ".".
+  - name: kind
+    required: false
+    param_type: string
+    description: Which check to run (build, test, lint, typecheck). Omit to run all detected checks.
+implementation:
+  type: compiled
+  provider_name: run_project_checks
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 300
+  categories:
+    - coding
+    - filesystem
+  composition_category: action
+  sandbox: none

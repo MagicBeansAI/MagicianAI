@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Theme 5: Forest Mist - Magician UI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       THEME 5: FOREST MIST
+       Natural & Calming - Organic sage greens
+       ============================================ */
+
+    :root {
+      /* Core palette - soft sage/cream */
+      --bg-base: #f5f7f4;
+      --bg-surface: #eef2ec;
+      --bg-elevated: #ffffff;
+      --bg-hover: #e4ebe1;
+
+      /* Text hierarchy - forest greens/browns */
+      --text-primary: #2d3a2e;
+      --text-secondary: #4a5d4b;
+      --text-muted: #6b7c6c;
+      --text-faint: #a8b5a9;
+
+      /* Primary accent - forest green */
+      --accent-primary: #4a7c59;
+      --accent-primary-hover: #3d6849;
+      --accent-primary-soft: #dfeee3;
+
+      /* Secondary accent - warm terracotta */
+      --accent-secondary: #c17f59;
+      --accent-secondary-soft: #f5e6dd;
+
+      /* Tertiary accent - muted gold */
+      --accent-tertiary: #a69356;
+      --accent-tertiary-soft: #f5f0e0;
+
+      /* Status colors - natural tones */
+      --color-success: #4a7c59;
+      --color-success-soft: #dfeee3;
+      --color-warning: #c9a227;
+      --color-warning-soft: #faf3dc;
+      --color-error: #b54a4a;
+      --color-error-soft: #f8e5e5;
+
+      /* Borders - soft green-gray */
+      --border-soft: #d4ddd5;
+      --border-default: #bcc8bd;
+
+      /* Typography */
+      --font-primary: 'Plus Jakarta Sans', -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+
+      /* Radii - organic, rounded */
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --radius-full: 9999px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-primary);
+      background: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-soft);
+      padding: 1.5rem 2rem;
+    }
+
+    .header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .header .badge {
+      background: var(--accent-primary-soft);
+      color: var(--accent-primary);
+      padding: 0.25rem 0.75rem;
+      border-radius: var(--radius-full);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .header p {
+      color: var(--text-secondary);
+      margin-top: 0.5rem;
+    }
+
+    /* Main content */
+    .main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    /* Section */
+    .section {
+      margin-bottom: 3rem;
+    }
+
+    .section-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    /* Color swatches */
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 1rem;
+    }
+
+    .swatch {
+      text-align: center;
+    }
+
+    .swatch-color {
+      width: 100%;
+      height: 60px;
+      border-radius: var(--radius-md);
+      margin-bottom: 0.5rem;
+      border: 1px solid var(--border-soft);
+    }
+
+    .swatch-label {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    .swatch-value {
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--text-muted);
+    }
+
+    /* Buttons */
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .btn {
+      padding: 0.625rem 1.25rem;
+      border-radius: var(--radius-md);
+      font-weight: 600;
+      font-size: 0.875rem;
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-primary {
+      background: var(--accent-primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-primary-hover);
+    }
+
+    .btn-success {
+      background: var(--color-success);
+      color: white;
+    }
+
+    .btn-secondary {
+      background: var(--accent-secondary-soft);
+      color: var(--accent-secondary);
+    }
+
+    .btn-tertiary {
+      background: var(--accent-tertiary-soft);
+      color: var(--accent-tertiary);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-default);
+    }
+
+    .btn-ghost:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    /* Badges */
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .badge {
+      padding: 0.25rem 0.75rem;
+      border-radius: var(--radius-full);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .badge-success {
+      background: var(--color-success-soft);
+      color: var(--color-success);
+    }
+
+    .badge-warning {
+      background: var(--color-warning-soft);
+      color: var(--color-warning);
+    }
+
+    .badge-error {
+      background: var(--color-error-soft);
+      color: var(--color-error);
+    }
+
+    .badge-primary {
+      background: var(--accent-primary-soft);
+      color: var(--accent-primary);
+    }
+
+    .badge-secondary {
+      background: var(--accent-secondary-soft);
+      color: var(--accent-secondary);
+    }
+
+    .badge-tertiary {
+      background: var(--accent-tertiary-soft);
+      color: var(--accent-tertiary);
+    }
+
+    /* Cards */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1rem;
+    }
+
+    .card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      box-shadow: 0 2px 8px rgba(45, 58, 46, 0.06);
+    }
+
+    .card:hover {
+      border-color: var(--border-default);
+      box-shadow: 0 4px 20px rgba(45, 58, 46, 0.08);
+    }
+
+    .card-title {
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .card-description {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+
+    .card-meta {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-soft);
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Input */
+    .input-group {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+
+    .input {
+      flex: 1;
+      padding: 0.625rem 1rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-size: 0.875rem;
+    }
+
+    .input:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 4px rgba(74, 124, 89, 0.15);
+    }
+
+    .input::placeholder {
+      color: var(--text-muted);
+    }
+
+    /* Progress */
+    .progress {
+      height: 8px;
+      background: var(--bg-hover);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      margin-top: 1rem;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: var(--accent-primary);
+      border-radius: var(--radius-full);
+      transition: width 0.3s ease;
+    }
+
+    /* List */
+    .list {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .list-item {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border-soft);
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .list-item:last-child {
+      border-bottom: none;
+    }
+
+    .list-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .list-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+    }
+
+    .list-icon.success {
+      background: var(--color-success-soft);
+      color: var(--color-success);
+    }
+
+    .list-icon.warning {
+      background: var(--color-warning-soft);
+      color: var(--color-warning);
+    }
+
+    .list-icon.error {
+      background: var(--color-error-soft);
+      color: var(--color-error);
+    }
+
+    .list-content {
+      flex: 1;
+    }
+
+    .list-title {
+      font-weight: 500;
+      font-size: 0.875rem;
+    }
+
+    .list-subtitle {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+
+    /* Decorative leaf pattern */
+    .leaf-pattern {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: 400px;
+      height: 400px;
+      opacity: 0.03;
+      pointer-events: none;
+      background: radial-gradient(circle at 70% 30%, var(--accent-primary) 0%, transparent 50%);
+    }
+  </style>
+</head>
+<body>
+  <div class="leaf-pattern"></div>
+
+  <header class="header">
+    <h1>
+      <span>Forest Mist</span>
+      <span class="badge">Light Theme</span>
+    </h1>
+    <p>Natural & Calming - Sage greens with organic, rounded aesthetics</p>
+  </header>
+
+  <main class="main">
+    <!-- Colors -->
+    <section class="section">
+      <h2 class="section-title">Color Palette</h2>
+      <div class="swatches">
+        <div class="swatch">
+          <div class="swatch-color" style="background: #f5f7f4;"></div>
+          <div class="swatch-label">Base</div>
+          <div class="swatch-value">#f5f7f4</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #eef2ec;"></div>
+          <div class="swatch-label">Surface</div>
+          <div class="swatch-value">#eef2ec</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #ffffff;"></div>
+          <div class="swatch-label">Elevated</div>
+          <div class="swatch-value">#ffffff</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #4a7c59;"></div>
+          <div class="swatch-label">Primary</div>
+          <div class="swatch-value">#4a7c59</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #c17f59;"></div>
+          <div class="swatch-label">Secondary</div>
+          <div class="swatch-value">#c17f59</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #a69356;"></div>
+          <div class="swatch-label">Tertiary</div>
+          <div class="swatch-value">#a69356</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #c9a227;"></div>
+          <div class="swatch-label">Warning</div>
+          <div class="swatch-value">#c9a227</div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-color" style="background: #b54a4a;"></div>
+          <div class="swatch-label">Error</div>
+          <div class="swatch-value">#b54a4a</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Buttons -->
+    <section class="section">
+      <h2 class="section-title">Buttons</h2>
+      <div class="buttons">
+        <button class="btn btn-primary">Primary Action</button>
+        <button class="btn btn-success">Execute</button>
+        <button class="btn btn-secondary">Terracotta</button>
+        <button class="btn btn-tertiary">Planning</button>
+        <button class="btn btn-ghost">Cancel</button>
+      </div>
+    </section>
+
+    <!-- Badges -->
+    <section class="section">
+      <h2 class="section-title">Status Badges</h2>
+      <div class="badges">
+        <span class="badge badge-success">Ready</span>
+        <span class="badge badge-primary">Running</span>
+        <span class="badge badge-tertiary">Planning</span>
+        <span class="badge badge-warning">Pending</span>
+        <span class="badge badge-error">Failed</span>
+        <span class="badge badge-secondary">Terracotta</span>
+      </div>
+    </section>
+
+    <!-- Cards -->
+    <section class="section">
+      <h2 class="section-title">Task Cards</h2>
+      <div class="cards">
+        <div class="card">
+          <div class="card-title">Garden planning assistant</div>
+          <div class="card-description">Research optimal planting schedules for spring vegetables based on local climate.</div>
+          <div class="card-meta">
+            <span>Due: This Weekend</span>
+            <span class="badge badge-primary">In Progress</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Sustainability report</div>
+          <div class="card-description">Compile quarterly environmental impact metrics and generate summary.</div>
+          <div class="card-meta">
+            <span>Due: Next Month</span>
+            <span class="badge badge-success">Ready</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Input -->
+    <section class="section">
+      <h2 class="section-title">Input Field</h2>
+      <div class="input-group">
+        <input type="text" class="input" placeholder="What would you like to accomplish today?">
+        <button class="btn btn-primary">Add Task</button>
+      </div>
+      <div class="progress">
+        <div class="progress-bar" style="width: 45%;"></div>
+      </div>
+    </section>
+
+    <!-- List -->
+    <section class="section">
+      <h2 class="section-title">Activity List</h2>
+      <div class="list">
+        <div class="list-item">
+          <div class="list-icon success">&#10003;</div>
+          <div class="list-content">
+            <div class="list-title">Analysis completed successfully</div>
+            <div class="list-subtitle">Just now</div>
+          </div>
+        </div>
+        <div class="list-item">
+          <div class="list-icon warning">&#9888;</div>
+          <div class="list-content">
+            <div class="list-title">Waiting for confirmation</div>
+            <div class="list-subtitle">3 minutes ago</div>
+          </div>
+        </div>
+        <div class="list-item">
+          <div class="list-icon error">&#10005;</div>
+          <div class="list-content">
+            <div class="list-title">Resource unavailable</div>
+            <div class="list-subtitle">15 minutes ago</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

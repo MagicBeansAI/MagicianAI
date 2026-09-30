@@ -1,0 +1,242 @@
+name: presto-calendar
+version: 0.1.0
+parameters:
+- name: command
+  required: true
+  param_type: string
+  description: Outer-loop fallback command string after `gws calendar`, for example "+agenda --today" or "events list --params '{\"calendarId\":\"primary\"}'". Ignored while implementation.type is primitive.
+- name: timeout_secs
+  param_type: integer
+  description: Command timeout in seconds
+  default: '30'
+auth:
+  required: true
+  setup_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth login -s gmail,sheets,drive,docs,calendar
+  check_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth status
+  reauth_command: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws auth login -s gmail,sheets,drive,docs,calendar
+  error_patterns:
+  - '401'
+  - authError
+  - No OAuth client configured
+  - Token has been expired or revoked
+  - ACCESS_TOKEN_SCOPE_INSUFFICIENT
+  - insufficientPermissions
+  - insufficient authentication scopes
+  - Request had insufficient authentication scopes
+  - Request had insufficient authentication scopes.
+native_action_schemas:
+  agenda:
+    description: |
+      Run `gws calendar +agenda`. Use this for upcoming events and day
+      views. Typed params — `--today` / `--days` no longer need to be
+      composed by hand.
+    argv:
+    - calendar
+    - +agenda
+    parameters:
+    - today
+    - days
+    - calendar_id
+    - format
+    - extra_args
+    required: []
+    parameter_overrides:
+      today:
+        type: boolean
+        description: Restrict to today's events only. Bool flag — maps to `--today`.
+      days:
+        type: integer
+        description: Look-ahead window in days from now. Maps to `--days`.
+      calendar_id:
+        type: string
+        description: Calendar id (omit for the primary calendar). Maps to `--calendar`.
+      format:
+        type: string
+        enum:
+        - json
+        - table
+        - text
+        description: Output format. Maps to `--format`.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+      args: &id001
+        type: array
+        items:
+          type: string
+        description: |
+          DEPRECATED — use typed parameters plus `extra_args`. Kept so
+          the long-tail args-bag actions in this pack still validate.
+    arg_mappings:
+    - type: bool_flag
+      flag: --today
+      param: today
+    - type: flag
+      flag: --days
+      param: days
+    - type: flag
+      flag: --calendar
+      param: calendar_id
+    - type: flag
+      flag: --format
+      param: format
+    - type: passthrough
+      param: extra_args
+  events_list:
+    description: Run `gws calendar events list`. Inspect upcoming or matching events; prefer `--format json` for structured output.
+    argv:
+    - calendar
+    - events
+    - list
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  events_get:
+    description: Run `gws calendar events get` for one event id.
+    argv:
+    - calendar
+    - events
+    - get
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  events_insert:
+    description: Run `gws calendar events insert`. Inspect availability/context first, then pass explicit --params and --json payload.
+    argv:
+    - calendar
+    - events
+    - insert
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  events_patch:
+    description: Run `gws calendar events patch`. Use after identifying the exact event id; pass --params and --json payload.
+    argv:
+    - calendar
+    - events
+    - patch
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  events_delete:
+    description: Run `gws calendar events delete`. Use only after identifying the exact event id.
+    argv:
+    - calendar
+    - events
+    - delete
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  calendars_get:
+    description: Run `gws calendar calendars get` to inspect calendar metadata such as timezone and summary.
+    argv:
+    - calendar
+    - calendars
+    - get
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  calendar_list:
+    description: Run `gws calendar calendarList list` to list calendars available to Presto's own account (reach.magican@gmail.com).
+    argv:
+    - calendar
+    - calendarList
+    - list
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+  raw:
+    description: 'Escape hatch: run exact argv tokens after `gws calendar` for any Calendar CLI command not listed above.'
+    argv:
+    - calendar
+    parameters:
+    - args
+    required:
+    - args
+    parameter_overrides:
+      args: *id001
+  help:
+    description: 'Run exact gws help argv. Examples: ["--help"], ["calendar","--help"], ["calendar","events","list","--help"].'
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    skip_tool_name: true
+  auth_status:
+    description: Run `gws auth status` for Presto's own account (reach.magican@gmail.com).
+    argv:
+    - auth
+    - status
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+  auth_login:
+    description: Run `gws auth login` for Presto's own account (reach.magican@gmail.com) when re-authentication is explicitly needed.
+    argv:
+    - auth
+    - login
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+  auth_setup:
+    description: Run `gws auth setup` for first-time OAuth setup.
+    argv:
+    - auth
+    - setup
+    parameters:
+    - args
+    required: []
+    parameter_overrides:
+      args: *id001
+implementation:
+  type: primitive
+  command:
+  - 'gws'
+  program: 'gws'
+  fixed_args:
+  - calendar
+  arg_mappings:
+  - type: split_positional
+    param: command
+  content_type: tool_output
+  timeout_secs: 30
+  env:
+    GOOGLE_WORKSPACE_CLI_CONFIG_DIR: '{scope_capability_auth_root}/gws-presto'
+    CLOUDSDK_CONFIG: '{scope_capability_auth_root}/gws-presto/cloudsdk'
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - productivity
+  - calendar
+  - scheduling
+  - meetings
+  composition_category: calendar_operations
+  sandbox: shell

@@ -1,0 +1,57 @@
+name: distill_evidence
+description: >-
+  Promote the metadata-only roll-up rows a scheduled observe writer just wrote
+  into reviewable work-evidence. Pass the producer ("email" | "calendar" |
+  "meeting"); the evidence layer clusters the rows by account+day, distils the
+  salient ones, and appends them to the Work-Evidence Graph.
+version: "1.0.0"
+guide: |
+  Tool name: `distill_evidence`
+
+  Call this as the FINAL step of a scheduled observe-writer run, right
+  after you've persisted the per-account/day rows with
+  `update_memory_tier`. It promotes those raw metadata rows into the
+  Work-Evidence Graph so they surface in reviews and the evidence
+  dashboard. You are NOT passing any message contents — only the
+  producer name.
+
+  Inputs:
+  - `producer` (required) — the evidence lane you just wrote rows for:
+    `"email"`, `"calendar"`, or `"meeting"`.
+  - `days` (optional) — how many days back to scan the tier for new
+    rows. Defaults to 1 (today).
+
+  Output:
+  - `status: "ok"` plus `{rows, clusters, promotable, distilled}` counts.
+  - `status: "error"` with `reason` on failure (unknown producer,
+    memory/router/prompt-manager unavailable). Non-fatal — a failed
+    distil leaves the rows in place for the next run.
+
+  Notes:
+  - Idempotent. Re-running re-distils the same `(account, day)`
+    clusters into the same evidence ids (upsert), so a missed run
+    self-heals on the next cadence.
+  - Only salient clusters (a real summary, or substantive metadata)
+    are distilled; empty bookkeeping rows are skipped for free.
+parameters:
+  - name: producer
+    required: true
+    param_type: string
+    description: The evidence lane to distil — "email", "calendar", or "meeting".
+  - name: days
+    required: false
+    param_type: integer
+    description: Days back to scan the tier for new rows. Defaults to 1.
+    default: "1"
+implementation:
+  type: compiled
+  provider_name: distill_evidence
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories:
+    - memory
+    - evidence
+    - write
+  composition_category: action
+  sandbox: none

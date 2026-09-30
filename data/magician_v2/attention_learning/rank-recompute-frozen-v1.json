@@ -1,0 +1,557 @@
+{
+  "fixture_id": "attention-rank-recompute-frozen-v1",
+  "schema_version": 1,
+  "api_contract": {
+    "delivery_native_outcome_path": "/api/magician/v2/channel-assist/attention-learning/outcomes",
+    "legacy_follow_up_feedback_path": "/api/magician/v2/channel-assist/annotations/{candidate_id}/{action}",
+    "legacy_worth_feedback_path": "/api/magician/v2/channel-assist/resurfacing/{candidate_id}/action",
+    "job_status_path": "/api/magician/v2/channel-assist/attention-learning/rank-recompute/jobs/{job_id}",
+    "health_path": "/api/magician/v2/channel-assist/attention-learning/rank-recompute/status",
+    "schedule_path": "/api/magician/v2/channel-assist/attention-learning/rank-recompute/schedule",
+    "process_path": "/api/magician/v2/channel-assist/attention-learning/rank-recompute/process",
+    "scope_query": ["principal", "workspace"],
+    "authorization": "Bearer workspace-bound token",
+    "immediate_outcome_status": 200,
+    "job_statuses": ["pending", "in_flight", "retry", "succeeded", "stale", "dead"],
+    "terminal_job_statuses": ["succeeded", "stale", "dead"],
+    "result_semantics": ["current_universe_diagnostic", "served_universe_diagnostic"],
+    "result_semantics_by_universe": {"served": "served_universe_diagnostic", "recomputed": "current_universe_diagnostic"},
+    "stale_reason_codes": ["candidate_inactive", "source_revision_changed", "snapshot_incompatible", "universe_changed_during_commit", "generation_changed_during_commit", "no_served_decision", "served_projection_unreadable"],
+    "retry_and_dead_reason_codes": ["canonical_projection_failed", "posterior_read_failed", "rank_recompute_failed", "lease_expired", "max_retries_exhausted"],
+    "max_reason_characters": 120
+  },
+  "defaults": {
+    "rank_recompute_enabled": false,
+    "bandit_mode": "disabled",
+    "bandit_snapshot_id": null,
+    "bandit_canary_fraction": 0.0,
+    "lease_secs": 30,
+    "batch_size": 20,
+    "concurrency": 1,
+    "interval_secs": 30,
+    "max_retries": 3,
+    "retry_base_secs": 30,
+    "job_retention_days": 30,
+    "retry_max_secs": 900,
+    "health": {
+      "schema_version": 1,
+      "enabled": false,
+      "paused": true,
+      "pause_reason": "rank_recompute_disabled",
+      "queue": {
+        "pending": 0,
+        "in_flight": 0,
+        "retry": 0,
+        "succeeded": 0,
+        "stale": 0,
+        "dead": 0,
+        "next_retry_at": null,
+        "oldest_pending_at": null
+      },
+      "worker": {
+        "batch_size": 20,
+        "concurrency": 1,
+        "interval_secs": 30,
+        "max_retries": 3,
+        "lease_secs": 30,
+        "retention_days": 30
+      }
+    }
+  },
+  "config_contract": {
+    "path": "attention_learning.rank_recompute",
+    "value": {
+      "enabled": false,
+      "batch_size": 20,
+      "concurrency": 1,
+      "interval_secs": 30,
+      "max_retries": 3,
+      "retry_base_secs": 30,
+      "retry_max_secs": 900,
+      "lease_secs": 30,
+      "retention_days": 30
+    }
+  },
+  "outcome_and_job": {
+    "outcome": {
+      "outcome_id": "outcome-rank-1",
+      "event_id": "event-rank-1",
+      "principal": "owner",
+      "workspace": "default",
+      "candidate_id": "follow_up:f2",
+      "source_revision": "distill:102",
+      "surface": "follow_up",
+      "outcome": "irrelevant",
+      "label_quality": "explicit",
+      "decision_id": "delivery-decision-follow-up-v1",
+      "impression_id": "impression-follow-up-f2-v1",
+      "served_rank_before": 3,
+      "accepted_at": 1785301000000
+    },
+    "job": {
+      "job_id": "rank-job-outcome-rank-1",
+      "outcome_id": "outcome-rank-1",
+      "status": "pending",
+      "origin_surface": "follow_up",
+      "canonical_candidate_id": "follow_up:f2",
+      "raw_candidate_id": "f2",
+      "source_revision": "distill:102",
+      "outcome": "irrelevant",
+      "decision_id": "delivery-decision-follow-up-v1",
+      "delivery_id": "delivery-follow-up-page-1-v1",
+      "impression_id": "impression-follow-up-f2-v1",
+      "affected_rank_before": 3,
+      "enqueue_policy_snapshot_id": "bandit-delivery-fixture-v1",
+      "enqueue_posterior_version": 17,
+      "attempts": 0,
+      "next_retry_at": null,
+      "lease_expires_at": null,
+      "created_at": 1785301000000,
+      "updated_at": 1785301000000,
+      "completed_at": null,
+      "reason": null,
+      "result": null
+    },
+    "uniqueness": {
+      "database_key": ["principal", "workspace", "outcome_id"],
+      "jobs_after_first_accept": 1,
+      "jobs_after_idempotent_outcome_replay": 1,
+      "jobs_after_reconciliation_scan": 1
+    },
+    "immediate_receipt": {
+      "rank_recompute": {
+        "enqueue_status": "enqueued",
+        "job_id": "rank-job-outcome-rank-1",
+        "job_status": "pending",
+        "status_href": "/api/magician/v2/channel-assist/attention-learning/rank-recompute/jobs/rank-job-outcome-rank-1",
+        "affected_rank_before": 3,
+        "affected_rank_after": null,
+        "affected_rank_delta": null,
+        "result_semantics": "served_universe_diagnostic",
+        "reason": null
+      }
+    },
+    "no_durable_outcome_receipt": {
+      "case": "learning_disabled",
+      "rank_recompute": null
+    },
+    "accepted_outcome_survival": [
+      {
+        "failure": "enqueue_failed",
+        "outcome_count": 1,
+        "immediate_rank_recompute": {
+          "enqueue_status": "failed",
+          "job_id": null,
+          "job_status": null,
+          "status_href": null,
+          "affected_rank_before": 3,
+          "affected_rank_after": null,
+          "affected_rank_delta": null,
+          "result_semantics": "current_universe_diagnostic",
+          "reason": "enqueue_failed"
+        },
+        "job_count_before_reconciliation": 0,
+        "job_count_after_reconciliation": 1,
+        "accepted_outcome_rolled_back": false
+      },
+      {
+        "failure": "worker_process_crashed_after_lease",
+        "outcome_count": 1,
+        "job_count": 1,
+        "job_status": "in_flight",
+        "lease_reclaimable": true
+      },
+      {
+        "failure": "worker_model_unavailable_until_exhausted",
+        "outcome_count": 1,
+        "job_count": 1,
+        "job_status": "dead",
+        "outcome_rolled_back": false
+      }
+    ]
+  },
+  "worker_lifecycle": {
+    "claim_order": ["next_retry_at", "created_at", "job_id"],
+    "attempts": [
+      {
+        "sequence": 1,
+        "from": "pending",
+        "to": "in_flight",
+        "attempt": 1,
+        "lease_owner": "rank-worker-a",
+        "lease_expires_at": 1785301030000
+      },
+      {
+        "sequence": 2,
+        "from": "in_flight",
+        "to": "retry",
+        "attempt": 1,
+        "error_code": "posterior_read_failed",
+        "next_retry_at": 1785301060000
+      },
+      {
+        "sequence": 3,
+        "from": "retry",
+        "to": "in_flight",
+        "attempt": 2,
+        "lease_owner": "rank-worker-b",
+        "lease_expires_at": 1785301090000
+      },
+      {
+        "sequence": 4,
+        "from": "in_flight",
+        "to": "succeeded",
+        "attempt": 2,
+        "completed_at": 1785301075000
+      }
+    ],
+    "expired_lease": {
+      "prior_owner": "rank-worker-crashed",
+      "reclaimed_by": "rank-worker-b",
+      "attempt_increment": 1,
+      "late_prior_owner_completion_accepted": false
+    },
+    "exhaustion": {
+      "attempt": 3,
+      "max_retries": 3,
+      "terminal_status": "dead",
+      "reclaimed_automatically": false
+    },
+    "idempotent_completion": {
+      "completion_writes": 2,
+      "terminal_rows": 1,
+      "posterior_updates": 1,
+      "result_documents": 1
+    }
+  },
+  "completion_contract": {
+    "job_id": "rank-job-outcome-rank-1",
+    "outcome_id": "outcome-rank-1",
+    "status": "succeeded",
+    "before": {
+      "decision_id": "delivery-decision-follow-up-v1",
+      "candidate_id": "follow_up:f2",
+      "source_revision": "distill:102",
+      "served_lane": "follow_up",
+      "served_rank": 3,
+      "attribution": "verified_impression"
+    },
+    "after": {
+      "semantics": "served_universe_diagnostic",
+      "affected_rank_after": 4,
+      "affected_rank_delta": 1,
+      "current_source_revision": "distill:102",
+      "universe_digest": "rank-universe-digest-generation-12-20-v1",
+      "recompute_generation": {"follow_up": 12, "worth_a_look": 20},
+      "posterior_version": 18,
+      "policy_snapshot_id": "bandit-delivery-fixture-v1",
+      "completed_at": 1785301075000
+    },
+    "affected": {
+      "candidate_count": 4,
+      "rank_changed_count": 3,
+      "follow_up_count": 2,
+      "worth_a_look_count": 2
+    }
+  },
+  "current_universe": {
+    "universe_digest": "rank-universe-digest-generation-12-20-v1",
+    "source_generations": {
+      "follow_up": 12,
+      "worth_a_look": 20
+    },
+    "candidate_total": 4,
+    "origin_totals": {
+      "follow_up": 2,
+      "worth_a_look": 2
+    },
+    "evidence": {
+      "eligible_total": 4,
+      "compatible_feature_total": 4,
+      "posterior_evidence_total": 3,
+      "follow_up": {
+        "candidate_total": 2,
+        "compatible_feature_total": 2,
+        "posterior_evidence_total": 2
+      },
+      "worth_a_look": {
+        "candidate_total": 2,
+        "compatible_feature_total": 2,
+        "posterior_evidence_total": 1
+      }
+    },
+    "items": [
+      {"candidate_id": "follow_up:f1", "origin_lane": "follow_up", "source_revision": "distill:101", "current_rank": 1},
+      {"candidate_id": "worth_a_look:w1", "origin_lane": "worth_a_look", "source_revision": "content:201", "current_rank": 2},
+      {"candidate_id": "worth_a_look:w2", "origin_lane": "worth_a_look", "source_revision": "content:202", "current_rank": 3},
+      {"candidate_id": "follow_up:f2", "origin_lane": "follow_up", "source_revision": "distill:102", "current_rank": 4}
+    ],
+    "reconciliation": {
+      "candidate_total_equals_origin_sum": true,
+      "candidate_ids_exact_once": true,
+      "no_hidden_overflow": true,
+      "no_short_page_universe": true
+    }
+  },
+  "compare_and_set": {
+    "frozen_at_claim": {
+      "candidate_id": "follow_up:f2",
+      "source_revision": "distill:102",
+      "universe_digest": "rank-universe-digest-generation-12-20-v1",
+      "source_generations": {"follow_up": 12, "worth_a_look": 20},
+      "posterior_version": 18,
+      "policy_snapshot_id": "bandit-delivery-fixture-v1",
+      "policy_model_version": "bayesian-linear-delivery-fixture-v1"
+    },
+    "required_exact_matches": [
+      "principal",
+      "workspace",
+      "candidate_id",
+      "source_revision",
+      "universe_digest",
+      "source_generations.follow_up",
+      "source_generations.worth_a_look",
+      "posterior_version",
+      "policy_snapshot_id",
+      "policy_model_version"
+    ],
+    "stale_cases": [
+      {
+        "case": "candidate_removed_or_terminal",
+        "reason": "candidate_inactive",
+        "terminal_status": "stale",
+        "after": null,
+        "posterior_updates": 0
+      },
+      {
+        "case": "candidate_source_revision_changed",
+        "reason": "source_revision_changed",
+        "terminal_status": "stale",
+        "after": null,
+        "posterior_updates": 0
+      },
+      {
+        "case": "policy_or_feature_snapshot_changed",
+        "reason": "snapshot_incompatible",
+        "terminal_status": "stale",
+        "after": null,
+        "posterior_updates": 0
+      },
+      {
+        "case": "universe_digest_changed_during_commit",
+        "reason": "universe_changed_during_commit",
+        "terminal_status": "stale",
+        "after": null,
+        "posterior_updates": 0
+      },
+      {
+        "case": "source_generation_changed_during_commit",
+        "reason": "generation_changed_during_commit",
+        "terminal_status": "stale",
+        "after": null,
+        "posterior_updates": 0
+      }
+    ],
+    "served_precondition_stale_cases": [
+      {
+        "case": "decision_missing_from_serving_ledger",
+        "reason": "no_served_decision",
+        "terminal_status": "stale",
+        "after": null,
+        "posterior_updates": 0
+      },
+      {
+        "case": "retained_served_projection_cannot_be_decoded",
+        "reason": "served_projection_unreadable",
+        "terminal_status": "stale",
+        "after": null,
+        "posterior_updates": 0
+      }
+    ],
+    "digest_or_generation_drift": {
+      "completion_accepted": false,
+      "current_revision_job_scheduled": true,
+      "stale_worker_can_overwrite_current_result": false
+    },
+    "requeue_wrongly_staled": {
+      "requeued_reason": "universe_changed_during_commit",
+      "terminal_reasons_left_untouched": [
+        "candidate_inactive",
+        "generation_changed_during_commit",
+        "no_served_decision",
+        "served_projection_unreadable",
+        "snapshot_incompatible",
+        "source_revision_changed"
+      ],
+      "apply_false_never_mutates": true,
+      "bounded_by_batch_size": true,
+      "idempotent": true,
+      "requeued_status": "pending",
+      "requeued_attempts": 0,
+      "affected_rank_before_backfilled_from": "served_rank",
+      "creates_jobs": false
+    },
+    "universe_provenance": {
+      "served": {
+        "commit_time_live_reprojection": false,
+        "reachable_stale_reasons": [
+          "candidate_inactive",
+          "generation_changed_during_commit",
+          "no_served_decision",
+          "served_projection_unreadable",
+          "snapshot_incompatible",
+          "source_revision_changed"
+        ]
+      },
+      "recomputed": {
+        "commit_time_live_reprojection": true,
+        "reachable_stale_reasons": [
+          "candidate_inactive",
+          "generation_changed_during_commit",
+          "snapshot_incompatible",
+          "source_revision_changed",
+          "universe_changed_during_commit"
+        ]
+      }
+    }
+  },
+  "ingress_contract": {
+    "delivery_native": {
+      "decision_id_required": true,
+      "verified_impression_preferred": true,
+      "before_rank_source": "delivery_root_served_position",
+      "jobs_created": 1
+    },
+    "legacy_follow_up": {
+      "adapter": "canonical_outcome_adapter",
+      "source_revision_required": true,
+      "before_rank_source": "persisted_decision_item_when_available",
+      "jobs_created": 1
+    },
+    "legacy_worth_a_look": {
+      "adapter": "canonical_outcome_adapter",
+      "source_revision_required": true,
+      "before_rank_source": "persisted_decision_item_when_available",
+      "jobs_created": 1
+    },
+    "same_outcome_semantics": true
+  },
+  "serving_isolation": {
+    "list_and_page_model_invocations": 0,
+    "list_and_page_job_claims": 0,
+    "list_and_page_job_waits": 0,
+    "pending_job_changes_page_order": false,
+    "only_completed_bound_result_can_report_after_rank": true
+  },
+  "job_polling": {
+    "pending": {
+      "schema_version": 1,
+      "job": {
+        "job_id": "rank-job-outcome-rank-1",
+        "outcome_id": "outcome-rank-1",
+        "status": "pending",
+        "origin_surface": "follow_up",
+        "canonical_candidate_id": "follow_up:f2",
+        "raw_candidate_id": "f2",
+        "source_revision": "distill:102",
+        "outcome": "irrelevant",
+        "decision_id": "delivery-decision-follow-up-v1",
+        "delivery_id": "delivery-follow-up-page-1-v1",
+        "impression_id": "impression-follow-up-f2-v1",
+        "affected_rank_before": 3,
+        "enqueue_policy_snapshot_id": "bandit-delivery-fixture-v1",
+        "enqueue_posterior_version": 17,
+        "attempts": 0,
+        "next_retry_at": null,
+        "lease_expires_at": null,
+        "created_at": 1785301000000,
+        "updated_at": 1785301000000,
+        "completed_at": null,
+        "reason": null,
+        "result": null
+      }
+    },
+    "succeeded": {
+      "schema_version": 1,
+      "job": {
+        "job_id": "rank-job-outcome-rank-1",
+        "outcome_id": "outcome-rank-1",
+        "status": "succeeded",
+        "origin_surface": "follow_up",
+        "canonical_candidate_id": "follow_up:f2",
+        "raw_candidate_id": "f2",
+        "source_revision": "distill:102",
+        "outcome": "irrelevant",
+        "decision_id": "delivery-decision-follow-up-v1",
+        "delivery_id": "delivery-follow-up-page-1-v1",
+        "impression_id": "impression-follow-up-f2-v1",
+        "affected_rank_before": 3,
+        "enqueue_policy_snapshot_id": "bandit-delivery-fixture-v1",
+        "enqueue_posterior_version": 17,
+        "attempts": 2,
+        "next_retry_at": null,
+        "lease_expires_at": null,
+        "created_at": 1785301000000,
+        "updated_at": 1785301075000,
+        "completed_at": 1785301075000,
+        "reason": null,
+        "result": {
+          "semantics": "served_universe_diagnostic",
+          "affected_rank_after": 4,
+          "affected_rank_delta": 1,
+          "current_source_revision": "distill:102",
+          "universe_digest": "rank-universe-digest-generation-12-20-v1",
+          "recompute_generation": {"follow_up": 12, "worth_a_look": 20},
+          "policy_snapshot_id": "bandit-delivery-fixture-v1",
+          "posterior_version": 18,
+          "completed_at": 1785301075000
+        }
+      }
+    },
+    "scope_mismatch_status": 404,
+    "unknown_job_status": 404,
+    "raw_error_detail_exposed": false
+  },
+  "retention_and_deletion": {
+    "table": "attention_rank_recompute_jobs",
+    "scope": {"principal": "owner", "workspace": "default"},
+    "retention": {
+      "terminal_only": true,
+      "preserve_pending_in_flight_retry": true,
+      "preserve_accepted_outcomes": true,
+      "preserve_posterior_idempotency_anchors": true,
+      "other_scopes_unchanged": true
+    },
+    "scoped_deletion": {
+      "deletes_jobs_for_scope": true,
+      "deletes_outcomes_for_scope": true,
+      "deletes_posterior_state_for_scope": true,
+      "preserves_global_immutable_snapshots": true,
+      "other_scopes_unchanged": true
+    }
+  },
+  "admin_contract": {
+    "request": {"apply": false},
+    "schedule_is_outcome_reconciliation_only": true,
+    "process_disabled": {
+      "enabled": false,
+      "paused": true,
+      "pause_reason": "rank_recompute_disabled",
+      "jobs_leased": 0
+    },
+    "apply_false_never_mutates": true
+  },
+  "expected_report": {
+    "schema_version": 1,
+    "fixture_id": "attention-rank-recompute-frozen-v1",
+    "outcome_job_uniqueness_rate": 1.0,
+    "accepted_outcome_survival_rate": 1.0,
+    "terminal_idempotency_rate": 1.0,
+    "completed_rank_binding_rate": 1.0,
+    "stale_cas_rejection_rate": 1.0,
+    "complete_union_reconciliation_rate": 1.0,
+    "list_and_page_model_invocations": 0,
+    "defaults_paused": true,
+    "gate_passed": true
+  }
+}

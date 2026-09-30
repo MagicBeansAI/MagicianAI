@@ -1,0 +1,510 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "claim_id": {
+              "value_type": 1,
+              "required": true
+            },
+            "expected_revision": {
+              "value_type": 2,
+              "required": true
+            },
+            "reason": {
+              "value_type": 3,
+              "required": true
+            },
+            "request_id": {
+              "value_type": 4,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:387675d258b173ad66e13726a8f43804e4204a00db95041afb8866f8113c1c3f",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:387675d258b173ad66e13726a8f43804e4204a00db95041afb8866f8113c1c3f",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {},
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/request_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/request_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/claim_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/expected_revision"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/reason"
+                },
+                {
+                  "kind": "literal",
+                  "value": "claim"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/claim_id"
+                },
+                {
+                  "kind": "literal",
+                  "value": "confirm_claim"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/expected_revision"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/reason"
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "request_id": 4,
+                    "claim_id": 5,
+                    "expected_revision": 6,
+                    "reason": 7
+                  }
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 13
+                },
+                {
+                  "kind": "literal",
+                  "value": "recorded"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "request",
+                  "parts": [
+                    3
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 17
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/request_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 19,
+                  "right": 3
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/decision_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 21,
+                  "right": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/target_kind"
+                },
+                {
+                  "kind": "equal",
+                  "left": 23,
+                  "right": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/target_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 25,
+                  "right": 9
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/decision"
+                },
+                {
+                  "kind": "equal",
+                  "left": 27,
+                  "right": 10
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/expected_revision"
+                },
+                {
+                  "kind": "equal",
+                  "left": 29,
+                  "right": 11
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/actor_ref"
+                },
+                {
+                  "kind": "equal",
+                  "left": 31,
+                  "right": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/reason"
+                },
+                {
+                  "kind": "equal",
+                  "left": 33,
+                  "right": 12
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/payload_json"
+                },
+                {
+                  "kind": "equal",
+                  "left": 35,
+                  "right": 14
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/apply_state"
+                },
+                {
+                  "kind": "equal",
+                  "left": 37,
+                  "right": 15
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    20,
+                    22,
+                    24,
+                    26,
+                    28,
+                    30,
+                    32,
+                    34,
+                    36,
+                    38
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 18
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    40,
+                    39
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 18
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "existing",
+                "entity": "review_decision",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "request_id",
+                    "decision_id",
+                    "target_kind",
+                    "target_id",
+                    "decision",
+                    "expected_revision",
+                    "actor_ref",
+                    "reason",
+                    "payload_json",
+                    "apply_state",
+                    "decided_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "request_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 3
+                }
+              }
+            ],
+            "query_when": {},
+            "guards": [
+              {
+                "require": 41,
+                "reason": "request_identity_conflict"
+              }
+            ],
+            "mutations": [
+              {
+                "entity": "review_decision",
+                "for_each": null,
+                "when": 42,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 16,
+                  "fields": {
+                    "request_id": 3,
+                    "decision_id": 0,
+                    "target_kind": 8,
+                    "target_id": 9,
+                    "decision": 10,
+                    "expected_revision": 11,
+                    "actor_ref": 0,
+                    "reason": 12,
+                    "payload_json": 14,
+                    "apply_state": 15,
+                    "decided_at": 1
+                  }
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

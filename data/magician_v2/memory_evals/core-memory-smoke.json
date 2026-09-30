@@ -1,0 +1,76 @@
+{
+  "suite_id": "core-memory-smoke",
+  "enabled": true,
+  "cases": [
+    {
+      "case_id": "personal-sota-test-runner-workflow",
+      "agent_id": "personal-assistant",
+      "query": "How should I run local browser SOTA tests and verify pass fail status?",
+      "scopes": ["user", "agent"],
+      "expected_substrings": ["window.testRunner", "getResults"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 6000
+    },
+    {
+      "case_id": "personal-cross-origin-iframe-strategy",
+      "agent_id": "personal-assistant",
+      "query": "What should I remember when browser automation touches cross-origin iframes?",
+      "scopes": ["user", "agent"],
+      "expected_substrings": ["cross-origin", "postMessage"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 6000
+    },
+    {
+      "case_id": "personal-browser-evaluate-preference",
+      "agent_id": "personal-assistant",
+      "query": "Which browser primitive should be preferred for state inspection?",
+      "scopes": ["user", "agent"],
+      "expected_substrings": ["browser:evaluate"],
+      "min_selected_count": 1,
+      "max_entries": 8,
+      "max_chars": 5000
+    },
+    {
+      "case_id": "personal-markdown-output-format",
+      "agent_id": "personal-assistant",
+      "query": "What media type and preferred format should execution output and user-facing output use?",
+      "scopes": ["user"],
+      "expected_substrings": ["markdown"],
+      "min_selected_count": 1,
+      "max_entries": 12,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "internal-output-publication-debug-pattern",
+      "agent_id": "internal-system-analyst",
+      "query": "How should I debug a task output that exists but is not appearing in the UI?",
+      "scopes": ["agent"],
+      "expected_substrings": ["task wrapper", "output_id"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "internal-diagnostic-query-playbook",
+      "agent_id": "internal-system-analyst",
+      "query": "Which diagnostic queries should I run first when a published surface shows the wrong content?",
+      "scopes": ["agent"],
+      "expected_substrings": ["effective_diagnostic_queries"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "data-analyst-metabase-native-sql",
+      "agent_id": "simple-data-analyst",
+      "query": "What Metabase native SQL dependency syntax has caused downstream card failures?",
+      "scopes": ["agent"],
+      "expected_substrings": ["Metabase", "native SQL"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    }
+  ]
+}

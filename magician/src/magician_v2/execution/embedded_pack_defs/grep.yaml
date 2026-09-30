@@ -1,0 +1,65 @@
+name: grep
+description: Content search via ripgrep. Supports full regex, filtering by file type or glob, and three output modes (content / files_with_matches / count). Use for searching text inside files; pair with `glob` for filename pattern queries.
+version: "1.0.0"
+guide: |
+  Tool name: `grep`
+
+  Shells out to `rg` with output-mode-aware flags. Three modes:
+  - `files_with_matches` (default) — list files that contain matches
+  - `content` — show matching lines (with `-n`); optional `context`
+    sets lines of surrounding context
+  - `count` — per-file match counts
+
+  Honors `.gitignore` like ripgrep does by default. Filter by file
+  type with `type` (e.g. `rust`, `python`) or by glob with `glob`
+  (e.g. `*.rs`).
+
+  Result count is capped by `head_limit` (default 250).
+parameters:
+  - name: pattern
+    required: true
+    param_type: string
+    description: Regex pattern to search for.
+  - name: path
+    required: false
+    param_type: string
+    description: File or directory to search in. Defaults to current working directory.
+    default: "."
+  - name: glob
+    required: false
+    param_type: string
+    description: Glob filter (e.g. `*.rs`).
+  - name: output_mode
+    required: false
+    param_type: string
+    description: "Output mode: `files_with_matches` (default), `content`, or `count`."
+    default: files_with_matches
+  - name: case_insensitive
+    required: false
+    param_type: boolean
+    description: Case-insensitive match. Default false.
+    default: false
+  - name: context
+    required: false
+    param_type: integer
+    description: Lines of context around each match. Only applies when `output_mode` is `content`.
+  - name: head_limit
+    required: false
+    param_type: integer
+    description: "Maximum result lines to return (default: 250)."
+    default: 250
+  - name: type
+    required: false
+    param_type: string
+    description: File type filter (e.g. `rust`, `python`, `js`).
+implementation:
+  type: compiled
+  provider_name: grep
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - filesystem
+    - search
+  composition_category: action
+  sandbox: none

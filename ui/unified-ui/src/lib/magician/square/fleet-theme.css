@@ -1,0 +1,173 @@
+/*
+ * Fleet Civilization — world token layer.
+ *
+ * `--fleet-*` is the WORLD's palette (terrain, sky, status colours). It is
+ * INDEPENDENT of the app `data-theme`: the world keeps its own look in light or
+ * dark app themes. The five status colours are the exception — they are SHARED
+ * with the HUD, which reads them directly (hud/FleetHud.svelte plaques and
+ * health bars, hud/RosterStrip.svelte dots) and aliases them into
+ * `--game-state-*` in game-chrome.css. Retuning a status colour repaints the
+ * crew leaderboard too, so check it against the app card backgrounds as well as
+ * against the lawn.
+ *
+ * The world renders one look — the modern campus — so there is a single block
+ * here. The hero still carries a fixed `data-game-theme` attribute: the engine
+ * reads these tokens via getComputedStyle on the element carrying it and
+ * re-reads when it changes. Values must be plain hex (parsed by THREE.Color).
+ *
+ * Note that the loaded model pack carries its own baked texture atlas, so the
+ * architecture tokens below only reach PROCEDURAL geometry.
+ */
+/*
+ * Palette rule: these colours are shaded through a THREE step toon ramp and
+ * then downsampled, so neighbouring surfaces must differ in VALUE, not just
+ * hue. Two greens a few percent apart (the old ground/ground-alt pair) resolve
+ * to one flat green — the checker simply disappears. Pick steps you can tell
+ * apart in greyscale and the world reads at any zoom.
+ *
+ * THE STANDING RULE, because this has now broken on four consecutive rounds and
+ * every time for the same reason: BOTH SIDES OF A CONTRAST COMPARISON HAVE AN
+ * ALPHA. It is easy to remember that the thing you are tuning is translucent and
+ * to forget that what it sits on is too. A status ring is not measured against
+ * the lawn token, it is measured against the lawn as rendered in one of three
+ * toon bands; the beam is not measured against a ring's token, it is measured
+ * against that ring already composited over that lawn; and a HUD label is not on
+ * a solid panel, it is on a panel that is itself 90% over a live canvas. Measure
+ * the backdrop as it actually renders, or the number is optimistic and the
+ * collapse ships.
+ *
+ * A second-order version of the same trap: reachability is a property of the
+ * MANIFEST, not of the source guard. Code that reads `if (useModels && assets &&
+ * assets.rocks.length > 0)` looks pack-gated and is not, because assets.ts
+ * declares `rocks: []` for the city pack, so the branch is dead however
+ * perfectly the pack loads. Check what the manifest actually supplies.
+ *
+ * Two consequences worth stating, because getting either wrong is invisible in
+ * the token list and obvious on screen:
+ *
+ * 1. The four terrain tokens are per-instance colours on ONE InstancedMesh with
+ *    ONE material (civWorld.ts), so they are co-planar, up-facing, and land in
+ *    the same toon band. Value is the only separation they have. They are laid
+ *    out here as a ladder with ~10 L* between adjacent steps. Path and plaza
+ *    deliberately share one paving value: they had the narrowest step in the
+ *    ladder and, as two near-neutral warm greys, almost no hue cue to fall back
+ *    on. Spending that budget on lawn-vs-paving instead buys the separation the
+ *    world actually reads by, and leaves room under the lawn for rule 2. A
+ *    campus paves its paths and its plazas in the same material anyway; the two
+ *    are told apart by shape, not tint.
+ *
+ * 2. Everything drawn ON the terrain — the status ring under each citizen and
+ *    the delegation beam — is an UNLIT semi-transparent material composited
+ *    straight onto lit ground. What matters is the COMPOSITED value, which is
+ *    always closer to the backdrop than the token is: an overlay keeps only its
+ *    alpha's share of its token separation. The ring's alpha is set per frame at
+ *    citizens.ts:295-296 — `pulse = active ? 0.75 + sin*0.25 : 0.55` — so it is
+ *    0.50 to 1.00 for working and needs and a flat 0.55 for the rest, and the
+ *    working/needs pulse MINIMUM is the case to tune against. The beam line is
+ *    0.35 and its orb is opaque.
+ *    The bright lane above the lawn is already taken by paving, sky and walls,
+ *    so every ring lives BELOW the lawn — currently L* 33-52 against a 68-88
+ *    terrain ladder. Rings separate from the terrain by VALUE and from EACH
+ *    OTHER by hue; two rings are never adjacent surfaces, so they only have to
+ *    be identifiable, not co-planar-legible.
+ */
+:root {
+	/* sky — clear daylight; deep enough at the zenith that a white wall and an
+	   amber roofline both keep their silhouette against it */
+	--fleet-sky-top: #95c1dc;
+	--fleet-sky-bottom: #cae0ed;
+
+	/* terrain ladder: mown lawn (two stripes) -> paving, ~10 L* per step */
+	--fleet-ground: #a0ce7e;
+	--fleet-ground-alt: #81b45e;
+	--fleet-path: #e4dcd0;
+	--fleet-plaza: #e4dcd0;
+	--fleet-foliage: #2f8b46;
+	--fleet-trunk: #7d5b46;
+	--fleet-rock: #7e8e95;
+
+	/* architecture: white panel + glass, amber roofline accent */
+	--fleet-wall: #fbfaf6;
+	--fleet-roof: #c77919;
+	--fleet-roof-hall: #2f6fb8;
+
+	/* on-world ink (empty state etc.) */
+	--fleet-ink: #1f2b33;
+
+	/* citizen status — drawn as a flat ring at the citizen's feet (alpha 0.50-1.00
+	   for working/needs, 0.55 otherwise; citizens.ts:295-296) and shared with the
+	   HUD; see the header note before retuning.
+	   --fleet-needs stays AMBER. It is --game-state-attention, and the HUD pairs
+	   it against --color-error in four places (health bands, seal tones); every
+	   brand error is a red at hue ~0-6, so moving needs into the reds collapses
+	   warn-and-error into one colour. Hue is the axis that separates that pair —
+	   the HUD renders crisp, so it is not subject to the toon-ramp rule above. */
+	--fleet-working: #20773d;
+	--fleet-needs: #ae6500;
+	--fleet-paused: #8b5cf6;
+	--fleet-idle: #0078a4;
+	--fleet-offline: #4f5860;
+
+	/* Delegation hand-off beams/orbs between citizens. World-only: nothing
+	   outside fleet-theme.css, palette.ts, engine.ts, civWorld.ts and
+	   handoffs.ts reads it.
+
+	   THE BEAM DOES NOT FOLLOW THE RULE ABOVE. "Rings live below the lawn" was
+	   derived for flat ground rings, which only ever sit on terrain. The beam is
+	   the only overlay that is not co-planar with the ground, so it needs its own
+	   constraint set — three rounds running, a value was picked against part of
+	   that set and broke the rest.
+
+	   Its geometry, stated carefully because it was twice stated wrong: the
+	   figure in handoffs.ts, 0.55 + min(3.2, dist*0.35 + 0.8), is the quadratic
+	   Bézier's CONTROL POINT, not its apex. A quadratic peaks halfway between
+	   chord and control, so the rendered arc tops out at y = 0.95 to 2.15 — well
+	   under the tall structures. And LineBasicMaterial leaves depthTest and
+	   depthWrite at their defaults, so the beam is OCCLUDED BY architecture, not
+	   drawn over it. What it actually crosses is therefore low: the 0.85-high
+	   hedge, ground clutter, citizens at chest height, and whatever architecture
+	   is behind rather than in front of it.
+
+	   The full set it must separate from, all measured COMPOSITED at the line's
+	   real alpha 0.35 (it keeps only ~35% of its token separation), each backdrop
+	   in all three toon bands, and each translucent backdrop itself composited
+	   over what IT sits on:
+
+	     1. the three terrain values — the arc starts and ends on the ground;
+	     2. the city pack's baked texture atlas — the buildings, and the trees,
+	        are model instances whose colours are NOT IN THIS FILE. That atlas is
+	        heavily slate, teal and terracotta, which is what the previous teal
+	        collapsed against;
+	     3. the palette colours that render whatever the pack does. Read this off
+	        assets.ts, not off the source guards, which mislead: --fleet-rock
+	        (city declares `rocks: []`, so civWorld.ts always falls through to
+	        procedural dodecahedra), --fleet-foliage (the hedge is drawn
+	        unconditionally, outside the useModels guard), --fleet-trunk (desks,
+	        banner poles) and ALL SIX GUILD_HUES (door banners and district state
+	        rings, both outside the guard; plus citizen garments in citizens.ts,
+	        where the tint regex matches Suit and Worker_Vest — note the garment
+	        renders the hue lerped 45% toward white, and that pastel is what the
+	        beam actually sees);
+	     4. genuinely pack-gated, i.e. fallback-only: --fleet-roof-hall and
+	        --fleet-wall. --fleet-roof is read by nothing at all: its only read
+	        was the sci-fi perimeter wall's emissive, which was deleted with the
+	        rest of the retired themes' geometry, so the token is now unused;
+	     5. the other five status rings, each taken as the ring ALREADY
+	        COMPOSITED over terrain at its own alpha — not as its raw token;
+	     6. sky, where the arc clears the hedge near the world edge.
+
+	   Against all of that there is exactly one unoccupied lane, and it is not a
+	   lane the world could ever use: the campus is greens, warm neutrals, slate
+	   and sky-blue, so magenta is empty. That is the right answer rather than a
+	   lucky one — the beam is not scenery, it is a system annotation drawn in
+	   world space, and a colour that exists nowhere in the world is what makes
+	   it read as one. Over 365 backdrops built that way the worst dE00 is 6.43
+	   for the line and 14.79 for the opaque orb, both binding on the guild-RED
+	   garment (#b03a48 lerped 45% to white is a dusty rose — the closest thing
+	   the world has to this beam). The previous teal scored 1.78 and the amber
+	   before it 0.79, so this is roughly 8x either. Earlier drafts of this
+	   comment claimed 9.41/24.97; that came from measuring against a ring's raw
+	   token instead of the ring as rendered, which is exactly the mistake the
+	   standing rule at the top of this file exists to stop. */
+	--fleet-handoff: #ff89cb;
+}

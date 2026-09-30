@@ -1,0 +1,65 @@
+{
+  "name": "channel_reply_draft_user",
+  "version": "1.0.0",
+  "content": [
+    "Draft a short reply to the latest message below. Respond with ONLY the JSON object.",
+    "",
+    "Subject: {subject}",
+    "From (message being replied to): {sender}",
+    "",
+    "## Latest message (reply to this)",
+    "{latest_message}",
+    "",
+    "## Thread context (locally distilled — for grounding only, do not quote verbatim)",
+    "{thread_summary}",
+    "",
+    "## Redraft hint (optional; empty if none)",
+    "{hint}"
+  ],
+  "variables": [
+    {
+      "name": "subject",
+      "description": "Thread subject (metadata; may be redacted for sensitive threads).",
+      "required": true,
+      "default_value": "(none)",
+      "examples": ["Re: lunch on Friday"]
+    },
+    {
+      "name": "sender",
+      "description": "Sender of the message being replied to, as 'Name <address>' or a channel handle.",
+      "required": true,
+      "default_value": "(unknown)",
+      "examples": ["Alex <alex@example.com>"]
+    },
+    {
+      "name": "latest_message",
+      "description": "The message being replied to. Exists in process memory only and is discarded after the local draft.",
+      "required": true,
+      "default_value": null,
+      "examples": ["Are you free for lunch Friday around noon?"]
+    },
+    {
+      "name": "thread_summary",
+      "description": "The locally-derived distilled thread context (never a raw body dump) used to ground the reply.",
+      "required": false,
+      "default_value": "(none)",
+      "examples": ["Alex and the owner have been trying to find a time to meet this week."]
+    },
+    {
+      "name": "hint",
+      "description": "Optional owner redraft instruction (for example 'make it warmer' or 'decline politely'). Empty when the owner has not asked for a specific change.",
+      "required": false,
+      "default_value": "",
+      "examples": ["keep it casual and say yes"]
+    }
+  ],
+  "metadata": {
+    "category": "ChannelAssist",
+    "description": "User prompt paired with channel_reply_draft_system v1.0.0. Injects {subject}, {sender}, {latest_message}, {thread_summary}, and optional {hint}; the model returns a short first-person reply draft as strict JSON {\"draft\": string}.",
+    "author": "magician",
+    "created_at": "2026-07-15T00:00:00Z",
+    "changelog": "v1.0.0: Initial channel-assist reply-draft user prompt.",
+    "tags": ["channel-assist", "reply-draft", "local-only", "privacy"],
+    "estimated_tokens": 160
+  }
+}

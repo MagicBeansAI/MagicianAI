@@ -1,0 +1,7 @@
+Bundled fonts (matching the web unified-ui themes). All redistributable:
+  Caveat, Newsreader, Fira Code, IBM Plex Mono, Inter, JetBrains Mono, Fredoka, Quicksand,
+  Rajdhani, Space Grotesk, Press Start 2P, Outfit, Manrope, Geist Mono,
+  Bricolage Grotesque, Pixelify Sans, Lilita One
+    — SIL Open Font License 1.1
+  Special Elite, Permanent Marker  — Apache License 2.0
+Sources: Google Fonts (github.com/google/fonts).

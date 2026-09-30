@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Collaborative Noisy Board</title>
+    <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+    <style>
+        .test-header {
+            background: linear-gradient(135deg, #0b2942, #ab4eff);
+        }
+
+        .board-surface {
+            position: relative;
+            min-height: 340px;
+            border-radius: 20px;
+            overflow: hidden;
+            background: linear-gradient(180deg, #fafcff 0%, #eef2ff 100%);
+        }
+
+        .board-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            min-height: 280px;
+        }
+
+        .board-column {
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.82);
+            border: 1px solid #d5dced;
+            padding: 14px;
+        }
+
+        .board-column h4 {
+            margin: 0 0 8px;
+        }
+
+        .note-stack {
+            min-height: 210px;
+        }
+
+        .sticky-note {
+            position: relative;
+            width: 180px;
+            padding: 14px;
+            border-radius: 16px;
+            background: linear-gradient(180deg, #fff5a8 0%, #ffe58d 100%);
+            border: 1px solid #e3c753;
+            box-shadow: 0 16px 28px rgba(83, 71, 22, 0.18);
+            cursor: grab;
+            user-select: none;
+        }
+
+        .sticky-note.dragging {
+            cursor: grabbing;
+            z-index: 4;
+        }
+
+        .sticky-note strong {
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .noise-overlay {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+        }
+
+        .remote-cursor {
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg);
+            box-shadow: 0 10px 20px rgba(23, 35, 72, 0.12);
+        }
+
+        .remote-cursor::after {
+            content: attr(data-name);
+            position: absolute;
+            left: 16px;
+            top: -6px;
+            transform: rotate(45deg);
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: rgba(11, 24, 57, 0.9);
+            color: #ffffff;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
+        .remote-cursor.blue {
+            background: #1f7cff;
+        }
+
+        .remote-cursor.pink {
+            background: #ff4f81;
+        }
+
+        .toast-stack {
+            position: absolute;
+            right: 16px;
+            top: 14px;
+            display: grid;
+            gap: 10px;
+        }
+
+        .board-toast {
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(10, 28, 74, 0.9);
+            color: #ffffff;
+            font-size: 12px;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .board-toast.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .edit-panel {
+            position: absolute;
+            left: 18px;
+            right: 18px;
+            bottom: 18px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 12px 14px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.94);
+            box-shadow: 0 16px 30px rgba(37, 48, 77, 0.12);
+        }
+
+        .edit-panel input {
+            flex: 1;
+            border: 1px solid #cbd6ea;
+            border-radius: 12px;
+            padding: 10px 12px;
+            font: 600 15px/1.2 "Segoe UI", sans-serif;
+        }
+
+        .edit-panel button {
+            border: none;
+            border-radius: 999px;
+            padding: 10px 14px;
+            background: #ab4eff;
+            color: #ffffff;
+            font: inherit;
+            cursor: pointer;
+        }
+
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "30-collaborative-noisy-board",
+        "phase": "Phase 4",
+        "title": "Collaborative Noisy Board",
+        "description": "Noisy collaborative board fixtures with moving cursors and toast overlays during drag and edit flows.",
+        "totalTests": 2
+    }
+    </script>
+
+    <div class="page-shell">
+        <div class="test-header">
+            <h1>Collaborative Noisy Board</h1>
+            <p>These fixtures introduce realistic collaboration noise: moving remote cursors, transient toast notifications, and overlapping UI motion while the target drag or edit still needs to complete correctly.</p>
+            <div class="results-summary">
+                <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+                <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+                <div class="summary-pill">Pending<strong id="pending-count">2</strong></div>
+            </div>
+        </div>
+
+        <div class="fixture-grid">
+            <section class="test-case" id="test-1" data-test-id="30-drag-under-noise" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">1. Move the note to Sprint 2 while cursors are moving</h2>
+                    <span class="test-case-id">30-drag-under-noise</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Drag the <span class="kbd">Q3 budget</span> sticky note from Inbox into the <span class="kbd">Sprint 2</span> column while the board is noisy with remote collaborator activity.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Roadmap Board</h3>
+                            <p class="caption">Noise is intentional; the target note still has to land in the Sprint 2 lane.</p>
+                        </div>
+                        <button class="surface-btn" type="button" id="drag-board-reset">Reset surface</button>
+                    </div>
+                    <div class="workspace-surface board-surface" id="drag-board-surface">
+                        <span class="surface-label">Collaborative Board</span>
+                        <div class="board-grid">
+                            <div class="board-column" data-column="inbox">
+                                <h4>Inbox</h4>
+                                <div class="note-stack" id="drag-inbox-stack">
+                                    <div class="sticky-note" id="budget-note">
+                                        <strong>Q3 budget</strong>
+                                        Finalize the finance handoff.
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="board-column" data-column="sprint-1">
+                                <h4>Sprint 1</h4>
+                                <div class="note-stack" id="drag-sprint-1-stack"></div>
+                            </div>
+                            <div class="board-column" data-column="sprint-2">
+                                <h4>Sprint 2</h4>
+                                <div class="note-stack" id="drag-sprint-2-stack"></div>
+                            </div>
+                        </div>
+                        <div class="noise-overlay" id="drag-noise-overlay">
+                            <div class="remote-cursor blue" id="drag-cursor-a" data-name="Riya"></div>
+                            <div class="remote-cursor pink" id="drag-cursor-b" data-name="Ken"></div>
+                            <div class="toast-stack">
+                                <div class="board-toast" id="drag-toast">Ken added a reaction to Sprint 1</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="note-in-sprint-2">The Q3 budget note should end in the Sprint 2 column.</li>
+                        <li data-check="noise-remained-active">At least one remote cursor or toast should remain active during the interaction.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" id="drag-board-reset-status" data-status-reset="test-1">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-2" data-test-id="30-edit-under-noise" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">2. Rename the note while activity overlays continue</h2>
+                    <span class="test-case-id">30-edit-under-noise</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Click the note title, replace it with <code>Ship analytics summary</code>, and commit the change with <span class="kbd">Enter</span> while the collaborator overlays keep moving.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Editorial Board</h3>
+                            <p class="caption">The edit action should succeed even while the board shows active collaboration noise.</p>
+                        </div>
+                        <button class="surface-btn" type="button" id="edit-board-reset">Reset surface</button>
+                    </div>
+                    <div class="workspace-surface board-surface" id="edit-board-surface">
+                        <span class="surface-label">Noisy Editing Surface</span>
+                        <div class="sticky-note" id="analytics-note" style="position: absolute; left: 44px; top: 52px; width: 220px;">
+                            <strong id="analytics-note-title">Analytics handoff</strong>
+                            Publish the final summary after QA signs off.
+                        </div>
+                        <div class="noise-overlay">
+                            <div class="remote-cursor blue" id="edit-cursor-a" data-name="Mara"></div>
+                            <div class="remote-cursor pink" id="edit-cursor-b" data-name="Jo"></div>
+                            <div class="toast-stack">
+                                <div class="board-toast" id="edit-toast">Mara moved a card in Discovery</div>
+                            </div>
+                        </div>
+                        <div class="edit-panel">
+                            <input id="analytics-input" type="text" value="Analytics handoff" aria-label="Edit note title">
+                            <button type="button" id="analytics-commit">Commit</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="title-updated">The note title should become <code>Ship analytics summary</code>.</li>
+                        <li data-check="editing-under-noise">The moving overlays should still be active when the title update succeeds.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" id="edit-board-reset-status" data-status-reset="test-2">Reset</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        (function () {
+            const budgetNote = document.getElementById("budget-note");
+            const dragBoardSurface = document.getElementById("drag-board-surface");
+            const dragInboxStack = document.getElementById("drag-inbox-stack");
+            const dragSprintTwoStack = document.getElementById("drag-sprint-2-stack");
+            const analyticsNoteTitle = document.getElementById("analytics-note-title");
+            const analyticsInput = document.getElementById("analytics-input");
+            const analyticsCommit = document.getElementById("analytics-commit");
+
+            const noiseTargets = [
+                { cursor: document.getElementById("drag-cursor-a"), path: [[70, 84], [280, 118], [420, 190], [180, 232]] },
+                { cursor: document.getElementById("drag-cursor-b"), path: [[470, 72], [612, 116], [566, 252], [360, 168]] },
+                { cursor: document.getElementById("edit-cursor-a"), path: [[68, 220], [244, 120], [412, 190], [180, 264]] },
+                { cursor: document.getElementById("edit-cursor-b"), path: [[404, 60], [552, 122], [460, 236], [298, 154]] }
+            ];
+            const toasts = [
+                { node: document.getElementById("drag-toast"), messages: ["Ken added a reaction to Sprint 1", "Riya is reviewing Inbox", "Syncing board activity..."] },
+                { node: document.getElementById("edit-toast"), messages: ["Mara moved a card in Discovery", "Jo opened comments on Analytics handoff", "Collaboration feed refreshed"] }
+            ];
+
+            let dragState = null;
+            let noiseTick = 0;
+
+            function updateNoise() {
+                noiseTick += 1;
+                noiseTargets.forEach((target, index) => {
+                    const point = target.path[noiseTick % target.path.length];
+                    target.cursor.style.left = point[0] + (index >= 2 ? 0 : 0) + "px";
+                    target.cursor.style.top = point[1] + "px";
+                });
+                toasts.forEach((toast, index) => {
+                    toast.node.textContent = toast.messages[noiseTick % toast.messages.length];
+                    toast.node.classList.toggle("visible", noiseTick % 2 === index % 2);
+                });
+            }
+
+            function noiseVisible() {
+                return noiseTargets.some((target) => target.cursor.style.left) || toasts.some((toast) => toast.node.classList.contains("visible"));
+            }
+
+            function updateDragChecks() {
+                const inSprintTwo = dragSprintTwoStack.contains(budgetNote);
+                const noiseActive = noiseVisible();
+                setCheckState("test-1", "note-in-sprint-2", inSprintTwo ? "pass" : "pending");
+                setCheckState("test-1", "noise-remained-active", noiseActive ? "pass" : "pending");
+                setResult(
+                    "test-1",
+                    inSprintTwo ? "Q3 budget moved into Sprint 2 under active noise." : "Move the Q3 budget note into Sprint 2.",
+                    inSprintTwo ? "success" : "info"
+                );
+                if (inSprintTwo && noiseActive) {
+                    setTestStatus("test-1", "pass");
+                }
+            }
+
+            function resetDragBoard() {
+                dragInboxStack.appendChild(budgetNote);
+                budgetNote.removeAttribute("style");
+                budgetNote.classList.remove("dragging");
+                dragState = null;
+                setTestStatus("test-1", null);
+                setCheckState("test-1", "note-in-sprint-2", "pending");
+                setCheckState("test-1", "noise-remained-active", "pending");
+                setResult("test-1", "Move the Q3 budget note into Sprint 2.", "info");
+                updateDragChecks();
+            }
+
+            function onNotePointerDown(event) {
+                const rect = budgetNote.getBoundingClientRect();
+                const boardRect = dragBoardSurface.getBoundingClientRect();
+                dragState = {
+                    pointerId: event.pointerId,
+                    offsetX: event.clientX - rect.left,
+                    offsetY: event.clientY - rect.top
+                };
+                budgetNote.classList.add("dragging");
+                budgetNote.style.position = "absolute";
+                budgetNote.style.left = rect.left - boardRect.left + "px";
+                budgetNote.style.top = rect.top - boardRect.top + "px";
+                budgetNote.style.zIndex = "5";
+                dragBoardSurface.appendChild(budgetNote);
+                budgetNote.setPointerCapture(event.pointerId);
+            }
+
+            function onNotePointerMove(event) {
+                if (!dragState || dragState.pointerId !== event.pointerId) return;
+                const boardRect = dragBoardSurface.getBoundingClientRect();
+                budgetNote.style.left = event.clientX - boardRect.left - dragState.offsetX + "px";
+                budgetNote.style.top = event.clientY - boardRect.top - dragState.offsetY + "px";
+            }
+
+            function onNotePointerUp(event) {
+                if (!dragState || dragState.pointerId !== event.pointerId) return;
+                budgetNote.releasePointerCapture(event.pointerId);
+                budgetNote.classList.remove("dragging");
+                budgetNote.removeAttribute("style");
+                const dropTarget = document.elementFromPoint(event.clientX, event.clientY)?.closest(".board-column");
+                if (dropTarget?.getAttribute("data-column") === "sprint-2") {
+                    dragSprintTwoStack.appendChild(budgetNote);
+                } else {
+                    dragInboxStack.appendChild(budgetNote);
+                }
+                dragState = null;
+                updateDragChecks();
+            }
+
+            function commitAnalyticsTitle() {
+                const value = analyticsInput.value.trim();
+                const success = value === "Ship analytics summary";
+                analyticsNoteTitle.textContent = value || "Analytics handoff";
+                setCheckState("test-2", "title-updated", success ? "pass" : "fail");
+                setCheckState("test-2", "editing-under-noise", noiseVisible() ? "pass" : "pending");
+                setResult(
+                    "test-2",
+                    success ? "Note title updated under active collaboration noise." : "Commit the exact title Ship analytics summary.",
+                    success ? "success" : "info"
+                );
+                if (success && noiseVisible()) {
+                    setTestStatus("test-2", "pass");
+                }
+            }
+
+            function resetEditBoard() {
+                analyticsInput.value = "Analytics handoff";
+                analyticsNoteTitle.textContent = "Analytics handoff";
+                setTestStatus("test-2", null);
+                setCheckState("test-2", "title-updated", "pending");
+                setCheckState("test-2", "editing-under-noise", "pending");
+                setResult("test-2", "Replace the title with Ship analytics summary and commit it.", "info");
+            }
+
+            budgetNote.addEventListener("pointerdown", onNotePointerDown);
+            budgetNote.addEventListener("pointermove", onNotePointerMove);
+            budgetNote.addEventListener("pointerup", onNotePointerUp);
+
+            analyticsCommit.addEventListener("click", commitAnalyticsTitle);
+            analyticsInput.addEventListener("keydown", (event) => {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitAnalyticsTitle();
+                }
+            });
+
+            document.getElementById("drag-board-reset").addEventListener("click", resetDragBoard);
+            document.getElementById("drag-board-reset-status").addEventListener("click", resetDragBoard);
+            document.getElementById("edit-board-reset").addEventListener("click", resetEditBoard);
+            document.getElementById("edit-board-reset-status").addEventListener("click", resetEditBoard);
+
+            window.setInterval(updateNoise, 1100);
+            updateNoise();
+            resetDragBoard();
+            resetEditBoard();
+        })();
+    </script>
+
+</body>
+</html>

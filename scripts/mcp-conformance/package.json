@@ -1,0 +1,9 @@
+{
+  "name": "magician-mcp-conformance-runner",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Exact-pinned official MCP conformance runner for Magician qualification",
+  "dependencies": {
+    "@modelcontextprotocol/conformance": "0.2.0-alpha.10"
+  }
+}

@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Real-World Checkout Flow (Combined SOTA)</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #f5f5f5;
+        }
+
+        /* Test header */
+        .test-header {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 20px;
+            margin-bottom: 0;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Site header with hover menus */
+        .site-header {
+            background: #2d3748;
+            color: white;
+            padding: 0 20px;
+        }
+        .header-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .logo { font-size: 24px; font-weight: bold; padding: 15px 0; }
+        .nav-menu { display: flex; gap: 0; }
+        .nav-item { position: relative; padding: 20px 15px; cursor: pointer; }
+        .nav-item:hover { background: rgba(255,255,255,0.1); }
+        .nav-dropdown {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: white;
+            min-width: 200px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            border-radius: 4px;
+            z-index: 100;
+        }
+        .nav-item:hover .nav-dropdown { display: block; }
+        .nav-dropdown a {
+            display: block;
+            padding: 12px 20px;
+            color: #333;
+            text-decoration: none;
+        }
+        .nav-dropdown a:hover { background: #f8f9fa; }
+        .cart-icon { position: relative; padding: 10px; cursor: pointer; }
+        .cart-badge {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: #e53e3e;
+            color: white;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 10px;
+        }
+
+        /* Main content */
+        .main-content { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+        /* Breadcrumbs */
+        .breadcrumb {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 15px 0;
+            font-size: 14px;
+        }
+        .breadcrumb a { color: #3182ce; text-decoration: none; }
+        .breadcrumb span { color: #718096; }
+
+        /* Step tracker */
+        .step-tracker {
+            display: flex;
+            justify-content: center;
+            padding: 30px 0;
+            background: white;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        .step-item {
+            display: flex;
+            align-items: center;
+            position: relative;
+        }
+        .step-item:not(:last-child) { margin-right: 40px; }
+        .step-item:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            left: calc(100% + 5px);
+            width: 30px;
+            height: 2px;
+            background: #e2e8f0;
+        }
+        .step-item.completed:not(:last-child)::after { background: #38a169; }
+        .step-circle {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: #e2e8f0;
+            color: #718096;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .step-item.completed .step-circle { background: #38a169; color: white; }
+        .step-item.active .step-circle { background: #3182ce; color: white; }
+        .step-label { font-size: 14px; color: #718096; }
+        .step-item.active .step-label { color: #3182ce; font-weight: 500; }
+
+        /* Layout */
+        .checkout-grid {
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            gap: 30px;
+        }
+
+        /* Form sections */
+        .form-section {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+        .form-section h2 { margin: 0 0 20px 0; font-size: 18px; color: #2d3748; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group.full-width { grid-column: span 2; }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            font-size: 14px;
+            color: #4a5568;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #3182ce;
+            box-shadow: 0 0 0 3px rgba(49, 130, 206, 0.1);
+        }
+
+        /* Payment iframe container */
+        .payment-iframe-container {
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            overflow: hidden;
+            min-height: 200px;
+            background: #fafafa;
+        }
+        .payment-iframe-container iframe {
+            width: 100%;
+            height: 200px;
+            border: none;
+        }
+
+        /* Order summary */
+        .order-summary {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            position: sticky;
+            top: 20px;
+        }
+        .order-summary h2 { margin: 0 0 20px 0; font-size: 18px; }
+        .summary-item {
+            display: flex;
+            gap: 15px;
+            padding: 15px 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .item-details { flex: 1; }
+        .item-name { font-weight: 500; margin-bottom: 4px; }
+        .item-variant { font-size: 13px; color: #718096; }
+        .item-price { font-weight: 500; }
+        .summary-totals { padding-top: 15px; }
+        .summary-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            font-size: 14px;
+        }
+        .summary-row.total {
+            font-weight: bold;
+            font-size: 18px;
+            border-top: 2px solid #e2e8f0;
+            padding-top: 15px;
+            margin-top: 10px;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 14px 28px;
+            font-size: 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #3182ce; color: white; width: 100%; }
+        .btn-primary:hover { background: #2c5282; }
+        .btn-primary:disabled { background: #a0aec0; cursor: not-allowed; }
+        .btn-secondary { background: #e2e8f0; color: #4a5568; }
+
+        /* Loading spinner */
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Honeypot */
+        .hp-field {
+            position: absolute;
+            left: -9999px;
+            opacity: 0;
+        }
+
+        /* Discount tooltip */
+        .discount-section { position: relative; }
+        .discount-input-group { display: flex; gap: 10px; }
+        .discount-input-group input { flex: 1; }
+        .discount-input-group button { padding: 12px 20px; }
+        .discount-tooltip {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            background: #2d3748;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 4px;
+            font-size: 13px;
+            margin-bottom: 10px;
+            white-space: nowrap;
+        }
+        .discount-section:hover .discount-tooltip { display: block; }
+
+        /* Alerts */
+        .alert {
+            padding: 12px 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        .alert-success { background: #c6f6d5; color: #22543d; }
+        .alert-error { background: #fed7d7; color: #742a2a; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .test-case[data-status="pass"] { border-color: #28a745; background: #f0fff4; }
+        .test-case[data-status="fail"] { border-color: #dc3545; background: #fff5f5; }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        .status-controls { display: flex; gap: 10px; margin-top: 15px; }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "12-checkout-flow",
+        "phase": "Combined",
+        "title": "Real-World Checkout Flow",
+        "description": "A realistic multi-step checkout combining multiple SOTA features: cross-origin iframe, hover menus, honeypot detection, loading states, and flow context",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header" style="margin: 0 20px 20px 20px; border-radius: 8px;">
+        <h1>Combined SOTA: Real-World Checkout Flow</h1>
+        <p>A realistic multi-step checkout combining Phases 0 (iframe), 4 (honeypot), 5 (loading), 7 (hover), and 13 (flow context).</p>
+    </div>
+
+    <!-- Test Case 1: Navigate Menu -->
+    <div class="test-case" style="margin: 0 20px;"
+         id="test-1"
+         data-test-id="12-hover-menu"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Navigate Hover Menu</h3>
+            <span class="test-case-id">12-hover-menu</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click "Flash Sale" from the Deals dropdown menu in the header below.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="hover-menu">Agent hovers to reveal dropdown</li>
+                <li data-check="click-flash-sale">Agent clicks Flash Sale (alert shown)</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Header with hover menus -->
+    <header class="site-header" style="margin: 20px 20px 0 20px; border-radius: 8px 8px 0 0;">
+        <div class="header-inner">
+            <div class="logo">TechStore</div>
+            <nav class="nav-menu">
+                <div class="nav-item" data-testid="nav-products">
+                    Products
+                    <div class="nav-dropdown">
+                        <a href="#" data-testid="nav-laptops" onclick="alert('Laptops'); return false;">Laptops</a>
+                        <a href="#" data-testid="nav-phones" onclick="alert('Phones'); return false;">Phones</a>
+                        <a href="#" data-testid="nav-accessories" onclick="alert('Accessories'); return false;">Accessories</a>
+                    </div>
+                </div>
+                <div class="nav-item" data-testid="nav-deals">
+                    Deals
+                    <div class="nav-dropdown">
+                        <a href="#" data-testid="nav-flash-sale" onclick="alert('Flash Sale'); return false;">Flash Sale</a>
+                        <a href="#" data-testid="nav-clearance" onclick="alert('Clearance'); return false;">Clearance</a>
+                    </div>
+                </div>
+                <div class="nav-item" data-testid="nav-support">Support</div>
+            </nav>
+            <div class="cart-icon" data-testid="cart-icon">
+                🛒
+                <span class="cart-badge">2</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-content" style="margin: 0 20px;">
+        <!-- Breadcrumbs -->
+        <nav class="breadcrumb" aria-label="breadcrumb">
+            <a href="#" data-testid="bc-home" onclick="return false;">Home</a>
+            <span>/</span>
+            <a href="#" data-testid="bc-cart" onclick="return false;">Cart</a>
+            <span>/</span>
+            <span aria-current="page" data-testid="bc-current">Checkout</span>
+        </nav>
+
+        <!-- Step Tracker -->
+        <div class="step-tracker">
+            <div class="step-item completed" data-step="1">
+                <div class="step-circle">✓</div>
+                <span class="step-label">Cart</span>
+            </div>
+            <div class="step-item completed" data-step="2">
+                <div class="step-circle">✓</div>
+                <span class="step-label">Shipping</span>
+            </div>
+            <div class="step-item active" data-step="3" aria-current="step">
+                <div class="step-circle">3</div>
+                <span class="step-label">Payment</span>
+            </div>
+            <div class="step-item" data-step="4">
+                <div class="step-circle">4</div>
+                <span class="step-label">Review</span>
+            </div>
+        </div>
+
+        <!-- Test Case 2: Complete Checkout Form -->
+        <div class="test-case"
+             id="test-2"
+             data-test-id="12-complete-checkout"
+             data-status="pending">
+            <div class="test-case-header">
+                <h3 class="test-case-title">Test 2: Complete Checkout Form</h3>
+                <span class="test-case-id">12-complete-checkout</span>
+            </div>
+
+            <div class="goal-section" data-goal>
+                <strong>Goal:</strong> Fill out the checkout form below with: Email "test@example.com", First Name "John", Last Name "Doe", Address "123 Test St", City "New York", State "New York", ZIP "10001". Then fill in the payment iframe with Card "4242424242424242", Expiry "12/25", CVC "123". Do NOT fill any hidden fields.
+            </div>
+
+            <div class="verify-section" data-verify>
+                <strong>Verification:</strong>
+                <ul>
+                    <li data-check="contact-filled">Contact information filled correctly</li>
+                    <li data-check="shipping-filled">Shipping address filled correctly</li>
+                    <li data-check="payment-iframe">Payment details entered in iframe</li>
+                    <li data-check="honeypot-avoided">Hidden honeypot field NOT filled</li>
+                </ul>
+            </div>
+
+            <div class="status-controls" data-status-controls="test-2">
+                <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+            </div>
+        </div>
+
+        <div class="checkout-grid">
+            <div class="form-area">
+                <!-- Contact Information -->
+                <div class="form-section">
+                    <h2>Contact Information</h2>
+                    <div class="form-group">
+                        <label for="email">Email Address</label>
+                        <input type="email" id="email" placeholder="your@email.com" data-testid="checkout-email">
+                    </div>
+
+                    <!-- Honeypot field -->
+                    <div class="hp-field">
+                        <label for="website">Website (leave blank)</label>
+                        <input type="text" id="website" name="website" tabindex="-1" autocomplete="off">
+                    </div>
+                </div>
+
+                <!-- Shipping Address -->
+                <div class="form-section">
+                    <h2>Shipping Address</h2>
+                    <div id="shipping-alert" class="alert alert-success" style="display:none;">
+                        Shipping address saved!
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="first-name">First Name</label>
+                            <input type="text" id="first-name" placeholder="John" data-testid="first-name">
+                        </div>
+                        <div class="form-group">
+                            <label for="last-name">Last Name</label>
+                            <input type="text" id="last-name" placeholder="Doe" data-testid="last-name">
+                        </div>
+                    </div>
+                    <div class="form-group full-width">
+                        <label for="address">Street Address</label>
+                        <input type="text" id="address" placeholder="123 Main Street" data-testid="address">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="city">City</label>
+                            <input type="text" id="city" placeholder="New York" data-testid="city">
+                        </div>
+                        <div class="form-group">
+                            <label for="state">State</label>
+                            <select id="state" data-testid="state">
+                                <option value="">Select state...</option>
+                                <option value="CA">California</option>
+                                <option value="NY">New York</option>
+                                <option value="TX">Texas</option>
+                                <option value="FL">Florida</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="zip">ZIP Code</label>
+                            <input type="text" id="zip" placeholder="10001" data-testid="zip">
+                        </div>
+                        <div class="form-group">
+                            <label for="phone">Phone</label>
+                            <input type="tel" id="phone" placeholder="(555) 123-4567" data-testid="phone">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Payment (iframe) -->
+                <div class="form-section">
+                    <h2>Payment</h2>
+                    <div class="payment-iframe-container">
+                        <iframe
+                            id="payment-frame"
+                            data-testid="payment-iframe"
+                            srcdoc='
+                                <!DOCTYPE html>
+                                <html>
+                                <head>
+                                    <style>
+                                        body { font-family: system-ui; padding: 20px; margin: 0; background: #fafafa; }
+                                        .field { margin-bottom: 15px; }
+                                        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+                                        input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px; box-sizing: border-box; }
+                                        input:focus { outline: none; border-color: #635bff; }
+                                        .row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+                                    </style>
+                                </head>
+                                <body>
+                                    <div class="field">
+                                        <label>Card Number</label>
+                                        <input type="text" placeholder="1234 5678 9012 3456" data-testid="card-number">
+                                    </div>
+                                    <div class="row">
+                                        <div class="field">
+                                            <label>Expiry</label>
+                                            <input type="text" placeholder="MM / YY" data-testid="card-expiry">
+                                        </div>
+                                        <div class="field">
+                                            <label>CVC</label>
+                                            <input type="text" placeholder="123" data-testid="card-cvc">
+                                        </div>
+                                    </div>
+</body>
+                                </html>
+                            '
+                            title="Payment form"
+                        ></iframe>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Order Summary -->
+            <aside class="order-summary">
+                <h2>Order Summary</h2>
+
+                <div class="summary-item">
+                    <div style="width:60px; height:60px; background:#e2e8f0; border-radius:4px; display:flex; align-items:center; justify-content:center;">📱</div>
+                    <div class="item-details">
+                        <div class="item-name">Wireless Earbuds Pro</div>
+                        <div class="item-variant">Color: Black • Qty: 1</div>
+                    </div>
+                    <div class="item-price">$149.99</div>
+                </div>
+
+                <!-- Discount with tooltip -->
+                <div class="discount-section" style="padding: 15px 0;">
+                    <div class="discount-tooltip">Try code: SAVE10 for 10% off!</div>
+                    <div class="discount-input-group">
+                        <input type="text" placeholder="Discount code" data-testid="discount-code" id="discount-input">
+                        <button class="btn btn-secondary" data-testid="apply-discount" onclick="applyDiscount()">Apply</button>
+                    </div>
+                </div>
+
+                <div id="discount-alert" class="alert" style="display:none;"></div>
+
+                <div class="summary-totals">
+                    <div class="summary-row">
+                        <span>Subtotal</span>
+                        <span>$149.99</span>
+                    </div>
+                    <div class="summary-row">
+                        <span>Shipping</span>
+                        <span>$9.99</span>
+                    </div>
+                    <div class="summary-row">
+                        <span>Tax</span>
+                        <span>$12.00</span>
+                    </div>
+                    <div class="summary-row" id="discount-row" style="display:none; color: #38a169;">
+                        <span>Discount</span>
+                        <span id="discount-amount">-$0.00</span>
+                    </div>
+                    <div class="summary-row total">
+                        <span>Total</span>
+                        <span id="total">$171.98</span>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- Test Case 3: Place Order -->
+        <div class="test-case"
+             id="test-3"
+             data-test-id="12-place-order"
+             data-status="pending">
+            <div class="test-case-header">
+                <h3 class="test-case-title">Test 3: Place Order with Loading State</h3>
+                <span class="test-case-id">12-place-order</span>
+            </div>
+
+            <div class="goal-section" data-goal>
+                <strong>Goal:</strong> Click the "Place Order" button and wait for the order to be processed. The button will show a loading state for 3 seconds before confirming.
+            </div>
+
+            <div class="verify-section" data-verify>
+                <strong>Verification:</strong>
+                <ul>
+                    <li data-check="button-clicked">Place Order button clicked</li>
+                    <li data-check="loading-detected">Loading state detected (spinner shown)</li>
+                    <li data-check="completion-waited">Agent waits for processing to complete</li>
+                    <li data-check="success-confirmed">Order success confirmed (alert shown)</li>
+                </ul>
+            </div>
+
+            <div class="status-controls" data-status-controls="test-3">
+                <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+            </div>
+        </div>
+
+        <button
+            class="btn btn-primary"
+            id="place-order-btn"
+            data-testid="place-order"
+            onclick="placeOrder()"
+            style="margin-bottom: 20px;"
+        >
+            Place Order - $171.98
+        </button>
+    </main>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Combined Checkout Flow Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Apply discount
+        function applyDiscount() {
+            const code = document.getElementById('discount-input').value.toUpperCase();
+            const discountAlert = document.getElementById('discount-alert');
+            const discountRow = document.getElementById('discount-row');
+
+            if (code === 'SAVE10') {
+                discountAlert.className = 'alert alert-success';
+                discountAlert.textContent = 'Discount code applied! You saved $15.00';
+                discountAlert.style.display = 'block';
+                discountRow.style.display = 'flex';
+                document.getElementById('discount-amount').textContent = '-$15.00';
+                document.getElementById('total').textContent = '$156.98';
+            } else if (code === '') {
+                discountAlert.className = 'alert alert-error';
+                discountAlert.textContent = 'Please enter a discount code';
+                discountAlert.style.display = 'block';
+            } else {
+                discountAlert.className = 'alert alert-error';
+                discountAlert.textContent = 'Invalid discount code. Try "SAVE10"';
+                discountAlert.style.display = 'block';
+            }
+
+            setTimeout(() => {
+                discountAlert.style.display = 'none';
+            }, 3000);
+        }
+
+        // Place order
+        function placeOrder() {
+            const btn = document.getElementById('place-order-btn');
+            const honeypot = document.getElementById('website').value;
+
+            if (honeypot) {
+                alert('Bot detection triggered!');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Processing...';
+
+            setTimeout(() => {
+                btn.innerHTML = 'Place Order - $171.98';
+                btn.disabled = false;
+                document.getElementById('shipping-alert').style.display = 'block';
+                document.getElementById('shipping-alert').textContent = 'Order placed successfully!';
+                alert('Order placed successfully! Order #12345');
+            }, 3000);
+        }
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        // SOTA auto-detection: fire setCheckState only on genuine target actions.
+        (() => {
+            const EXPECTED = {
+                email: 'test@example.com',
+                'first-name': 'John',
+                'last-name': 'Doe',
+                address: '123 Test St',
+                city: 'New York',
+                state: 'NY', // <select> value for "New York"
+                zip: '10001'
+            };
+
+            function mark(testId, checkName) {
+                if (typeof window.setCheckState === 'function') {
+                    window.setCheckState(testId, checkName, 'pass');
+                }
+            }
+
+            // ---- Test 1: Navigate Hover Menu ----
+            // hover-menu: dropdown for Deals actually became visible (CSS :hover -> display:block)
+            // click-flash-sale: the Flash Sale link itself was activated
+            const dealsItem = document.querySelector('[data-testid="nav-deals"]');
+            const dealsDropdown = dealsItem ? dealsItem.querySelector('.nav-dropdown') : null;
+            const flashSale = document.querySelector('[data-testid="nav-flash-sale"]');
+
+            if (dealsItem && dealsDropdown) {
+                // Detect genuine reveal: the dropdown is computed-visible while pointer is over Deals.
+                const checkReveal = () => {
+                    if (getComputedStyle(dealsDropdown).display !== 'none') {
+                        mark('test-1', 'hover-menu');
+                    }
+                };
+                dealsItem.addEventListener('mouseenter', () => {
+                    // allow the :hover style to apply before reading
+                    requestAnimationFrame(checkReveal);
+                });
+                dealsItem.addEventListener('mouseover', checkReveal);
+            }
+
+            if (flashSale) {
+                flashSale.addEventListener('click', () => {
+                    // Clicking Flash Sale requires the dropdown to be open, which means it was revealed.
+                    mark('test-1', 'hover-menu');
+                    mark('test-1', 'click-flash-sale');
+                });
+            }
+
+            // ---- Test 2: Complete Checkout Form ----
+            // Each check fires only when its real sub-condition is genuinely satisfied.
+            function evalContactFilled() {
+                const email = document.getElementById('email');
+                return email && email.value.trim().toLowerCase() === EXPECTED.email;
+            }
+
+            function evalShippingFilled() {
+                const fn = document.getElementById('first-name');
+                const ln = document.getElementById('last-name');
+                const addr = document.getElementById('address');
+                const city = document.getElementById('city');
+                const state = document.getElementById('state');
+                const zip = document.getElementById('zip');
+                if (!fn || !ln || !addr || !city || !state || !zip) return false;
+                return fn.value.trim() === EXPECTED['first-name']
+                    && ln.value.trim() === EXPECTED['last-name']
+                    && addr.value.trim() === EXPECTED.address
+                    && city.value.trim() === EXPECTED.city
+                    && state.value === EXPECTED.state
+                    && zip.value.trim() === EXPECTED.zip;
+            }
+
+            function evalPaymentIframe() {
+                const frame = document.getElementById('payment-frame');
+                let doc = null;
+                try {
+                    doc = frame && (frame.contentDocument || (frame.contentWindow && frame.contentWindow.document));
+                } catch (e) {
+                    return false; // cross-origin would land here; srcdoc is same-origin so normally readable
+                }
+                if (!doc) return false;
+                const card = doc.querySelector('[data-testid="card-number"]');
+                const expiry = doc.querySelector('[data-testid="card-expiry"]');
+                const cvc = doc.querySelector('[data-testid="card-cvc"]');
+                if (!card || !expiry || !cvc) return false;
+                const digits = (s) => (s || '').replace(/\D/g, '');
+                return digits(card.value) === '4242424242424242'
+                    && digits(expiry.value) === '1225'
+                    && digits(cvc.value) === '123';
+            }
+
+            function evalHoneypotAvoided() {
+                // "Avoided" is only meaningful once the agent has engaged the real form.
+                // Confirm the honeypot stays empty while at least one genuine field is filled.
+                const honeypot = document.getElementById('website');
+                if (!honeypot) return false;
+                if (honeypot.value.trim() !== '') return false;
+                return evalContactFilled() || evalShippingFilled() || evalPaymentIframe();
+            }
+
+            function reevaluateTest2() {
+                if (evalContactFilled()) mark('test-2', 'contact-filled');
+                if (evalShippingFilled()) mark('test-2', 'shipping-filled');
+                if (evalPaymentIframe()) mark('test-2', 'payment-iframe');
+                if (evalHoneypotAvoided()) mark('test-2', 'honeypot-avoided');
+            }
+
+            // Watch the visible parent-page fields.
+            ['email', 'first-name', 'last-name', 'address', 'city', 'state', 'zip', 'website']
+                .forEach((id) => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.addEventListener('input', reevaluateTest2);
+                    el.addEventListener('change', reevaluateTest2);
+                });
+
+            // Watch the same-origin srcdoc payment iframe fields once it loads.
+            const paymentFrame = document.getElementById('payment-frame');
+            function wirePaymentFrame() {
+                let doc = null;
+                try {
+                    doc = paymentFrame.contentDocument || (paymentFrame.contentWindow && paymentFrame.contentWindow.document);
+                } catch (e) {
+                    doc = null;
+                }
+                if (!doc) return;
+                ['card-number', 'card-expiry', 'card-cvc'].forEach((tid) => {
+                    const input = doc.querySelector('[data-testid="' + tid + '"]');
+                    if (!input) return;
+                    input.addEventListener('input', reevaluateTest2);
+                    input.addEventListener('change', reevaluateTest2);
+                });
+            }
+            if (paymentFrame) {
+                paymentFrame.addEventListener('load', wirePaymentFrame);
+                // srcdoc iframes are usually parsed by the time this runs; wire immediately too.
+                wirePaymentFrame();
+            }
+
+            // ---- Test 3: Place Order with Loading State ----
+            // button-clicked: the genuine Place Order button was activated (and not bot-blocked)
+            // loading-detected: spinner actually rendered in the button
+            // completion-waited / success-confirmed: the 3s processing finished and success alert fired
+            const placeBtn = document.getElementById('place-order-btn');
+            if (placeBtn && typeof window.placeOrder === 'function') {
+                const originalPlaceOrder = window.placeOrder;
+                window.placeOrder = function instrumentedPlaceOrder() {
+                    const honeypot = document.getElementById('website');
+                    const botBlocked = honeypot && honeypot.value.trim() !== '';
+
+                    const result = originalPlaceOrder.apply(this, arguments);
+
+                    // Only a genuine, non-bot-blocked click starts processing (spinner + disabled).
+                    if (!botBlocked && placeBtn.disabled && placeBtn.querySelector('.spinner')) {
+                        mark('test-3', 'button-clicked');
+                        mark('test-3', 'loading-detected');
+
+                        // Confirm completion by observing the real end-state the original sets at 3s.
+                        const started = Date.now();
+                        const poll = setInterval(() => {
+                            const succeeded = !placeBtn.disabled && !placeBtn.querySelector('.spinner');
+                            if (succeeded) {
+                                clearInterval(poll);
+                                // Waiting through the loading window is the genuine "wait" behavior.
+                                if (Date.now() - started >= 2500) {
+                                    mark('test-3', 'completion-waited');
+                                }
+                                mark('test-3', 'success-confirmed');
+                            } else if (Date.now() - started > 10000) {
+                                clearInterval(poll);
+                            }
+                        }, 100);
+                    }
+                    return result;
+                };
+            }
+        })();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

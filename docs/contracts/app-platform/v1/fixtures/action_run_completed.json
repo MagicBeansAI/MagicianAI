@@ -1,0 +1,52 @@
+{
+  "execution_id": "execution_fixture_1",
+  "protocol_version": "1",
+  "result": {
+    "action_id": "shorten_video",
+    "mutation_receipt_refs": [
+      "mutation:receipt_01"
+    ],
+    "output": {
+      "content_digest": "blake3:7d5b1d7a30969303743795d55a57e69dc28eb451c761ed257f8fdb9744a41bba",
+      "expires_at": "2026-08-14T07:30:00Z",
+      "grant_revision": 2,
+      "handling_labels": {
+        "classification": "personal",
+        "model_processing": "local_only",
+        "policy_digest": "blake3:f98f30111fa85c533ff074620814a853afa1e7b6715a55df740ab987affa4996",
+        "provenance_digest": "blake3:62403b576e4a52499024b60e62fc1e3bedb2ed48dbbcdaac5e12854cecb9ef65"
+      },
+      "installation_id": "install_reading_room",
+      "package_revision_ref": "package:reading_room:1.0.0",
+      "produced_at": "2026-08-14T06:30:00Z",
+      "protocol_version": "1",
+      "schema_revision": 3,
+      "scope_binding_ref": "scope_binding_owner_default",
+      "source": "app_action",
+      "source_refs": [
+        {
+          "kind": "entity_record",
+          "reference": "record:saved_video:video_01",
+          "revision": 7
+        }
+      ],
+      "value": {
+        "artifact_ref": "artifact:video:short_01",
+        "duration_seconds": 481
+      },
+      "value_schema_ref": "schema:shorten_video_result:v2"
+    },
+    "protocol_version": "1",
+    "run_ref": "run:app-action:fixture_completed",
+    "status": "completed"
+  },
+  "result_withheld": false,
+  "run_handle": {
+    "action_id": "shorten_video",
+    "installation_id": "install_contract_fixture",
+    "protocol_version": "1",
+    "run_ref": "run:app-action:fixture_completed"
+  },
+  "status": "completed",
+  "terminal": true
+}

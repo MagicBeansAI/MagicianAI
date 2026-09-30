@@ -1,0 +1,1 @@
+{"compile":"ok","steps":1,"inputs":["q"],"data_flows":0,"write_steps":0,"verify_with_steps":0,"answer_fields":["title"],"template":"find the ssr result for {q}","replay":{"inputs":{"q":"rust"},"answer":{"title":"Rust SSR result"}},"title_variants":[{"title":"Find the SSR result for golang","expect":"template","inputs":{"q":"golang"}}],"must_not_contain":[],"known_failing":null}

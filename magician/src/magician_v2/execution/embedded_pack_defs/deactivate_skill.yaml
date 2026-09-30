@@ -1,0 +1,31 @@
+name: deactivate_skill
+description: Clear the currently active procedure-skill playbook on this agent. Use when the task that needed the playbook is done, or when switching to a task that needs a different one (just call `activate_skill` with the new name instead — that auto-replaces). Leaving an irrelevant playbook active can bias unrelated work.
+version: "1.0.0"
+guide: |
+  Tool name: `deactivate_skill`
+
+  Clears the agent-scope `active_procedure_skill` memory tier. Idempotent:
+  calling on an empty tier returns `{status: "ok", outcome: "noop"}`.
+
+  No parameters. Subsequent prompt builds — chat or autonomous — see no
+  ACTIVE PROCEDURE PLAYBOOK section, so the playbook's guidance stops
+  influencing later turns.
+
+  Output:
+  - `{status: "ok", outcome: "deactivated", previous_active, message}` on
+    successful clear.
+  - `{status: "ok", outcome: "noop", message}` when nothing was active.
+  - `{status: "error", reason}` on memory I/O failure.
+parameters: []
+implementation:
+  type: compiled
+  provider_name: deactivate_skill
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - skills
+    - playbook
+    - write
+  composition_category: action
+  sandbox: none

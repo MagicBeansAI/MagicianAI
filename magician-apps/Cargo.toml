@@ -1,0 +1,39 @@
+[package]
+name = "magician-apps"
+version = "0.2.7"
+edition = "2021"
+authors = ["MagicBeansAI"]
+description = "App-platform runtime surface (hosting, hydration, workers, entity lifecycle periphery) extracted from the magician monolith"
+license = "MIT OR Apache-2.0"
+
+[features]
+# Fixture modules shared with dependent crates test builds.
+test-fixtures = ["magician/test-fixtures"]
+
+[dependencies]
+magician = { path = "../magician" }
+magician-app-contract = { path = "../magician-app-contract" }
+
+anyhow = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+libc = "0.2"
+chrono = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+schemars = { version = "1.2.1", features = ["chrono04"] }
+serde = { workspace = true, features = ["derive"] }
+serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = "0.30"
+tempfile = "3.8"
+thiserror = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
+
+# JS engine for surface compilation
+boa_engine = { version = "0.20", default-features = false }
+
+[dev-dependencies]
+magician = { path = "../magician", features = ["test-fixtures"] }
+static_assertions = "1"

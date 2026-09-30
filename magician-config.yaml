@@ -1,0 +1,2552 @@
+# MagicianV2 Configuration
+# LLM configurations for multi-step workflows
+
+consumer_mode: true
+
+runtime:
+  scale:
+    # PR8 pre-bootstrap plan. `null` inherits the selected profile.
+    # Seed stays `current`. `MAGICIAN_SCALE_PROFILE` overrides the name
+    # (restart-bound). Mixing leftover `llm.dispatch.workers: 3` or `12`
+    # with an explicit non-current profile is a boot error.
+    profile: current
+    overrides:
+      main_worker_threads: null
+      http_worker_threads: null
+      execution_worker_threads: null
+      background_worker_threads: null
+      lance_worker_threads: null
+      lance_search_cost_units: null
+      blocking_admission_permits: null
+      live_agent_limit: null
+      workers: null
+      reserved_interactive_workers: null
+      global_cloud_concurrency: null
+      queue_capacity_high: null
+      queue_capacity_normal: null
+      queue_capacity_background: null
+  retrieval:
+    result_cache:
+      # Default on. Kill switch MAGICIAN_MEMORY_HYBRID_RESULT_CACHE=off.
+      enabled: true
+      max_entries: 512
+      max_bytes: 67108864
+    lance_table_pool:
+      # Cross-request reuse of Lance search tables. Kill switch:
+      # MAGICIAN_LANCE_TABLE_POOL=off.
+      enabled: true
+      max_idle: 4
+    query_vector_cache:
+      # Exact-query embedding LRU. Default on. Kill switch:
+      # MAGICIAN_QUERY_VECTOR_CACHE=off.
+      enabled: true
+      max_entries: 1024
+      max_bytes: 33554432
+    vector_search: ann # flat | ann_shadow | ann
+    ann:
+      min_rows: 256
+      candidate_multiplier: 4
+  ollama:
+    # Request-level model residency window for local Ollama calls. Env override:
+    # MAGICIAN_OLLAMA_KEEP_ALIVE.
+    keep_alive: 10m
+    # Generation models and contexts are resolved from Ollama profiles named by
+    # llm.router.operation_mapping. Embeddings run on a dedicated daemon so a
+    # generation request can never occupy the embedding request queue.
+    max_loaded_models: 2
+    embedding_base_url: http://127.0.0.1:11435
+    # Which local generation model gets installed and run, decided by how much
+    # memory the machine has. The installer picks the first tier the machine
+    # satisfies and writes it to `selected`; every Ollama generation profile in
+    # llm.router.profiles reads `selected` through the anchor below, so the
+    # installer, the runtime and magician-components/src/graph.yaml cannot
+    # disagree about which model is actually resident.
+    #
+    # Below `min_memory_gb`, or off the stated arch/os, no generation model is
+    # installed at all: chat runs on a remote provider and "keep processing on
+    # this machine" is simply unavailable. This mirrors the `host:` block on the
+    # ollama-generation component in magician-components/src/graph.yaml — change
+    # both or neither.
+    local_generation:
+      min_memory_gb: 16
+      requires_arch: arm64
+      requires_os: macos
+      # First tier whose min_memory_gb the machine meets wins, so these stay in
+      # descending order. The embedder is resident alongside whichever is
+      # chosen, which is why the bar is higher than the model alone would need.
+      # `resident_gb` is roughly what the model holds once loaded. It is only
+      # used to warn when a machine is tight at install time — not a limit, and
+      # Ollama will still try and then swap.
+      tiers:
+        - min_memory_gb: 36
+          model: qwen3.8-ud2-mtp
+          resident_gb: 11
+        - min_memory_gb: 24
+          model: gemma4:12b
+          resident_gb: 8
+        - min_memory_gb: 16
+          model: woof-4b
+          resident_gb: 3
+      # The other two claims on memory while Magician runs: the embedder, which
+      # is always resident, and what the OS and the rest of the stack need to
+      # not be miserable.
+      embedding_resident_gb: 4
+      system_headroom_gb: 6
+      # Seed default is Gemma 4. make setup-ollama overwrites this from the
+      # memory tier (36+ Qwen, 24–35 Gemma, 16–23 Woof). Override with
+      # make setup-local-generation MODEL=<id> SELECT=1
+      # Kitty scores: data/magician_v2/local_generation_catalog.yaml
+      selected: &local_generation_model gemma4:12b
+    embedding_keep_alive: "-1"
+    # Conservative physical admission capacity. The current Ollama embedding
+    # runner is single-sequence; foreground reads preempt background batches.
+    embedding_num_parallel: 1
+    embedding_max_loaded_models: 1
+    embedding_query_timeout_ms: 5000
+    # Distinct-query micro-batch. Window 3ms / max items 8. A lone chat miss
+    # still flushes immediately. Kill switch: MAGICIAN_EMBEDDING_QUERY_BATCH=off.
+    embedding_query_batch_window_ms: 3
+    embedding_query_batch_max_items: 8
+    embedding_query_batch_max_chars: 6000
+    embedding_write_timeout_ms: 180000
+    embedding_context_tokens: 8192
+    embedding_batch_tokens: 512
+    # Items per physical embedding request.
+    #
+    # Raised 2 -> 10 on 2026-09-07 and MEASURED, not assumed. A full rebuild of
+    # 36,988 chunks went 4.90 -> 5.62 chunks/s: 5x the batch bought 15%.
+    # Per-request time scaled almost linearly with payload (408 -> 1,781 ms for
+    # 252 -> 1,260 tokens), i.e. token throughput moved 618 -> 708 tok/s and
+    # then stopped. That is a saturated GPU, not per-request overhead.
+    #
+    # So width is NOT the lever here and raising it further will not help; the
+    # ceiling is the 4B embedding model itself. Keep 10 because the 15% is free,
+    # but treat any further speed work as a decision about the model (size or
+    # quantization), which also changes retrieval quality and forces another
+    # full re-embed.
+    #
+    # The ceiling is DEFAULT_OLLAMA_MAX_BATCH_CHARS (6,000) in
+    # memory_index.rs, overridable only by
+    # MAGICIAN_MEMORY_EMBEDDING_MAX_BATCH_CHARS — NOT by
+    # embedding_query_batch_max_chars above, which governs the foreground
+    # query micro-batch and merely happens to share the value.
+    # `embedding_batch_tokens` is applied as a BYTE cap per input (512 minus an
+    # 8-token reserve = 504 B, ~126 tokens), so 10 x 504 B stays inside 6,000
+    # and the item count, not the char ceiling, stays the binding limit.
+    #
+    # One width serves EmbeddingPriority::{Read, BackgroundRead, Write}, but it
+    # only binds when a call has many inputs: a single foreground query still
+    # embeds at width 1, and the query micro-batch is separately capped at 8
+    # items.
+    embedding_batch_size: 10
+    embedding_model: hf.co/mykor/pplx-embed-v1-4b-GGUF:Q6_K
+    embedding_dimensions: 2560
+    kv_cache_type: q8_0
+    flash_attention: true
+    # Generation prewarm policy. Embedding is always prewarmed and pinned.
+    prewarm: true
+    replace_existing_local_daemon: true
+
+# Workspace storage backend selector (local_file | silverbullet_space). Folded in
+# from the former workspace_storage/settings.json; the settings API reads + mutates
+# this section in place. Typed storage profiles are a separate bootstrap file
+# (`--storage-bootstrap` / MAGICIAN_STORAGE_BOOTSTRAP_CONFIG). When that file is
+# absent, this local selector is unchanged.
+# Automatic, lossless maintenance of Channel Assist and Feed DuckDB stores.
+# Heavy work runs after HTTP startup; only the affected database is gated.
+database_maintenance:
+  enabled: true
+  startup_delay_seconds: 15
+  check_interval_seconds: 1800
+  cooldown_seconds: 86400
+  max_deferral_seconds: 21600
+  min_database_mib: 64
+  fragmented_row_groups: 128
+  channel_memory_mib: 1024
+  feed_memory_mib: 256
+  maintenance_memory_mib: 2048
+
+workspace_storage:
+  provider: silverbullet_space
+
+# Public HTTPS origin placed into short-lived mobile enrollment QR codes, and
+# used to build the "Open secure request" link in a critical-request alert
+# (`{origin}/attention?attention=1&attention_item=<id>`). Without it the alert
+# still goes out and simply tells the owner where to look instead. The link
+# carries no authority: it opens behind login and scope, so a forwarded URL
+# grants nothing and a link-preview fetch cannot claim or resolve a request.
+# The Cloudflare provisioning script normally supplies the machine-local env
+# override, so this seed stays customer-neutral.
+mobile_access:
+  public_origin: null
+  # A private / self-hosted Magdroid build needs no pins here: the owner
+  # approves the exact build (signer, version) the phone's hardware attestation
+  # proves at the first pairing, and the device stays pinned to it. Fill the
+  # signer and version to name the build explicitly instead. A Play build needs
+  # them plus the server-decoded Play Integrity policy below.
+  android_apps_signing_sha256: []
+  # Google-published hardware-attestation roots. Refresh from
+  # https://android.googleapis.com/attestation/root when Google rotates them.
+  android_attestation_root_sha256:
+    - cedb1cb6dc896ae5ec797348bce9286753c2b38ee71ce0fbe34a9a1248800dfc
+    - 6d9db4ce6c5c0b293166d08986e05774a8776ceb525d9e4329520de12ba4bcc0
+  # Diagnostic only; this app-reported checksum is not an authority proof.
+  android_apps_apk_sha256: []
+  # Exact reviewed versions accepted for both Play and private/self-hosted builds.
+  android_apps_version_codes: []
+  android_play_integrity_cloud_project_number: null
+  android_play_integrity_version_codes: []
+  android_play_integrity_required_device_verdicts: []
+
+analytics:
+  llm_trace:
+    enabled: true
+    # Safe runtime default: content-free facts only. Enable sanitized capture
+    # through an exact scope/operation override after redaction audit.
+    content_mode: metadata
+    metadata_capture_rate: 1.0
+    sanitized_content_rate: 1.0
+    payload_records: 512
+    retention:
+      facts_days: 90
+      context_metadata_days: 90
+      sanitized_io_days: 30
+      encrypted_raw_days: 7
+    redaction:
+      policy_version: llm-content-redaction-v1
+      fail_to_metadata_only: true
+      max_payload_bytes: 524288
+      max_block_chars: 65536
+    training_default_eligible: false
+    exclude_public_guest_content: true
+    operation_overrides: {}
+    scope_overrides: {}
+
+coding:
+  default_profile: coding-balanced
+  # Lead engineer that drives VibeDev coding runs (tasks tagged `vibedev`). Swapping the
+  # coding lead (e.g. EM -> CTO) is a one-line edit here, not a UI/code change.
+  # 2026-06-19 (plan §10/§10.1): EM "Bridge" collapsed into CTO "Forge"; CTO is now the
+  # engineering authority and delegates directly to the coding ICs.
+  lead_agent_id: cto
+  # contribute_to_project write mode: true = write straight into the project repo (autonomous,
+  # the contributing agent already curated the artifact); false = stage behind diff-approval HITL.
+  contribute_direct: true
+  # Duration is NOT what decides whether a coding run should stop.
+  #
+  # A run that has been going six hours while committing every two minutes is
+  # healthy; a run that has been silent for twenty is not, however long it has
+  # been alive. So liveness (`no_progress`) is the primary bound, the cost
+  # ceiling (`MAGICIAN_AGENTIC_MAX_COST_USD` + the token meter) is the real
+  # spend limit, and the wall clock below is only a backstop that catches a bug
+  # in one of those. A long autonomous run is supposed to be possible.
+  #
+  # Renamed from `timeout_secs`, which is still accepted; setting BOTH to
+  # different values is rejected rather than silently resolved. Raising the old
+  # key alone used to change nothing: the agentic executor independently clipped
+  # every coding run to a generic 40-minute ceiling, so one budget moved and the
+  # other did not. Both now read this block.
+  #
+  # 0 = no wall clock at all, leaving liveness and cost as the only stops.
+  turn_timeout_secs: 28800
+  # Optional ACTIVE-time ceiling for the whole coding task (waiting on diff
+  # approval is not spending; parallel children do not double-charge wall
+  # clock). 0 = none, which is the default: active time is still accumulated and
+  # reported, it just never stops work. Set a positive value only if you want a
+  # hard cap per task.
+  task_budget_secs: 0
+  # Held back from task_budget_secs so verification and repair are not starved
+  # by the coding phase. Inert while task_budget_secs is 0 — with no ceiling
+  # there is nothing to be starved of.
+  verification_reserve_secs: 1200
+  # Liveness. THIS is what stops a wedged run. Each phase carries its own bound
+  # because they fail differently: a 16-minute test is silent by nature, a
+  # compaction emits nothing at all, and an auto-retry announces its own
+  # backoff. A single idle timer across all of them either kills healthy work or
+  # never fires.
+  no_progress:
+    enabled: true
+    # No text or thinking delta from the model.
+    model_idle_secs: 900
+    # No output from a running tool. Deliberately longer than the model's: a
+    # single test command here legitimately runs 16 minutes saying nothing.
+    tool_idle_secs: 1500
+    # A tool that runs forever while STAYING chatty, which an inactivity bound
+    # alone can never catch.
+    tool_max_secs: 3000
+    compaction_max_secs: 900
+    summarization_max_secs: 900
+    # Added to a retry's own declared backoff, never used in place of it.
+    retry_grace_secs: 120
+  persist_session: false
+  # Local `codex app-server` discovery. Selectable only after Ready
+  # qualification. The browser/model/tool cannot set `binary`.
+  codex:
+    enabled: true
+    # binary: /opt/homebrew/bin/codex
+  # Local `grok agent stdio` discovery. Selectable only after Ready
+  # qualification (version + auth + positive isolation evidence). The
+  # browser/model/tool cannot set `binary`.
+  grok:
+    enabled: true
+    # binary: ~/.grok/bin/grok
+  # Local `claude -p --output-format stream-json` discovery. Selectable when
+  # enabled and exactly one reviewed binary is found, the CLI meets the
+  # frozen minimum, Max/OAuth is signed in, and isolation is attested.
+  # Default `use_api_key: false` so the child does not inherit Magician's
+  # ANTHROPIC_API_KEY (Max subscription / OAuth). The browser/model/tool
+  # cannot set `binary`.
+  claude:
+    enabled: true
+    use_api_key: false
+    # binary: /opt/homebrew/bin/claude
+  # Local `agy -p --output-format stream-json` discovery. Selectable when
+  # enabled and exactly one reviewed binary is found, the CLI meets the
+  # frozen minimum, Antigravity OAuth is signed in, and isolation is
+  # attested. Default `use_api_key: false` so Magician's GEMINI_API_KEY
+  # is not inherited. The browser/model/tool cannot set `binary`.
+  agy:
+    enabled: true
+    use_api_key: false
+    # binary: ~/.local/bin/agy
+  profiles:
+    - id: coding-balanced
+      label: GPT-6.1 Sol coding · 64k output
+      llm_profile: gpt61sol-responses-vision-toolsany-rhigh-out64k
+      description: Default Pi-backed implementation profile for routine engineering work.
+
+    - id: coding-premium
+      label: GPT-6.1 Sol coding
+      llm_profile: gpt61sol-responses-vision-toolsany-rhigh
+      description: Premium vision-capable profile for the hardest implementation and review work.
+
+    - id: coding-astra
+      label: GPT-6 Astra coding
+      llm_profile: gptastra-responses-vision-toolsany-rhigh
+      description: Frontier vision-capable profile for the hardest end-to-end implementation and review work.
+
+    - id: coding-opus5
+      label: Claude Opus 5 coding
+      llm_profile: opus5-messages-vision-toolsauto-rhigh-think8k
+      description: Retained previous-generation Anthropic vision-capable profile for compatibility and rollback.
+
+    - id: coding-opus55
+      label: Claude Opus 5.5 coding
+      llm_profile: opus55-messages-vision-toolsauto-rhigh-think8k
+      description: Latest Anthropic advanced vision-capable profile for long-running agentic coding and review.
+
+    - id: coding-fable
+      label: Claude Fable 5.1 coding
+      llm_profile: fable51-messages-vision-toolsauto-rhigh
+      description: Anthropic frontier vision-capable profile. tool_choice is auto; Fable 5.1 rejects forced tool use.
+
+    - id: coding-luna
+      label: GPT-6 Luna coding
+      llm_profile: gpt6luna-responses-vision-toolsany-rnone-out16k
+      description: Fast, lower-cost vision-capable profile for bounded edits and routine iteration.
+
+    - id: coding-grok47
+      label: Grok 4.7 coding
+      llm_profile: grok47-responses-vision-toolsany-rhigh
+      description: xAI Grok 4.7 vision-capable profile with high reasoning; needs XAI_API_KEY. Pi runs it on the Responses API.
+
+    - id: coding-deepseek-v4.1-flash
+      label: DeepSeek V4.1 Flash coding
+      llm_profile: dsv4-flash-vision-messages-toolsany-rhigh
+      description: Vision + thinking DeepSeek V4.1 Flash profile for code work including screenshots. Replaces retired V4 Pro / V4 Flash / Flash Vision catalogue entries.
+
+    - id: coding-minimax-m3
+      label: MiniMax M3 coding
+      llm_profile: m3-vision-toolsauto-rhigh-out64k
+      description: Multimodal MiniMax profile for code work that also needs screenshots or visual context.
+
+verification:
+  # The verification controller: holds a coding candidate's success until the
+  # project's required checks pass. disabled | observe | enforce.
+  #
+  # observe opens gates and RUNS the checks — recording real attestation
+  # evidence — but never holds completion, never dispatches repair. It is the
+  # qualification mode before enforce. The MAGICIAN_VERIFICATION_CONTROLLER
+  # env var, when set, overrides this mode (process-local kill switch); a typo
+  # in either place degrades to disabled, never to enforce.
+  mode: observe
+  # Repair rounds before a gate settles `exhausted`. 0 is legitimate: verify
+  # once, never repair.
+  max_repair_rounds: 3
+  # Wall clock across the gate's WHOLE lifecycle, idle waits included — this
+  # is what settles a repair whose engineer never comes back.
+  max_elapsed_secs: 7200
+  # USD ceiling across a gate's repair rounds, fed by the engine-reported
+  # session cost of each round. Unset = no spend ceiling.
+  # max_spend_usd: 5.0
+  # How often the reconciler re-offers retryable gates a pass. 0 disables
+  # periodic driving (startup recovery only — the pre-reconciler behaviour).
+  reconcile_interval_secs: 60
+  # Owner baseline policy: checks every gated repository must run, which a
+  # repository's own .magician/verification.{json,yaml} may add to but never
+  # remove or swap. Absent = each repository defines its own verification; a
+  # repository with no policy file then completes as `unverified`.
+  # baseline:
+  #   required:
+  #     - id: check
+  #       program: make
+  #       args: ["check-all"]
+  #       display: make check-all
+
+vibedev_deploy:
+  # First-slice static publishing. The enabled target requires Cloudflare
+  # Pages credentials in the Magician process environment.
+  enabled: true
+  build_timeout_secs: 300
+  publish_timeout_secs: 300
+  max_artifact_bytes: 104857600
+  max_artifact_files: 10000
+  output_dirs:
+    - dist
+    - build
+    - out
+    - .svelte-kit/output/prerendered/pages
+  targets:
+    - id: cloudflare-pages
+      label: Cloudflare Pages
+      provider: cloudflare-pages
+      kind: static
+      enabled: true
+      default: true
+      command:
+        program: scripts/vibedev-cloudflare-pages-deploy.sh
+        args:
+          - --output-dir
+          - "{output_dir}"
+          - --project-name
+          - "{site_slug}"
+          - --branch
+          - main
+        public_url_regex: "VIBEDEV_PUBLIC_URL=(https://[^\\s]+)"
+        env_allowlist:
+          - CLOUDFLARE_PAGES_API_TOKEN
+          - CLOUDFLARE_API_TOKEN
+          - CLOUDFLARE_ACCOUNT_ID
+          - WRANGLER_BIN
+
+memory:
+  prompt_snapshot:
+    enabled: true
+    max_bytes: 67108864
+    max_entries: 8
+    idle_ttl_secs: 600
+    refresh_debounce_ms: 100
+  prompt_scope_budgets:
+    user: { max_entries: 24, max_chars: 12000 }
+    agent: { max_entries: 24, max_chars: 12000 }
+    agent_goal: { max_entries: 24, max_chars: 16000 }
+  prompt_lane_budgets:
+    user:
+      # Slice 3: 4/1600 -> 6/2400. The old ceiling was set when selection was
+      # pure cosine and extra entries were mostly noise; with scope-tag
+      # narrowing ahead of the judge, more entries survive that actually
+      # govern the task, so the budget is worth spending.
+      user_preference: { max_entries: 6, max_chars: 2400 }
+      procedure: { max_entries: 2, max_chars: 800 }
+      entity: { max_entries: 2, max_chars: 720 }
+      project_context: { max_entries: 1, max_chars: 400 }
+      environment: { max_entries: 1, max_chars: 320 }
+      agent_context: { max_entries: 1, max_chars: 256 }
+      episode: { max_entries: 0, max_chars: 0 }
+      source_evidence: { max_entries: 0, max_chars: 0 }
+    agent:
+      procedure: { max_entries: 2, max_chars: 880 }
+      project_context: { max_entries: 2, max_chars: 800 }
+      entity: { max_entries: 2, max_chars: 720 }
+      environment: { max_entries: 2, max_chars: 560 }
+      agent_context: { max_entries: 2, max_chars: 880 }
+      episode: { max_entries: 1, max_chars: 320 }
+      source_evidence: { max_entries: 0, max_chars: 0 }
+      user_preference: { max_entries: 0, max_chars: 0 }
+    agent_goal:
+      project_context: { max_entries: 4, max_chars: 2520 }
+      procedure: { max_entries: 2, max_chars: 1080 }
+      entity: { max_entries: 2, max_chars: 840 }
+      episode: { max_entries: 1, max_chars: 480 }
+      environment: { max_entries: 1, max_chars: 480 }
+      agent_context: { max_entries: 1, max_chars: 480 }
+      source_evidence: { max_entries: 0, max_chars: 0 }
+      # Slice 3: 0/0 -> 2/800. Goal-scoped work could previously see no user
+      # preferences at all, which is the lane most likely to carry "how this
+      # kind of work should be done". `agent` deliberately stays 0/0 — an
+      # agent's own scope is not where owner taste belongs.
+      user_preference: { max_entries: 2, max_chars: 800 }
+  # ACTIVE taste_profile block. Note the caveat below: `memory` rejects unknown
+  # keys, so this block makes the config unparseable by a binary older than
+  # 0.6.1196. That is acceptable here because the runtime and this file ship
+  # together; if you share this file with an older deployment, comment it out.
+  taste_profile:
+    enabled: true
+    note_path: profile.md
+    max_chars: 4000
+    # Capture ON. Distillation still requires the operation binding below —
+    # this flag alone changes nothing.
+    capture_enabled: true
+    max_proposals_per_day: 5
+    min_confidence: 0.6
+
+  # taste_profile — owner-edited taste note loaded through the Notes provider
+  # and snapshotted for prompt injection. Deliberately left commented out: the
+  # `memory` block rejects unknown keys, so an active block here would fail to
+  # parse under an older binary sharing this file. Defaults live in code
+  # (`magician/src/magician_v2/taste_profile.rs`):
+  #   enabled: true
+  #   note_path: profile.md   # provider-relative, under the notes root
+  #   max_chars: 4000         # over-ceiling flag only; content is never truncated
+  # The note is injected as read — nothing in it is filtered — so proposals
+  # awaiting approval must live in a different note. That path derives from
+  # note_path (profile.md -> profile.inbox.md) and may be set explicitly; it
+  # is refused if it resolves to note_path itself:
+  #   proposals_note_path: profile.inbox.md
+  # Capture (Slice 2) distils finished sessions into proposals. It defaults to
+  # OFF, unlike injection: injection reads one note the owner wrote on purpose,
+  # capture reads their transcripts. Enabling it is not enough on its own — the
+  # distiller model binds under llm.router.operation_mapping as
+  # `taste_profile_distill`, and an unbound operation means capture stays off
+  # rather than falling back to the router default. Any provider may be bound:
+  # the transcript already went to whichever model conducted the session, so
+  # forcing a local distiller would protect nothing. Binding a DIFFERENT vendor
+  # than your chat model is a new disclosure — choose it knowingly:
+  #   capture_enabled: false
+  #   max_proposals_per_day: 5   # against approval fatigue; must be >= 1 when on
+  #   min_confidence: 0.6        # candidates below this are never filed
+
+media:
+  tts:
+    providers:
+      - id: openai
+        label: OpenAI · gpt-4o-mini-tts
+        adapter: openai_speech
+        model: gpt-4o-mini-tts
+        voice: alloy
+        format: mp3
+        api_key_env: OPENAI_API_KEY
+        enabled: true
+
+      - id: minimax
+        label: MiniMax · speech-02-hd
+        adapter: minimax_t2a_v2
+        model: speech-02-hd
+        voice: female-yujie-jingpin
+        format: mp3
+        api_key_env: MINIMAX_API_KEY
+        group_id_env: MAGICIAN_MINIMAX_GROUP_ID
+        enabled: true
+
+      - id: gemini-tts-3-1-flash
+        label: Gemini · gemini-3.1-flash-tts-preview
+        adapter: gemini_tts
+        model: gemini-3.1-flash-tts-preview
+        voice: Kore
+        format: wav
+        api_key_env: GEMINI_API_KEY
+        enabled: true
+
+      - id: gemini-tts-3-8-flash
+        label: Gemini · 3.8 Flash TTS
+        adapter: gemini_tts
+        model: gemini-3.8-flash-tts
+        voice: Kore
+        format: wav
+        api_key_env: GEMINI_API_KEY
+        enabled: true
+
+      - id: gemini-tts-3-8-flash-lite
+        label: Gemini · 3.8 Flash-Lite TTS
+        adapter: gemini_tts
+        model: gemini-3.8-flash-lite-tts
+        voice: Kore
+        format: wav
+        api_key_env: GEMINI_API_KEY
+        enabled: true
+
+      - id: grok-tts
+        label: Grok · eve
+        adapter: grok_tts
+        model: grok-tts
+        voice: eve
+        voices: [eve, ara, leo, rex, sal]
+        format: mp3
+        formats: [mp3, wav, pcm]
+        api_key_env: XAI_API_KEY
+        enabled: true
+
+      - id: fluid-kokoro-en
+        label: FluidAudio Kokoro (local English)
+        adapter: fluid_audio_kokoro_tts
+        model: FluidInference/kokoro-82m-coreml
+        variant: 15s
+        revision: main
+        voice: af_heart
+        voices: [af_heart, af_kore, am_michael]
+        format: wav
+        formats: [wav]
+        language_codes: [en]
+        capabilities: [rate_control]
+        idle_secs: 300
+        enabled: true
+
+  recording_stt:
+    providers:
+      - id: openai
+        label: OpenAI · gpt-transcribe
+        adapter: openai_transcriptions
+        model: gpt-transcribe
+        api_key_env: OPENAI_API_KEY
+        enabled: true
+
+      - id: openai-mini
+        label: OpenAI Mini · gpt-4o-mini-transcribe
+        adapter: openai_transcriptions
+        model: gpt-4o-mini-transcribe
+        api_key_env: OPENAI_API_KEY
+        enabled: true
+
+      - id: gemini-flash-stt
+        label: Gemini · gemini-3.8-flash transcription
+        adapter: gemini_generate_content
+        model: gemini-3.8-flash
+        api_key_env: GEMINI_API_KEY
+        prompt: |
+          Generate a clean verbatim transcript of the speech.
+          Return only the transcript text.
+        generation_config:
+          temperature: 0
+
+        enabled: true
+      - id: gemini-transcribe
+        label: Gemini · 3.5 Transcribe
+        adapter: gemini_transcribe
+        model: gemini-3.5-transcribe
+        api_key_env: GEMINI_API_KEY
+        enabled: true
+
+      - id: grok-transcribe
+        label: Grok · Voice Transcribe 2.0
+        adapter: grok_stt
+        model: grok-voice-transcribe-2.0
+        api_key_env: XAI_API_KEY
+        enabled: true
+
+      - id: google-chirp3
+        label: Google Cloud Speech · Chirp 3
+        adapter: google_cloud_speech_v2
+        model: chirp_3
+        auth_token_env: GOOGLE_CLOUD_ACCESS_TOKEN
+        project_id_env: GOOGLE_CLOUD_PROJECT
+        location: us
+        recognizer: _
+        language_codes:
+          - auto
+        enabled: false
+        cloud_features:
+          enableAutomaticPunctuation: true
+
+      # Opt-in local Dictation provider. It remains behind the existing
+      # macOS/online boot order until the Phase 4 benchmark is approved.
+      - id: fluid-qwen3-asr-f32
+        label: FluidAudio Qwen3 ASR 0.6B (local)
+        engine_id: fluid_audio
+        adapter: fluid_audio_recording_stt
+        model: FluidInference/qwen3-asr-0.6b-coreml
+        variant: f32
+        revision: main
+        idle_secs: 300
+        language_codes: [auto, en, hi]
+        enabled: true
+
+  # Shared audio-provider catalog. Meeting and Listening resolve these bindings
+  # through the surface profiles below before capture starts.
+  engines:
+    macos_system:
+      label: macOS System
+      enabled: true
+      startup: lazy
+      download_policy: disabled
+      offline: false
+      request_timeout_secs: 120
+      health_timeout_secs: 3
+      idle_process_secs: 900
+      default_model_idle_secs: 300
+      max_resident_models: 1
+      max_streaming_sessions: 2
+      max_restart_attempts: 2
+      max_request_bytes: 26214400
+      max_frame_bytes: 1048576
+    online:
+      label: Online providers
+      enabled: true
+      startup: lazy
+      download_policy: disabled
+      offline: false
+      request_timeout_secs: 120
+      health_timeout_secs: 3
+      idle_process_secs: 900
+      default_model_idle_secs: 300
+      max_resident_models: 1
+      max_streaming_sessions: 2
+      max_restart_attempts: 2
+      max_request_bytes: 26214400
+      max_frame_bytes: 1048576
+    fluid_audio:
+      label: FluidAudio
+      enabled: true
+      minimum_macos_version: "14.0"
+      endpoint: http://127.0.0.1:3029
+      startup: lazy
+      download_policy: prewarm
+      model_cache_dir: models/audio/fluidaudio
+      offline: false
+      # Includes lazy model load/compile on the first recording request.
+      request_timeout_secs: 300
+      health_timeout_secs: 3
+      idle_process_secs: 900
+      default_model_idle_secs: 300
+      # A diarized local stream can synthesize while VAD, STT, and speaker models remain active.
+      max_resident_models: 4
+      max_streaming_sessions: 4
+      max_restart_attempts: 2
+      max_request_bytes: 26214400
+      max_frame_bytes: 1048576
+      # Prepared in the background at Magician startup, then released by the
+      # normal per-model idle policy when unused.
+      prewarm: [fluid-silero-v6, fluid-parakeet-eou-en, fluid-kokoro-en]
+
+  vad:
+    providers:
+      - id: fluid-silero-v6
+        label: FluidAudio Silero VAD
+        engine_id: fluid_audio
+        adapter: fluid_audio_vad
+        model: FluidInference/silero-vad-coreml
+        variant: silero-vad-unified-256ms-v6.0.0.mlmodelc
+        revision: main
+        idle_secs: 300
+        capabilities: [probability_events, configurable_threshold]
+        enabled: true
+
+  streaming_stt:
+    providers:
+      - id: macos-speech
+        label: macOS Speech
+        engine_id: macos_system
+        adapter: macos_speech_streaming
+        model: system_default
+        language_codes: [en]
+        enabled: true
+
+      - id: openai-diarize
+        label: OpenAI streaming transcription with diarization
+        engine_id: online
+        adapter: openai_diarize_streaming_stt
+        model: gpt-4o-transcribe-diarize
+        language_codes: [en]
+        capabilities: [end_of_utterance, speaker_attribution]
+        enabled: true
+
+      - id: openai-streaming
+        label: OpenAI streaming transcription
+        engine_id: online
+        adapter: openai_streaming_stt
+        model: gpt-transcribe
+        language_codes: [en, hi]
+        capabilities: [end_of_utterance]
+        enabled: true
+
+      - id: gemini-live-transcribe
+        label: Gemini · 3.5 Live Transcribe
+        engine_id: online
+        adapter: gemini_live_transcribe
+        model: gemini-3.5-transcribe-live
+        language_codes: []
+        capabilities: [partial_results, end_of_utterance]
+        enabled: true
+
+      - id: fluid-parakeet-eou-en
+        label: FluidAudio Parakeet EOU (English)
+        engine_id: fluid_audio
+        adapter: fluid_audio_streaming_eou_stt
+        model: FluidInference/parakeet-realtime-eou-120m-coreml
+        variant: 160ms
+        revision: main
+        idle_secs: 300
+        language_codes: [en]
+        capabilities: [partial_results, end_of_utterance]
+        enabled: true
+
+  diarization:
+    providers:
+      - id: fluid-sortformer
+        label: FluidAudio streaming Sortformer
+        engine_id: fluid_audio
+        adapter: fluid_audio_streaming_sortformer
+        model: FluidInference/diar-streaming-sortformer-coreml
+        variant: default
+        revision: main
+        idle_secs: 300
+        capabilities: [online_revisions, speaker_attribution]
+        enabled: true
+
+  # Explicit defaults preserve the established provider order. Optional
+  # FluidAudio-first profiles remain user-selectable until eval gates approve a
+  # default change.
+  surface_profiles:
+    default_mapping:
+      dictation: dictation-default-v1
+      meeting: meeting-vad-gated-v1
+      listening: listening-vad-gated-v1
+      hands_free: hands-free-local-fluid-v1
+    profiles:
+      dictation-default-v1:
+        surface: dictation
+        turn_boundary: push_to_talk
+        recording_stt:
+          enabled: true
+          providers: [macos_speech, openai, openai-mini, gemini-flash-stt, gemini-transcribe, grok-transcribe, fluid-qwen3-asr-f32]
+          required: false
+        tts:
+          enabled: true
+          providers: [macos_tts, openai, minimax, gemini-tts-3-1-flash, gemini-tts-3-8-flash, gemini-tts-3-8-flash-lite, grok-tts, fluid-kokoro-en]
+          required: false
+        vad:
+          enabled: false
+          required: false
+        streaming_stt:
+          enabled: false
+          required: false
+        diarization:
+          enabled: false
+          required: false
+      dictation-fluid-qwen3-v1:
+        surface: dictation
+        turn_boundary: push_to_talk
+        recording_stt:
+          enabled: true
+          providers: [fluid-qwen3-asr-f32, macos_speech, openai, openai-mini, gemini-flash-stt, gemini-transcribe, grok-transcribe]
+          required: false
+        tts:
+          enabled: true
+          providers: [macos_tts, openai, minimax, gemini-tts-3-1-flash, gemini-tts-3-8-flash, gemini-tts-3-8-flash-lite, grok-tts]
+          required: false
+        vad:
+          enabled: false
+          required: false
+        streaming_stt:
+          enabled: false
+          required: false
+        diarization:
+          enabled: false
+          required: false
+      meeting-vad-gated-v1:
+        surface: meeting
+        turn_boundary: stt_eou
+        vad:
+          enabled: true
+          required: false
+          mode: gate_only
+          providers: [fluid-silero-v6]
+          threshold: 0.65
+          min_speech_ms: 250
+          min_silence_ms: 500
+          pre_roll_ms: 400
+          hangover_ms: 600
+          max_utterance_ms: 120000
+        streaming_stt:
+          enabled: true
+          providers: [openai-diarize, macos-speech, openai-streaming]
+          required: false
+        recording_stt:
+          enabled: false
+          required: false
+        diarization:
+          enabled: false
+          required: false
+        tts:
+          enabled: false
+          required: false
+      listening-vad-gated-v1:
+        surface: listening
+        turn_boundary: stt_eou
+        vad:
+          enabled: true
+          required: false
+          mode: gate_only
+          providers: [fluid-silero-v6]
+          threshold: 0.65
+          min_speech_ms: 250
+          min_silence_ms: 500
+          pre_roll_ms: 400
+          hangover_ms: 600
+          max_utterance_ms: 120000
+        streaming_stt:
+          enabled: true
+          providers: [macos-speech, openai-streaming, openai-diarize]
+          required: false
+        recording_stt:
+          enabled: false
+          required: false
+        diarization:
+          enabled: false
+          required: false
+        tts:
+          enabled: false
+          required: false
+      meeting-fluid-local-v1:
+        surface: meeting
+        turn_boundary: stt_eou
+        vad:
+          enabled: true
+          required: false
+          mode: gate_only
+          providers: [fluid-silero-v6]
+          threshold: 0.65
+          min_speech_ms: 250
+          min_silence_ms: 500
+          pre_roll_ms: 400
+          hangover_ms: 600
+          max_utterance_ms: 120000
+        streaming_stt:
+          enabled: true
+          providers: [fluid-parakeet-eou-en, openai-diarize, macos-speech]
+          required: false
+        diarization:
+          enabled: true
+          required: false
+          providers: [fluid-sortformer]
+        recording_stt:
+          enabled: false
+          required: false
+        tts:
+          enabled: false
+          required: false
+      listening-fluid-local-v1:
+        surface: listening
+        turn_boundary: stt_eou
+        vad:
+          enabled: true
+          required: false
+          mode: gate_only
+          providers: [fluid-silero-v6]
+          threshold: 0.65
+          min_speech_ms: 250
+          min_silence_ms: 500
+          pre_roll_ms: 400
+          hangover_ms: 600
+          max_utterance_ms: 120000
+        streaming_stt:
+          enabled: true
+          providers: [fluid-parakeet-eou-en, macos-speech, openai-streaming]
+          required: false
+        diarization:
+          enabled: false
+          providers: [fluid-sortformer]
+          required: false
+        recording_stt:
+          enabled: false
+          required: false
+        tts:
+          enabled: false
+          required: false
+      hands-free-local-fluid-v1:
+        surface: hands_free
+        turn_boundary: stt_eou
+        vad:
+          enabled: true
+          required: true
+          mode: gate_only
+          providers: [fluid-silero-v6]
+          threshold: 0.65
+          min_speech_ms: 250
+          min_silence_ms: 500
+          pre_roll_ms: 400
+          hangover_ms: 600
+          max_utterance_ms: 120000
+        streaming_stt:
+          enabled: true
+          required: true
+          providers: [fluid-parakeet-eou-en, macos-speech, openai-streaming, gemini-live-transcribe]
+        diarization:
+          enabled: false
+          providers: [fluid-sortformer]
+          required: false
+        tts:
+          enabled: true
+          required: true
+          providers: [fluid-kokoro-en, macos_tts, openai, gemini-tts-3-1-flash, gemini-tts-3-8-flash, gemini-tts-3-8-flash-lite, grok-tts]
+
+        recording_stt:
+          enabled: false
+          required: false
+channel_assist:
+  distillation:
+    # V2 enriches the existing local Gemma call; it does not add another call.
+    brief_contract_version: 2
+    summary_max_chars: 900
+    backfill:
+      enabled: true
+      lookback_days: 30
+      # Historical repair is sequential and yields to live queue pressure.
+      batch_size: 1
+      surfaced_first: true
+
+# Structured decision plane: Magician asks the decision-engine process over
+# its Unix socket; models, tiers, operations, thresholds, and shadow/gate
+# rollout live in <runtime root>/decision-engine.yaml (seed: repo-root
+# decision-engine.yaml). A configured but unreachable engine stops the turn.
+# Host mode controls which engines use it; see docs/components/magician/structured-decision.md.
+decision:
+  # all_engines | magician_only | off; also available in Settings > Engines
+  mode: all_engines
+  # socket: absolute path; unset = <runtime root>/run/decision-engine.sock
+  timeout_ms: 20000
+
+# Unified Chat / realtime voice / autonomous-task runtime-context lifecycle.
+# The unified runtime and every supported surface are active by default; this
+# block contains tuning only. Retired rollout fields are rejected so stale
+# configuration cannot silently disable only one surface.
+agent_surface_runtime:
+  cache:
+    max_schema_indexes: 64
+    max_surface_plans: 512
+    idle_ttl_seconds: 1800
+    singleflight: true
+  working_set:
+    # Two families, not one: a browser task loads a date pack for "next
+    # Friday" and must not lose the browser to get it; a select merges and
+    # evicts the oldest family only past this limit.
+    max_loaded_families: 2
+    max_loaded_tools: 128
+    max_schema_bytes: 262144
+  result_projection:
+    chat:
+      max_model_tokens: 4096
+      max_serialized_bytes: 16384
+      max_records: 20
+      max_depth: 8
+      max_scalar_bytes: 8192
+    realtime_voice:
+      max_model_tokens: 2048
+      max_serialized_bytes: 8192
+      max_records: 10
+      max_depth: 8
+      max_scalar_bytes: 8192
+    autonomous_task:
+      max_model_tokens: 6144
+      max_serialized_bytes: 24576
+      max_records: 20
+      max_depth: 8
+      max_scalar_bytes: 8192
+  context_retrieval:
+    chat:
+      deadline_ms: 3000
+    realtime_voice:
+      deadline_ms: 300
+    autonomous_task:
+      # First decision and HITL resume are answer-critical. Completed staged
+      # memory/procedure branches are retained; slow local indexes cannot hold
+      # bootstrap beyond this budget.
+      deadline_ms: 500
+
+# Slice 1: canonical outcome capture + embedding-based Bayesian kNN re-score.
+# Learned order is constrained to the existing lane; cross-lane routing remains
+# separately gated by an immutable routing snapshot and canary assignment.
+attention_learning:
+  enabled: true
+  semantic_ranking_enabled: true
+  rescore_limit: 100
+  neighbor_count: 32
+  prior_alpha: 1.0
+  prior_beta: 1.0
+  kernel_bandwidth: 0.2
+  min_evidence_weight: 0.25
+  embedding_timeout_ms: 5000
+  # Revision-bound semantic coverage repair, bounded independently from
+  # request-time feedback processing.
+  semantic_backfill:
+    enabled: true
+    batch_size: 60
+    concurrency: 2
+    interval_secs: 60
+    max_retries: 5
+    retry_base_secs: 30
+    retry_max_secs: 3600
+    lease_secs: 120
+    calls_per_minute: 60
+  # Durable current-universe rank diagnostics with bounded leasing/processing.
+  rank_recompute:
+    enabled: true
+    batch_size: 20
+    concurrency: 2
+    interval_secs: 60
+    max_retries: 5
+    retry_base_secs: 30
+    retry_max_secs: 3600
+    lease_secs: 120
+    retention_days: 30
+  # One-time migration of typed pre-Slice-1 labels. The first startup persists
+  # an immutable cutoff, drains capped Worth evidence before producers, then
+  # migrates bounded pages. Later passes repair source-log/outcome gaps, retry
+  # missing embeddings, and refresh newly active candidates without inventing labels.
+  historical_bootstrap:
+    enabled: true
+    batch_size: 20
+    interval_secs: 60
+  # Slice 2 starts disabled. Set a reviewed immutable snapshot_id before
+  # changing mode to shadow; enforcement requires a separate canary decision.
+  actionability:
+    mode: disabled
+    snapshot_id: null
+    # Magician runs the same trainer the CLI uses. A refused run is the
+    # expected day-one outcome until joinable labels clear the gates.
+    # First auto-install is shadow; a later passing install may become enforced.
+    training:
+      enabled: true
+      interval_secs: 3600
+      auto_install: true
+  # Slice 3 starts disabled. The audited merge threshold is embedded in the
+  # immutable pair-model snapshot, never configured independently here.
+  grouping:
+    mode: disabled
+    snapshot_id: null
+    # Complete-universe integrity/latency circuit breaker (not a quality cap).
+    # Exceeding it preserves every item as an ungrouped singleton.
+    max_pair_evaluations: 2500000
+  # Slice 4 baseline still records the ledger. Slice-1 kNN applies lane
+  # demotions/promotions from owner corrections without a snapshot. Fitted
+  # routing snapshots auto-train in the background and install to shadow.
+  routing:
+    mode: baseline
+    snapshot_id: null
+    canary_fraction: 0.0
+    seed_identity: attention-routing-slice4-v1
+    min_visible_ms: 1000
+    visibility_rule_version: attention-visible-dwell-v1
+    training:
+      enabled: true
+      interval_secs: 3600
+      auto_install: true
+  # Slice 5 personal ranking is armed in shadow: no reorder until Magician has
+  # a store-installed snapshot and enough posterior updates, then it promotes
+  # to canary on its own. Leave snapshot_id null so YAML does not pin a model.
+  bandit:
+    mode: shadow
+    snapshot_id: null
+    canary_fraction: 0.0
+    delivery_default_page_size: 50
+    delivery_max_page_size: 200
+    delivery_ttl_secs: 900
+    delivery_retention_days: 30
+    training:
+      enabled: true
+      interval_secs: 3600
+      auto_install: true
+
+resurfacing:
+  rich_briefs_enabled: true
+  source_details_enabled: true
+  contextual_actions_enabled: true
+  recommendations_enabled: true
+  active_repair_enabled: true
+  active_repair_batch_size: 10
+  # Candidates the curator promotes to "surfaced" per sweep. Surfaced items are
+  # never evicted, so Worth-a-look grows across sweeps; this only bounds the
+  # per-pass drain rate. Overridable via RESURFACING_SURFACE_CAP.
+  surface_cap: 15
+  recommendation_min_confidence: 0.65
+  action_result_cooldown_days: 60
+  centrality_reference_timeout_secs: 90
+  centrality_query_timeout_secs: 15
+  # Deprecated compatibility input; parsed but ignored. Reference embeddings
+  # persist one logical item at a time so partial progress survives timeouts.
+  centrality_reference_batch_size: 8
+
+# Internal, scope-isolated social network for the active agent roster. The
+# worker reads task/runtime state but never creates or mutates execution work.
+# Budget reservations fail closed and reset at the UTC day boundary.
+social:
+  enabled: true
+  paused: false
+  scopes:
+    # Repeat this pair for every scope that should run its own independent
+    # roster, budget, mention inbox, and Town Square database.
+    - principal: anonymous
+      workspace: default
+    # - principal: another-principal
+    #   workspace: another-workspace
+  tick_interval_secs: 300
+  cooldown_secs: 3600
+  max_agents_per_tick: 4
+  default_daily_tokens: 2000
+  gate_reserve_tokens: 512
+  compose_reserve_tokens: 1024
+  max_post_chars: 2000
+  retention_days: 90
+  max_posts_per_scope: 10000
+  max_spend_log_rows: 50000
+
+# Turns what a provider told us — hard bounces, complaints — into entries on the
+# suppression register, which `outward_gate::contact_refusal` screens every
+# outward recipient against. Left off, that screen is fail-closed over an empty
+# store: it clears everybody, including the people who bounced and the people
+# who complained. On by default for that reason; the sweep only ever ADDS
+# entries a provider already asserted, and never lifts one.
+delivery_hygiene:
+  enabled: true
+  paused: false
+  scopes:
+    # Repeat this pair for every scope whose delivery ledger should be swept.
+    - principal: anonymous
+      workspace: default
+    # - principal: another-principal
+    #   workspace: another-workspace
+  # Floored at 60 by the worker. Bounces arrive over minutes, and re-ingesting
+  # is idempotent, so a tighter interval only re-reads an unchanged ledger.
+  tick_interval_secs: 900
+  # The same tick also asks what the ledger has never heard back about: acts
+  # this runtime dispatched and no provider ever acknowledged. Read-only — it
+  # writes nothing — and it is the ONLY early warning that a provider
+  # integration has silently broken, since a send that nobody acknowledges is
+  # otherwise indistinguishable from one that worked.
+  silence_watch_enabled: true
+  # How long an act may go unacknowledged before it counts as overdue.
+  # Providers acknowledge in seconds and deliver in minutes, so a day of total
+  # silence is already far past any honest in-flight window. Refused at or
+  # below zero: a zero grace marks every live send overdue the instant it
+  # leaves, and a signal that is always on is one nobody reads.
+  silence_grace_hours: 24
+  # Overdue acts in one scope before the watch reports `degraded`. One, on
+  # purpose — an act nobody acknowledged a day after it left is already the
+  # failure this watch exists to surface. Raise it where a rail is known to be
+  # unreconcilable, but raise it here, where somebody can read that the choice
+  # was made.
+  silence_alert_overdue: 1
+  # How many overdue acts the health snapshot names. The counts are the signal;
+  # the named acts are what makes it investigable.
+  silence_named_acts: 20
+  # Where delivery status notifications come back to. Absent — which is what
+  # this deployment ships with — means the sweep has NO receipt source: every
+  # live send lands in `dispatch_unknown` and stays there, a hard bounce never
+  # reaches the suppression register, and the next send to a dead address goes
+  # out exactly as if the first had worked. The health snapshot reports that as
+  # `receipts_state: no_source` on every tick rather than as an idle worker.
+  #
+  # A directory of `.eml` files, deliberately, because every way a bounce
+  # reaches a host ends in something that can write a file: a postmaster alias
+  # piped to a script, fetchmail into a maildir, a webhook receiver, a shared
+  # volume. Nothing here is AgentMail-shaped, so a second rail is a second
+  # implementor rather than an edit to the sweep.
+  #
+  # `provider` MUST name the sender whose bounces land here — the send index is
+  # keyed on it, and a lookup under the wrong name refuses a correlatable bounce
+  # and reports it as `uncorrelated`, which reads like a broken index instead of
+  # a wrong string. There is no default for that reason.
+  #
+  # WHEN TO TURN THIS ON: docs/plans/whattotest.md, section 'OPC switches'.
+  # bounce_mailbox:
+  #   provider: agentmail
+  #   maildir_path: /var/spool/magician/bounces
+# The maturity sweep: the only producer of `silent` outcome observations.
+#
+# OFF by default, unlike delivery_hygiene above, and the difference is the point.
+# That sweep chooses nothing — a provider's hard bounce maps to a suppression
+# reason and the mapping is already made. This one records a JUDGEMENT: that
+# somebody who has not answered inside `default_window_days` has decided. The
+# window is the judgement, and the store it writes to is append-only, so nothing
+# it records can be withdrawn. Turn it on after naming the scopes and declaring
+# the cohorts below; leaving it off records nothing, which is the safe failure.
+# WHEN TO TURN THIS ON: docs/plans/whattotest.md, section 'OPC switches'.
+# Two conditions, both required — real outward acts exist, AND at least one
+# cohort is declared below. Until the second, the sweep finds acts and binds
+# none of them; its health reports that as degraded rather than as a quiet
+# zero, so an on-but-doing-nothing sweep cannot hide.
+outcome_maturity:
+  enabled: false
+  paused: false
+  # Floored at 60 by the worker. A maturity window is measured in days, so a
+  # tighter interval only re-reads an index that has not changed.
+  tick_interval_secs: 3600
+  # Refused at or below zero rather than substituted: a zero window matures
+  # silence the instant an act is sent, recording a decision nobody had the
+  # chance to make.
+  default_window_days: 14
+  # An accelerator's two weeks and a support ticket's two hours are not the same
+  # judgement, so a variant may state its own.
+  variant_window_days: []
+  #   - variant_ref: support-reply
+  #     days: 1
+  # Exact scopes whose outward acts are swept. An enabled sweep naming no scope
+  # refuses to start rather than ticking forever over nothing.
+  scopes: []
+  #   - principal: anonymous
+  #     workspace: default
+  #     # WHICH VARIANT VERSION WAS LIVE is the one fact an outward act does not
+  #     # record — it records what went out, to whom, on which exact payload, and
+  #     # when. Plan §2: where no deterministic fact is available, the answer is
+  #     # a person's. Declaring it here is that person saying so. An act whose
+  #     # payload is not declared below is COUNTED AND LEFT UNSWEPT, never bound
+  #     # to a default: an observation filed under a cohort key nobody chose is
+  #     # comparable to nothing and cannot be withdrawn.
+  #     variants:
+  #       - variant_ref: seed-outreach
+  #         variant_version: v3
+  #         payloads:
+  #           - artifact-abc@3
+  #         # What was true that is not the thing being tested. Without these a
+  #         # small sample confidently attributes an introducer's effect to a
+  #         # subject line.
+  #         confounders:
+  #           - kind: introduction
+  #             value: warm
+# The proposal pass: what a filled cohort is allowed to SAY.
+#
+# ON by default, unlike the sweep above, and for the opposite reason: this pass
+# decides nothing and applies nothing. It reads cohorts the sweep filled and
+# files a candidate for an owner to accept or reject, so with the sweep off it
+# has nothing to read and does nothing. Leaving it off would only mean that
+# turning the sweep on later produced observations nobody was watching.
+#
+# The floors below are the interesting part. They are what separates "this
+# variant did better" from a coincidence, and they are stated here rather than
+# compiled in because the person who has to defend the conclusion is the one who
+# should be able to read the threshold it rests on.
+# Where a durable run's out-of-band verification arrives — the account-creation
+# mail, the countersignature, the code. Absent means the run-inbox sweep has NO
+# SOURCE: a run raises a wait and waits until a person notices and closes it by
+# hand, which is the state §5 calls "the primitive nobody has".
+#
+# `POST /api/magician/v2/work/runs/inbox-sweep` reads it. Nothing is consumed —
+# unlike the bounce mailbox, this one is never settled, because a run inbox is
+# an ORDINARY mailbox carrying the verification and every other message that
+# person receives. Re-reading is free: the run store is idempotent on the event
+# ref, so its idempotency IS the cursor.
+#
+# `source_hint` must match the hint a run raised its wait with. It is a
+# person's word for "my inbox", not a filesystem location, which is why it is
+# stated rather than derived from the path.
+#
+# WHEN TO TURN THIS ON: docs/plans/whattotest.md, section 'OPC switches'.
+# run_inbox:
+#   maildir_path: /var/spool/magician/run-inbox
+#   source_hint: magican@agentmail.to
+outcome_proposal:
+  enabled: true
+  paused: false
+  # Floored at 60 by the worker. A cohort fills over weeks.
+  tick_interval_secs: 3600
+  # The smallest usable sample either cohort may carry. Refused BELOW the
+  # module's own minimum rather than substituted — and in particular it cannot
+  # be zero, which an empty cohort satisfies vacuously.
+  # These are the module's OWN floors, restated rather than raised: shipping a
+  # config whose numbers differ from the compiled defaults would change
+  # behaviour for every deployment that never edited this file.
+  minimum_usable: 5
+  # The smallest number of distinct counterparties either cohort may rest on.
+  # One counterparty is a fact about that counterparty, not about the variant,
+  # and a cohort of acts all sent to one person is the shape that most often
+  # looks like a sample and is not.
+  minimum_counterparties: 2
+  # Where a converted comparison lands in the learning substrate. A variant of
+  # an outward act is a template of how a piece of work is done. `other` is the
+  # bucket nobody filters on, so it is the wrong timid answer.
+  candidate_type: workflow_template
+content_acquisition:
+  # Server-owned policy: agents listed here automatically retain eligible
+  # controller reads as immutable scoped evidence. Other callers may opt in
+  # with `working_set_title`; no agent can submit raw evidence for storage.
+  working_sets:
+    auto_capture_agents:
+      - web-researcher
+    # Boundary B routing. `lanes` says which agents work in which lane; the
+    # default puts the web researcher in `web-research`, the lane the
+    # evaluation suite measured. `enabled_lanes` is the gate: a lane opens
+    # only after `make test-working-set-routing-live-eval` passes for it, as
+    # web-research did on 2026-09-19. Empty the list to close routing again.
+    # Activation measures scale: bytes the ordinary page window could not
+    # show (`min_beyond_window_bytes`, default 24 KiB across a task's pages)
+    # or total input (`min_total_source_bytes`, default 96 KiB). Source count
+    # and read depth are not thresholds — they put ordinary research on the
+    # path and paid for nothing.
+    activation:
+      enabled_lanes:
+        - web-research
+      lanes:
+        web-research:
+          - web-researcher
+  progressive_retrieval:
+    enabled: true
+    rollout_mode: authoritative
+    default_deadline_ms: 20000
+    discovery_attempt_timeout_ms: 15000
+    max_attempts: 8
+    max_parallel_actions: 2
+    circuit_failure_threshold: 3
+    circuit_cooldown_secs: 60
+    selection_receipt_ttl_secs: 900
+    max_cost_microunits: {}
+    discover:
+      - id: source_native
+        mode: eligible_parallel
+        actions:
+          - rss.discover
+        optional_actions: []
+      - id: public_search
+        mode: sequential
+        actions: []
+        optional_actions: []
+      - id: public_browser_handoff
+        mode: sequential
+        actions: []
+        optional_actions:
+          - browser.headless.discover_handoff
+    read:
+      - id: public_static
+        mode: sequential
+        actions: []
+        optional_actions: []
+      - id: verified_replay
+        mode: sequential
+        actions: []
+        optional_actions:
+          - api_replay.read
+      - id: public_rendered
+        mode: sequential
+        actions: []
+        optional_actions:
+          - browser.headless.read
+      - id: owner_assisted
+        mode: sequential
+        actions: []
+        optional_actions:
+          - browser.headed.read_handoff
+      - id: authenticated
+        mode: sequential
+        actions: []
+        optional_actions:
+          - browser.cdp.read
+      - id: interaction_handoff
+        mode: sequential
+        actions: []
+        optional_actions:
+          - browser.cdp.interact_handoff
+  browser:
+    enabled: true
+    public_headless_reads: true
+    public_handoffs: true
+    authenticated_cdp: true
+    verified_api_replay: true
+    # Full-fidelity browser engine for ordinary/headed/visual/meeting paths and
+    # as the second stage after a failed public-read preference. Use null for
+    # bundled Chrome for Testing. Explicit ordinary-tool overrides fail closed.
+    engine: cloak-browser
+    # First browser engine for high-volume/profile-free deterministic public
+    # headless reads. The bounded chain is this → `engine` → bundled Chrome for
+    # Testing; auth and side-effecting flows never replay across that chain.
+    public_read_engine: lightpanda
+    command_timeout_secs: 20
+    render_wait_ms: 750
+    max_capture_bytes: 2097152
+    max_document_chars: 1048576
+    approval_ttl_secs: 300
+    cdp_url: ws://127.0.0.1:3003/devtools/browser/magicutor-proxy
+  observe:
+    enabled: true
+    scheduler_interval_secs: 30
+    max_concurrency: 2
+    lease_ttl_secs: 600
+    source_catalog:
+      allowed_actions:
+        - rss.discover
+      maximum_authority: public_remote_read
+      allow_metered: false
+      allow_browser: false
+
+# Operator processing-locality switch: the one control deciding whether
+# local-eligible operations run on the on-device model (`local` — the
+# schema default when this section is absent) or their `when_cloud` remote
+# counterparts (`cloud` — selected by this shipped config; the on-device generation model goes unused;
+# embeddings stay local in both modes). UI-writable through the privacy
+# settings API. See docs/archive/plans/2026-08-25-llm-locality-policy-design.md.
+privacy:
+  processing:
+    mode: cloud          # local | cloud
+app_platform:
+  # Packages shipped from the host-controlled, digest-pinned system seed are
+  # reviewed and enabled by a package-bound host grantor during boot. This does
+  # not enable unattended behavior execution; that remains controlled below.
+  system_packages:
+    admit_at_boot: true
+    enable_at_boot: true
+  processing:
+    # A provider/model name never proves locality. Add only concrete profile
+    # keys from llm.router.profiles after reviewing their physical endpoint.
+    endpoint_trust_revision: 1
+    local_profile: op-app-workflow-local
+    remote_profile: op-app-workflow-remote
+    profiles:
+      op-app-workflow-local:
+        class: loopback_managed
+        local_processing_eligible: true
+        provider_retention: no_provider_storage
+      op-app-workflow-remote:
+        class: external
+        local_processing_eligible: false
+        provider_retention: no_provider_storage
+  # App LLM operation lane admission (plan 1.4, additive; absent = no declared
+  # app operation can execute, exactly the pre-lane behavior). Keys are the
+  # exact names a manifest may declare under app.llm_operations behind the
+  # llm_operations_v1 feature. Every admitted name also needs one
+  # llm.router.operation_mapping entry `app:<name>` whose selector arms all
+  # name profiles from app_platform.processing.profiles above.
+  llm_operations:
+    engagement_gate:
+      reviewed_purpose: Decide whether a Town Square turn is worth composing.
+      max_output_tokens: 700
+    compose_post:
+      reviewed_purpose: Read permitted agent discussion context and return one short draft or explicit quiet outcome.
+      max_output_tokens: 1600
+  # Scripted custom interactive surfaces (plan 1.6, custom_surfaces_v1).
+  # Enabled for reviewed system app destinations such as Brainstorm and Meetings.
+  # Per-installation grants and sandbox restrictions still apply. Absent or
+  # enabled: false disables scripted surfaces; changes apply on the next request.
+  custom_surfaces_v1:
+    enabled: true
+  # Host-executed schedule/event app behaviors. This is their boot-bound master
+  # switch; grants, per-scope pause, and per-operation admission narrow it.
+  # The shared worker still delivers durable one-way owner notifications while
+  # this switch is off, because foreground workflows may have accepted them.
+  # V1 is fixed-interval UTC, collapses missed intervals, and retries one
+  # durable deterministic fire. Deterministic recipes and explicit reviewed
+  # model-operation recipes execute; unordered operation allow-sets do not.
+  #
+  # Enabled by owner decision on 2026-09-08. It shipped `false` pending
+  # verification and release qualification, and that qualification has NOT been
+  # recorded — this is a deliberate posture change, not evidence the gate was
+  # met. Turning it on arms unattended execution for every installed app in
+  # every scope, not one feature: the first thing it surfaced here was that the
+  # scheduler walks all scopes each tick, which the registry's blocking
+  # admission had not been sized for.
+  background_behaviors:
+    enabled: true
+    tick_interval_seconds: 30
+    max_installations_per_scope: 256
+    max_claims_per_scope_tick: 8
+    lease_seconds: 120
+    retry_seconds: 30
+  # One process-wide scheduler and canonical durable resource policy for all
+  # installed-app execution trees. App manifests/grants can only narrow it.
+  resources:
+    max_tree_nodes: 256
+    max_tree_depth: 16
+    max_journal_events: 2048
+    max_reservations: 512
+    max_active_intervals: 2048
+    max_capability_families: 64
+    # Cold debug app preparation currently needs about 50 seconds.
+    max_no_progress_seconds: 60
+    max_package_bytes: 268435456
+    max_background_starts_per_period: 1000
+    scheduler_capacity: 8
+    foreground_reserved_slots: 2
+
+task_state:
+  policy: llm_lazy_optional
+  decision_points:
+    - task_start
+    - each_outer_iteration_start
+    - after_capability_return
+    - resume_or_handoff
+    - user_goal_change
+  revisions:
+    format: structured_json
+    bump_on_runtime_ledger_change: false
+    bump_on_execution_history_change: false
+    bump_on_artifact_change: false
+    bump_on_prompt_projection_change: false
+    allowed_actions:
+      - create
+      - patch
+      - close
+  helpers:
+    generate_operation: durable_task_state_generate
+    patch_operation: durable_task_state_patch
+    close_summary_operation: durable_task_state_close_summary
+
+llm:
+  # Keep local inference responsive when derived-memory and comms maintenance
+  # are active. Interactive work retains the high/normal lanes; background
+  # work is bounded and Ollama is serialized to avoid model eviction/thrashing.
+  dispatch:
+    enabled: true
+    # Isolated HTTP executors. Rollback: `legacy_worker_pool` (restart-bound).
+    engine: provider_isolated
+    workers: 12
+    reserved_interactive_workers: 4
+    queue_capacity_high: 200
+    queue_capacity_normal: 400
+    queue_capacity_background: 256
+    max_request_bytes: 67108864
+    queue_bytes_high: 268435456
+    queue_bytes_normal: 536870912
+    queue_bytes_background: 536870912
+    queue_bytes_global: 805306368
+    provider_concurrency:
+      default: 3
+      overrides:
+        anthropic: 4
+        openai: 4
+        openrouter: 2
+        ollama: 1
+        gemini: 3
+        deepseek: 3
+        minimax: 3
+    # Per-provider RPM/TPM token buckets. Missing provider or 0 = unlimited.
+    # Keys match provider_concurrency.overrides (openai, anthropic, ...).
+    # provider_quota:
+    #   openai:
+    #     rpm: 500
+    #     tpm: 200000
+    provider_quota: {}
+    queue_depth_warn: 24
+    watchdog_factor: 2.0
+    idempotency_window_secs: 60
+    max_recorded_errors: 6
+    retry:
+      max_attempts_per_dispatch: 2
+      max_dispatch_cycles: 1
+      backoff_base_ms: 500
+      backoff_cap_ms: 30000
+      backoff_jitter_pct: 0.25
+      requeue_backoff_base_ms: 5000
+      requeue_backoff_cap_ms: 60000
+    breaker:
+      threshold: 3
+      window_secs: 60
+      cooldown_secs: 60
+      max_cooldown_secs: 900
+    local_prep:
+      enabled: false
+      yield_worker: true
+      operation: local_prep
+      threshold_chars: 8000
+      max_chars_out: 1500
+      timeout_secs: 300
+      purpose_prompts: {}
+    shutdown_timeout_secs: 30
+    completed_ring_capacity: 500
+    tombstone_ring_capacity: 500
+  router:
+    # Profiles live in `llm-router.yaml` beside this file and are spliced
+    # in at load. See that file's header for why it is a text splice.
+
+    adaptive_profiles:
+      # OpenAI adaptive tier — GPT-6 Luna powers instant; GPT-6.1 Sol powers normal/advanced;
+      # GPT-6.1 Sol requires at least low effort; Astra remains the frontier layer.
+      # The normal identifier remains as a compatibility tier for saved
+      # selections. Each composite pairs the chat-shaped fast + thinking
+      # variants of the same model. The `tier` label is rendered as a chip
+      # alongside the Adaptive badge in the chat profile picker so the
+      # user picks a size / capability point without seeing raw model
+      # names. Cost / latency scales Luna → Sol → Astra.
+      chat-openai-adaptive-advanced:
+        description: GPT-6.1 Sol, low effort escalating to high when needed.
+        tier: advanced
+        fast_profile: chat-gpt61sol-responses-vision-toolsauto-fast
+        thinking_profile: chat-gpt61sol-responses-vision-toolsauto-thinking
+
+      chat-openai-adaptive-frontier:
+        description: GPT-6 Astra, escalates to high reasoning when needed.
+        tier: frontier
+        fast_profile: chat-gptastra-responses-vision-toolsauto-fast
+        thinking_profile: chat-gptastra-responses-vision-toolsauto-thinking
+
+      chat-openai-adaptive-normal:
+        description: GPT-6.1 Sol, low effort escalating to high when needed.
+        tier: normal
+        fast_profile: chat-gpt61sol-responses-vision-toolsauto-fast
+        thinking_profile: chat-gpt61sol-responses-vision-toolsauto-thinking
+
+      chat-openai-adaptive-instant:
+        description: Cheapest / fastest, escalates to thinking when needed.
+        tier: instant
+        fast_profile: chat-gpt6luna-responses-vision-toolsauto-fast
+        thinking_profile: chat-gpt6luna-responses-vision-toolsauto-thinking
+
+      # Anthropic adaptive tier — Haiku instant, Sonnet normal, Opus 5.5
+      # advanced, Fable 5.1 frontier. Opus 5 remains selectable by name.
+      # Each composite pairs the chat-shaped fast + thinking variants of the same model.
+      chat-anthropic-adaptive-instant:
+        description: Cheapest / fastest, escalates to thinking when needed.
+        tier: instant
+        fast_profile: chat-haiku46-messages-vision-toolsauto-fast
+        thinking_profile: chat-haiku46-messages-vision-toolsauto-thinking
+
+      chat-anthropic-adaptive-normal:
+        description: Balanced, escalates to thinking when needed.
+        tier: normal
+        fast_profile: chat-sonnet46-messages-vision-toolsauto-fast
+        thinking_profile: chat-sonnet46-messages-vision-toolsauto-thinking
+
+      chat-anthropic-adaptive-advanced:
+        description: Claude Opus 5.5, escalates to high effort when needed.
+        tier: advanced
+        fast_profile: chat-opus55-messages-vision-toolsauto-fast
+        thinking_profile: chat-opus55-messages-vision-toolsauto-thinking
+
+      chat-anthropic-adaptive-opus5:
+        description: Retained Claude Opus 5 profile, escalates to high effort when needed.
+        tier: advanced
+        fast_profile: chat-opus5-messages-vision-toolsauto-fast
+        thinking_profile: chat-opus5-messages-vision-toolsauto-thinking
+
+      chat-anthropic-adaptive-frontier:
+        description: Claude Fable 5.1, escalates to high effort when needed.
+        tier: frontier
+        fast_profile: chat-fable51-messages-vision-toolsauto-fast
+        thinking_profile: chat-fable51-messages-vision-toolsauto-thinking
+
+      # Gemini adaptive tier — two composites, both vision-capable.
+      # v0.6.598 retires the legacy `chat-gemini-adaptive` name in
+      # favour of the explicit -instant / -advanced suffix so the tier
+      # is part of the identifier, not just a sidecar field.
+      chat-gemini-adaptive-instant:
+        description: Cheapest / fastest, escalates to thinking when needed.
+        tier: instant
+        fast_profile: chat-gemini35-flash-lite-vision-toolsauto-fast
+        thinking_profile: chat-gemini35-flash-lite-vision-toolsauto-thinking
+
+      chat-gemini-adaptive-advanced:
+        description: Capable, escalates to thinking when needed.
+        tier: advanced
+        fast_profile: chat-gemini31-pro-vision-toolsauto-fast
+        thinking_profile: chat-gemini31-pro-vision-toolsauto-thinking
+
+      # DeepSeek adaptive tier — two composites. v0.6.598 retires the
+      # legacy `chat-deepseek-adaptive` name in favour of the explicit
+      # -instant / -advanced suffix.
+      chat-deepseek-adaptive-instant:
+        description: V4.1 Flash, vision, escalates to thinking when needed.
+        tier: instant
+        fast_profile: chat-dsv4-flash-vision-toolsauto-fast
+        thinking_profile: chat-dsv4-flash-vision-toolsauto-thinking
+
+      chat-deepseek-adaptive-advanced:
+        description: V4.1 Flash at max thinking effort, vision, escalates when needed.
+        tier: advanced
+        fast_profile: chat-dsv4-pro-toolsauto-fast
+        thinking_profile: chat-dsv4-pro-toolsauto-thinking
+
+      # MiniMax — single tier (no instant/advanced split per
+      # provider's current model lineup). Left untiered intentionally;
+      # the picker shows it as a regular Adaptive entry without a tier
+      # chip.
+      chat-minimax-adaptive:
+        description: Fast, escalates to reasoning when needed.
+        fast_profile: chat-m27-toolsauto-fast
+        thinking_profile: chat-m27-toolsauto-thinking
+
+      chat-minimax-adaptive-advanced:
+        description: Capable + multimodal MiniMax (M3); escalates to reasoning when needed.
+        tier: advanced
+        fast_profile: chat-m3-vision-toolsauto-fast
+        thinking_profile: chat-m3-vision-toolsauto-thinking
+
+      # xAI Grok — single advanced tier. Grok reasoning cannot be turned
+      # off, so the fast half is `low` effort and the thinking half `high`.
+      chat-xai-adaptive-advanced:
+        description: Grok 4.7, vision, low effort escalating to high when needed.
+        tier: advanced
+        fast_profile: chat-grok47-responses-vision-toolsauto-fast
+        thinking_profile: chat-grok47-responses-vision-toolsauto-thinking
+
+      # Sarvam — Indic-first, text-only. Reasoning cannot be turned off,
+      # so the fast half is `low` effort and the thinking half `high`.
+      chat-sarvam-adaptive:
+        description: Sarvam 105B for Indian languages, text-only, low effort escalating to high.
+        tier: advanced
+        fast_profile: chat-sarvam105b-toolsauto-fast
+        thinking_profile: chat-sarvam105b-toolsauto-thinking
+
+    # Operation mapping lives in `llm-router.yaml` beside this file,
+    # alongside the profiles it selects from. Spliced in at load.
+
+    default_profile: gpt61sol-responses-toolsany
+
+    # ── Realtime voice provider routing ───────────────────────────────
+    # Lives in the same router config so chat models + realtime voice
+    # are described by one file. Profiles fully specify the upstream
+    # provider, model, voice, and lifecycle hints; `operation_mapping`
+    # binds an `LLMOperation::VoiceController` lookup to a profile name.
+    # Google Gemini Live is available as backend-proxied profiles
+    # (`voice_realtime_gemini_38_live`, `voice_realtime_gemini_38_live_thinking`,
+    # `voice_realtime_gemini_live`); switch an operation mapping or pass
+    # `realtime_profile=<id>` to try one without changing the default browser
+    # voice path.
+    realtime_voice:
+      profiles:
+        voice_realtime_default:
+          provider: openai_realtime
+          display_name: GPT Realtime 2.1 Mini (Default)
+          selectable: true
+          # Default general voice runs on the cheap, fast, reasoning-capable
+          # gpt-realtime-2.1-mini (audio $10/$20 per 1M vs $32/$64 for the
+          # flagship) — right for high-volume, turn-taking browser voice chat.
+          # Presto meeting joining uses the flagship gpt-realtime-2.1 (see the
+          # meeting responder) where alphanumeric accuracy + interruption
+          # handling matter more than per-minute cost.
+          model: gpt-realtime-2.1-mini
+          # Omit `voice` to use the provider/model default. Set it only when
+          # you want to pin a specific provider voice. The voice modality
+          # addendum still instructs the model to default to Indian English
+          # with comfortable Hinglish code-switching when the user speaks
+          # that way.
+          #
+          # OpenAI examples:
+          #   shimmer — warm + friendly
+          #   coral   — calm + grounded
+          #   ballad  — softer, narrative cadence
+          #   sage    — calm + measured
+          #   marin   — newest GA, natural + conversational
+          #   ash     — warm, mid-range
+          #   echo    — neutral, mid-range
+          #   verse   — expressive
+          #   cedar   — newest GA, natural
+          #   alloy   — neutral, default-feeling
+          # voice: shimmer
+          # OpenAI Realtime cuts sessions at ~30 min; we rotate at 28
+          # min so the orchestrator never hits the hard close.
+          max_session_duration_secs: 1680
+          # 70 % of the model context window before we proactively
+          # compact + rotate. Lowering this trades compaction
+          # frequency for fresher context per response.
+          compaction_token_watermark: 0.7
+          # Provider-side knobs the frontend installs verbatim via
+          # `session.update` once the WebRTC data channel opens.
+          transcription_model: whisper-1
+          # `server_vad` = upstream auto-commits turns on silence.
+          # `none` = client (PTT) owns turn-taking. Frontend may
+          # still override per-call via the push-to-talk store.
+          turn_detection_mode: server_vad
+          # Context window for gpt-realtime-2.1-mini (128K). Used as the
+          # denominator for the watermark trigger.
+          context_window_tokens: 128000
+          # How many recent voice turns to replay verbatim on each
+          # rotation alongside the compacted summary. 12 ≈ 60 s of
+          # conversation at typical density.
+          verbatim_recent_turns: 12
+          # Soft cap on the chat-ledger window the compactor reads
+          # on each pass. 200 turns is generous; bounded so a long
+          # call doesn't pull the entire history every rotation.
+          compaction_input_turn_limit: 200
+        # Backend-proxied OpenAI Realtime profile for native iOS/tray live PTT.
+        # Browser live-call behavior remains on the direct WebRTC profile above.
+        voice_realtime_openai_backend:
+          provider: openai_realtime_backend
+          display_name: GPT Realtime 2.1
+          selectable: true
+          # Flagship backend voice (desktop tray host-native PTT). Swapped from
+          # gpt-realtime-2 to the same-priced gpt-realtime-2.1 upgrade.
+          model: gpt-realtime-2.1
+          # Omit `voice` to use the provider/model default; set one to pin.
+          # voice: marin
+          max_session_duration_secs: 1800
+          compaction_token_watermark: 0.7
+          # `local` tees the native PCM stream through the hands-free STT chain
+          # and disables vendor transcription only after that stream attaches.
+          transcription_model: local
+          # Restored if the local stream cannot start or fails during the call.
+          transcription_fallback_model: whisper-1
+          turn_detection_mode: none
+          context_window_tokens: 128000
+          verbatim_recent_turns: 12
+          compaction_input_turn_limit: 200
+        # Budget backend voice on gpt-realtime-2.1-mini (audio $10/$20 per 1M).
+        # DEFINED but NOT mapped to any operation yet — available to point a
+        # host-native voice path at the cheap tier when per-minute cost matters.
+        voice_realtime_openai_backend_mini:
+          provider: openai_realtime_backend
+          display_name: GPT Realtime 2.1 Mini
+          selectable: true
+          model: gpt-realtime-2.1-mini
+          max_session_duration_secs: 1800
+          compaction_token_watermark: 0.7
+          transcription_model: local
+          transcription_fallback_model: whisper-1
+          turn_detection_mode: none
+          context_window_tokens: 128000
+          verbatim_recent_turns: 12
+          compaction_input_turn_limit: 200
+        # Backend-proxied Google Gemini Live profiles. Each keeps GEMINI_API_KEY
+        # server-side, uses Google session resumption handles on rotation, and
+        # enables context-window compression so long calls survive provider
+        # connection resets. None is mapped by default.
+        #
+        # Gemini 3.8 Live (GA): Google's default low-latency voice model. Every
+        # Magician tool is declared `NON_BLOCKING` (the model may keep talking
+        # while the tool runs; measured 2026-09-17 it waited for the result).
+        # `tool_result_scheduling` says when a finished tool result is spoken:
+        # `when_idle` (after the current sentence, default), `interrupt` (right
+        # away), `silent` (later).
+        voice_realtime_gemini_38_live:
+          provider: gemini_live
+          display_name: Gemini 3.8 Live
+          selectable: true
+          mode: assistant
+          allow_without_turn_grounding: true
+          model: gemini-3.8-live
+          # voice: Kore
+          max_session_duration_secs: 540
+          compaction_token_watermark: 0.7
+          turn_detection_mode: none
+          tool_result_scheduling: when_idle
+          context_window_tokens: 128000
+          verbatim_recent_turns: 12
+          compaction_input_turn_limit: 200
+        # Gemini 3.8 Live Extended Thinking (GA): the same audio model with
+        # background reasoning while it speaks: it says "let me check…", runs
+        # the tool, then answers, and `interaction.status` tells clients when
+        # it is idle again. `thinking_level` is low / medium / high (Live
+        # rejects minimal); only this model accepts it. Same published rates
+        # as 3.8 Live; thinking tokens bill as output and its context grows
+        # fast, so a turn costs more than on 3.8 Live.
+        voice_realtime_gemini_38_live_thinking:
+          provider: gemini_live
+          display_name: Gemini 3.8 Live Extended Thinking
+          selectable: true
+          mode: assistant
+          allow_without_turn_grounding: true
+          model: gemini-3.8-live-extended-thinking
+          thinking_level: medium
+          # voice: Kore
+          max_session_duration_secs: 540
+          compaction_token_watermark: 0.7
+          turn_detection_mode: none
+          tool_result_scheduling: when_idle
+          context_window_tokens: 128000
+          verbatim_recent_turns: 12
+          compaction_input_turn_limit: 200
+        # Gemini 3.1 Flash Live (preview): the previous generation, kept
+        # selectable and priced. It blocks on every tool call and has no
+        # thinking knob. `display_order` lists it last in engine pickers.
+        voice_realtime_gemini_live:
+          provider: gemini_live
+          display_name: Gemini 3.1 Flash Live
+          selectable: true
+          display_order: 100
+          mode: assistant
+          # Explicit opt-in: Gemini Live cannot yet defer its response until
+          # Magician's finalized-turn retrieval stage completes.
+          allow_without_turn_grounding: true
+          model: gemini-3.1-flash-live-preview
+          # Omit `voice` to let Gemini Live choose its default; set one to pin.
+          # voice: Kore
+          # Gemini Live connections are reset around 10 min; the provider also
+          # reacts to Google GoAway messages and rotates with the latest native
+          # resume handle.
+          max_session_duration_secs: 540
+          compaction_token_watermark: 0.7
+          # `none` disables Gemini automatic activity detection and lets
+          # Magician's PTT controls send activityStart/activityEnd. Use
+          # `server_vad` for hands-free experiments.
+          turn_detection_mode: none
+          context_window_tokens: 128000
+          verbatim_recent_turns: 12
+          compaction_input_turn_limit: 200
+        # OpenAI GPT-Live-1 full-duplex voice frontend (`/v1/live/sessions`).
+        # Not Realtime: Live owns turn-taking; Magician is the delegated
+        # backend via `delegation.type = client` → `delegate_to_chat`.
+        # Selectable personal engine. Meeting join stays on wake + Realtime
+        # (`voice_realtime_openai_backend`) until Live-1 is proven not to
+        # barge in on other speakers.
+        # Backend-proxied Grok speech-to-speech. Same PCM WebSocket family as
+        # openai_realtime_backend, with Grok's session.update (flat voice,
+        # instructions, tools). Not on the OpenAI turn-context gate.
+        voice_realtime_grok:
+          provider: grok_voice
+          display_name: Grok Voice
+          selectable: true
+          mode: assistant
+          allow_without_turn_grounding: true
+          model: grok-voice-latest
+          voice: eve
+          max_session_duration_secs: 6600
+          compaction_token_watermark: 0.7
+          turn_detection_mode: none
+          context_window_tokens: 128000
+          verbatim_recent_turns: 12
+          compaction_input_turn_limit: 200
+        voice_realtime_gpt_live_1:
+          provider: openai_live
+          display_name: GPT Live 1
+          selectable: true
+          mode: assistant
+          allow_without_turn_grounding: true
+          model: gpt-live-1
+          max_session_duration_secs: 1680
+          compaction_token_watermark: 0.7
+          turn_detection_mode: server_vad
+          context_window_tokens: 128000
+          verbatim_recent_turns: 12
+          compaction_input_turn_limit: 200
+        # Continuous speech-to-speech translation, not an assistant. Same
+        # Gemini Live WebSocket transport as Flash Live, but no tools, no
+        # Magician memory, and no turn-taking chat. Catalogued with
+        # selectable: false so it is not offered as a Realtime engine.
+        voice_realtime_gemini_translate_en:
+          provider: gemini_live
+          display_name: Gemini 3.5 Live Translate (English)
+          selectable: false
+          mode: translation
+          allow_without_turn_grounding: true
+          model: gemini-3.5-live-translate-preview
+          translation_target_language: en
+          translation_echo_target_language: false
+          max_session_duration_secs: 540
+          compaction_token_watermark: 0.7
+          turn_detection_mode: server_vad
+          context_window_tokens: 131072
+      operation_mapping:
+        voice_controller: voice_realtime_default
+      default_profile: voice_realtime_default
+
+public_chat:
+  kapso_envoy_chat:
+    enabled: true
+    source_surface: kapso-envoy-chat
+    source_surfaces:
+      - telegram-envoy-chat
+    paid_operation: kapso_envoy_chat
+    fallback_operation: kapso_envoy_chat_fallback
+    max_paid_concurrent: 2
+    max_fallback_concurrent: 4
+    max_global_queue_depth: 200
+    max_per_sender_queue_depth: 3
+    coalesce_window_ms: 8000
+    max_queue_wait_ms: 45000
+    daily_paid_limit:
+      max_calls: 1000
+      max_cost_usd: 5.0
+      max_tokens: 1000000
+      reset_timezone: Asia/Kolkata
+    queued_reply: "I got your message. I am a bit busy and will reply shortly."
+    overload_reply: "I am receiving a lot of messages right now. Please try again shortly."
+    daily_fallback_reply: "I am switching to a lower-cost mode for today, but I can still chat."
+    outside_window_template_policy:
+      queued_and_overload: allow
+      normal_llm_reply: suppress
+    first_contact:
+      llm_enabled: true
+      operation: kapso_envoy_chat
+      ask_for_identity: true
+      ask_for_purpose: true
+      debounce_window_ms: 7000
+      max_debounce_wait_ms: 18000
+      min_response_delay_ms: 1200
+      max_paid_concurrent: 1
+      max_per_sender_per_day: 2
+      prompt: "Introduce yourself as the owner's AI partner when identity is relevant. Ask who they are only if identity is not already clear, and ask what they would like help with only if purpose is not already clear. Do not start work unless they use the control command /magic. Legacy @magic also works."
+      conversation_style: "Sound warm, concise, and human. Progress naturally from what they said. Ask at most one lightweight follow-up question; do not use checklist-style identity questions. If identity or purpose is already clear, respond to that instead of asking again."
+    identity_research:
+      enabled: true
+      worker_agent_id: web-researcher
+      trigger: after_identity_details
+      min_details:
+        claimed_name_or_org: true
+        purpose: true
+      max_concurrent: 1
+      max_global_queue_depth: 100
+      max_per_sender_queue_depth: 1
+      max_per_sender_per_day: 1
+      daily_limit:
+        max_jobs: 50
+        max_cost_usd: 2.0
+        reset_timezone: Asia/Kolkata
+      coalesce_window_ms: 60000
+      owner_review_priority: true
+      expose_research_to_user: false
+
+tool_authorization:
+  allowlist: []
+  blocklist: []
+  unlisted_policy: "deny"
+
+execution:
+  magicutor_base_url: http://127.0.0.1:3003/
+  request_timeout_secs: 600
+  on_failure: ask_user
+  # Plane Task 8 — who thinks inside each loop iteration. `magician` is the
+  # built-in decision path. A launchable harness such as `pi` replaces
+  # decide+execute with one Plane turn. Unknown names fail closed.
+  # Turn bounds match Magician's own run: AgentConstraints.max_iterations
+  # (4000) and DEFAULT_AGENTIC_MAX_DURATION_SECS (2400s / 40 min). The plan
+  # sketch's 40 / 300s was an interleave example, not the product default.
+  harness_engine: magician
+  harness_model: default
+  # Optional chat-eligible LLM profile used when Pi drives agentic runs.
+  # Omit or set null to let Pi use its own credentials and model settings.
+  pi_profile: null
+  harness_turn_max_tool_calls: 4000
+  harness_turn_max_seconds: 2400
+  shell_sandbox:
+    mode: workspace_write
+    allow_network: true
+    allowed_binaries: []
+    on_violation: "ask"
+    blocked_command_fragments:
+      - rm -rf /
+      - mkfs
+      - shutdown
+      - reboot
+      - poweroff
+      - dd if=/dev/zero
+      - chmod -R 777 /
+      - chown -R /
+      - curl | sh
+      - wget | sh
+    allowed_working_dirs:
+      - .
+      - /tmp
+  file_sandbox:
+    mode: workspace_write
+    allow_delete: true
+    allowed_roots:
+      - .
+      - /tmp
+
+chat:
+  # Who thinks a chat turn. `magician` is today's LLM mouth. Roster names
+  # (pi, claude_code, codex, grok, agy, codex_app_server) replace the mouth.
+  # Native-tool strip is per-engine: claude_code and grok stripped; codex /
+  # codex_app_server / agy sandboxed (those CLIs have no empty-registry flag).
+  harness_engine: magician
+  harness_model: default
+  harness_turn_max_tool_calls: 4000
+  harness_turn_max_seconds: 2400
+
+api_mining:
+  enabled: true
+  enable_trace_capture: true
+  enable_mining: true
+  enable_replay: true
+  enable_xhr_validation: true
+  max_traces_per_origin: 5000
+  max_capabilities_per_origin: 1000
+  trace_retention_days: 30
+  xhr_validation_idempotent_patterns:
+    - "/graphql"
+    - "/gql"
+    - "/search"
+    - "/query"
+    - "/lookup"
+    - "/suggest"
+    - "/autocomplete"
+    - "/typeahead"
+    - "/sync/"
+  auto_replay_validation:
+    enabled: true
+    dry_run: true
+    runs_per_capability: 3
+    max_per_pipeline: 15
+    allowed_methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+    opt_in_post_origins: []
+
+  recipes:
+    enabled: true
+    compile_after_first_run: true
+    match_confirm_threshold: 0.85
+    transport_ladder: [reqwest, in_page_fetch, browser]
+    unknown_origin_default: reads_auto_writes_by_grant
+  recipe_verification:
+    enabled: false
+    interval_secs: 21600
+
+  takeover_min_samples_per_method:
+    GET: 1
+    HEAD: 1
+    POST: 1
+    PUT: 1
+    PATCH: 1
+    DELETE: 1
+    OPTIONS: 1
+  takeover_default_min_samples: 1
+
+capability_evolution:
+  enabled: true
+  enable_api_mined_bridge: true
+  trial_to_validated_min_attempts: 5
+  trial_to_validated_min_success_rate: 0.8
+  validated_to_trusted_min_attempts: 20
+  validated_to_trusted_min_success_rate: 0.95
+  max_failure_rate_before_demotion: 0.5
+  max_runtime_generated_packs: 256
+  include_trial_packs_in_runtime: false
+
+# Developer Mode — `interactive_process` policy.
+# Operator-startable Workbench CLIs are listed explicitly so the UI
+# does not hardcode runtime names. Pi is intentionally not listed here:
+# it is the internal coding-engine adapter behind run_coding_task, not
+# an operator CLI launcher option.
+#
+# CLIs are capped at 1 concurrent session each because they consume
+# scarce license / quota slots that don't multiplex well. Programs
+# without an entry have no limit (bash, git, gh, etc.). Raise per-CLI
+# values once you've confirmed the upstream service supports parallel
+# sessions on your plan. See
+# docs/plans/2026-05-13-developer-mode-workbench.md.
+interactive_process:
+  operator_cli_programs:
+    - claude
+    - codex
+    - agy
+    - opencode
+  max_concurrent_per_program:
+    claude: 1
+    codex: 1
+    agy: 1
+    opencode: 1
+
+# Enrollment: consumer channel identity resolution
+enrollment:
+  auto_approve: true
+  default_principal: "anonymous"
+  pending_ttl_hours: 24
+# Authentication posture (docs/components/magician/auth.md).
+# mode: open = bootstrap posture: while this install has NO identity at all,
+#   requests without credentials use anonymous/default. The first login
+#   creates the owner identity (adopting scopes/anonymous), and from that
+#   moment bearerless requests are refused exactly like credentials mode —
+#   open never stays open past the identity it was scaffolding.
+# mode: credentials = the same refusal from first boot: every authenticated
+#   route requires a valid bearer (mag_ session or mag_pat_ API token).
+# In both modes a valid bearer selects its embedded principal/workspace;
+# caller scope headers and query/body selectors are ignored.
+# Shared installs: the owner (first identity) provisions members via
+#   POST /auth/identities; each member gets their own scope root and
+#   workspace list, and signs in via POST /auth/login.
+auth:
+  mode: open
+  allow_signup: true
+  session_ttl_days: 30
+  # Social login (workspace design §3.2). Secrets prefer env over this file:
+  #   MAGICIAN_AUTH_GOOGLE_CLIENT_SECRET / MAGICIAN_AUTH_GITHUB_CLIENT_SECRET
+  # providers:
+  #   google:
+  #     client_id: ""
+  #   github:
+  #     client_id: ""
+
+
+# Outward-action policy — readiness review §9 steps 2 and 4.
+#
+# An outward action is a dispatch that sends something out of your control: an
+# email, a chat message, a calendar invitation. Which dispatches those are is
+# decided centrally in `agents::outward_actions`, not per agent — a per-agent
+# list is only true for the agents someone remembered to edit.
+#
+# 2026-08-20 — this block was present in
+# `magician_data_v3/magician.config.template.yaml` and ABSENT here, which is
+# the one structural difference between the two files. The runtime default is
+# `true`, so the posture was never wrong; what was wrong is that an operator
+# reading the LIVE config found nothing about sending at all and could
+# reasonably conclude the gate was not in force. Stated explicitly so the
+# posture is reviewable in the file that is actually loaded.
+# Standing consent: whether pre-authorisation is resolved at dispatch at all.
+#
+# Three postures, and the middle one is the point:
+#   off        the resolver never runs. Every gated act asks.
+#   shadow     the resolver runs and LOGS what an envelope WOULD have covered.
+#              Nothing is authorised and nothing is debited — it is observation.
+#   enforcing  a covered act proceeds without asking, and debits the envelope.
+#
+# `off` by default, and that is the same argument as `outward_actions.capture_only`
+# inverted: an envelope system that switched itself on would be the opposite of
+# consent. An operator moves off `off` once, knowingly.
+#
+# An unrecognised value reads as `off`, never as the nearest match — a
+# misspelling must not authorise outward acts.
+#
+# WHEN TO TURN THIS ON: docs/plans/whattotest.md, section 'OPC switches'.
+# Move to `shadow` once an engagement exists and one act has been dispatched
+# under it. Shadow is safe the moment those two are true. Move to `enforcing`
+# only after shadow has shown real coverage on real acts — going straight there
+# skips the one step that tells you the resolver agrees with your intent.
+approval_envelopes:
+  mode: "off"
+
+outward_actions:
+  # true (default): outward actions are RECORDED and NOT performed. The agents
+  # can be rehearsed end to end and nothing reaches a real person.
+  #
+  # Setting this to false makes them SEND FOR REAL. Do that deliberately, once,
+  # after reviewing captured output — and expect `[OUTWARD-LIVE]` at boot and on
+  # every send. Per-agent `requires_approval` rules still apply and are NOT
+  # replaced by this switch.
+  capture_only: true
+
+# Envoy routing: owner vs guest identity resolution.
+# Owners get full-trust (Presto) treatment; everyone else is bound to the
+# least-privilege envoy agent. See docs/components/magician/envoy-agent.md.
+envoy:
+  envoy_agent_id: envoy
+  # Phase 2 of docs/plans/2026-08-07-opc-engagements-contextual-authority.md.
+  # OFF means an inbound from a proved counterparty identity still resolves an
+  # InboundLane::Engagement (observable, reviewable) and still routes exactly
+  # where it routed before — to the guest thread and the envoy agent.
+  # Turning it ON is Phase 3: the message then reaches the agent an owner named
+  # as that engagement's front, holding the engagement's grant. Deliberate act.
+  engagement_forwarding_enabled: false
+  # Exact-string match against the sender as the channel delivers it. Use env
+  # vars for real phone numbers and email addresses so tracked config carries
+  # only variable names, not private owner identities.
+  owner_identities: {}
+  owner_identity_envs:
+    # Kapso/WhatsApp sends the number WITHOUT a leading "+" — if a match misses,
+    # check the bot logged sender phone_number and adjust the env value to that
+    # exact form.
+    kapso: MAGICIAN_OWNER_KAPSO_IDENTITIES
+    # Telegram private chats use the numeric chat id (`ctx.chat.id`) as the
+    # channel address. Add that id to MAGICIAN_OWNER_TELEGRAM_IDENTITIES to
+    # allow `/magic` owner-control routing from Telegram.
+    telegram: MAGICIAN_OWNER_TELEGRAM_IDENTITIES
+    # Owner emails for the agentmail envoy routing. An email "from" is spoofable,
+    # so owner trust here is sender-auth-gated: the agentmail bot forwards
+    # channel_verified=false for mail AgentMail labels `unauthenticated` (and
+    # AgentMail drops explicitly-failing auth upstream), so a spoofed owner
+    # from-address routes to the envoy as a guest. See
+    # docs/components/magician/envoy-agent.md "Sender-auth gate".
+    agentmail: MAGICIAN_OWNER_AGENTMAIL_IDENTITIES
+
+# Human-in-the-loop delivery: how a critical request — a credential or
+# verification-code ask, a time-bound decision — reaches the owner's verified
+# private destinations. Owner addresses stay in `envoy` above; this section
+# only chooses which of them, in what order, and when. Every channel is off
+# until the owner enables it (Settings → Critical alerts), so nothing changes
+# here by default: registered mobile devices keep receiving the attention
+# push as before. See docs/components/magician/critical-request-delivery.md.
+hitl:
+  critical_delivery:
+    # Channel types, in preference order, e.g. [telegram, kapso]. A type with
+    # no owner identity or no connected bot is recorded `unavailable`.
+    enabled_channels: []
+    # `simultaneous` alerts every destination at once; `staged` alerts the
+    # first and moves on only when the provider has not accepted within
+    # `staged_fallback_secs`.
+    policy: simultaneous
+    staged_fallback_secs: 45
+    # Registered mobile devices receive the attention push.
+    push_enabled: true
+    # The origin the alert's "Open secure request" link is built on. Unset
+    # means mobile_access.public_origin, which is right whenever one origin
+    # serves both the API and the owner-facing UI. Set it when they are split
+    # — a device hostname routed to the API cannot serve /attention, and the
+    # link lands on a 404 the browser offers as a download.
+    # owner_ui_origin: https://ui.example.com
+    owner_ui_origin: null
+    # Optional daily quiet window in the owner's timezone; a time-bound
+    # request (one with a collection deadline) may interrupt it.
+    # quiet_hours:
+    #   start: "22:00"
+    #   end: "07:00"
+    #   timezone: Asia/Kolkata
+    #   interrupt_for_time_bound: true
+  # Automatic verification-code retrieval (plan §6.2). Which accounts and
+  # devices may be read is a purpose the owner grants per source — an Observe
+  # account's "Use for verification codes", a paired device on the Devices
+  # page — never this section; it only shapes how the resolver runs. See
+  # docs/components/magician/verification-code-retrieval.md.
+  verification_codes:
+    enabled: true
+    # Seconds a critical code ask with retrieval in progress waits before the
+    # channel alerts above go out (push is never delayed; a deadline under
+    # 90 s skips the wait).
+    retrieval_grace_secs: 20
+    # How far before the challenge started a message may have arrived and
+    # still count (a "Send code" pressed a moment before the ask was raised).
+    lookback_secs: 90
+
+# Managed consumer-channel bots are scoped and live in
+# magician_data_v3/scopes/<principal>/<workspace>/capabilities/bot_configs.yaml.
+# The shipped default set materializes from
+# magician_data_v3/system/capability_templates/bot_configs.yaml.
+
+# Resource Authority — Layer 2 declarative budgets. Off by default;
+# uncomment and populate to activate spend-token gating on
+# chat-dispatched compiled packs. See
+# docs/plans/2026-05-20-resource-authority-layer-2.md.
+#
+# `commodity` is a free-form string — the ledger is per-commodity, no
+# implicit conversion. Common examples used or named across the
+# codebase:
+#   USD            — dollars (today's only shipped declaration; on
+#                    `create_task.yaml` and `create_agent.yaml`).
+#   LLM_TOKENS     — prompt/completion tokens against an LLM budget.
+#   API_CALLS      — generic third-party API call counter (Stripe,
+#                    Twilio, SendGrid, etc.).
+#   EMAIL_SENDS    — outbound email budget (e.g. SendGrid daily cap).
+#   GITHUB_PUSHES  — cap on automated commits/pushes per repo per day.
+#   GPU_HOURS      — fractional GPU usage for inference / training.
+# Any other string you mint is valid. Each commodity is a separate
+# ledger column with its own ceilings, tokens, and audit trail.
+#
+# Autonomous harness — the C-suite "company loop". The CTO detect-and-fix loop
+# turns detected cycle anomalies into review-gated fix proposals (never
+# auto-applied). Runs on a 15-minute sweep, one fix per scope per sweep, with a
+# 6h per-anomaly cooldown.
+harness:
+  # Autofix: auto-draft a fix (as an owner-approved diff proposal) for detected
+  # cycle anomalies. Default true (opt-out). Env MAGICIAN_HARNESS_AUTOFIX
+  # (0/1/true/false/on/off) overrides this — 0/off disables, 1/on enables.
+  autofix_enabled: true
+  # Agent the autofix task is assigned to. MUST directly grant run_coding_task
+  # (a coding engineer, NOT a router like `cto` whose persona forbids coding).
+  # Env MAGICIAN_HARNESS_AUTOFIX_AGENT overrides this.
+  autofix_agent: "senior-software-developer"
+  # Global company-loop switch: true blocks scheduled/manual harness starts plus
+  # steward/autofix dispatches. The control API clears queued work and requests
+  # cancellation of active harness cycles. Env MAGICIAN_HARNESS_PAUSED is an
+  # emergency override; Crew-page changes clear it and persist this value.
+  paused: true
+
+# Magician plane MCP catalog. Empty `hot` on a profile uses the built-in
+# list in execution::plane::catalog. Raw shell is excluded on every profile;
+# spawned-bare retains only governed Magician tools, while terminal narrows
+# further because the operator already has native terminal controls.
+plane:
+  spawned_bare:
+    hot: []
+  terminal:
+    hot: []
+
+# ── Active resource-authority config ─────────────────────────────────────────
+# Presto's send caps are LIVE. `enabled: true` below, and each send debits 1
+# against its commodity via the pack's own `execution.spend` block, so the
+# ceilings in `budgets:` are the numbers actually enforced at dispatch.
+#
+# This paragraph previously said enforcement was OFF (`enabled: false`) while
+# the very next line read `enabled: true` — readiness review §1 corrected that,
+# and the stale text is removed here so the file stops contradicting itself.
+# Flipping `enabled: false` would deactivate this AND every other declared gate
+# (e.g. the USD examples in the commented reference below), so do that
+# deliberately.
+resource_authority:
+  enabled: true
+  budgets:
+    # Email + WhatsApp send caps — 50/day each, debited 1 per call by each tool's
+    # `execution.spend` (counted). TOOL-scoped (not agent-scoped) so the gate
+    # matches on the tool name regardless of which agent dispatches the send: the
+    # CLI-template dispatch path now routes through the spend gate (see
+    # docs/components/magician/execution/README.md), and an agent-scoped row would
+    # fail-closed reject any send whose dispatch agent_id ≠ that agent. Tool-scope
+    # = "this tool may be used N times/day" across all agents, which is the
+    # intended system-wide send cap.
+    #
+    # 2026-08-20 — RECONCILED to the documented number (readiness review §9 step
+    # 4). These ceilings read "200" and "1000" while the comment directly above
+    # them said 50, and while BOTH SKILL.md files told the agent it had 50. The
+    # agent plans against what its skill doc says, so its self-restraint was the
+    # only thing keeping a campaign inside a number anyone had reviewed — a 4x
+    # and a 20x gap in the direction where the error costs sends, not prompts.
+    # The conservative side is the documented one, so the ceilings moved down to
+    # the docs rather than the docs moving up to the ceilings. Raising either
+    # number means editing these together: this row (repo seed and live
+    # config), and the `Cap:` line plus frontmatter `description` in
+    # `skillshub/<tool>/SKILL.md`.
+    - scope: tool
+      id: agentmail-send
+      commodity: EMAIL_SENDS
+      ceiling: "50"
+      period: daily
+      carryover: { type: none }
+    - scope: tool
+      id: kapso-whatsapp-send
+      commodity: WHATSAPP_SENDS
+      ceiling: "50"
+      period: daily
+      carryover: { type: none }
+    # Zepto / Swiggy food-ordering rupee caps (daily cumulative ₹). Checkout
+    # goes through the same SpendSession writer as email/WhatsApp (fail-closed).
+    # The packs declare no `execution.spend`; governed MCP commerce verifies
+    # `order_amount_inr` against the live cart, then reserves INR here.
+    # `period: daily` re-funds the ceiling each UTC day (use-it-or-lose-it).
+    - scope: tool
+      id: zepto-mcp
+      commodity: INR
+      ceiling: "2000"
+      period: daily
+      carryover: { type: none }
+    - scope: tool
+      id: swiggy-mcp
+      commodity: INR
+      ceiling: "2000"
+      period: daily
+      carryover: { type: none }
+    # Shared USD pool for any agent (`id: *`). Commodity names are
+    # case-insensitive (`usd` == `USD`). This is one pool, not $10 per agent.
+    - scope: agent
+      id: "*"
+      commodity: USD
+      ceiling: "10.0"
+      period: daily
+      carryover: { type: none }
+
+#
+# ── Full schema + examples (commented reference) ─────────────────────────────
+# resource_authority:
+#   enabled: true
+#   system_ceilings:
+#     - id: usd-monthly
+#       commodity: USD
+#       ceiling: "1000.0"
+#       relaxation: "0.02"
+#       period: monthly
+#       carryover: { type: none }
+#     - id: llm-tokens-daily
+#       commodity: LLM_TOKENS
+#       ceiling: "5000000"
+#       relaxation: "0.05"
+#       period: daily
+#       carryover: { type: none }
+#     - id: api-calls-daily
+#       commodity: API_CALLS
+#       ceiling: "1000"
+#       relaxation: "0.0"
+#       period: daily
+#       carryover: { type: none }
+#   budgets:
+#     # Per-principal — the user's overall account budget.
+#     - scope: principal
+#       id: owner
+#       commodity: USD
+#       ceiling: "100.0"
+#       period: monthly
+#       carryover: { type: none }
+#     - scope: principal
+#       id: owner
+#       commodity: LLM_TOKENS
+#       ceiling: "2000000"
+#       period: daily
+#       carryover: { type: none }
+#     # Per-agent — capped what an individual agent can spend.
+#     - scope: agent
+#       id: presto
+#       commodity: USD
+#       ceiling: "50.0"
+#       period: daily
+#       carryover: { type: none }
+#     - scope: agent
+#       id: presto
+#       commodity: API_CALLS
+#       ceiling: "200"
+#       period: daily
+#       carryover: { type: none }
+#     # Per-tool — limit individual capability packs.
+#     - scope: tool
+#       id: create_task
+#       commodity: USD
+#       ceiling: "5.0"
+#       period: monthly
+#       carryover: { type: full }

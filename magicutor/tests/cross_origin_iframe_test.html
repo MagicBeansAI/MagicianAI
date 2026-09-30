@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cross-Origin Iframe Test - CodeSandbox/StackBlitz</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; }
+        h2 { color: #666; margin-top: 30px; }
+        p { color: #555; line-height: 1.6; }
+        .test-section {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .instructions {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .instructions ol {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .expected {
+            background: #e8f5e9;
+            padding: 10px;
+            border-left: 4px solid #4caf50;
+            margin: 10px 0;
+        }
+        .failure {
+            background: #ffebee;
+            padding: 10px;
+            border-left: 4px solid #f44336;
+            margin: 10px 0;
+        }
+        .warning {
+            background: #fff3e0;
+            padding: 10px;
+            border-left: 4px solid #ff9800;
+            margin: 10px 0;
+        }
+        iframe {
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        code {
+            background: #e0e0e0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', monospace;
+        }
+        .iframe-container {
+            position: relative;
+        }
+        .iframe-info {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 Cross-Origin Iframe Test</h1>
+    <p>This page tests typing into real cross-origin iframes (CodeSandbox, StackBlitz).</p>
+    <p><strong>Goal:</strong> Verify that the CDP session attachment works correctly for cross-origin verification.</p>
+
+    <div class="warning">
+        <strong>⚠️ Important:</strong> These are REAL cross-origin iframes. The extension needs to:
+        <ul>
+            <li>Detect the iframe via <code>Target.setAutoAttach</code></li>
+            <li>Get a CDP session for the iframe</li>
+            <li>Use <code>Runtime.evaluate</code> with the session to verify text inside</li>
+        </ul>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 1: CodeSandbox (Code Editor in Cross-Origin Iframe)</h2>
+        <p>CodeSandbox embeds contain a full Monaco/CodeMirror editor inside a cross-origin iframe.</p>
+        <p>This is the most challenging test - combines cross-origin + virtual DOM code editor.</p>
+
+        <div class="iframe-container">
+            <span class="iframe-info">Cross-Origin: codesandbox.io</span>
+            <iframe src="https://codesandbox.io/embed/new?codemirror=1&fontsize=14&hidenavigation=1&theme=dark"
+                    style="width: 100%; height: 500px;"
+                    title="CodeSandbox"
+                    allow="accelerometer; ambient-light-sensor; camera; encrypted-media; geolocation; gyroscope; hid; microphone; midi; payment; usb; vr; xr-spatial-tracking"
+                    sandbox="allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts">
+            </iframe>
+        </div>
+
+        <div class="instructions">
+            <strong>Test Steps:</strong>
+            <ol>
+                <li>Wait for CodeSandbox to fully load (may take 5-10 seconds)</li>
+                <li>Attach debugger to this tab via Magicutor</li>
+                <li>Click inside the code editor area in the iframe</li>
+                <li>Use <code>typeAtCoordinatesInFrame</code> with the frame target ID</li>
+                <li>Type: <code>const test = 'verification works!';</code></li>
+                <li>Check console logs for verification result</li>
+            </ol>
+        </div>
+
+        <div class="expected">
+            <strong>Expected:</strong> Text appears in editor.
+            Logs show: <code>verified: true, where: "iframe:..."</code>
+            <br>The <code>verifyInFrame</code> function should successfully evaluate inside the cross-origin iframe.
+        </div>
+
+        <div class="failure">
+            <strong>Failure Mode:</strong>
+            <ul>
+                <li><code>"attachFailed"</code> - CDP session couldn't be attached to the iframe</li>
+                <li><code>"evalFailed"</code> - Session exists but Runtime.evaluate failed</li>
+                <li><code>verified: false</code> - Text was typed but 6-phase search didn't find it</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 2: StackBlitz (WebContainer-based Editor)</h2>
+        <p>StackBlitz uses WebContainers - an even more complex cross-origin scenario.</p>
+
+        <div class="iframe-container">
+            <span class="iframe-info">Cross-Origin: stackblitz.com</span>
+            <iframe src="https://stackblitz.com/edit/node-blank?embed=1&file=index.js&hideExplorer=1&hideNavigation=1"
+                    style="width: 100%; height: 400px;"
+                    title="StackBlitz"
+                    sandbox="allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts">
+            </iframe>
+        </div>
+
+        <div class="instructions">
+            <strong>Test Steps:</strong>
+            <ol>
+                <li>Wait for StackBlitz to fully load (may take 10-15 seconds)</li>
+                <li>Click inside the index.js editor</li>
+                <li>Type: <code>console.log('stackblitz test');</code></li>
+                <li>Verify text appears</li>
+            </ol>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Debug Information</h2>
+        <p>Open browser DevTools (F12) and check:</p>
+        <ul>
+            <li><strong>Extension logs:</strong> Filter by <code>[Magicutor]</code> to see verification flow</li>
+            <li><strong>Network tab:</strong> Verify iframes loaded successfully</li>
+            <li><strong>Application > Frames:</strong> See iframe structure and origins</li>
+        </ul>
+
+        <div id="iframe-status" style="margin-top: 15px; padding: 10px; background: #f5f5f5; border-radius: 4px; font-family: monospace; font-size: 12px;">
+            Detecting iframes...
+        </div>
+    </div>
+
+    <script>
+        // Detect and display iframe information
+        function updateIframeStatus() {
+            const iframes = document.querySelectorAll('iframe');
+            const statusDiv = document.getElementById('iframe-status');
+            const mainOrigin = window.location.origin;
+
+            let html = `<strong>Main page origin:</strong> ${mainOrigin}<br><br>`;
+            html += `<strong>Detected iframes:</strong><br>`;
+
+            iframes.forEach((iframe, i) => {
+                const src = iframe.src || 'about:blank';
+                let iframeOrigin = 'unknown';
+                try {
+                    iframeOrigin = new URL(src).origin;
+                } catch (e) {
+                    iframeOrigin = 'invalid URL';
+                }
+
+                const isCrossOrigin = iframeOrigin !== mainOrigin;
+                const status = isCrossOrigin ? '🔴 Cross-Origin' : '🟢 Same-Origin';
+
+                html += `${i + 1}. ${status} - ${iframeOrigin}<br>`;
+            });
+
+            statusDiv.innerHTML = html;
+        }
+
+        // Update status after iframes load
+        setTimeout(updateIframeStatus, 2000);
+        window.addEventListener('load', () => setTimeout(updateIframeStatus, 3000));
+
+        console.log('Cross-Origin Iframe Test page loaded');
+    </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="ai.magicbeans.magdroid.ui.ChatActivity"
+    android:supportsSwitchingToNextInputMethod="true">
+    <subtype
+        android:imeSubtypeLocale="en_IN"
+        android:languageTag="en-IN"
+        android:imeSubtypeMode="keyboard"
+        android:label="Magican · English (India)" />
+    <subtype
+        android:imeSubtypeLocale="en_GB"
+        android:languageTag="en-GB"
+        android:imeSubtypeMode="keyboard"
+        android:label="Magican · English (UK)" />
+    <subtype
+        android:imeSubtypeLocale="en_US"
+        android:languageTag="en-US"
+        android:imeSubtypeMode="keyboard"
+        android:label="Magican · English (US)" />
+</input-method>

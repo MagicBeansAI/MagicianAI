@@ -1,0 +1,98 @@
+name: tasks_data
+description: Read-only, bounded, executor-scoped access to the owner's task list projected to a narrow face.
+version: "1.0.0"
+guide: |-
+  Tool name: `tasks_data`
+
+  This is the read-only host binder that lets an app show the owner's tasks.
+  It cannot create, edit, run, stop, reassign or delete a task: task changes
+  belong to the task owner, and this binder has no write path at all.
+
+  It projects a deliberately narrow face: task id, title, status, owning
+  agent, priority, due date, tag names, created/updated timestamps, whether
+  the task is blocked, whether it is waiting on the owner, and the completion
+  outcome. `read_task` adds the bounded description and completion summary.
+  Plans, executions, chat links, question bodies, schedules and output routing
+  are never returned.
+
+  Actions (exactly two):
+
+  - `list_tasks {status?, limit?, after?}` lists the scope's user-visible
+    tasks newest first, one bounded page at a time. `status` filters by the
+    task's status word (case-insensitive). `next_cursor` is an opaque position
+    to pass back as `after`; it stays valid when the task it names is removed.
+  - `read_task {task_id}` returns one task, or `task: null` with
+    `present: false` when it does not exist or is not visible — an answer, not
+    an error.
+
+  Limits are capped at 200, ids and filters are bounded, serialized results
+  fail closed above 512 KiB, and every call has a 30-second timeout.
+
+  Runtime scope is executor-owned: `__principal` and `__workspace` are injected
+  by the runtime. Public principal/workspace values are assertions only and can
+  never switch scope.
+parameters:
+  - name: action
+    param_type: string
+    description: Optional direct action name. Inner-loop calls set this automatically.
+    enum_values:
+      - list_tasks
+      - read_task
+  - name: principal
+    param_type: string
+    description: Optional assertion that must match the runtime-injected principal.
+  - name: workspace
+    param_type: string
+    description: Optional assertion that must match the runtime-injected workspace.
+  - name: status
+    param_type: string
+    description: Optional status word to filter list_tasks by (for example running or completed).
+  - name: limit
+    param_type: integer
+    description: Page size, default 50 and capped at 200.
+  - name: after
+    param_type: string
+    description: Resume list_tasks after this prior page's next_cursor.
+  - name: task_id
+    param_type: string
+    description: Exact task id for read_task.
+native_action_schemas:
+  list_tasks:
+    description: List one bounded page of the owner's user-visible tasks, newest first.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - status
+      - limit
+      - after
+    required: []
+    parameter_overrides:
+      status: {type: string, minLength: 1, maxLength: 32, pattern: '^[A-Za-z0-9_-]+$'}
+      limit: {type: integer, minimum: 1, maximum: 200, default: 50}
+      after: {type: string, minLength: 3, maxLength: 320, pattern: '^[^|\x00-\x1f\x7f]+\|[^/\\:|\x00-\x1f\x7f]+$'}
+    timeout_secs: 30
+  read_task:
+    description: Read one task's bounded face, or learn that it is absent.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - task_id
+    required:
+      - task_id
+    parameter_overrides:
+      task_id: {type: string, minLength: 1, maxLength: 255, pattern: '^[^/\\:\x00-\x1f\x7f]+$'}
+    timeout_secs: 30
+implementation:
+  type: primitive
+  provider_name: tasks_data
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - tasks
+    - host_read
+  composition_category: observation
+  sandbox: none

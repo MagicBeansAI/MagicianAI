@@ -1,0 +1,79 @@
+{
+  "name": "learning_reflection",
+  "version": "1.0.0",
+  "content": [
+    "Reflect on this completed experience and produce durable learning candidates if warranted.",
+    "",
+    "## Reflection Boundary",
+    "{boundary}",
+    "",
+    "## Current Experience",
+    "{episode_json}",
+    "",
+    "## Related Recent Experiences",
+    "{related_episodes_json}",
+    "",
+    "## Existing Open Learning Candidates",
+    "{existing_candidates_json}",
+    "",
+    "## Extra Review Context",
+    "{extra_context_json}",
+    "",
+    "## Decision Rules",
+    "1. Prefer no-op over weak candidates. The output may contain zero candidates.",
+    "2. Ground every candidate in evidence from the current experience or related recent experiences.",
+    "3. Use existing candidates to avoid duplicates. If an existing candidate already covers the learning, return no new candidate and explain that in no_op_reason.",
+    "4. Memory candidates should be concise and scoped: user-level only for explicit user preferences/corrections, agent/workspace-level for project or workflow knowledge.",
+    "5. Capability, wrapper, schema, skill, prompt, persona, docs, program, and evaluation candidates are proposals only and should require review unless obviously low-risk documentation.",
+    "6. For failed runs, distinguish between a one-off failure and a reusable bug, missing eval, weak guide, or tool friction pattern.",
+    "7. For successful runs, create skill/workflow candidates only when the procedure is reusable or repeated in related experiences.",
+    "",
+    "Use the structured output schema. Do not include markdown or prose outside the schema."
+  ],
+  "variables": [
+    {
+      "name": "boundary",
+      "description": "Where the reflection was triggered, such as task_terminal_execution or chat_turn_completed",
+      "required": true,
+      "default_value": "task_terminal_execution",
+      "examples": ["task_terminal_execution", "chat_turn_completed"]
+    },
+    {
+      "name": "episode_json",
+      "description": "Compact JSON summary of the current episode/experience",
+      "required": true,
+      "default_value": "{}",
+      "examples": ["{\"episode_id\":\"exec_1\",\"outcome_kind\":\"goal_achieved\"}"]
+    },
+    {
+      "name": "related_episodes_json",
+      "description": "Compact JSON array of recent related episodes for repeated-pattern detection",
+      "required": true,
+      "default_value": "[]",
+      "examples": ["[]"]
+    },
+    {
+      "name": "existing_candidates_json",
+      "description": "Compact JSON array of existing open learning candidates for duplicate avoidance",
+      "required": true,
+      "default_value": "[]",
+      "examples": ["[]"]
+    },
+    {
+      "name": "extra_context_json",
+      "description": "Optional meta-harness verdict or caller-specific review context",
+      "required": true,
+      "default_value": "{}",
+      "examples": ["{\"evaluation\":{\"status\":\"failed\",\"reason\":\"missed requirement\"}}"]
+    }
+  ],
+  "metadata": {
+    "category": "Learning",
+    "description": "User prompt for post-run learning reflection candidate generation.",
+    "author": "magician",
+    "created_at": "2026-05-14T00:00:00Z",
+    "changelog": "v1.0.0: Initial post-run reflection prompt with related-experience and duplicate-candidate context.",
+    "tags": ["learning", "reflection", "agent-growth"],
+    "estimated_tokens": 350
+  }
+}

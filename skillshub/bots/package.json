@@ -1,0 +1,15 @@
+{
+  "name": "@magician/bots",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build -w @magician/bot-sdk && npm run build -w @magician/bot-telegram && npm run build -w @magician/bot-telegram-self && npm run build -w @magician/bot-whatsapp && npm run build -w @magician/bot-kapso && npm run build -w @magician/bot-gmail && npm run build -w @magician/bot-agentmail",
+    "check": "npm run check -w @magician/bot-sdk && npm run check -w @magician/bot-telegram && npm run check -w @magician/bot-telegram-self && npm run check -w @magician/bot-whatsapp && npm run check -w @magician/bot-kapso && npm run check -w @magician/bot-gmail && npm run check -w @magician/bot-agentmail",
+    "test": "npm run test -w @magician/bot-sdk && npm run test -w @magician/bot-telegram && npm run test -w @magician/bot-telegram-self && npm run test -w @magician/bot-whatsapp && npm run test -w @magician/bot-kapso && npm run test -w @magician/bot-gmail"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}

@@ -1,0 +1,1649 @@
+name: metabase
+version: 0.1.0
+description: Discover and query Metabase databases, models, cards, dashboards, and metrics, export results, and maintain reusable Metabase BI assets.
+parameters:
+  - name: command
+    required: true
+    param_type: string
+    description:
+      Outer-loop fallback command string forwarded to metabase.sh, e.g. "card list". Ignored while implementation.type
+      is primitive.
+  - name: timeout_secs
+    param_type: integer
+    description: Command timeout in seconds
+    default: "60"
+native_action_schemas:
+  database_list:
+    description: Run `database list` - list connected databases.
+    argv:
+      - database
+      - list
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: &id001
+        type: array
+        items:
+          type: string
+        description: |
+          Exact argv tokens appended after the fixed command prefix. ONE
+          TOKEN PER ELEMENT — a flag and its value are SEPARATE elements:
+          ["--can-query", "true"]   ✅
+          ["--can-query=true"]      ❌ (joined with `=`)
+          ["--can-query"]           ❌ (value missing)
+          Value-taking flags such as `--term`, `--can-query`,
+          `--data-source`, `--models`, `--export-format`, `--select`,
+          `--value`, `--q` ALWAYS require the value as the next element.
+          Boolean toggles such as `--compact`, `--agent`, `--stdin` stand
+          alone (no value).
+      stdin: &id002
+        type: string
+        description:
+          JSON request body to write to stdin for commands that use --stdin. Do not shell-quote or pipe; provide
+          the raw JSON string here.
+    timeout_secs: 60
+  database_get:
+    description: Run `database get <id>` - single database details.
+    argv:
+      - database
+      - get
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  database_metadata:
+    description: Run `database metadata database <id>` — tables + columns + types for a database.
+    argv:
+      - database
+      - metadata
+      - database
+    parameters:
+      - database_id
+      - extra_args
+    required:
+      - database_id
+    parameter_overrides:
+      database_id:
+        type: integer
+        description: Numeric Metabase database id.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+      - type: positional
+        param: database_id
+      - type: passthrough
+        param: extra_args
+    timeout_secs: 60
+  database_schemas:
+    description: Run `database schemas database <id>` - list schema names in a database.
+    argv:
+      - database
+      - schemas
+      - database
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  database_schema:
+    description: Run `database schema database <id> <schema-name>` - tables in one schema.
+    argv:
+      - database
+      - schema
+      - database
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  database_fields:
+    description: Run `database fields database <id>` - flat list of all fields across the database.
+    argv:
+      - database
+      - fields
+      - database
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  collection_list:
+    description: Run `collection list` - list collections.
+    argv:
+      - collection
+      - list
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  collection_tree:
+    description: Run `collection tree` - full collection hierarchy. Best overview of how content is organized.
+    argv:
+      - collection
+      - tree
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  collection_get:
+    description: Run `collection get <id>` - one collection's metadata.
+    argv:
+      - collection
+      - get
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  collection_root:
+    description: Run `collection root` - the root collection.
+    argv:
+      - collection
+      - root
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  collection_root_items:
+    description: Run `collection root-items` - items at the top level.
+    argv:
+      - collection
+      - root-items
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  collection_items:
+    description: Run `collection items collection <id>` — items inside a collection.
+    argv:
+      - collection
+      - items
+      - collection
+    parameters:
+      - collection_id
+      - extra_args
+    required:
+      - collection_id
+    parameter_overrides:
+      collection_id:
+        type: integer
+        description: Numeric Metabase collection id.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+      - type: positional
+        param: collection_id
+      - type: passthrough
+        param: extra_args
+    timeout_secs: 60
+  dashboard_list:
+    description: Run `dashboard list` - list dashboards.
+    argv:
+      - dashboard
+      - list
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  dashboard_get:
+    description: Run `dashboard get <id>` — dashboard details + the cards on it.
+    argv:
+      - dashboard
+      - get
+    parameters:
+      - dashboard_id
+      - extra_args
+    required:
+      - dashboard_id
+    parameter_overrides:
+      dashboard_id:
+        type: integer
+        description: Numeric Metabase dashboard id.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+      - type: positional
+        param: dashboard_id
+      - type: passthrough
+        param: extra_args
+    timeout_secs: 60
+  dashboard_items:
+    description: Run `dashboard items dashboard <id>` - items on a dashboard (cards, tabs, links).
+    argv:
+      - dashboard
+      - items
+      - dashboard
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  dashboard_query_metadata:
+    description: Run `dashboard query-metadata dashboard <id>` - query metadata across all dashboard cards.
+    argv:
+      - dashboard
+      - query-metadata
+      - dashboard
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  find_search:
+    description: |
+      Run `metabase-search` — keyword search across Metabase entities.
+      Almost always the right first call when you don't yet know where
+      data lives. The `q` parameter is required (the schema enforces
+      this) — the old "missing query" failure is impossible now.
+
+      "card" is the legacy name for "dataset" — use "dataset". Saved
+      questions are returned under `model: "dataset"`.
+    argv:
+      - metabase-search
+    parameters:
+      - q
+      - models
+      - extra_args
+    required:
+      - q
+    parameter_overrides:
+      q:
+        type: string
+        description: Free-text search query (required).
+      models:
+        type: string
+        description: |
+          Comma-separated entity types to restrict the search to. Whole
+          value is one string; do NOT split by entity. Canonical values
+          (anything else → HTTP 400): dashboard, table, dataset, segment,
+          collection, measure, transform, document, database, action,
+          indexed-entity.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens for flags this schema does not yet surface.
+    arg_mappings:
+      - type: flag
+        flag: --q
+        param: q
+      - type: flag
+        flag: --models
+        param: models
+      - type: passthrough
+        param: extra_args
+    timeout_secs: 60
+  card_list:
+    description: |
+      Run `card list` — list saved questions. Returns ~5k items on this
+      instance; trim with `--select id,name,collection_id,database_id,updated_at`
+      to reduce payload.
+
+      There is NO `-f` / `--filter` / `f` flag on `card list`. To find
+      cards by name fragment use `metabase-search --q <fragment>
+      --models dataset` (saved cards are model="dataset").
+    argv:
+      - card
+      - list
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  card_get:
+    description: Run `card get <id>` — saved question details (SQL, parameters, result_metadata). Always inspect before card_run.
+    argv:
+      - card
+      - get
+    parameters:
+      - card_id
+      - extra_args
+    required:
+      - card_id
+    parameter_overrides:
+      card_id:
+        type: integer
+        description: Numeric Metabase card (saved-question) id.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+      - type: positional
+        param: card_id
+      - type: passthrough
+        param: extra_args
+    timeout_secs: 60
+  card_create:
+    description: Run `card create --stdin` - save a new SQL question/card. stdin must include name, display, type, and dataset_query.
+    argv:
+      - card
+      - create
+    parameters:
+      - args
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  card_update:
+    description: Run `card update <id> --stdin` - update an existing saved question/card, including dataset_query SQL.
+    argv:
+      - card
+      - update
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  card_run:
+    description: |
+      Run `card query card-run <card-id>` — execute a saved question
+      and return rows. Fastest path when a card already answers the
+      question.
+
+      If you get HTTP 400 "Error preprocessing query" or HTTP 403
+      "missing-required-permissions", the card's underlying database
+      is not readable with the current API key. Inspect via
+      `card_get` (look at `dataset_query.database`), then either
+      request the missing grant or pivot to `dataset_query` against a
+      database the key does have access to (use `database_list` to see
+      which).
+    argv:
+      - card
+      - query
+      - card-run
+    parameters:
+      - card_id
+      - extra_args
+    required:
+      - card_id
+    parameter_overrides:
+      card_id:
+        type: integer
+        description: Numeric Metabase card id to execute.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+      - type: positional
+        param: card_id
+      - type: passthrough
+        param: extra_args
+    # 2026-05-23 — `--compact` triggers the query-result-aware slim
+    # in helpers.go::compactQueryResult. Without it, this endpoint's
+    # response is ~24 KB of column-metadata / fingerprints / insights /
+    # results_metadata duplicate / native_form, with the actual rows
+    # at the END — which gets chopped by the tool-result cap and the
+    # agent never sees data. See ARCHITECTURE/CHANGELOG.
+    suffix_args:
+      - --compact
+    timeout_secs: 120
+  card_run_with_body:
+    description:
+      Run `card query card-run <card-id> --stdin` - execute a parameterized saved question. Provide stdin JSON
+      with parameters or other query options.
+    argv:
+      - card
+      - query
+      - card-run
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    # `--compact`: see compactQueryResult in helpers.go.
+    suffix_args:
+      - --stdin
+      - --compact
+    timeout_secs: 120
+  card_export:
+    description: |
+      Run `card query card-export <card-id> --export-format <csv|json|xlsx|api>`
+      — execute a saved question and return exported bytes. Use for
+      large results.
+
+      Same permission caveat as `card_run`: HTTP 400 "Error preprocessing
+      query" or 403 means the card's `dataset_query.database` is not
+      readable with this key. Inspect via `card get <id>` and pivot to
+      `dataset query --stdin` against an accessible database if needed.
+    argv:
+      - card
+      - query
+      - card-export
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 120
+  card_export_with_body:
+    description:
+      Run `card query card-export <card-id> --export-format <csv|json|xlsx|api> --stdin` - export a parameterized
+      saved question. Provide stdin JSON with parameters or format options.
+    argv:
+      - card
+      - query
+      - card-export
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dataset_query:
+    description: |
+      Run `dataset query --stdin` — execute ad-hoc native SQL or MBQL.
+      Provide stdin JSON: {"database":<id>,"type":"native","native":{"query":"SELECT ..."}}.
+
+      The `database` id must be one this API key has read access to.
+      A 403 "missing-required-permissions" means the key cannot read
+      that database — list accessible dbs via `database list --agent`
+      and pivot to one that holds the same / replicated data.
+    argv:
+      - dataset
+      - query
+    parameters:
+      - args
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    # `--compact`: see compactQueryResult in helpers.go.
+    suffix_args:
+      - --stdin
+      - --compact
+    timeout_secs: 120
+  dataset_export:
+    description:
+      Run `dataset export --export-format <csv|json|xlsx|api> --stdin` - execute ad-hoc query and stream exported
+      bytes. Use for large result sets.
+    argv:
+      - dataset
+      - export
+    parameters:
+      - args
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 180
+  dataset_to_native:
+    description:
+      Run `dataset to-native --stdin` - convert MBQL to native SQL without executing. Useful for seeing the SQL
+      Metabase would run.
+    argv:
+      - dataset
+      - to-native
+    parameters:
+      - args
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 60
+  doctor:
+    description: Run `doctor` - auth + connectivity check. Use first if any other action fails unexpectedly.
+    argv:
+      - doctor
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 30
+  raw:
+    description:
+      "Escape hatch: run exact argv tokens through metabase-pp-cli (no fixed prefix). Use only when no native action
+      fits."
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    skip_tool_name: true
+    timeout_secs: 120
+  help:
+    description: Print metabase-pp-cli help for a subcommand or the top-level CLI.
+    parameters:
+      - args
+    required: []
+    parameter_overrides:
+      args: *id001
+    skip_tool_name: true
+    timeout_secs: 15
+  card_copy:
+    description: Run `card copy card <id>` - copy a saved question/card. Use args for the source card id.
+    argv:
+      - card
+      - copy
+      - card
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 120
+  card_copy_with_body:
+    description: Run `card copy card <id> --stdin` - copy a card while supplying JSON options such as name or collection placement.
+    argv:
+      - card
+      - copy
+      - card
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  card_dashboards:
+    description: Run `card dashboards card <id>` - list dashboards where a card appears.
+    argv:
+      - card
+      - dashboards
+      - card
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  card_query_metadata:
+    description: Run `card query-metadata card <id>` - metadata needed to understand or safely edit a saved question.
+    argv:
+      - card
+      - query-metadata
+      - card
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  card_series:
+    description: Run `card series card <id>` - compatible series/cards for combining visualizations.
+    argv:
+      - card
+      - series
+      - card
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  card_param_values:
+    description: Run `card params card-values <card-id> <param-key>` - possible values for a saved-card parameter.
+    argv:
+      - card
+      - params
+      - card-values
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  card_param_search:
+    description: Run `card params card-search <card-id> <param-key> <query>` - search possible values for a saved-card parameter.
+    argv:
+      - card
+      - params
+      - card-search
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  card_param_remapping:
+    description:
+      Run `card params card-remapping <id> <param-key> --value <value>` - display/remapped value for a saved-card
+      parameter.
+    argv:
+      - card
+      - params
+      - card-remapping
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  card_collections:
+    description: Run `card collections --stdin` - bulk move cards into a collection using JSON body.
+    argv:
+      - card
+      - collections
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  cards_dashboards:
+    description: Run `cards dashboards --stdin` - find dashboards containing multiple cards.
+    argv:
+      - cards
+      - dashboards
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  cards_move:
+    description: Run `cards move --stdin` - move cards to a collection or dashboard.
+    argv:
+      - cards
+      - move
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dataset_query_metadata:
+    description: Run `dataset query-metadata --stdin` - fetch metadata needed to run or validate an ad-hoc query.
+    argv:
+      - dataset
+      - query-metadata
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dataset_parameter_values:
+    description: Run `dataset parameter-values --stdin` - possible values for an ad-hoc/dashboard/card parameter.
+    argv:
+      - dataset
+      - parameter-values
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dataset_parameter_search:
+    description: Run `dataset parameter-search <query> --stdin` - search parameter values for an ad-hoc/dashboard/card parameter.
+    argv:
+      - dataset
+      - parameter-search
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dataset_parameter_remapping:
+    description: Run `dataset parameter-remapping --stdin` - remapped display values for a parameter.
+    argv:
+      - dataset
+      - parameter-remapping
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dataset_pivot:
+    description: Run `dataset pivot --stdin` - pivot an ad-hoc query result.
+    argv:
+      - dataset
+      - pivot
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 180
+  database_autocomplete_suggestions:
+    description: Run `database autocomplete-suggestions database <id>` - SQL autocomplete suggestions for a database.
+    argv:
+      - database
+      - autocomplete-suggestions
+      - database
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  database_card_autocomplete_suggestions:
+    description: Run `database card-autocomplete-suggestions database <id>` - autocomplete saved-card references for a database.
+    argv:
+      - database
+      - card-autocomplete-suggestions
+      - database
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  database_schema_list:
+    description: Run `database schema database-list <id>` - schema/table listing endpoint for one database.
+    argv:
+      - database
+      - schema
+      - database-list
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  database_idfields:
+    description: Run `database idfields database <id>` - fields Metabase considers identifier fields.
+    argv:
+      - database
+      - idfields
+      - database
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  database_usage_info:
+    description: Run `database usage-info database <id>` - database usage metadata.
+    argv:
+      - database
+      - usage-info
+      - database
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  collection_create:
+    description: Run `collection create --stdin` - create a collection with JSON body.
+    argv:
+      - collection
+      - create
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  collection_update:
+    description: Run `collection update <id> --stdin` - update/archive/move a collection.
+    argv:
+      - collection
+      - update
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  collection_graph:
+    description: Run `collection graph` - collection permissions graph.
+    argv:
+      - collection
+      - graph
+    parameters:
+      - args
+    required: []
+    timeout_secs: 60
+    parameter_overrides:
+      args: *id001
+  collection_update_graph:
+    description:
+      Run `collection update-graph --stdin` - batch update collection permissions graph. Use only when explicitly
+      requested.
+    argv:
+      - collection
+      - update-graph
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  collection_trash:
+    description: Run `collection trash` - fetch the trash collection.
+    argv:
+      - collection
+      - trash
+    parameters:
+      - args
+    required: []
+    timeout_secs: 60
+    parameter_overrides:
+      args: *id001
+  collection_dashboard_question_candidates:
+    description:
+      Run `collection dashboard-question-candidates collection <id>` - cards that can be moved into dashboards
+      in a collection.
+    argv:
+      - collection
+      - dashboard-question-candidates
+      - collection
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  collection_move_dashboard_question_candidates:
+    description:
+      Run `collection move-dashboard-question-candidates collection <id> --stdin` - move candidate cards to dashboards
+      in a collection.
+    argv:
+      - collection
+      - move-dashboard-question-candidates
+      - collection
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  collection_root_dashboard_question_candidates:
+    description: Run `collection root-dashboard-question-candidates` - root cards that can be moved into dashboards.
+    argv:
+      - collection
+      - root-dashboard-question-candidates
+    parameters:
+      - args
+    required: []
+    timeout_secs: 60
+    parameter_overrides:
+      args: *id001
+  collection_root_move_dashboard_question_candidates:
+    description: Run `collection root-move-dashboard-question-candidates --stdin` - move root candidate cards to dashboards.
+    argv:
+      - collection
+      - root-move-dashboard-question-candidates
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dashboard_create:
+    description: Run `dashboard create --stdin` - create a dashboard using JSON body.
+    argv:
+      - dashboard
+      - create
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dashboard_update:
+    description: Run `dashboard update <id> --stdin` - update dashboard metadata, tabs, parameters, or dashcards.
+    argv:
+      - dashboard
+      - update
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dashboard_update_cards:
+    description: Run `dashboard cards dashboard-update <id> --stdin` - update cards/layout/tabs on a dashboard.
+    argv:
+      - dashboard
+      - cards
+      - dashboard-update
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dashboard_copy:
+    description: Run `dashboard copy dashboard <from-dashboard-id>` - copy a dashboard.
+    argv:
+      - dashboard
+      - copy
+      - dashboard
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 120
+  dashboard_copy_with_body:
+    description:
+      Run `dashboard copy dashboard <from-dashboard-id> --stdin` - copy dashboard with JSON options such as name,
+      collection, or deep copy.
+    argv:
+      - dashboard
+      - copy
+      - dashboard
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dashboard_save:
+    description: Run `dashboard save --stdin` - save a denormalized dashboard description.
+    argv:
+      - dashboard
+      - save
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dashboard_save_in_collection:
+    description: Run `dashboard save-in-collection <parent-collection-id> --stdin` - save denormalized dashboard into a collection.
+    argv:
+      - dashboard
+      - save-in-collection
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dashboard_related:
+    description: Run `dashboard related dashboard <id>` - entities related to a dashboard.
+    argv:
+      - dashboard
+      - related
+      - dashboard
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  dashboard_valid_filter_fields:
+    description: Run `dashboard valid-filter-fields --filtered ... --filtering ...` - fields valid for dashboard filter wiring.
+    argv:
+      - dashboard
+      - valid-filter-fields
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  dashboard_param_values:
+    description: Run `dashboard params dashboard-values <id> <param-key>` - possible values for a dashboard parameter.
+    argv:
+      - dashboard
+      - params
+      - dashboard-values
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  dashboard_param_search:
+    description: Run `dashboard params dashboard-search <id> <param-key> <query>` - search values for a dashboard parameter.
+    argv:
+      - dashboard
+      - params
+      - dashboard-search
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  dashboard_param_remapping:
+    description:
+      Run `dashboard params dashboard-remapping <id> <param-key> --value <value>` - remapped display value for
+      a dashboard parameter.
+    argv:
+      - dashboard
+      - params
+      - dashboard-remapping
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  dashboard_dashcard_query:
+    description:
+      Run `dashboard dashcard dashboard-query <dashboard-id> <dashcard-id> <card-id>` - run a card in dashboard
+      context.
+    argv:
+      - dashboard
+      - dashcard
+      - dashboard-query
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 120
+  dashboard_dashcard_query_with_body:
+    description:
+      Run `dashboard dashcard dashboard-query <dashboard-id> <dashcard-id> <card-id> --stdin` - run a parameterized
+      card in dashboard context.
+    argv:
+      - dashboard
+      - dashcard
+      - dashboard-query
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  dashboard_dashcard_export:
+    description:
+      Run `dashboard dashcard dashboard-export <dashboard-id> <dashcard-id> <card-id> --export-format <csv|json|xlsx|api>`
+      - export a dashboard-context card result.
+    argv:
+      - dashboard
+      - dashcard
+      - dashboard-export
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 180
+  dashboard_dashcard_export_with_body:
+    description:
+      Run `dashboard dashcard dashboard-export <dashboard-id> <dashcard-id> <card-id> --export-format <csv|json|xlsx|api>
+      --stdin` - export parameterized dashboard-context card result.
+    argv:
+      - dashboard
+      - dashcard
+      - dashboard-export
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 180
+  table_list:
+    description: |
+      Run `table list` — list tables. Typed filters; the JSON Schema
+      validator rejects malformed shapes before the call leaves the LLM,
+      so the previous `--can-query` / `--term` arity failures are now
+      impossible by construction. Use `extra_args` only for flags this
+      schema does not surface (rare).
+    argv:
+      - table
+      - list
+    parameters:
+      - term
+      - can_query
+      - data_source
+      - extra_args
+    required: []
+    timeout_secs: 60
+    parameter_overrides:
+      term:
+        type: string
+        description: Case-insensitive substring filter on table name.
+      can_query:
+        type: boolean
+        description: When true, only return tables this API key can query. When false, includes tables the key cannot read.
+      data_source:
+        type: integer
+        description: Restrict listing to one database id.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — additional argv tokens for flags this schema does not yet surface.
+    arg_mappings:
+      - type: flag
+        flag: --term
+        param: term
+      - type: flag
+        flag: --can-query
+        param: can_query
+      - type: flag
+        flag: --data-source
+        param: data_source
+      - type: passthrough
+        param: extra_args
+  table_get:
+    description: Run `table get <id>` — table metadata.
+    argv:
+      - table
+      - get
+    parameters:
+      - table_id
+      - extra_args
+    required:
+      - table_id
+    parameter_overrides:
+      table_id:
+        type: integer
+        description: Numeric Metabase table id.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+      - type: positional
+        param: table_id
+      - type: passthrough
+        param: extra_args
+    timeout_secs: 60
+  table_query_metadata:
+    description: Run `table query-metadata table <id>` — DB, fields, FK, and values useful for query construction.
+    argv:
+      - table
+      - query-metadata
+      - table
+    parameters:
+      - table_id
+      - extra_args
+    required:
+      - table_id
+    parameter_overrides:
+      table_id:
+        type: integer
+        description: Numeric Metabase table id.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Escape hatch — extra argv tokens.
+    arg_mappings:
+      - type: positional
+        param: table_id
+      - type: passthrough
+        param: extra_args
+    timeout_secs: 60
+  table_fks:
+    description: Run `table fks table <id>` - foreign keys whose destination belongs to this table.
+    argv:
+      - table
+      - fks
+      - table
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  table_related:
+    description: Run `table related table <id>` - related entities for a table.
+    argv:
+      - table
+      - related
+      - table
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  table_data:
+    description: Run `table data table <table-id>` - sample/table data from Metabase.
+    argv:
+      - table
+      - data
+      - table
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 120
+  table_card_query_metadata:
+    description: Run `table card-query-metadata <id>` - virtual table metadata for a saved card/model.
+    argv:
+      - table
+      - card-query-metadata
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  table_card_fks:
+    description: Run `table card-fks <id>` - virtual table FK info for a saved card/model.
+    argv:
+      - table
+      - card-fks
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  field_get:
+    description: Run `field get <id>` - field metadata.
+    argv:
+      - field
+      - get
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  field_values:
+    description: Run `field values field <id>` - values cached/known for a field.
+    argv:
+      - field
+      - values
+      - field
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  field_summary:
+    description: Run `field summary field <id>` - summary statistics for a field.
+    argv:
+      - field
+      - summary
+      - field
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  field_search:
+    description: Run `field search field <id> <search-id> --value <text>` - search field values.
+    argv:
+      - field
+      - search
+      - field
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  field_related:
+    description: Run `field related field <id>` - related entities for a field.
+    argv:
+      - field
+      - related
+      - field
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  field_remapping:
+    description: Run `field remapping field <id> <remapped-id> --value <value>` - remapped display value for a field.
+    argv:
+      - field
+      - remapping
+      - field
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  field_table_ids:
+    description: Run `field table-ids --stdin` - resolve unique table ids for a list of field ids.
+    argv:
+      - field
+      - table-ids
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 60
+  snippet_list:
+    description: Run `native-query-snippet snippet-list` - list SQL snippets.
+    argv:
+      - native-query-snippet
+      - snippet-list
+    parameters:
+      - args
+    required: []
+    timeout_secs: 60
+    parameter_overrides:
+      args: *id001
+  snippet_get:
+    description: Run `native-query-snippet snippet-get <id>` - fetch a SQL snippet.
+    argv:
+      - native-query-snippet
+      - snippet-get
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  snippet_create:
+    description: Run `native-query-snippet snippet-create --stdin` - create a SQL snippet.
+    argv:
+      - native-query-snippet
+      - snippet-create
+    parameters:
+      - stdin
+    required:
+      - stdin
+    parameter_overrides:
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  snippet_update:
+    description: Run `native-query-snippet snippet-update <id> --stdin` - update/archive a SQL snippet.
+    argv:
+      - native-query-snippet
+      - snippet-update
+    parameters:
+      - args
+      - stdin
+    required:
+      - args
+      - stdin
+    parameter_overrides:
+      args: *id001
+      stdin: *id002
+    suffix_args:
+      - --stdin
+    timeout_secs: 120
+  metric_list:
+    description: Run `metric list` - list Metabase metrics.
+    argv:
+      - metric
+      - list
+    parameters:
+      - args
+    required: []
+    timeout_secs: 60
+    parameter_overrides:
+      args: *id001
+  metric_get:
+    description: Run `metric get <id>` - metric metadata with dimensions.
+    argv:
+      - metric
+      - get
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  metric_dimension_values:
+    description: Run `metric dimension metric-values <id> <dimension-key>` - values for a metric dimension.
+    argv:
+      - metric
+      - dimension
+      - metric-values
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  metric_dimension_search:
+    description: Run `metric dimension metric-search <id> <dimension-key> --query <text>` - search values for a metric dimension.
+    argv:
+      - metric
+      - dimension
+      - metric-search
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+  metric_dimension_remapping:
+    description:
+      Run `metric dimension metric-remapping <id> <dimension-key> --value <value>` - remapped value for a metric
+      dimension.
+    argv:
+      - metric
+      - dimension
+      - metric-remapping
+    parameters:
+      - args
+    required:
+      - args
+    parameter_overrides:
+      args: *id001
+    timeout_secs: 60
+implementation:
+  type: primitive
+  command:
+    - "{skill_runtime_root}/bin/metabase-pp-cli"
+    - --json
+    - --no-input
+    - --no-color
+    - --yes
+  program: "{skill_runtime_root}/bin/metabase-pp-cli"
+  arg_mappings:
+    - type: split_positional
+      param: command
+  content_type: tool_output
+  timeout_secs: 60
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories:
+    - data
+    - analytics
+    - discovery
+    - sql
+    - metabase
+  composition_category: data_operations
+  sandbox: shell

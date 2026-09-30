@@ -1,0 +1,8 @@
+{
+  "name": "@magician/skill-browser",
+  "private": true,
+  "description": "agent-browser CLI dep for the browser skill. Pinned to the upstream tag whose patch lives at _vendor/. `make setup-agent-browser` overlays the patched native binary on top of npm's vanilla download.",
+  "dependencies": {
+    "agent-browser": "0.38.1"
+  }
+}

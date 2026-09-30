@@ -1,0 +1,721 @@
+{
+  "fixture_id": "attention-canonical-union-frozen-v1",
+  "schema_version": 1,
+  "api_contract": {
+    "legacy_response_field": "canonical_attention_projection",
+    "standalone_method": "GET",
+    "standalone_path": "/api/magician/v2/channel-assist/attention-learning/canonical-projection",
+    "digest_contract": "blake3-origin-qualified-complete-union-v1",
+    "projection_contract": "single-idempotent-projection-v1"
+  },
+  "defaults": {
+    "routing_mode": "baseline",
+    "routing_snapshot_id": null,
+    "canary_fraction": 0.0,
+    "route_changes_applied": false
+  },
+  "learning_evidence_contract": {
+    "candidate_evidence": [
+      {
+        "canonical_id": "follow_up:shared-001",
+        "origin_surface": "follow_up",
+        "rank_surface": "follow_up",
+        "posterior_surface": "follow_up",
+        "pair_surface": "follow_up",
+        "cannot_link_surface": "follow_up"
+      },
+      {
+        "canonical_id": "follow_up:fu-campaign",
+        "origin_surface": "follow_up",
+        "rank_surface": "follow_up",
+        "posterior_surface": "follow_up",
+        "pair_surface": "follow_up",
+        "cannot_link_surface": "follow_up"
+      },
+      {
+        "canonical_id": "follow_up:fu-low",
+        "origin_surface": "follow_up",
+        "rank_surface": "follow_up",
+        "posterior_surface": "follow_up",
+        "pair_surface": "follow_up",
+        "cannot_link_surface": "follow_up"
+      },
+      {
+        "canonical_id": "worth_a_look:shared-001",
+        "origin_surface": "worth_a_look",
+        "rank_surface": "worth_a_look",
+        "posterior_surface": "worth_a_look",
+        "pair_surface": "worth_a_look",
+        "cannot_link_surface": "worth_a_look"
+      },
+      {
+        "canonical_id": "worth_a_look:wa-campaign",
+        "origin_surface": "worth_a_look",
+        "rank_surface": "worth_a_look",
+        "posterior_surface": "worth_a_look",
+        "pair_surface": "worth_a_look",
+        "cannot_link_surface": "worth_a_look"
+      },
+      {
+        "canonical_id": "worth_a_look:wa-request",
+        "origin_surface": "worth_a_look",
+        "rank_surface": "worth_a_look",
+        "posterior_surface": "worth_a_look",
+        "pair_surface": "worth_a_look",
+        "cannot_link_surface": "worth_a_look"
+      }
+    ],
+    "within_origin_pair_remaps": [
+      {
+        "surface": "follow_up",
+        "raw_left_id": "shared-001",
+        "raw_right_id": "fu-campaign",
+        "canonical_left_id": "follow_up:shared-001",
+        "canonical_right_id": "follow_up:fu-campaign",
+        "label": "not_duplicate",
+        "cannot_link": true
+      },
+      {
+        "surface": "worth_a_look",
+        "raw_left_id": "shared-001",
+        "raw_right_id": "wa-campaign",
+        "canonical_left_id": "worth_a_look:shared-001",
+        "canonical_right_id": "worth_a_look:wa-campaign",
+        "label": "not_duplicate",
+        "cannot_link": true
+      }
+    ],
+    "unlabeled_cross_origin_pairs": [
+      {
+        "left_canonical_id": "follow_up:fu-campaign",
+        "right_canonical_id": "worth_a_look:wa-campaign",
+        "owner_pair_label": null,
+        "cannot_link": false,
+        "borrowed_surface_evidence": false,
+        "model_inference_allowed": true
+      }
+    ]
+  },
+  "baseline_order_contract": {
+    "mode": "baseline",
+    "canary_fraction": 0.0,
+    "diagnostic_learned_order_may_differ": true,
+    "route_changes_applied": false,
+    "origin_order": {
+      "follow_up": [
+        "follow_up:shared-001",
+        "follow_up:fu-campaign",
+        "follow_up:fu-low"
+      ],
+      "worth_a_look": [
+        "worth_a_look:shared-001",
+        "worth_a_look:wa-campaign",
+        "worth_a_look:wa-request"
+      ],
+      "non_surfaced": []
+    },
+    "expected_served_order": {
+      "follow_up": [
+        "follow_up:shared-001",
+        "follow_up:fu-campaign",
+        "follow_up:fu-low"
+      ],
+      "worth_a_look": [
+        "worth_a_look:shared-001",
+        "worth_a_look:wa-campaign",
+        "worth_a_look:wa-request"
+      ],
+      "non_surfaced": []
+    }
+  },
+  "complete_union": {
+    "source_loads": {
+      "follow_up": {
+        "state": "complete",
+        "expected_total": 3,
+        "loaded_total": 3
+      },
+      "worth_a_look": {
+        "state": "complete",
+        "expected_total": 3,
+        "loaded_total": 3
+      }
+    },
+    "replays": [
+      {
+        "request_id": "follow-up-legacy-request",
+        "consumer": "follow_up",
+        "projection_id": "4f747fc2631d432a6923a10584e972ffaf51303a36adac158c1bd87a891127bb",
+        "universe_digest": "6f92f7b8fe68c75c63f80a719b0f6bc07dd4f4e2838234b32429b032cd53a4ef"
+      },
+      {
+        "request_id": "worth-legacy-request",
+        "consumer": "worth_a_look",
+        "projection_id": "4f747fc2631d432a6923a10584e972ffaf51303a36adac158c1bd87a891127bb",
+        "universe_digest": "6f92f7b8fe68c75c63f80a719b0f6bc07dd4f4e2838234b32429b032cd53a4ef"
+      },
+      {
+        "request_id": "standalone-replay-request",
+        "consumer": "standalone",
+        "projection_id": "4f747fc2631d432a6923a10584e972ffaf51303a36adac158c1bd87a891127bb",
+        "universe_digest": "6f92f7b8fe68c75c63f80a719b0f6bc07dd4f4e2838234b32429b032cd53a4ef"
+      }
+    ],
+    "expected": {
+      "schema_version": 1,
+      "status": "succeeded",
+      "projection_id": "4f747fc2631d432a6923a10584e972ffaf51303a36adac158c1bd87a891127bb",
+      "universe_digest": "6f92f7b8fe68c75c63f80a719b0f6bc07dd4f4e2838234b32429b032cd53a4ef",
+      "created_at": 1785250800000,
+      "policy": {
+        "mode": "canary",
+        "snapshot_id": "routing-fixture-v1",
+        "model_version": "routing-logistic-fixture-v1",
+        "seed_identity": "canonical-fixture-seed-v1",
+        "canary_fraction": 1.0
+      },
+      "integrity": {
+        "load_complete": true,
+        "exact_once": true,
+        "source_total": 6,
+        "follow_up_source_total": 3,
+        "worth_a_look_source_total": 3,
+        "reconciled_total": 6,
+        "grouped_member_total": 6,
+        "materialized_total": 6,
+        "follow_up_lane_total": 2,
+        "worth_a_look_lane_total": 3,
+        "non_surfaced_total": 1,
+        "duplicate_hidden_total": 0,
+        "unmatched_total": 0,
+        "fallback_reason": null
+      },
+      "lanes": {
+        "follow_up": [
+          {
+            "canonical_id": "follow_up:shared-001",
+            "source_revision": "distill:11",
+            "origin_lane": "follow_up",
+            "served_lane": "follow_up",
+            "learned_lane": "follow_up",
+            "route_reason": "learned_route_matches_baseline",
+            "route_applied": false,
+            "origin": {
+              "kind": "follow_up",
+              "annotation_id": "shared-001",
+              "provider": "gmail",
+              "account_alias": "fixture",
+              "thread_id": "thread-shared-001"
+            },
+            "group": {
+              "cluster_id": "cluster-follow-up-shared",
+              "representative_id": "follow_up:shared-001",
+              "member_ids": ["follow_up:shared-001"],
+              "member_count": 1
+            },
+            "actions": [
+              {
+                "id": "open_source",
+                "kind": "open_source",
+                "label": "Open",
+                "method": "get",
+                "href": "https://mail.google.com/mail/u/0/#inbox/shared-001",
+                "requires_confirmation": false
+              },
+              {
+                "id": "approve",
+                "kind": "approve",
+                "label": "Approve",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/shared-001/approve",
+                "requires_confirmation": true
+              },
+              {
+                "id": "acknowledge",
+                "kind": "acknowledge",
+                "label": "Acknowledge",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/shared-001/acknowledge",
+                "requires_confirmation": false
+              },
+              {
+                "id": "useful",
+                "kind": "useful",
+                "label": "Useful",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/shared-001/useful",
+                "requires_confirmation": false
+              },
+              {
+                "id": "dismiss",
+                "kind": "dismiss",
+                "label": "Dismiss",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/shared-001/dismiss",
+                "requires_confirmation": true
+              },
+              {
+                "id": "snooze",
+                "kind": "snooze",
+                "label": "Snooze",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/shared-001/snooze",
+                "requires_confirmation": false
+              }
+            ],
+            "payload": {
+              "kind": "follow_up",
+              "annotation_id": "shared-001",
+              "subject": "Approve the launch copy",
+              "sender": "Project Owner <owner@example.test>",
+              "summary": "A direct review request with a due date.",
+              "label": "action_required",
+              "reason": "direct request",
+              "received_at": 1785247200000,
+              "open_url": "https://mail.google.com/mail/u/0/#inbox/shared-001"
+            }
+          },
+          {
+            "canonical_id": "worth_a_look:wa-request",
+            "source_revision": "worth-revision:request-3",
+            "origin_lane": "worth_a_look",
+            "served_lane": "follow_up",
+            "learned_lane": "follow_up",
+            "route_reason": "canary_route_applied",
+            "route_applied": true,
+            "origin": {
+              "kind": "worth_a_look",
+              "candidate_id": "wa-request",
+              "source_kind": "task_episode",
+              "source_ref": "https://example.test/venue-request"
+            },
+            "group": {
+              "cluster_id": "cluster-worth-request",
+              "representative_id": "worth_a_look:wa-request",
+              "member_ids": ["worth_a_look:wa-request"],
+              "member_count": 1
+            },
+            "actions": [
+              {
+                "id": "open_source",
+                "kind": "open_source",
+                "label": "Open",
+                "method": "get",
+                "href": "https://example.test/venue-request",
+                "requires_confirmation": false
+              },
+              {
+                "id": "useful",
+                "kind": "useful",
+                "label": "Useful",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/wa-request/action",
+                "requires_confirmation": false
+              },
+              {
+                "id": "acknowledge",
+                "kind": "acknowledge",
+                "label": "Acknowledge",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/wa-request/action",
+                "requires_confirmation": false
+              },
+              {
+                "id": "dismiss",
+                "kind": "dismiss",
+                "label": "Dismiss",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/wa-request/action",
+                "requires_confirmation": true
+              }
+            ],
+            "payload": {
+              "kind": "worth_a_look",
+              "candidate_id": "wa-request",
+              "line": "Confirm the venue change",
+              "why_now": "The event organizer requested a decision.",
+              "summary": "The venue decision is due tomorrow.",
+              "source_title": "Venue decision",
+              "source_kind": "task_episode",
+              "source_ref": "https://example.test/venue-request",
+              "open_url": "https://example.test/venue-request",
+              "temporal_anchor_at": 1785333600000,
+              "brief": {"information_type": "event_update"}
+            }
+          }
+        ],
+        "worth_a_look": [
+          {
+            "canonical_id": "worth_a_look:shared-001",
+            "source_revision": "worth-revision:shared-5",
+            "origin_lane": "worth_a_look",
+            "served_lane": "worth_a_look",
+            "learned_lane": "worth_a_look",
+            "route_reason": "learned_route_matches_baseline",
+            "route_applied": false,
+            "origin": {
+              "kind": "worth_a_look",
+              "candidate_id": "shared-001",
+              "source_kind": "memory",
+              "source_ref": "https://example.test/research-notes"
+            },
+            "group": {
+              "cluster_id": "cluster-worth-shared",
+              "representative_id": "worth_a_look:shared-001",
+              "member_ids": ["worth_a_look:shared-001"],
+              "member_count": 1
+            },
+            "actions": [
+              {
+                "id": "open_source",
+                "kind": "open_source",
+                "label": "Open",
+                "method": "get",
+                "href": "https://example.test/research-notes",
+                "requires_confirmation": false
+              },
+              {
+                "id": "useful",
+                "kind": "useful",
+                "label": "Useful",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/shared-001/action",
+                "requires_confirmation": false
+              },
+              {
+                "id": "acknowledge",
+                "kind": "acknowledge",
+                "label": "Acknowledge",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/shared-001/action",
+                "requires_confirmation": false
+              },
+              {
+                "id": "dismiss",
+                "kind": "dismiss",
+                "label": "Dismiss",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/shared-001/action",
+                "requires_confirmation": true
+              }
+            ],
+            "payload": {
+              "kind": "worth_a_look",
+              "candidate_id": "shared-001",
+              "line": "Research notes were updated",
+              "why_now": "A related project became active.",
+              "summary": "Three bounded research facts changed.",
+              "source_title": "Research notes",
+              "source_kind": "memory",
+              "source_ref": "https://example.test/research-notes",
+              "open_url": "https://example.test/research-notes",
+              "temporal_anchor_at": null,
+              "brief": {"information_type": "research_update"}
+            }
+          },
+          {
+            "canonical_id": "follow_up:fu-campaign",
+            "source_revision": "distill:31",
+            "origin_lane": "follow_up",
+            "served_lane": "worth_a_look",
+            "learned_lane": "worth_a_look",
+            "route_reason": "canary_route_applied",
+            "route_applied": true,
+            "origin": {
+              "kind": "follow_up",
+              "annotation_id": "fu-campaign",
+              "provider": "gmail",
+              "account_alias": "fixture",
+              "thread_id": "thread-fu-campaign"
+            },
+            "group": {
+              "cluster_id": "cluster-campaign",
+              "representative_id": "follow_up:fu-campaign",
+              "member_ids": [
+                "follow_up:fu-campaign",
+                "worth_a_look:wa-campaign"
+              ],
+              "member_count": 2
+            },
+            "actions": [
+              {
+                "id": "open_source",
+                "kind": "open_source",
+                "label": "Open",
+                "method": "get",
+                "href": "https://mail.google.com/mail/u/0/#inbox/fu-campaign",
+                "requires_confirmation": false
+              },
+              {
+                "id": "approve",
+                "kind": "approve",
+                "label": "Approve",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-campaign/approve",
+                "requires_confirmation": true
+              },
+              {
+                "id": "acknowledge",
+                "kind": "acknowledge",
+                "label": "Acknowledge",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-campaign/acknowledge",
+                "requires_confirmation": false
+              },
+              {
+                "id": "useful",
+                "kind": "useful",
+                "label": "Useful",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-campaign/useful",
+                "requires_confirmation": false
+              },
+              {
+                "id": "dismiss",
+                "kind": "dismiss",
+                "label": "Dismiss",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-campaign/dismiss",
+                "requires_confirmation": true
+              },
+              {
+                "id": "snooze",
+                "kind": "snooze",
+                "label": "Snooze",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-campaign/snooze",
+                "requires_confirmation": false
+              }
+            ],
+            "payload": {
+              "kind": "follow_up",
+              "annotation_id": "fu-campaign",
+              "subject": "Weekly launch digest",
+              "sender": "Digest <digest@example.test>",
+              "summary": "An informational campaign update.",
+              "label": "information_brief",
+              "reason": "broadcast information",
+              "received_at": 1785243600000,
+              "open_url": "https://mail.google.com/mail/u/0/#inbox/fu-campaign"
+            }
+          },
+          {
+            "canonical_id": "worth_a_look:wa-campaign",
+            "source_revision": "worth-revision:campaign-8",
+            "origin_lane": "worth_a_look",
+            "served_lane": "worth_a_look",
+            "learned_lane": "worth_a_look",
+            "route_reason": "group_member_materialized",
+            "route_applied": false,
+            "origin": {
+              "kind": "worth_a_look",
+              "candidate_id": "wa-campaign",
+              "source_kind": "comms",
+              "source_ref": "https://example.test/campaign-update"
+            },
+            "group": {
+              "cluster_id": "cluster-campaign",
+              "representative_id": "follow_up:fu-campaign",
+              "member_ids": [
+                "follow_up:fu-campaign",
+                "worth_a_look:wa-campaign"
+              ],
+              "member_count": 2
+            },
+            "actions": [
+              {
+                "id": "open_source",
+                "kind": "open_source",
+                "label": "Open",
+                "method": "get",
+                "href": "https://example.test/campaign-update",
+                "requires_confirmation": false
+              },
+              {
+                "id": "useful",
+                "kind": "useful",
+                "label": "Useful",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/wa-campaign/action",
+                "requires_confirmation": false
+              },
+              {
+                "id": "acknowledge",
+                "kind": "acknowledge",
+                "label": "Acknowledge",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/wa-campaign/action",
+                "requires_confirmation": false
+              },
+              {
+                "id": "dismiss",
+                "kind": "dismiss",
+                "label": "Dismiss",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/resurfacing/wa-campaign/action",
+                "requires_confirmation": true
+              }
+            ],
+            "payload": {
+              "kind": "worth_a_look",
+              "candidate_id": "wa-campaign",
+              "line": "Launch digest source was refreshed",
+              "why_now": "It belongs to the same campaign.",
+              "summary": "A second source for the campaign update.",
+              "source_title": "Launch digest update",
+              "source_kind": "comms",
+              "source_ref": "https://example.test/campaign-update",
+              "open_url": "https://example.test/campaign-update",
+              "temporal_anchor_at": null,
+              "brief": {"information_type": "campaign_update"}
+            }
+          }
+        ],
+        "non_surfaced": [
+          {
+            "canonical_id": "follow_up:fu-low",
+            "source_revision": "distill:44",
+            "origin_lane": "follow_up",
+            "served_lane": "non_surfaced",
+            "learned_lane": "non_surfaced",
+            "route_reason": "below_minimum_surface_utility",
+            "route_applied": true,
+            "origin": {
+              "kind": "follow_up",
+              "annotation_id": "fu-low",
+              "provider": "gmail",
+              "account_alias": "fixture",
+              "thread_id": "thread-fu-low"
+            },
+            "group": {
+              "cluster_id": "cluster-follow-up-low",
+              "representative_id": "follow_up:fu-low",
+              "member_ids": ["follow_up:fu-low"],
+              "member_count": 1
+            },
+            "actions": [
+              {
+                "id": "open_source",
+                "kind": "open_source",
+                "label": "Open",
+                "method": "get",
+                "href": "https://mail.google.com/mail/u/0/#inbox/fu-low",
+                "requires_confirmation": false
+              },
+              {
+                "id": "approve",
+                "kind": "approve",
+                "label": "Approve",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-low/approve",
+                "requires_confirmation": true
+              },
+              {
+                "id": "acknowledge",
+                "kind": "acknowledge",
+                "label": "Acknowledge",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-low/acknowledge",
+                "requires_confirmation": false
+              },
+              {
+                "id": "useful",
+                "kind": "useful",
+                "label": "Useful",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-low/useful",
+                "requires_confirmation": false
+              },
+              {
+                "id": "dismiss",
+                "kind": "dismiss",
+                "label": "Dismiss",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-low/dismiss",
+                "requires_confirmation": true
+              },
+              {
+                "id": "snooze",
+                "kind": "snooze",
+                "label": "Snooze",
+                "method": "post",
+                "href": "/api/magician/v2/channel-assist/annotations/fu-low/snooze",
+                "requires_confirmation": false
+              }
+            ],
+            "payload": {
+              "kind": "follow_up",
+              "annotation_id": "fu-low",
+              "subject": "Automated digest copy",
+              "sender": "Digest <digest@example.test>",
+              "summary": "Low-utility repeated information.",
+              "label": "information_brief",
+              "reason": "low utility",
+              "received_at": 1785236400000,
+              "open_url": "https://mail.google.com/mail/u/0/#inbox/fu-low"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "fail_closed_cases": [
+    {
+      "id": "source_totals_changed_during_union_load",
+      "load_state": "stale",
+      "expected_status": "baseline_fallback",
+      "expected_fallback_reason": "canonical_source_totals_changed",
+      "expected_effective_mode": "baseline",
+      "expected_effective_canary_fraction": 0.0,
+      "expected_route_changes_applied": false,
+      "expected_partial_projection_item_total": 0,
+      "legacy_response": "original_atomic_payload"
+    },
+    {
+      "id": "worth_load_count_does_not_reconcile",
+      "load_state": "incomplete",
+      "expected_status": "baseline_fallback",
+      "expected_fallback_reason": "worth_a_look_load_incomplete",
+      "expected_effective_mode": "baseline",
+      "expected_effective_canary_fraction": 0.0,
+      "expected_route_changes_applied": false,
+      "expected_partial_projection_item_total": 0,
+      "legacy_response": "original_atomic_payload"
+    },
+    {
+      "id": "canonical_projector_unavailable",
+      "load_state": "unavailable",
+      "expected_status": "baseline_fallback",
+      "expected_fallback_reason": "canonical_projector_unavailable",
+      "expected_effective_mode": "baseline",
+      "expected_effective_canary_fraction": 0.0,
+      "expected_route_changes_applied": false,
+      "expected_partial_projection_item_total": 0,
+      "legacy_response": "original_atomic_payload"
+    },
+    {
+      "id": "baseline_default_is_complete_but_non_applying",
+      "load_state": "complete",
+      "expected_status": "succeeded",
+      "expected_fallback_reason": null,
+      "expected_effective_mode": "baseline",
+      "expected_effective_canary_fraction": 0.0,
+      "expected_route_changes_applied": false,
+      "expected_partial_projection_item_total": 6,
+      "legacy_response": "canonical_baseline_payload"
+    },
+    {
+      "id": "shipped_baseline_canary_zero_is_complete_but_non_applying",
+      "load_state": "complete",
+      "configured_mode": "baseline",
+      "configured_canary_fraction": 0.0,
+      "expected_status": "succeeded",
+      "expected_fallback_reason": null,
+      "expected_effective_mode": "baseline",
+      "expected_effective_canary_fraction": 0.0,
+      "expected_route_changes_applied": false,
+      "expected_partial_projection_item_total": 6,
+      "legacy_response": "canonical_baseline_payload"
+    }
+  ]
+}

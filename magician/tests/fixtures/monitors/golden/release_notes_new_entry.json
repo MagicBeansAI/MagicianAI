@@ -1,0 +1,153 @@
+{
+  "name": "release_notes_new_entry",
+  "description": "Release-notes feed: baseline captures two releases, the next scan discovers one brand-new entry. The new stable item must classify `new`, read material, and notify.",
+  "notification_policy": "material_changes",
+  "notify_initial_baseline": false,
+  "steps": [
+    {
+      "label": "baseline scan",
+      "execution_id": "exec_rel_1",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_rel_1",
+        "monitor_revision": 3,
+        "started_at": "2026-07-22T08:00:00Z",
+        "completed_at": "2026-07-22T08:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://vendor.example/releases",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 2
+          }
+        ],
+        "counts": { "scanned": 2, "new": 0, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:rel-1.2.0",
+            "title": "v1.2.0 released",
+            "canonical_url": "https://vendor.example/releases/1.2.0",
+            "source": "https://vendor.example/releases",
+            "observed_at": "2026-07-22T08:00:30Z",
+            "published_at": "2026-07-10T00:00:00Z",
+            "summary": "Version 1.2.0 shipped.",
+            "why_it_matters": "Tracked release entry.",
+            "entities": ["v1.2.0"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_2001",
+            "classification": "unchanged"
+          },
+          {
+            "stable_key": "native:rel-1.2.1",
+            "title": "v1.2.1 released",
+            "canonical_url": "https://vendor.example/releases/1.2.1",
+            "source": "https://vendor.example/releases",
+            "observed_at": "2026-07-22T08:00:30Z",
+            "published_at": "2026-07-18T00:00:00Z",
+            "summary": "Version 1.2.1 shipped.",
+            "why_it_matters": "Tracked release entry.",
+            "entities": ["v1.2.1"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_2002",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_2001",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "baseline",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": true,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 2, "updated": 0, "unchanged": 0, "possibly_removed": 0 }
+      }
+    },
+    {
+      "label": "v1.3.0 appears",
+      "execution_id": "exec_rel_2",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_rel_2",
+        "monitor_revision": 3,
+        "started_at": "2026-07-29T08:00:00Z",
+        "completed_at": "2026-07-29T08:01:00Z",
+        "status": "changed",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://vendor.example/releases",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 3
+          }
+        ],
+        "counts": { "scanned": 3, "new": 1, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:rel-1.3.0",
+            "title": "v1.3.0 released",
+            "canonical_url": "https://vendor.example/releases/1.3.0",
+            "source": "https://vendor.example/releases",
+            "observed_at": "2026-07-29T08:00:30Z",
+            "published_at": "2026-07-28T00:00:00Z",
+            "summary": "Version 1.3.0 shipped with the new export pipeline.",
+            "why_it_matters": "A brand-new release entry in the tracked feed.",
+            "entities": ["v1.3.0"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_2003",
+            "classification": "new"
+          },
+          {
+            "stable_key": "native:rel-1.2.0",
+            "title": "v1.2.0 released",
+            "canonical_url": "https://vendor.example/releases/1.2.0",
+            "source": "https://vendor.example/releases",
+            "observed_at": "2026-07-29T08:00:30Z",
+            "published_at": "2026-07-10T00:00:00Z",
+            "summary": "Version 1.2.0 shipped.",
+            "why_it_matters": "Tracked release entry.",
+            "entities": ["v1.2.0"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_2001",
+            "classification": "unchanged"
+          },
+          {
+            "stable_key": "native:rel-1.2.1",
+            "title": "v1.2.1 released",
+            "canonical_url": "https://vendor.example/releases/1.2.1",
+            "source": "https://vendor.example/releases",
+            "observed_at": "2026-07-29T08:00:30Z",
+            "published_at": "2026-07-18T00:00:00Z",
+            "summary": "Version 1.2.1 shipped.",
+            "why_it_matters": "Tracked release entry.",
+            "entities": ["v1.2.1"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_2002",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_2002",
+        "change_fingerprint": "chg_model_claim_2002"
+      },
+      "expect": {
+        "status": "changed",
+        "material": true,
+        "would_notify": true,
+        "update_recorded": true,
+        "projects_to_changed": true,
+        "change_fingerprint_present": true,
+        "counts": { "new": 1, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "classifications": {
+          "native:rel-1.3.0": "new",
+          "native:rel-1.2.0": "unchanged",
+          "native:rel-1.2.1": "unchanged"
+        }
+      }
+    }
+  ]
+}

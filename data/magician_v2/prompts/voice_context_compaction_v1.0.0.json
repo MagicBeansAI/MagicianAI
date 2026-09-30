@@ -1,0 +1,38 @@
+{
+  "name": "voice_context_compaction",
+  "version": "1.0.0",
+  "content": [
+    "{prior_summary_block}",
+    "{transcript_block}",
+    "",
+    "Produce the refreshed summary now."
+  ],
+  "variables": [
+    {
+      "name": "prior_summary_block",
+      "description": "Optional prior-summary section. When a previous compaction exists, the caller renders this as 'Prior summary (extend or refine):\\n<summary>\\n'. Otherwise an empty string so the prompt starts straight at the transcript.",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "Prior summary (extend or refine):\nUser asked Magician to research the Q3 OKR retro. Two tasks were spawned: one to pull the OKR doc, one to summarise the prior retro notes."
+      ]
+    },
+    {
+      "name": "transcript_block",
+      "description": "The new turns to fold into the summary, rendered one per line as 'role: text'. The caller assembles this from chat-ledger ChatMessageContent::Text entries since the prior compaction's last_compacted_turn_id. Heading line varies based on whether prior_summary_block was supplied — 'New turns since prior summary:' vs 'Conversation transcript to summarise:'.",
+      "required": true,
+      "examples": [
+        "New turns since prior summary:\nuser: Did the Q3 doc come back yet?\nassistant: Still pulling it — should land in about a minute."
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "Conversational",
+    "description": "User template for the voice context compactor. Two variables — the optional prior summary block and the required transcript block — are pre-assembled by the caller so the prompt manager doesn't need to know the chat-ledger shape.",
+    "author": "magician",
+    "created_at": "2026-05-19T00:00:00Z",
+    "changelog": "v1.0.0: Initial release. Two pre-assembled blocks plus a trailing 'produce now' nudge.",
+    "tags": ["voice", "user-prompt", "realtime-voice", "compaction"],
+    "estimated_tokens": 80
+  }
+}

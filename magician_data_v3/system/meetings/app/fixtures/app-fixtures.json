@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "one_live_listener",
+      "entity": "capture_session",
+      "value": {
+        "session_id": "listen-4f2c1a08",
+        "mode": "passive",
+        "status": "Listening",
+        "live": true,
+        "in_scope": true,
+        "paused": false,
+        "capture_mic": true,
+        "thread_id": "meeting-acme-review-2026-09-02",
+        "title": "Acme review",
+        "url": "https://meet.google.com/abc-defg-hij",
+        "started_seconds_ago": 1320,
+        "ended_seconds_ago": null,
+        "retained_for_seconds": 300,
+        "synced_at": "2026-09-02T09:22:00Z"
+      }
+    },
+    {
+      "name": "one_retained_attendee",
+      "entity": "capture_session",
+      "value": {
+        "session_id": "meet-91b0d7e4",
+        "mode": "attendee",
+        "status": "Left",
+        "live": false,
+        "in_scope": true,
+        "paused": false,
+        "capture_mic": null,
+        "thread_id": "meeting-standup-2026-09-01",
+        "title": "Standup",
+        "url": "https://meet.google.com/kli-mnop-qrs",
+        "started_seconds_ago": 5400,
+        "ended_seconds_ago": 120,
+        "retained_for_seconds": 300,
+        "synced_at": "2026-09-02T09:22:00Z"
+      }
+    },
+    {
+      "name": "one_meeting_thread",
+      "entity": "meeting_thread",
+      "value": {
+        "thread_id": "meeting-acme-review-2026-09-02",
+        "session_id": "chat-6b1f",
+        "title": "Acme review",
+        "agent_id": "magician",
+        "status": "active",
+        "created_at": "2026-09-02T09:00:00Z",
+        "updated_at": "2026-09-02T09:21:00Z",
+        "synced_at": "2026-09-02T09:22:00Z"
+      }
+    },
+    {
+      "name": "one_transcript_line",
+      "entity": "transcript_line",
+      "value": {
+        "message_id": "msg-0a17",
+        "thread_id": "meeting-acme-review-2026-09-02",
+        "session_id": "chat-6b1f",
+        "speaker": "Priya",
+        "line_text": "We can commit to the revised pricing by Friday.",
+        "transcript": true,
+        "line_at": "2026-09-02T09:11:04Z",
+        "synced_at": "2026-09-02T09:22:00Z"
+      }
+    },
+    {
+      "name": "one_non_transcript_line",
+      "entity": "transcript_line",
+      "value": {
+        "message_id": "msg-0a18",
+        "thread_id": "meeting-acme-review-2026-09-02",
+        "session_id": "chat-6b1f",
+        "speaker": null,
+        "line_text": "Capture was interrupted and resumed at 09:12.",
+        "transcript": false,
+        "line_at": "2026-09-02T09:12:00Z",
+        "synced_at": "2026-09-02T09:22:00Z"
+      }
+    },
+    {
+      "name": "one_takeaway",
+      "entity": "meeting_takeaway",
+      "value": {
+        "takeaway_key": "meeting:meeting-acme-review-2026-09-02",
+        "thread_id": "meeting-acme-review-2026-09-02",
+        "title": "Acme review",
+        "meeting_date": "2026-09-02",
+        "summary": "Reviewed the revised pricing and the Friday cut.",
+        "decisions": "- Ship the revised pricing on Friday",
+        "action_items": "- Send the updated deck before Thursday",
+        "updated_at": "2026-09-02T09:40:00Z",
+        "synced_at": "2026-09-02T09:41:00Z"
+      }
+    },
+    {
+      "name": "one_upcoming_meeting",
+      "entity": "upcoming_meeting",
+      "value": {
+        "event_id": "evt_5591",
+        "title": "Pricing follow-up",
+        "starts_at": "2026-09-02T14:00:00Z",
+        "ends_at": "2026-09-02T14:30:00Z",
+        "meet_url": "https://meet.google.com/tuv-wxyz-abc",
+        "live_now": false,
+        "account": "work",
+        "synced_at": "2026-09-02T09:22:00Z"
+      }
+    },
+    {
+      "name": "one_transcript_hit",
+      "entity": "meeting_search_hit",
+      "value": {
+        "hit_id": "msg-0a17",
+        "kind": "transcript",
+        "thread_id": "meeting-acme-review-2026-09-02",
+        "session_id": "chat-6b1f",
+        "message_id": "msg-0a17",
+        "speaker": "Priya",
+        "excerpt": "We can commit to the revised pricing by Friday.",
+        "hit_at": "2026-09-02T09:11:04Z",
+        "synced_at": "2026-09-02T09:22:00Z"
+      }
+    },
+    {
+      "name": "one_recorded_listen_request",
+      "entity": "control_request",
+      "value": {
+        "request_id": "listen:gesture-7c4a",
+        "verb": "listen",
+        "target_kind": "new_capture",
+        "target_ref": "https://meet.google.com/abc-defg-hij",
+        "gesture_id": "gesture-7c4a",
+        "actor_ref": null,
+        "note": null,
+        "payload_json": "{\"capture_mic\":true,\"date\":\"2026-09-02\",\"gesture_expires_at_ms\":1788339690000,\"gesture_id\":\"gesture-7c4a\",\"gesture_observed_at_ms\":1788339600000,\"request_id\":\"listen:gesture-7c4a\",\"surface_session_id\":\"surface-2f19\",\"title\":\"Acme review\",\"url\":\"https://meet.google.com/abc-defg-hij\",\"verb\":\"listen\"}",
+        "apply_state": "recorded",
+        "requested_at": "2026-09-02T09:00:00Z"
+      }
+    },
+    {
+      "name": "one_recorded_stop_request",
+      "entity": "control_request",
+      "value": {
+        "request_id": "stop:listen-4f2c1a08:9d31",
+        "verb": "stop",
+        "target_kind": "live_session",
+        "target_ref": "listen-4f2c1a08",
+        "gesture_id": null,
+        "actor_ref": null,
+        "note": null,
+        "payload_json": "{\"request_id\":\"stop:listen-4f2c1a08:9d31\",\"session_id\":\"listen-4f2c1a08\",\"verb\":\"stop\"}",
+        "apply_state": "recorded",
+        "requested_at": "2026-09-02T09:45:00Z"
+      }
+    }
+  ]
+}

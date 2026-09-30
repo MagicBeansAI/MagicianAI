@@ -1,0 +1,107 @@
+{
+  "request": {
+    "contract_version": 4,
+    "operation": "memory_utility_review",
+    "state": "",
+    "locality": "cloud",
+    "mode": "gate",
+    "request_id": "17bdcdf88b134f72bfc0a8ddfc1ec0ae",
+    "reference_version": "memory-human-review-v1",
+    "expected_policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+    "projection_version": "human-review-api-v1",
+    "execution_budget_ms": 60000,
+    "context": null,
+    "items": [
+      {
+        "item_id": "H05",
+        "state": {
+          "evidence": "Memory says the verified invoice reference is INV-583. The completed task asked for that exact reference; the final answer quoted INV-583 from the memory and matched the source."
+        }
+      }
+    ]
+  },
+  "reply": {
+    "request_id": "17bdcdf88b134f72bfc0a8ddfc1ec0ae",
+    "engine_instance": "01M3J67G1JTAZ8B4V7PB0CF7VK",
+    "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+    "items": [
+      {
+        "eligible_answers": {
+          "utility": "operator-enabled:176e89ccc1c75d89d22d7cbba806cafcf6d9b10ec3962e4fd4ebf8f3965b5be0"
+        },
+        "item_id": "H05",
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "typesafe",
+            "model": "jev-1.13.0"
+          },
+          "pack_id": "memory_utility_review",
+          "pack_version": "1.0.0",
+          "answers": {
+            "utility": {
+              "type": "choice",
+              "choice": "load_bearing",
+              "probabilities": {
+                "harmful": 0.0,
+                "irrelevant": 0.0,
+                "load_bearing": 0.97,
+                "referenced": 0.0,
+                "stale": 0.0,
+                "unknown": 0.0,
+                "useful": 0.03
+              },
+              "confidence": 0.96
+            }
+          },
+          "usage": {
+            "input_tokens": 565,
+            "output_tokens": 79
+          }
+        },
+        "thresholds": {
+          "utility": 0.7
+        },
+        "error": null,
+        "latency_ms": 447
+      }
+    ],
+    "model_health": {
+      "jev": null,
+      "kev-4b": null
+    },
+    "model_calls": [
+      {
+        "batch_id": "17bdcdf88b134f72bfc0a8ddfc1ec0ae",
+        "item_ids": [
+          "H05"
+        ],
+        "call_id": "01M3J6DFB0YN6CBYQEG91AWDME",
+        "retry_group_id": "01M3J6DFB0M9K9P7S1C987V6YJ",
+        "attempt": 1,
+        "operation": "memory_utility_review",
+        "adapter": "typesafe",
+        "provider": "decision:typesafe",
+        "requested_model": "jev-1.13.0",
+        "model": "jev-1.13.0",
+        "local": false,
+        "started_at_ms": 1790538333536,
+        "completed_at_ms": 1790538333983,
+        "latency_ms": 447,
+        "queue_wait_ms": 0,
+        "status": "succeeded",
+        "error_class": null,
+        "input_tokens": 565,
+        "output_tokens": 79,
+        "cache_read_tokens": null,
+        "cache_write_tokens": null
+      }
+    ],
+    "contract_version": 4,
+    "status": "answered",
+    "response": null,
+    "thresholds": null,
+    "error": null,
+    "latency_ms": 447
+  }
+}

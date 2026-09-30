@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Vision-Only Canvas Targets</title>
+    <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+    <style>
+        .test-header {
+            background: linear-gradient(135deg, #6366f1, #ec4899);
+        }
+
+        .vision-stage {
+            position: relative;
+            width: min(100%, 960px);
+            margin: 0 auto;
+            border-radius: 18px;
+            overflow: hidden;
+            background: #0f172a;
+        }
+
+        canvas.vision-surface {
+            display: block;
+            width: 100%;
+            height: 420px;
+            touch-action: none;
+            cursor: crosshair;
+            background: #0f172a;
+        }
+
+        .layered-canvas {
+            position: relative;
+            width: min(100%, 960px);
+            margin: 0 auto;
+            border-radius: 18px;
+            overflow: hidden;
+            background: #0f172a;
+        }
+
+        .layered-canvas canvas.layered {
+            display: block;
+            width: 100%;
+            height: 420px;
+            touch-action: none;
+        }
+
+        .layered-canvas canvas.layered.bg {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+        }
+
+        .layered-canvas canvas.layered.fg {
+            position: relative;
+            background: transparent;
+            cursor: crosshair;
+        }
+
+        .instruction-card {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            padding: 12px 14px;
+            margin: 12px 0 0;
+            border-radius: 12px;
+            background: #f1f5f9;
+            border: 1px solid #cbd5e1;
+            font-size: 14px;
+        }
+
+        .instruction-card .seq-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            font-weight: 600;
+            font-size: 13px;
+            color: #1e293b;
+        }
+
+        .instruction-card .seq-chip[data-state="hit"] {
+            background: #dcfce7;
+            border-color: #16a34a;
+            color: #166534;
+        }
+
+        .instruction-card .seq-chip[data-state="next"] {
+            outline: 2px solid #6366f1;
+            outline-offset: 2px;
+        }
+
+        .seq-swatch {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .vision-warning {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #475569;
+        }
+
+        .opaque-frame-shell {
+            position: relative;
+            width: min(100%, 960px);
+            margin: 0 auto;
+            border-radius: 18px;
+            overflow: hidden;
+            border: 1px solid #1e293b;
+            background: #0f172a;
+        }
+
+        .opaque-frame-shell iframe {
+            display: block;
+            width: 100%;
+            height: 460px;
+            border: 0;
+            background: #0f172a;
+        }
+
+        .bridge-log {
+            font-size: 12px;
+            color: #475569;
+            margin-top: 8px;
+        }
+
+        .status-controls {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "32-vision-only-targets",
+        "phase": "Phase 5",
+        "title": "Vision-Only Canvas Targets",
+        "description": "Randomized canvas-only fixtures that cannot be solved without screenshot vision: target positions and sequences are generated at load time, never serialized to DOM or globals.",
+        "totalTests": 4
+    }
+    </script>
+
+    <div class="page-shell">
+        <div class="test-header">
+            <h1>Vision-Only Canvas Targets</h1>
+            <p>Each canvas paints colored shapes at <strong>randomized positions</strong> on every load. The target order and the source/destination roles are also randomized. Coordinates are kept in closure scope &mdash; no DOM attributes, no globals &mdash; so a screenshot is the only viable path.</p>
+            <div class="results-summary">
+                <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+                <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+                <div class="summary-pill">Pending<strong id="pending-count">4</strong></div>
+            </div>
+        </div>
+
+        <div class="fixture-grid">
+            <section class="test-case" id="test-1" data-test-id="32-tap-sequence" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">1. Tap colored circles in the shown order</h2>
+                    <span class="test-case-id">32-tap-sequence</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Click the three colored circles on the canvas in the order indicated below. Hit each circle once, in sequence. A wrong tap resets progress.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Tap Surface</h3>
+                            <p class="caption">Three colored circles &mdash; positions randomized on load.</p>
+                        </div>
+                        <div class="control-cluster">
+                            <button class="surface-btn" type="button" id="tap-reset">Re-randomize</button>
+                        </div>
+                    </div>
+                    <div class="workspace-surface vision-stage">
+                        <span class="surface-label">Tap Canvas</span>
+                        <canvas id="tap-canvas" class="vision-surface" width="960" height="420"></canvas>
+                    </div>
+                    <div class="instruction-card" id="tap-sequence-card" aria-live="polite"></div>
+                    <div class="vision-warning">Coordinates are not exposed via DOM or window. Reading the source will not reveal them.</div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="sequence-complete">Three taps must land inside the requested circles, in the requested order.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" id="tap-reset-status" data-status-reset="test-1">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-2" data-test-id="32-vision-drag" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">2. Drag the package shape into the depot shape</h2>
+                    <span class="test-case-id">32-vision-drag</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Press inside the <span id="drag-source-label">source</span> shape and release inside the <span id="drag-target-label">target</span> shape. Both are repainted at random positions on each load.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Drag Surface</h3>
+                            <p class="caption">A filled package shape and an outlined depot shape on a canvas. Positions randomized.</p>
+                        </div>
+                        <div class="control-cluster">
+                            <button class="surface-btn" type="button" id="drag-reset">Re-randomize</button>
+                        </div>
+                    </div>
+                    <div class="workspace-surface vision-stage">
+                        <span class="surface-label">Drag Canvas</span>
+                        <canvas id="drag-canvas" class="vision-surface" width="960" height="420"></canvas>
+                    </div>
+                    <div class="vision-warning">Coordinates are not exposed via DOM or window. Reading the source will not reveal them.</div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="drag-source-grabbed">Pointer-down must land inside the package shape.</li>
+                        <li data-check="drag-target-released">Pointer-up must land inside the depot shape.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" id="drag-reset-status" data-status-reset="test-2">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-3" data-test-id="32-stroke-waypoints" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">3. Draw a continuous stroke through numbered waypoints</h2>
+                    <span class="test-case-id">32-stroke-waypoints</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Press and drag a single continuous stroke that passes through every numbered waypoint <em>in ascending order</em> (1 &rarr; 2 &rarr; 3 &rarr; 4). Lifting the pointer before all waypoints are reached cancels the attempt and clears the canvas. The next required waypoint is the one outlined in yellow.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Stroke Canvas</h3>
+                            <p class="caption">Numbered waypoints &mdash; positions and order randomized on load.</p>
+                        </div>
+                        <div class="control-cluster">
+                            <button class="surface-btn" type="button" id="stroke-reset">Re-randomize</button>
+                        </div>
+                    </div>
+                    <div class="workspace-surface layered-canvas">
+                        <span class="surface-label">Stroke Canvas</span>
+                        <canvas id="stroke-bg" class="layered bg" width="960" height="420"></canvas>
+                        <canvas id="stroke-canvas" class="layered fg" width="960" height="420"></canvas>
+                    </div>
+                    <div class="vision-warning">Coordinates are not exposed via DOM or window. The numbers shown on the canvas indicate the required order.</div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="stroke-started">A continuous pointer stroke must begin on the canvas.</li>
+                        <li data-check="waypoints-ordered">Each numbered waypoint must be touched in ascending order during the same stroke.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-3">
+                    <button class="status-btn reset" type="button" id="stroke-reset-status" data-status-reset="test-3">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-4" data-test-id="32-cross-origin-stroke" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">4. Stroke through waypoints inside an opaque sandboxed canvas</h2>
+                    <span class="test-case-id">32-cross-origin-stroke</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Inside the sandboxed iframe below, draw a single continuous stroke that visits the numbered waypoints (1 &rarr; 2 &rarr; 3) in order. Lifting the pointer before all waypoints are reached cancels the attempt. The parent page can only see the rendered pixels; verification arrives via <code>postMessage</code> from the iframe.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Sandboxed Canvas</h3>
+                            <p class="caption">Iframe with <code>sandbox="allow-scripts"</code>; document is opaque to the parent.</p>
+                        </div>
+                        <div class="control-cluster">
+                            <button class="surface-btn" type="button" id="cross-reset">Re-randomize</button>
+                        </div>
+                    </div>
+                    <div class="opaque-frame-shell">
+                        <iframe id="cross-frame" title="Sandboxed cross-origin canvas" sandbox="allow-scripts"></iframe>
+                    </div>
+                    <div class="bridge-log">Verification only accepts messages from this iframe's <code>contentWindow</code>; parent-page spoofs are rejected.</div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="iframe-stroke-started">A continuous pointer stroke must begin inside the iframe canvas.</li>
+                        <li data-check="iframe-waypoints-ordered">The iframe must report all waypoints visited in ascending order during the same stroke.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-4">
+                    <button class="status-btn reset" type="button" id="cross-reset-status" data-status-reset="test-4">Reset</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        (function () {
+            const COLORS = [
+                { id: "ruby",     label: "ruby",     fill: "#ef4444", text: "#fee2e2" },
+                { id: "emerald",  label: "emerald",  fill: "#10b981", text: "#d1fae5" },
+                { id: "azure",    label: "azure",    fill: "#3b82f6", text: "#dbeafe" },
+                { id: "amber",    label: "amber",    fill: "#f59e0b", text: "#fef3c7" },
+                { id: "violet",   label: "violet",   fill: "#8b5cf6", text: "#ede9fe" },
+            ];
+            const CIRCLE_RADIUS = 44;
+
+            function shuffleInPlace(arr) {
+                for (let i = arr.length - 1; i > 0; i -= 1) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [arr[i], arr[j]] = [arr[j], arr[i]];
+                }
+                return arr;
+            }
+
+            function distance(a, b) {
+                return Math.hypot(a.x - b.x, a.y - b.y);
+            }
+
+            function placeCircles(canvas, count) {
+                const placed = [];
+                const margin = CIRCLE_RADIUS + 16;
+                const minSeparation = CIRCLE_RADIUS * 2 + 24;
+                const palette = shuffleInPlace(COLORS.slice()).slice(0, count);
+                let attempts = 0;
+                while (placed.length < count && attempts < 4000) {
+                    attempts += 1;
+                    const candidate = {
+                        x: Math.random() * (canvas.width - margin * 2) + margin,
+                        y: Math.random() * (canvas.height - margin * 2) + margin,
+                    };
+                    const tooClose = placed.some((p) => distance(p, candidate) < minSeparation);
+                    if (tooClose) continue;
+                    const color = palette[placed.length];
+                    placed.push({ ...candidate, color });
+                }
+                return placed;
+            }
+
+            function canvasPointFromEvent(canvas, event) {
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                return {
+                    x: (event.clientX - rect.left) * scaleX,
+                    y: (event.clientY - rect.top) * scaleY,
+                };
+            }
+
+            function clearChildren(node) {
+                while (node.firstChild) node.removeChild(node.firstChild);
+            }
+
+            function renderSequenceCard(container, sequence, hits) {
+                clearChildren(container);
+                const intro = document.createElement("span");
+                intro.textContent = "Tap order:";
+                container.appendChild(intro);
+                sequence.forEach((step, index) => {
+                    const chip = document.createElement("span");
+                    chip.className = "seq-chip";
+                    if (index < hits) chip.dataset.state = "hit";
+                    else if (index === hits) chip.dataset.state = "next";
+                    const swatch = document.createElement("span");
+                    swatch.className = "seq-swatch";
+                    swatch.style.background = step.color.fill;
+                    chip.appendChild(swatch);
+                    const label = document.createElement("span");
+                    label.textContent = `${index + 1}. ${step.color.label}`;
+                    chip.appendChild(label);
+                    container.appendChild(chip);
+                });
+            }
+
+            // ---------- Test 1: Tap sequence ----------
+            (function setupTapSequence() {
+                const canvas = document.getElementById("tap-canvas");
+                const ctx = canvas.getContext("2d");
+                const card = document.getElementById("tap-sequence-card");
+                const resetBtn = document.getElementById("tap-reset");
+                const resetStatusBtn = document.getElementById("tap-reset-status");
+
+                let circles = [];
+                let sequence = [];
+                let hits = 0;
+                let completed = false;
+
+                function repaint() {
+                    ctx.fillStyle = "#0f172a";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    circles.forEach((circle) => {
+                        ctx.beginPath();
+                        ctx.arc(circle.x, circle.y, CIRCLE_RADIUS, 0, Math.PI * 2);
+                        ctx.fillStyle = circle.color.fill;
+                        ctx.fill();
+                        ctx.lineWidth = 3;
+                        ctx.strokeStyle = "#0f172a";
+                        ctx.stroke();
+                        const seqIndex = sequence.findIndex((step) => step.color.id === circle.color.id);
+                        const alreadyHit = seqIndex >= 0 && seqIndex < hits;
+                        if (alreadyHit) {
+                            ctx.beginPath();
+                            ctx.arc(circle.x, circle.y, CIRCLE_RADIUS - 10, 0, Math.PI * 2);
+                            ctx.fillStyle = "rgba(15, 23, 42, 0.55)";
+                            ctx.fill();
+                            ctx.fillStyle = "#f8fafc";
+                            ctx.font = "600 30px sans-serif";
+                            ctx.textAlign = "center";
+                            ctx.textBaseline = "middle";
+                            ctx.fillText("\u2713", circle.x, circle.y + 1);
+                        }
+                    });
+                }
+
+                function regenerate() {
+                    completed = false;
+                    hits = 0;
+                    circles = placeCircles(canvas, 3);
+                    sequence = shuffleInPlace(circles.map((c) => ({ color: c.color })));
+                    renderSequenceCard(card, sequence, hits);
+                    setCheckState("test-1", "sequence-complete", "pending");
+                    setResult("test-1", "Tap the circles in the order shown.", "info");
+                    setTestStatus("test-1", "pending");
+                    repaint();
+                }
+
+                function handleClick(event) {
+                    if (completed) return;
+                    const point = canvasPointFromEvent(canvas, event);
+                    const hitCircle = circles.find((c) => distance(c, point) <= CIRCLE_RADIUS);
+                    if (!hitCircle) return;
+                    const expected = sequence[hits];
+                    if (expected && hitCircle.color.id === expected.color.id) {
+                        hits += 1;
+                        renderSequenceCard(card, sequence, hits);
+                        repaint();
+                        if (hits === sequence.length) {
+                            completed = true;
+                            setCheckState("test-1", "sequence-complete", "pass");
+                            setResult("test-1", `Sequence complete: ${sequence.map((s) => s.color.label).join(" \u2192 ")}.`, "success");
+                            setTestStatus("test-1", "pass");
+                        }
+                    } else {
+                        hits = 0;
+                        renderSequenceCard(card, sequence, hits);
+                        repaint();
+                        setResult("test-1", `Wrong tap. Sequence reset; first target is ${sequence[0].color.label}.`, "info");
+                    }
+                }
+
+                canvas.addEventListener("click", handleClick);
+                resetBtn.addEventListener("click", regenerate);
+                resetStatusBtn.addEventListener("click", regenerate);
+                regenerate();
+            })();
+
+            // ---------- Test 2: Vision drag ----------
+            (function setupVisionDrag() {
+                const canvas = document.getElementById("drag-canvas");
+                const ctx = canvas.getContext("2d");
+                const sourceLabelEl = document.getElementById("drag-source-label");
+                const targetLabelEl = document.getElementById("drag-target-label");
+                const resetBtn = document.getElementById("drag-reset");
+                const resetStatusBtn = document.getElementById("drag-reset-status");
+
+                let pkg = null;
+                let depot = null;
+                let pointerInsidePackage = false;
+                let dragging = false;
+                let dragOffset = { x: 0, y: 0 };
+                let pkgInitial = null;
+                let completed = false;
+                let paintQueued = false;
+
+                const PKG_HALF = 48;
+                const DEPOT_W = 150;
+                const DEPOT_H = 110;
+
+                function schedulePaint() {
+                    if (paintQueued) return;
+                    paintQueued = true;
+                    requestAnimationFrame(() => {
+                        paintQueued = false;
+                        repaint();
+                    });
+                }
+
+                function pointInPackage(p) {
+                    if (!pkg) return false;
+                    return Math.abs(p.x - pkg.x) <= PKG_HALF && Math.abs(p.y - pkg.y) <= PKG_HALF;
+                }
+
+                function pointInDepot(p) {
+                    if (!depot) return false;
+                    return p.x >= depot.x - DEPOT_W / 2
+                        && p.x <= depot.x + DEPOT_W / 2
+                        && p.y >= depot.y - DEPOT_H / 2
+                        && p.y <= depot.y + DEPOT_H / 2;
+                }
+
+                function repaint() {
+                    ctx.fillStyle = "#0f172a";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    if (depot) {
+                        ctx.save();
+                        ctx.strokeStyle = depot.color.fill;
+                        ctx.lineWidth = 4;
+                        ctx.setLineDash([10, 8]);
+                        ctx.strokeRect(depot.x - DEPOT_W / 2, depot.y - DEPOT_H / 2, DEPOT_W, DEPOT_H);
+                        ctx.setLineDash([]);
+                        ctx.fillStyle = depot.color.text;
+                        ctx.font = "600 16px sans-serif";
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText("DEPOT", depot.x, depot.y);
+                        ctx.restore();
+                    }
+                    if (pkg) {
+                        ctx.save();
+                        ctx.fillStyle = pkg.color.fill;
+                        ctx.strokeStyle = "#0f172a";
+                        ctx.lineWidth = 3;
+                        ctx.fillRect(pkg.x - PKG_HALF, pkg.y - PKG_HALF, PKG_HALF * 2, PKG_HALF * 2);
+                        ctx.strokeRect(pkg.x - PKG_HALF, pkg.y - PKG_HALF, PKG_HALF * 2, PKG_HALF * 2);
+                        ctx.fillStyle = "#ffffff";
+                        ctx.font = "600 16px sans-serif";
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText("PKG", pkg.x, pkg.y);
+                        ctx.restore();
+                    }
+                }
+
+                function regenerate() {
+                    completed = false;
+                    dragging = false;
+                    pointerInsidePackage = false;
+                    const palette = shuffleInPlace(COLORS.slice()).slice(0, 2);
+                    const placements = [];
+                    let attempts = 0;
+                    while (placements.length < 2 && attempts < 4000) {
+                        attempts += 1;
+                        const candidate = {
+                            x: Math.random() * (canvas.width - 200) + 100,
+                            y: Math.random() * (canvas.height - 180) + 90,
+                        };
+                        const tooClose = placements.some((p) => Math.hypot(p.x - candidate.x, p.y - candidate.y) < 280);
+                        if (tooClose) continue;
+                        placements.push(candidate);
+                    }
+                    pkg = { ...placements[0], color: palette[0] };
+                    depot = { ...placements[1], color: palette[1] };
+                    pkgInitial = { x: pkg.x, y: pkg.y };
+                    sourceLabelEl.textContent = `${palette[0].label} package`;
+                    targetLabelEl.textContent = `${palette[1].label} depot`;
+                    setCheckState("test-2", "drag-source-grabbed", "pending");
+                    setCheckState("test-2", "drag-target-released", "pending");
+                    setResult(
+                        "test-2",
+                        `Drag the ${palette[0].label} package into the ${palette[1].label} depot.`,
+                        "info"
+                    );
+                    setTestStatus("test-2", "pending");
+                    repaint();
+                }
+
+                function onPointerDown(event) {
+                    if (completed) return;
+                    const point = canvasPointFromEvent(canvas, event);
+                    if (!pointInPackage(point)) return;
+                    pointerInsidePackage = true;
+                    dragging = true;
+                    dragOffset = { x: point.x - pkg.x, y: point.y - pkg.y };
+                    setCheckState("test-2", "drag-source-grabbed", "pass");
+                    try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+                    event.preventDefault();
+                }
+
+                function onPointerMove(event) {
+                    if (!dragging) return;
+                    const point = canvasPointFromEvent(canvas, event);
+                    pkg.x = point.x - dragOffset.x;
+                    pkg.y = point.y - dragOffset.y;
+                    schedulePaint();
+                }
+
+                function onPointerUp(event) {
+                    if (!dragging) return;
+                    dragging = false;
+                    try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+                    const releasePoint = canvasPointFromEvent(canvas, event);
+                    if (pointerInsidePackage && pointInDepot(releasePoint)) {
+                        completed = true;
+                        pkg.x = depot.x;
+                        pkg.y = depot.y;
+                        setCheckState("test-2", "drag-target-released", "pass");
+                        setResult(
+                            "test-2",
+                            `Package landed in ${depot.color.label} depot. SUCCESS.`,
+                            "success"
+                        );
+                        setTestStatus("test-2", "pass");
+                    } else {
+                        pkg.x = pkgInitial.x;
+                        pkg.y = pkgInitial.y;
+                        setCheckState("test-2", "drag-source-grabbed", "pending");
+                        setResult(
+                            "test-2",
+                            "Drag did not finish inside the depot. Package returned to start.",
+                            "info"
+                        );
+                    }
+                    pointerInsidePackage = false;
+                    repaint();
+                }
+
+                canvas.addEventListener("pointerdown", onPointerDown);
+                canvas.addEventListener("pointermove", onPointerMove);
+                canvas.addEventListener("pointerup", onPointerUp);
+                canvas.addEventListener("pointercancel", onPointerUp);
+                resetBtn.addEventListener("click", regenerate);
+                resetStatusBtn.addEventListener("click", regenerate);
+                regenerate();
+            })();
+
+            // ---------- Test 3: Stroke through ordered waypoints ----------
+            (function setupStrokeWaypoints() {
+                const canvas = document.getElementById("stroke-canvas");
+                const ctx = canvas.getContext("2d");
+                const bgCanvas = document.getElementById("stroke-bg");
+                const bgCtx = bgCanvas.getContext("2d");
+                const resetBtn = document.getElementById("stroke-reset");
+                const resetStatusBtn = document.getElementById("stroke-reset-status");
+
+                const WAYPOINT_RADIUS = 32;
+                const WAYPOINT_COUNT = 4;
+                const TOUCH_RADIUS = 36;
+
+                let waypoints = [];
+                let drawing = false;
+                let lastInkedPoint = null;
+                let nextWaypoint = 0;
+                let completed = false;
+
+                function placeWaypoints() {
+                    const margin = WAYPOINT_RADIUS + 24;
+                    const minSeparation = WAYPOINT_RADIUS * 2 + 80;
+                    const placed = [];
+                    let attempts = 0;
+                    while (placed.length < WAYPOINT_COUNT && attempts < 5000) {
+                        attempts += 1;
+                        const candidate = {
+                            x: Math.random() * (canvas.width - margin * 2) + margin,
+                            y: Math.random() * (canvas.height - margin * 2) + margin,
+                        };
+                        const tooClose = placed.some(
+                            (p) => Math.hypot(p.x - candidate.x, p.y - candidate.y) < minSeparation
+                        );
+                        if (tooClose) continue;
+                        placed.push(candidate);
+                    }
+                    return placed;
+                }
+
+                function paintBackground() {
+                    bgCtx.fillStyle = "#0f172a";
+                    bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+                    waypoints.forEach((wp, idx) => {
+                        const visited = idx < nextWaypoint;
+                        bgCtx.save();
+                        bgCtx.beginPath();
+                        bgCtx.arc(wp.x, wp.y, WAYPOINT_RADIUS, 0, Math.PI * 2);
+                        bgCtx.fillStyle = visited ? "#22c55e" : "#f8fafc";
+                        bgCtx.fill();
+                        bgCtx.lineWidth = 3;
+                        bgCtx.strokeStyle = idx === nextWaypoint ? "#fde047" : "#0f172a";
+                        bgCtx.stroke();
+                        bgCtx.fillStyle = "#0f172a";
+                        bgCtx.font = "700 22px sans-serif";
+                        bgCtx.textAlign = "center";
+                        bgCtx.textBaseline = "middle";
+                        bgCtx.fillText(String(idx + 1), wp.x, wp.y + 1);
+                        bgCtx.restore();
+                    });
+                }
+
+                function clearInk() {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+
+                function inkSegment(from, to) {
+                    if (!from || !to) return;
+                    ctx.strokeStyle = "#a7f3d0";
+                    ctx.lineWidth = 5;
+                    ctx.lineCap = "round";
+                    ctx.lineJoin = "round";
+                    ctx.beginPath();
+                    ctx.moveTo(from.x, from.y);
+                    ctx.lineTo(to.x, to.y);
+                    ctx.stroke();
+                }
+
+                function regenerate() {
+                    completed = false;
+                    drawing = false;
+                    nextWaypoint = 0;
+                    lastInkedPoint = null;
+                    waypoints = placeWaypoints();
+                    setCheckState("test-3", "stroke-started", "pending");
+                    setCheckState("test-3", "waypoints-ordered", "pending");
+                    setResult(
+                        "test-3",
+                        "Press and drag through the waypoints 1 \u2192 2 \u2192 3 \u2192 4 in one continuous stroke. Lifting before reaching the last waypoint resets the attempt.",
+                        "info"
+                    );
+                    setTestStatus("test-3", "pending");
+                    clearInk();
+                    paintBackground();
+                }
+
+                function tryAdvance(point) {
+                    let advanced = false;
+                    while (nextWaypoint < waypoints.length) {
+                        const target = waypoints[nextWaypoint];
+                        if (Math.hypot(point.x - target.x, point.y - target.y) <= TOUCH_RADIUS) {
+                            nextWaypoint += 1;
+                            advanced = true;
+                            if (nextWaypoint === waypoints.length) {
+                                completed = true;
+                                drawing = false;
+                                setCheckState("test-3", "waypoints-ordered", "pass");
+                                setResult(
+                                    "test-3",
+                                    `Stroke visited all ${waypoints.length} waypoints in order. SUCCESS.`,
+                                    "success"
+                                );
+                                setTestStatus("test-3", "pass");
+                                break;
+                            }
+                            setResult(
+                                "test-3",
+                                `Waypoint ${nextWaypoint} reached; continue to ${nextWaypoint + 1}.`,
+                                "info"
+                            );
+                        } else {
+                            break;
+                        }
+                    }
+                    if (advanced) paintBackground();
+                }
+
+                function canvasPoint(event) {
+                    const rect = canvas.getBoundingClientRect();
+                    const scaleX = canvas.width / rect.width;
+                    const scaleY = canvas.height / rect.height;
+                    return {
+                        x: (event.clientX - rect.left) * scaleX,
+                        y: (event.clientY - rect.top) * scaleY,
+                    };
+                }
+
+                function onPointerDown(event) {
+                    if (completed) return;
+                    drawing = true;
+                    nextWaypoint = 0;
+                    clearInk();
+                    paintBackground();
+                    const point = canvasPoint(event);
+                    lastInkedPoint = point;
+                    setCheckState("test-3", "stroke-started", "pass");
+                    setCheckState("test-3", "waypoints-ordered", "pending");
+                    setResult(
+                        "test-3",
+                        "Stroke started. Drag through waypoint 1 next; do not lift until all are visited.",
+                        "info"
+                    );
+                    try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+                    event.preventDefault();
+                    tryAdvance(point);
+                }
+
+                function onPointerMove(event) {
+                    if (!drawing || completed) return;
+                    const point = canvasPoint(event);
+                    inkSegment(lastInkedPoint, point);
+                    lastInkedPoint = point;
+                    tryAdvance(point);
+                }
+
+                function onPointerUp(event) {
+                    if (!drawing) return;
+                    drawing = false;
+                    lastInkedPoint = null;
+                    try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+                    if (!completed) {
+                        const reached = nextWaypoint;
+                        nextWaypoint = 0;
+                        clearInk();
+                        paintBackground();
+                        setCheckState("test-3", "stroke-started", "pending");
+                        setResult(
+                            "test-3",
+                            `Lifted at waypoint ${reached}/${waypoints.length}. The stroke must be one continuous press; press again and visit 1 \u2192 2 \u2192 3 \u2192 4 without lifting.`,
+                            "info"
+                        );
+                    }
+                }
+
+                canvas.addEventListener("pointerdown", onPointerDown);
+                canvas.addEventListener("pointermove", onPointerMove);
+                canvas.addEventListener("pointerup", onPointerUp);
+                canvas.addEventListener("pointercancel", onPointerUp);
+                resetBtn.addEventListener("click", regenerate);
+                resetStatusBtn.addEventListener("click", regenerate);
+                regenerate();
+            })();
+
+            // ---------- Test 4: Cross-origin sandboxed canvas stroke ----------
+            (function setupCrossOriginStroke() {
+                const frame = document.getElementById("cross-frame");
+                const resetBtn = document.getElementById("cross-reset");
+                const resetStatusBtn = document.getElementById("cross-reset-status");
+
+                function frameSrcdoc() {
+                    return [
+                        "<!DOCTYPE html>",
+                        "<html lang=\"en\"><head><meta charset=\"UTF-8\"><style>",
+                        "  body { margin: 0; background: #0f172a; color: #f8fafc; font: 14px/1.4 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }",
+                        "  .shell { padding: 16px; }",
+                        "  .stage { position: relative; width: 100%; height: 360px; border-radius: 12px; overflow: hidden; background: #020617; }",
+                        "  .stage canvas { display: block; width: 100%; height: 360px; touch-action: none; }",
+                        "  .stage canvas.bg { position: absolute; inset: 0; pointer-events: none; }",
+                        "  .stage canvas.fg { position: relative; background: transparent; cursor: crosshair; }",
+                        "  .hint { margin-top: 8px; color: #94a3b8; font-size: 12px; }",
+                        "</style></head><body>",
+                        "<div class=\"shell\">",
+                        "  <strong>Opaque Stroke Canvas</strong>",
+                        "  <div class=\"stage\">",
+                        "    <canvas id=\"frame-bg\" class=\"bg\" width=\"920\" height=\"360\"></canvas>",
+                        "    <canvas id=\"frame-canvas\" class=\"fg\" width=\"920\" height=\"360\"></canvas>",
+                        "  </div>",
+                        "  <div class=\"hint\">Visit waypoints 1 \u2192 2 \u2192 3 in order.</div>",
+                        "</div>",
+                        "<scr" + "ipt>",
+                        "(function () {",
+                        "  var canvas = document.getElementById('frame-canvas');",
+                        "  var ctx = canvas.getContext('2d');",
+                        "  var bgCanvas = document.getElementById('frame-bg');",
+                        "  var bgCtx = bgCanvas.getContext('2d');",
+                        "  var WAYPOINT_COUNT = 3;",
+                        "  var WAYPOINT_RADIUS = 30;",
+                        "  var TOUCH_RADIUS = 34;",
+                        "  var waypoints = [];",
+                        "  var drawing = false;",
+                        "  var lastInkedPoint = null;",
+                        "  var nextWaypoint = 0;",
+                        "  var completed = false;",
+                        "  function post(payload) {",
+                        "    parent.postMessage(Object.assign({ fixtureId: '32-vision-only-targets', frameKind: 'stroke' }, payload), '*');",
+                        "  }",
+                        "  function place() {",
+                        "    var margin = WAYPOINT_RADIUS + 24;",
+                        "    var minSep = WAYPOINT_RADIUS * 2 + 100;",
+                        "    var placed = []; var attempts = 0;",
+                        "    while (placed.length < WAYPOINT_COUNT && attempts < 5000) {",
+                        "      attempts += 1;",
+                        "      var c = { x: Math.random() * (canvas.width - margin * 2) + margin, y: Math.random() * (canvas.height - margin * 2) + margin };",
+                        "      var bad = false;",
+                        "      for (var i = 0; i < placed.length; i += 1) { if (Math.hypot(placed[i].x - c.x, placed[i].y - c.y) < minSep) { bad = true; break; } }",
+                        "      if (!bad) placed.push(c);",
+                        "    }",
+                        "    return placed;",
+                        "  }",
+                        "  function paintBackground() {",
+                        "    bgCtx.fillStyle = '#020617'; bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);",
+                        "    waypoints.forEach(function (wp, idx) {",
+                        "      var visited = idx < nextWaypoint;",
+                        "      bgCtx.save();",
+                        "      bgCtx.beginPath(); bgCtx.arc(wp.x, wp.y, WAYPOINT_RADIUS, 0, Math.PI * 2);",
+                        "      bgCtx.fillStyle = visited ? '#22c55e' : '#f8fafc'; bgCtx.fill();",
+                        "      bgCtx.lineWidth = 3; bgCtx.strokeStyle = idx === nextWaypoint ? '#fde047' : '#0f172a'; bgCtx.stroke();",
+                        "      bgCtx.fillStyle = '#0f172a'; bgCtx.font = '700 22px sans-serif'; bgCtx.textAlign = 'center'; bgCtx.textBaseline = 'middle';",
+                        "      bgCtx.fillText(String(idx + 1), wp.x, wp.y + 1);",
+                        "      bgCtx.restore();",
+                        "    });",
+                        "  }",
+                        "  function clearInk() { ctx.clearRect(0, 0, canvas.width, canvas.height); }",
+                        "  function inkSegment(from, to) {",
+                        "    if (!from || !to) return;",
+                        "    ctx.strokeStyle = '#a7f3d0'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';",
+                        "    ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();",
+                        "  }",
+                        "  function pointFromEvent(event) {",
+                        "    var rect = canvas.getBoundingClientRect();",
+                        "    var sx = canvas.width / Math.max(rect.width, 1);",
+                        "    var sy = canvas.height / Math.max(rect.height, 1);",
+                        "    return { x: (event.clientX - rect.left) * sx, y: (event.clientY - rect.top) * sy };",
+                        "  }",
+                        "  function regenerate() {",
+                        "    completed = false; drawing = false; nextWaypoint = 0; lastInkedPoint = null;",
+                        "    waypoints = place();",
+                        "    clearInk(); paintBackground();",
+                        "    post({ event: 'regenerated', success: false, nextWaypoint: 0, totalWaypoints: WAYPOINT_COUNT });",
+                        "  }",
+                        "  function tryAdvance(p) {",
+                        "    var advanced = false;",
+                        "    while (nextWaypoint < waypoints.length) {",
+                        "      var t = waypoints[nextWaypoint];",
+                        "      if (Math.hypot(p.x - t.x, p.y - t.y) <= TOUCH_RADIUS) {",
+                        "        nextWaypoint += 1; advanced = true;",
+                        "        if (nextWaypoint === waypoints.length) {",
+                        "          completed = true; drawing = false;",
+                        "          paintBackground();",
+                        "          post({ event: 'completed', success: true, nextWaypoint: nextWaypoint, totalWaypoints: WAYPOINT_COUNT });",
+                        "          return;",
+                        "        }",
+                        "      } else { break; }",
+                        "    }",
+                        "    if (advanced) paintBackground();",
+                        "  }",
+                        "  canvas.addEventListener('pointerdown', function (e) {",
+                        "    if (completed) return;",
+                        "    drawing = true; nextWaypoint = 0; clearInk(); paintBackground();",
+                        "    var p = pointFromEvent(e); lastInkedPoint = p;",
+                        "    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}",
+                        "    e.preventDefault();",
+                        "    post({ event: 'pointerdown', success: false, started: true });",
+                        "    tryAdvance(p);",
+                        "  });",
+                        "  canvas.addEventListener('pointermove', function (e) {",
+                        "    if (!drawing || completed) return;",
+                        "    var p = pointFromEvent(e);",
+                        "    inkSegment(lastInkedPoint, p);",
+                        "    lastInkedPoint = p;",
+                        "    tryAdvance(p);",
+                        "  });",
+                        "  function endStroke(e) {",
+                        "    if (!drawing) return;",
+                        "    drawing = false; lastInkedPoint = null;",
+                        "    try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}",
+                        "    if (!completed) {",
+                        "      var reached = nextWaypoint;",
+                        "      nextWaypoint = 0; clearInk(); paintBackground();",
+                        "      post({ event: 'stroke-aborted', success: false, reached: reached, totalWaypoints: WAYPOINT_COUNT });",
+                        "    }",
+                        "  }",
+                        "  canvas.addEventListener('pointerup', endStroke);",
+                        "  canvas.addEventListener('pointercancel', endStroke);",
+                        "  window.addEventListener('message', function (e) { if (e.data && e.data.fixtureId === '32-vision-only-targets' && e.data.command === 'regenerate') regenerate(); });",
+                        "  regenerate();",
+                        "})();",
+                        "</scr" + "ipt></body></html>"
+                    ].join("\n");
+                }
+
+                function isTrustedFrameMessage(event) {
+                    const data = event.data;
+                    return Boolean(
+                        data &&
+                            data.fixtureId === "32-vision-only-targets" &&
+                            data.frameKind === "stroke" &&
+                            typeof data.success === "boolean" &&
+                            frame.contentWindow &&
+                            event.source === frame.contentWindow
+                    );
+                }
+
+                function resetState() {
+                    setCheckState("test-4", "iframe-stroke-started", "pending");
+                    setCheckState("test-4", "iframe-waypoints-ordered", "pending");
+                    setResult("test-4", "Draw a single stroke through waypoints 1 \u2192 2 \u2192 3 inside the sandboxed iframe.", "info");
+                    setTestStatus("test-4", "pending");
+                }
+
+                window.addEventListener("message", function (event) {
+                    if (!isTrustedFrameMessage(event)) return;
+                    const data = event.data;
+                    if (data.event === "pointerdown" && data.started) {
+                        setCheckState("test-4", "iframe-stroke-started", "pass");
+                        setCheckState("test-4", "iframe-waypoints-ordered", "pending");
+                        setResult("test-4", "Stroke started inside the iframe; do not lift until all waypoints are visited in order.", "info");
+                    } else if (data.event === "completed" && data.success) {
+                        setCheckState("test-4", "iframe-waypoints-ordered", "pass");
+                        setResult("test-4", "Iframe reported stroke visited all waypoints in order. SUCCESS.", "success");
+                        setTestStatus("test-4", "pass");
+                    } else if (data.event === "stroke-aborted") {
+                        setCheckState("test-4", "iframe-stroke-started", "pending");
+                        setResult(
+                            "test-4",
+                            `Iframe reported stroke ended at waypoint ${data.reached}/${data.totalWaypoints}. The stroke must be one continuous press; press again and visit 1 \u2192 2 \u2192 3 without lifting.`,
+                            "info"
+                        );
+                    } else if (data.event === "regenerated") {
+                        resetState();
+                    }
+                });
+
+                function regenerate() {
+                    resetState();
+                    if (frame.contentWindow) {
+                        frame.contentWindow.postMessage(
+                            { fixtureId: "32-vision-only-targets", command: "regenerate" },
+                            "*"
+                        );
+                    }
+                }
+
+                resetBtn.addEventListener("click", regenerate);
+                resetStatusBtn.addEventListener("click", regenerate);
+
+                frame.srcdoc = frameSrcdoc();
+                resetState();
+            })();
+        })();
+    </script>
+</body>
+</html>

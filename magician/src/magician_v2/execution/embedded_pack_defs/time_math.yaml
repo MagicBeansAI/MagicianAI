@@ -1,0 +1,132 @@
+name: time_math
+description: Deterministic calendar and timestamp math for date ranges, current time, and SQL-safe boundary calculations
+guide: |-
+  Tool name: `time_math`
+  Primary parameter: `operation`
+  Requires: Built-in Rust date/time handling. No shell, Python, network, or system date binary is used.
+
+  Use this tool whenever a task needs exact date boundaries, current time, or
+  timestamp values before querying another source. This is especially important
+  before writing SQL filters for "between dates", "today", "yesterday", "this
+  week", or any task where local timezone affects inclusion.
+
+  Operations:
+
+    date_range
+      Convert an absolute start/end date into a half-open range:
+        start <= value < end_exclusive
+
+      Required parameters for this operation:
+        - start_date: YYYY-MM-DD
+        - end_date: YYYY-MM-DD
+
+      Optional parameters:
+        - timezone: IANA timezone such as UTC, Asia/Kolkata, or America/New_York.
+          Defaults to UTC if omitted.
+        - end_inclusive: true by default. When true, end_exclusive is the day
+          after end_date. When false, end_date itself is treated as the
+          exclusive boundary.
+
+      Example:
+        {"operation":"date_range","start_date":"2026-04-06","end_date":"2026-04-21","timezone":"Asia/Kolkata","end_inclusive":true}
+
+    now
+      Return the current time in a timezone, with Unix and Apple epoch values.
+
+      Example:
+        {"operation":"now","timezone":"Asia/Kolkata"}
+
+  Output:
+    - local and UTC RFC3339 timestamps
+    - unix_seconds and unix_millis
+    - apple_absolute.seconds and apple_absolute.nanoseconds
+    - SQL predicate examples using half-open boundaries
+
+  SQL guidance:
+    - Prefer half-open ranges: COLUMN >= start AND COLUMN < end_exclusive
+    - For ordinary Unix-second columns, use the unix_seconds values.
+    - For macOS Apple absolute nanosecond columns, use apple_absolute.nanoseconds.
+      The Messages `message.date` column is one example of this timestamp style.
+    - Replace COLUMN in the predicate example with the real timestamp column.
+parameters:
+- name: operation
+  required: true
+  param_type: string
+  description: 'Operation to perform: date_range or now'
+  enum_values:
+  - date_range
+  - now
+- name: start_date
+  param_type: string
+  description: Start date for date_range in YYYY-MM-DD format
+- name: end_date
+  param_type: string
+  description: End date for date_range in YYYY-MM-DD format
+- name: timezone
+  param_type: string
+  description: IANA timezone for local date boundaries, for example UTC, Asia/Kolkata, or America/New_York
+  default: UTC
+- name: end_inclusive
+  param_type: boolean
+  description: Whether end_date is included in date_range. Defaults to true, producing an exclusive boundary on the next day.
+  default: 'true'
+native_action_schemas:
+  date_range:
+    description: Convert exact calendar dates into a half-open timestamp range.
+    parameters:
+    - operation
+    - start_date
+    - end_date
+    - timezone
+    - end_inclusive
+    required:
+    - operation
+    - start_date
+    - end_date
+    parameter_overrides:
+      operation:
+        type: string
+        const: date_range
+      start_date:
+        type: string
+        pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+        maxLength: 10
+      end_date:
+        type: string
+        pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+        maxLength: 10
+      timezone:
+        type: string
+        minLength: 1
+        maxLength: 64
+      end_inclusive:
+        type: boolean
+  now:
+    description: Read the current trusted local clock in one bounded timezone.
+    parameters:
+    - operation
+    - timezone
+    required:
+    - operation
+    parameter_overrides:
+      operation:
+        type: string
+        const: now
+      timezone:
+        type: string
+        minLength: 1
+        maxLength: 64
+implementation:
+  type: compiled
+  provider_name: time_math
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+  - core_utility
+  - time
+  - date_math
+  - calendar
+  - sql
+  composition_category: utility_operations
+  sandbox: none

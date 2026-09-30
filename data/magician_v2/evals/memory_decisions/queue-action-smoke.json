@@ -1,0 +1,185 @@
+{
+  "coverage": "real v4 action API plus isolated local reads, not host chat/agentic workflows",
+  "rows": [
+    {
+      "tool": "read_file",
+      "elapsed_ms": 933,
+      "selected_exact_call": true,
+      "read_verified": true,
+      "reply": {
+        "model_calls": [
+          {
+            "call_id": "01M3JAMGQVKBACH1XKNHZJSMPN",
+            "retry_group_id": "01M3JAMGQTAKF58F5QSGRK2KXV",
+            "attempt": 1,
+            "operation": "tool_action_judge",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790542758651,
+            "completed_at_ms": 1790542759094,
+            "latency_ms": 443,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 692,
+            "output_tokens": 39,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          },
+          {
+            "call_id": "01M3JAMH5QV55P5C6RE0QGWWBW",
+            "retry_group_id": "01M3JAMH5QXMMV3X60WF9KH0DN",
+            "attempt": 1,
+            "operation": "tool_action_judge",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790542759095,
+            "completed_at_ms": 1790542759513,
+            "latency_ms": 418,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 792,
+            "output_tokens": 45,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "snapshot": "memory-v4-smoke-c49f4da0a206451dbc70e41f8e8ffde6",
+        "verdict": {
+          "outcome": "execute",
+          "candidate_id": "schema:0",
+          "call": {
+            "tool": "read_file",
+            "arguments": {
+              "path": "/Volumes/build/magician/tmp/memory-human-review-20260927/queue-action-fixture.txt"
+            }
+          },
+          "origin": "structured",
+          "confidence": 0.81,
+          "continuation": {
+            "scope": "0bcd86ec1b4e14ba7615ef4d1a00386d3df9e04c10d0e04894873f1de4ab9d5c",
+            "steps": []
+          }
+        },
+        "reason": "structured_selection",
+        "model": {
+          "adapter": "typesafe",
+          "model": "jev-1.13.0"
+        },
+        "review_model": {
+          "adapter": "typesafe",
+          "model": "jev-1.13.0"
+        },
+        "usage": {
+          "input_tokens": 1484,
+          "output_tokens": 84
+        },
+        "latency_ms": 908,
+        "model_health": [
+          {
+            "model": "jev",
+            "issue": null
+          }
+        ]
+      }
+    },
+    {
+      "tool": "file_metadata",
+      "elapsed_ms": 610,
+      "selected_exact_call": true,
+      "read_verified": true,
+      "reply": {
+        "model_calls": [
+          {
+            "call_id": "01M3JAMHKPXG5VHH3H4MKXWKFP",
+            "retry_group_id": "01M3JAMHKPW0AW6919MV94GXWG",
+            "attempt": 1,
+            "operation": "tool_action_judge",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790542759542,
+            "completed_at_ms": 1790542759831,
+            "latency_ms": 289,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 690,
+            "output_tokens": 39,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          },
+          {
+            "call_id": "01M3JAMHWQMR3N3V9KMVN9ZTQP",
+            "retry_group_id": "01M3JAMHWQK7WDXCRQQHJQBYA4",
+            "attempt": 1,
+            "operation": "tool_action_judge",
+            "adapter": "typesafe",
+            "provider": "decision:typesafe",
+            "requested_model": "jev-1.13.0",
+            "model": "jev-1.13.0",
+            "local": false,
+            "started_at_ms": 1790542759831,
+            "completed_at_ms": 1790542760124,
+            "latency_ms": 293,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 790,
+            "output_tokens": 45,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "snapshot": "memory-v4-smoke-947c53af1fe84679ac98fee9d240d72d",
+        "verdict": {
+          "outcome": "execute",
+          "candidate_id": "schema:0",
+          "call": {
+            "tool": "file_metadata",
+            "arguments": {
+              "path": "/Volumes/build/magician/tmp/memory-human-review-20260927/queue-action-fixture.txt"
+            }
+          },
+          "origin": "structured",
+          "confidence": 0.81,
+          "continuation": {
+            "scope": "dd3d513385d5ebde39a1193552cf1e3ebb354607ffe9425df95546361aea8367",
+            "steps": []
+          }
+        },
+        "reason": "structured_selection",
+        "model": {
+          "adapter": "typesafe",
+          "model": "jev-1.13.0"
+        },
+        "review_model": {
+          "adapter": "typesafe",
+          "model": "jev-1.13.0"
+        },
+        "usage": {
+          "input_tokens": 1480,
+          "output_tokens": 84
+        },
+        "latency_ms": 584,
+        "model_health": [
+          {
+            "model": "jev",
+            "issue": null
+          }
+        ]
+      }
+    }
+  ]
+}

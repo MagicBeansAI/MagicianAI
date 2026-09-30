@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Extract bounded, syntactically valid JSON-LD from local HTML."""
+
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+from html.parser import HTMLParser
+
+
+class JsonLdParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._in_json_ld = False
+        self._in_title = False
+        self._buffer: list[str] = []
+        self._title: list[str] = []
+        self.records: list[object] = []
+
+    @property
+    def title(self) -> str:
+        return " ".join("".join(self._title).split())
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key.lower(): (value or "") for key, value in attrs}
+        if tag.lower() == "script" and values.get("type", "").lower() == "application/ld+json":
+            self._in_json_ld = True
+            self._buffer = []
+        elif tag.lower() == "title":
+            self._in_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "script" and self._in_json_ld:
+            self._in_json_ld = False
+            payload = "".join(self._buffer).strip()
+            try:
+                parsed = json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                return
+            if isinstance(parsed, list):
+                self.records.extend(parsed)
+            elif isinstance(parsed, dict):
+                self.records.append(parsed)
+        elif tag.lower() == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_json_ld:
+            self._buffer.append(data)
+        elif self._in_title:
+            self._title.append(data)
+
+
+def extract(path: pathlib.Path, max_chars: int) -> dict:
+    parser = JsonLdParser()
+    parser.feed(path.read_text(encoding="utf-8", errors="replace"))
+    if not parser.records:
+        return {"error": "no valid JSON-LD records found"}
+    content = json.dumps(parser.records, ensure_ascii=True, indent=2, sort_keys=True)
+    if len(content) > max_chars:
+        return {"error": "structured data exceeds configured output bound"}
+    return {
+        "content": content,
+        "title": parser.title or "Structured web data",
+        "method": "json-ld",
+        "truncated": False,
+    }
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    input_file = pathlib.Path(str(request["input_file"]))
+    max_chars = int(request.get("max_chars", 4 * 1024 * 1024))
+    if max_chars <= 0 or max_chars > 4 * 1024 * 1024:
+        print(json.dumps({"error": "max_chars must be between 1 and 4194304"}))
+        return 0
+    try:
+        output = extract(input_file, max_chars)
+    except OSError:
+        output = {"error": "unable to read input file"}
+    print(json.dumps(output))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

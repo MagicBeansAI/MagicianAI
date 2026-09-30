@@ -1,0 +1,33 @@
+name: glob
+description: File pattern matching via ripgrep. Returns the list of paths matching the glob (e.g. `**/*.rs`, `src/**/*.ts`). Capped at 100 results — refine `pattern` or `path` to drill in.
+version: "1.0.0"
+guide: |
+  Tool name: `glob`
+
+  Shells out to `rg --files --glob <pattern>` under the hood. Honors
+  `.gitignore` like ripgrep does by default. Use for enumerating
+  files by name pattern — prefer this over `bash find` or `bash ls`
+  for filename pattern queries.
+
+  For content searches (text inside files), use `grep` instead.
+parameters:
+  - name: pattern
+    required: true
+    param_type: string
+    description: Glob pattern (e.g. `**/*.rs`, `src/**/*.ts`, `Cargo.toml`).
+  - name: path
+    required: false
+    param_type: string
+    description: Directory to search in. Defaults to current working directory.
+    default: "."
+implementation:
+  type: compiled
+  provider_name: glob
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - filesystem
+    - search
+  composition_category: action
+  sandbox: none

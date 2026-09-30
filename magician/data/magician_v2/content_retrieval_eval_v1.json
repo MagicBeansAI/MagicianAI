@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "read_cases": [
+    {
+      "id": "article",
+      "depth": "full_text",
+      "text": "This release introduces a bounded asynchronous runtime scheduler. The implementation documents compatibility, migration, cancellation, observability, and operational behavior across supported environments.",
+      "expected": "sufficient"
+    },
+    {
+      "id": "thin",
+      "depth": "full_text",
+      "text": "Short notice.",
+      "expected": "insufficient_quality"
+    },
+    {
+      "id": "javascript-shell",
+      "depth": "gist",
+      "text": "Please enable JavaScript to view this page. JavaScript is required before the application can display its content.",
+      "expected": "javascript_required"
+    },
+    {
+      "id": "login-wall",
+      "depth": "gist",
+      "text": "Sign in to continue. This content is available after you log in to continue to your account.",
+      "expected": "authentication_required"
+    },
+    {
+      "id": "paywall",
+      "depth": "gist",
+      "text": "Subscribe to continue reading this report. A subscription is required to access the complete article.",
+      "expected": "authentication_required"
+    },
+    {
+      "id": "error-page",
+      "depth": "gist",
+      "text": "404 not found. The requested page could not be located on this server. Please return to the home page.",
+      "expected": "insufficient_quality"
+    },
+    {
+      "id": "structured-json-ld",
+      "depth": "gist",
+      "output": "structured",
+      "text": "[{\"@context\":\"https://schema.org\",\"@type\":\"Article\",\"headline\":\"Bounded retrieval ladders\",\"author\":\"Magician team\",\"datePublished\":\"2026-07-22\",\"description\":\"Typed public evidence with deterministic provenance and policy controls\",\"keywords\":[\"retrieval\",\"evidence\",\"quality\",\"policy\"]}]",
+      "expected": "sufficient"
+    },
+    {
+      "id": "structured-invalid",
+      "depth": "gist",
+      "output": "structured",
+      "text": "This is long and varied prose with enough distinct words for an ordinary gist, but it is not a valid structured schema payload and must fail closed.",
+      "expected": "insufficient_quality"
+    },
+    {
+      "id": "pdf-text",
+      "depth": "full_text",
+      "media_type": "application/pdf",
+      "text": "This public PDF report documents deterministic retrieval, bounded fallback, cancellation, provenance, cache behavior, policy enforcement, extraction quality, operational evidence, and deployment guidance for the complete implementation.",
+      "expected": "sufficient"
+    },
+    {
+      "id": "truncated-full-text",
+      "depth": "full_text",
+      "metadata": {"extraction_truncated": true},
+      "text": "This otherwise complete technical article contains implementation details, migration guidance, compatibility constraints, operational evidence, failure handling, and enough varied prose to satisfy the full text length threshold.",
+      "expected": "insufficient_quality"
+    },
+    {
+      "id": "low-confidence-extraction",
+      "depth": "full_text",
+      "metadata": {"extraction_quality": {"score": 0.2}},
+      "text": "This extracted technical document contains architecture details, integration contracts, deployment guidance, fallback behavior, observability requirements, and verification evidence across supported environments.",
+      "expected": "insufficient_quality"
+    },
+    {
+      "id": "repeated-boilerplate",
+      "depth": "full_text",
+      "text": "Cookie preferences and privacy settings\nCookie preferences and privacy settings\nCookie preferences and privacy settings\nCookie preferences and privacy settings\nCookie preferences and privacy settings\nCookie preferences and privacy settings\nA small amount of article text remains below the repeated navigation.",
+      "expected": "insufficient_quality"
+    }
+  ],
+  "discovery_cases": [
+    {
+      "id": "relevant",
+      "query": "rust async runtime",
+      "title": "Rust async runtime release",
+      "snippet": "Scheduler and cancellation updates for the Rust runtime",
+      "minimum_score": 0.66
+    },
+    {
+      "id": "irrelevant",
+      "query": "rust async runtime",
+      "title": "Quarterly retail earnings",
+      "snippet": "Store expansion and consumer demand",
+      "maximum_score": 0.01
+    }
+  ],
+  "ladder_cases": [
+    {
+      "id": "primary-success-stops",
+      "first": "one",
+      "second": "one",
+      "min_candidates": 1,
+      "expected_status": "complete",
+      "expected_attempt_classifications": ["sufficient"],
+      "expected_direct_complete": true,
+      "expected_calls": 1
+    },
+    {
+      "id": "empty-primary-fallback-recovers",
+      "first": "empty",
+      "second": "one",
+      "min_candidates": 1,
+      "expected_status": "complete",
+      "expected_attempt_classifications": ["not_found", "sufficient"],
+      "expected_direct_complete": false,
+      "expected_calls": 2
+    },
+    {
+      "id": "provider-outage-fallback-recovers",
+      "first": "provider_unavailable",
+      "second": "one",
+      "min_candidates": 1,
+      "expected_status": "complete",
+      "expected_attempt_classifications": ["provider_unavailable", "sufficient"],
+      "expected_direct_complete": false,
+      "expected_calls": 2
+    },
+    {
+      "id": "rate-limit-fallback-recovers",
+      "first": "rate_limited",
+      "second": "one",
+      "min_candidates": 1,
+      "expected_status": "complete",
+      "expected_attempt_classifications": ["rate_limited", "sufficient"],
+      "expected_direct_complete": false,
+      "expected_calls": 2
+    },
+    {
+      "id": "policy-denial-stops",
+      "first": "policy_denied",
+      "second": "one",
+      "min_candidates": 1,
+      "expected_status": "failed",
+      "expected_attempt_classifications": ["policy_denied"],
+      "expected_direct_complete": false,
+      "expected_calls": 1
+    },
+    {
+      "id": "authentication-wall-stops",
+      "first": "authentication_required",
+      "second": "one",
+      "min_candidates": 1,
+      "expected_status": "approval_required",
+      "expected_attempt_classifications": ["authentication_required"],
+      "expected_direct_complete": false,
+      "expected_calls": 1
+    },
+    {
+      "id": "malformed-request-stops",
+      "first": "invalid_request",
+      "second": "one",
+      "min_candidates": 1,
+      "expected_status": "failed",
+      "expected_attempt_classifications": ["invalid_request"],
+      "expected_direct_complete": false,
+      "expected_calls": 1
+    },
+    {
+      "id": "independent-source-coverage",
+      "first": "one",
+      "second": "one",
+      "min_candidates": 2,
+      "expected_status": "complete",
+      "expected_attempt_classifications": ["sufficient", "sufficient"],
+      "expected_direct_complete": false,
+      "expected_calls": 2
+    }
+  ],
+  "merge_cases": [
+    {
+      "id": "tracking-and-fragment-variants",
+      "inputs": [
+        {
+          "adapter_id": "exa",
+          "item_id": "one",
+          "url": "https://example.com/story?utm_source=exa&section=runtime#details"
+        },
+        {
+          "adapter_id": "tavily",
+          "item_id": "two",
+          "url": "https://example.com/story?section=runtime&utm_medium=search"
+        }
+      ],
+      "expected_unique": 1
+    },
+    {
+      "id": "syndicated-content-hash",
+      "inputs": [
+        {
+          "adapter_id": "rss",
+          "item_id": "one",
+          "url": "https://origin.example/story",
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "adapter_id": "news",
+          "item_id": "two",
+          "url": "https://syndicate.example/reprint",
+          "content_hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      ],
+      "expected_unique": 1
+    },
+    {
+      "id": "independent-content-remains-distinct",
+      "inputs": [
+        {
+          "adapter_id": "rss",
+          "item_id": "one",
+          "url": "https://one.example/story"
+        },
+        {
+          "adapter_id": "news",
+          "item_id": "two",
+          "url": "https://two.example/story"
+        }
+      ],
+      "expected_unique": 2
+    }
+  ]
+}

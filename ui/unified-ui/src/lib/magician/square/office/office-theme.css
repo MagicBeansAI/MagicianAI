@@ -1,0 +1,142 @@
+/*
+ * Office Floor — surface token layer.
+ *
+ * `--office-*` is the FLOOR's palette: plot, shell, partitions, flooring and
+ * furniture. It follows the same division of labour fleet-theme.css sets up
+ * for the campus — the world owns its look, the chrome around it owns the app
+ * theme — with one deliberate difference, described below.
+ *
+ * WHY THIS FILE HAS TWO BLOCKS AND fleet-theme.css HAS ONE.
+ *
+ * The campus is a 3D scene behind a translucent HUD: it is unmistakably a
+ * separate thing from the page, so a fixed bright palette reads as "the world"
+ * in any app theme. The office floor is a FLAT PLATE that fills the hero edge
+ * to edge. At that scale a fixed cream slab in a dark theme is not "the world
+ * keeping its own look", it is a light-mode rectangle bolted into a dark page —
+ * the same failure the pixel-skin note in game-chrome.css calls out for
+ * hardcoded cream plates.
+ *
+ * So the plot is toned, and it is toned WITHOUT a per-theme table, because the
+ * app ships twenty-two themes and a table would be wrong on the twenty-third.
+ * officeTone.ts measures the resolved luminance of the app's own background and
+ * stamps `data-office-tone="light" | "dark"` on the floor's root. Both blocks
+ * below are hand-picked, warm, and bright FOR THEIR TONE: the light floor is
+ * the reference's cream and parchment, the dark floor is a warm night office —
+ * lamplit walnut and tobacco rather than cool grey — so the character of the
+ * art survives the switch instead of only its geometry.
+ *
+ * CONTRAST, the standing rule from fleet-theme.css restated for a flat plate:
+ * both sides of a comparison have to be measured as RENDERED. Everything here
+ * is opaque, which is the point — there is no live canvas behind the floor, so
+ * a value picked against these tokens is the value that ships. The two pairs
+ * that matter, and the reason the ladders below are spaced the way they are:
+ *
+ *   1. room floor vs corridor floor vs vacant floor. These are large co-planar
+ *      neighbours separated by a hairline partition, so they must differ in
+ *      VALUE. Vacant deliberately sits a full step BELOW both — a vacant room
+ *      has to read as empty from across the floor, before you get close enough
+ *      to see there are no desks in it, and value is the only cue that carries
+ *      at that distance.
+ *   2. desk wood vs room floor. The desk is the largest object in a room and
+ *      the person is drawn against it; if those two collapse, the crew stops
+ *      reading as seated at anything.
+ *
+ * Status colours are NOT here. They are the shared `--fleet-*` tokens; see the
+ * header of fleet-theme.css before touching them.
+ */
+
+.office-floor,
+[data-office-tone='light'] {
+	/* the plot the building sits on — visible as a margin around the shell */
+	--office-plot: #e3d8c1;
+	--office-plot-line: #d3c5a9;
+
+	/* structure */
+	--office-shell: #40313f;
+	--office-partition: #cbbb9c;
+	--office-partition-edge: #a8977a;
+
+	/* flooring ladder: corridor -> room -> vacant, each a clear value step */
+	--office-corridor: #f0e6cf;
+	--office-corridor-line: #e2d5b8;
+	--office-room: #fdf7e8;
+	--office-room-alt: #f8f0dd;
+	--office-vacant: #ded2b6;
+	--office-vacant-line: #cabd9d;
+
+	/* ink */
+	--office-ink: #40313f;
+	--office-ink-soft: rgba(64, 49, 63, 0.42);
+	--office-ink-faint: rgba(64, 49, 63, 0.16);
+
+	/* furniture */
+	--office-desk: #dda765;
+	--office-desk-edge: #b47b3f;
+	--office-desk-leg: #8c5c2c;
+	--office-chair: #7b8697;
+	--office-chair-dark: #5c6675;
+	--office-screen: #35424f;
+	--office-screen-glow: #7fb2c9;
+	--office-metal: #c3ccd4;
+	--office-metal-dark: #97a2ac;
+	--office-paper: #ffffff;
+	--office-glass: rgba(126, 178, 201, 0.34);
+	--office-glass-edge: #8fbfd4;
+	--office-plant: #4f9f5f;
+	--office-plant-dark: #37784a;
+	--office-pot: #c9744e;
+	--office-pot-dark: #a35637;
+	--office-sofa: #7d90c4;
+	--office-sofa-dark: #5f72a6;
+	--office-rug: #d68a63;
+	--office-counter: #b9866a;
+	--office-counter-top: #efe3cd;
+	--office-board: #fbfbf7;
+	--office-carton: #cf9f6b;
+	--office-carton-dark: #a97a48;
+}
+
+[data-office-tone='dark'] {
+	--office-plot: #17121a;
+	--office-plot-line: #221a26;
+
+	--office-shell: #0d090f;
+	--office-partition: #4b3c46;
+	--office-partition-edge: #5d4b57;
+
+	--office-corridor: #2c242f;
+	--office-corridor-line: #362c39;
+	--office-room: #3b3040;
+	--office-room-alt: #362c3a;
+	--office-vacant: #241d28;
+	--office-vacant-line: #2f2634;
+
+	--office-ink: #f4e9d8;
+	--office-ink-soft: rgba(244, 233, 216, 0.45);
+	--office-ink-faint: rgba(244, 233, 216, 0.16);
+
+	--office-desk: #a8703b;
+	--office-desk-edge: #7c4f26;
+	--office-desk-leg: #5d3a1c;
+	--office-chair: #5d6779;
+	--office-chair-dark: #454e5e;
+	--office-screen: #1d2632;
+	--office-screen-glow: #6ea3bd;
+	--office-metal: #7d8894;
+	--office-metal-dark: #5b656f;
+	--office-paper: #ded3c2;
+	--office-glass: rgba(110, 163, 189, 0.22);
+	--office-glass-edge: #567c90;
+	--office-plant: #3f8b52;
+	--office-plant-dark: #2c6539;
+	--office-pot: #a35b3c;
+	--office-pot-dark: #7d4229;
+	--office-sofa: #5c6c9c;
+	--office-sofa-dark: #45527a;
+	--office-rug: #a5603f;
+	--office-counter: #8a6047;
+	--office-counter-top: #4a3e44;
+	--office-board: #d9cfbe;
+	--office-carton: #9b7245;
+	--office-carton-dark: #77552f;
+}

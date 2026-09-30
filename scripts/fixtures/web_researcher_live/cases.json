@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "direct_openai_sarvam_pricing",
+      "mode": "direct",
+      "root_agent_id": "web-researcher",
+      "title": "GPT 5.6 family and Sarvam prices",
+      "query": "Compare prices of GPT 5.6 family and Sarvam.",
+      "min_answer_chars": 300,
+      "max_answer_words": 480,
+      "min_citations": 2,
+      "min_distinct_domains": 2,
+      "min_resolvable_citations": 1,
+      "required_domain_groups": [
+        [
+          "openai.com"
+        ],
+        [
+          "sarvam.ai"
+        ]
+      ],
+      "required_term_groups": [
+        [
+          "openai"
+        ],
+        [
+          "sarvam"
+        ],
+        [
+          "gpt-5.6",
+          "gpt 5.6"
+        ],
+        [
+          "luna"
+        ],
+        [
+          "terra"
+        ],
+        [
+          "sol"
+        ],
+        [
+          "sarvam-105b",
+          "sarvam 105b"
+        ],
+        [
+          "input"
+        ],
+        [
+          "cached"
+        ],
+        [
+          "output"
+        ],
+        [
+          "dollar",
+          "$"
+        ],
+        [
+          "rupee",
+          "inr",
+          "₹"
+        ],
+        [
+          "price",
+          "pricing",
+          "cost"
+        ],
+        [
+          "million",
+          "1m",
+          "1 m"
+        ]
+      ],
+      "required_tool_groups": [
+        [
+          "content_search"
+        ]
+      ],
+      "min_paired_tool_calls": 1,
+      "max_failed_tool_calls": 0,
+      "max_failed_llm_calls": 0
+    },
+    {
+      "id": "delegated_official_release_comparison",
+      "mode": "delegated",
+      "root_agent_id": "personal-assistant",
+      "title": "Delegated current Rust and Python release comparison",
+      "query": "Delegate this bounded web query to the web-researcher. Treat Rust and Python as independent branches and start them together with one content_search call whose requests array contains one Rust query and one Python query. Using official Rust and Python release sources, identify the current stable release number and release date for each, then state which was released more recently. Keep the final answer under 260 words and preserve inline Markdown citations to the exact official pages. Do not perform deep research and do not open a browser unless the static retrieval path explicitly reports that it is insufficient.",
+      "min_answer_chars": 220,
+      "max_answer_words": 380,
+      "min_citations": 2,
+      "min_distinct_domains": 2,
+      "min_resolvable_citations": 1,
+      "required_domain_groups": [
+        [
+          "python.org"
+        ],
+        [
+          "rust-lang.org"
+        ]
+      ],
+      "required_term_groups": [
+        [
+          "python"
+        ],
+        [
+          "rust"
+        ],
+        [
+          "release",
+          "released"
+        ],
+        [
+          "recent",
+          "newer",
+          "later"
+        ]
+      ],
+      "required_tool_groups": [
+        [
+          "content_search"
+        ]
+      ],
+      "min_paired_tool_calls": 1,
+      "max_failed_tool_calls": 0,
+      "max_failed_llm_calls": 0
+    },
+    {
+      "id": "direct_client_rendered_pricing_page",
+      "mode": "direct",
+      "root_agent_id": "web-researcher",
+      "title": "Client-rendered pricing page (hydrated island)",
+      "query": "Using the official page https://www.sarvam.ai/api-pricing, report Sarvam's text-to-speech price per 1,000 characters and the Sarvam 105B input, cached input, and output rates per 1M tokens, in INR. Keep it under 200 words.",
+      "min_answer_chars": 120,
+      "max_answer_words": 260,
+      "min_citations": 1,
+      "min_distinct_domains": 1,
+      "min_resolvable_citations": 1,
+      "required_domain_groups": [
+        [
+          "sarvam.ai"
+        ]
+      ],
+      "required_term_groups": [
+        [
+          "sarvam"
+        ],
+        [
+          "3.00",
+          "₹3"
+        ],
+        [
+          "29.28"
+        ],
+        [
+          "10.98"
+        ],
+        [
+          "73.2"
+        ],
+        [
+          "rupee",
+          "inr",
+          "₹"
+        ],
+        [
+          "million",
+          "1m",
+          "1 m"
+        ]
+      ],
+      "required_tool_groups": [
+        [
+          "content_read",
+          "browser"
+        ]
+      ],
+      "min_paired_tool_calls": 1,
+      "max_failed_tool_calls": 0,
+      "max_failed_llm_calls": 0
+    }
+  ]
+}

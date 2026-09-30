@@ -1,0 +1,3151 @@
+{
+  "schema_version": "tool-runtime.commerce-policy-fixtures.v1",
+  "commerce_boundary_schema_version": "tool-runtime.commerce-boundary.v1",
+  "summary": {
+    "fixtures": 60,
+    "terminals": {
+      "budget_ceiling_exceeded": 2,
+      "budget_not_configured": 2,
+      "budget_unavailable": 2,
+      "cart_mismatch": 2,
+      "cart_unavailable": 4,
+      "confirmation_intent_too_short": 2,
+      "confirmation_missing": 2,
+      "confirmation_risk_mismatch": 2,
+      "declared_ceiling_exceeded": 2,
+      "missing_declared_amount": 2,
+      "remote_ambiguous": 4,
+      "remote_error": 2,
+      "remote_success": 30,
+      "verified_ceiling_exceeded": 2
+    }
+  },
+  "source_digests": [
+    {
+      "integration": "swiggy-mcp",
+      "path": "SKILL.md",
+      "sha256": "5a262d40e8abc98532d141e4117b80c7c235f62a4a2b6612d36dfca1864d248c"
+    },
+    {
+      "integration": "swiggy-mcp",
+      "path": "scripts/run.sh",
+      "sha256": "5b85c8e9b8468aa884b9d2351c813218e56833a8fbd35b85bb2eb2ab10b0ad11"
+    },
+    {
+      "integration": "swiggy-mcp",
+      "path": "scripts/swiggy_mcp.mjs",
+      "sha256": "3e2d3018be013d8015e5c21f31949901280caff0a5a8cc688f6a596ac46f1d41"
+    },
+    {
+      "integration": "swiggy-mcp",
+      "path": "tool_schema.yaml",
+      "sha256": "848cdbac73de0e5b034cff9b42e7fd7f94f13e376497af5beba2b4eda31bcc28"
+    },
+    {
+      "integration": "zepto-mcp",
+      "path": "SKILL.md",
+      "sha256": "ac4a7139d70564ac9e3635cf0aebc8900965e79d7721cf8b3a9b260dc8c62e7f"
+    },
+    {
+      "integration": "zepto-mcp",
+      "path": "scripts/run.sh",
+      "sha256": "7598576fd0bdfc131594d13ae178e86d257cec88bf81ffc3dc91aa3e5dba59db"
+    },
+    {
+      "integration": "zepto-mcp",
+      "path": "scripts/zepto_mcp.mjs",
+      "sha256": "86e7a37af98fdca3dc81e16983d16bb41cb899bf6457a0ed012e57e8b1f512d7"
+    },
+    {
+      "integration": "zepto-mcp",
+      "path": "tool_schema.yaml",
+      "sha256": "2d90b5de47e72f7ee1c6e3d53e5b0822dc44fd19ddbaaf0efed400a988455f2d"
+    }
+  ],
+  "fixtures": [
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "amount-required",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "missing_declared_amount",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "missing_declared_amount",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "budget-ceiling",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "ceiling_exceeded",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "budget_ceiling_exceeded",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "budget_ceiling_exceeded",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "budget-missing",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "budget_not_configured",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "budget_not_configured",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "budget_not_configured",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "budget-unavailable-allowed",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": true,
+        "allow_unverified_cart": false,
+        "reservation": "unavailable",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_fail_open",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "budget-unavailable-blocked",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "unavailable",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "budget_unavailable",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "budget_unavailable",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "cart-mismatch-fail-closed",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 200,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": true,
+        "allow_unverified_cart": true,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "cart_mismatch",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "cart_mismatch",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "cart-paise-success",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 10000,
+          "unit": "paise"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "cart-rupees-success",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "cartless-allowed",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": true,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_fallback_accepted",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "cartless-blocked",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "cart_unavailable",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "cart_unavailable",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "confirmation-complete",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": true,
+        "confirmed": true,
+        "intent_summary_trimmed_chars": 12,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_accepted",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "confirmation-missing",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": true,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "confirmation_missing",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "confirmation_missing",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "confirmation-off",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "read",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "declared-preflight-cap",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 20000,
+        "per_order_ceiling_paise": 10000,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "declared_ceiling_exceeded",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "declared_ceiling_exceeded",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "gate-disabled",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": true,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "intent-too-short",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": true,
+        "confirmed": true,
+        "intent_summary_trimmed_chars": 11,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "confirmation_intent_too_short",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "confirmation_intent_too_short",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "percent-tolerance-boundary",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 105000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 1000,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 100000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 100000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "provided-checkout-promotes-read",
+        "tool_name": "search_items",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": true,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "read",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "read",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "provider-final",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "provider-nonfinal",
+        "tool_name": "add_item_to_cart",
+        "confirm_order_argument": false,
+        "provided_risk": "cart_mutation",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "cart_mutation",
+          "effective_risk": "cart_mutation",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "cart_mutation",
+        "effective_risk": "cart_mutation",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "read-precedence",
+        "tool_name": "get_payment_status",
+        "confirm_order_argument": false,
+        "provided_risk": "read",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "read",
+          "effective_risk": "read",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "read",
+        "effective_risk": "read",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "read-prefix",
+        "tool_name": "search_items",
+        "confirm_order_argument": false,
+        "provided_risk": "read",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "read",
+          "effective_risk": "read",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "read",
+        "effective_risk": "read",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "remote-ambiguous-commit",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "ambiguous_failure",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_ambiguous",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_ambiguous",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "remote-error-rollback",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "definite_error",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_error",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "rollback"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_error",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "rollback",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_rolled_back"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "remote-timeout-commit",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "timeout",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_ambiguous",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_ambiguous",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "risk-mismatch",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "read",
+        "wrapper_confirmation_required": true,
+        "confirmed": true,
+        "intent_summary_trimmed_chars": 20,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "confirmation_risk_mismatch",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "confirmation_risk_mismatch",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "tolerance-boundary",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 12500,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "unreadable-cart-allowed",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "read_failed"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": true,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_fallback_accepted",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "unreadable-cart-blocked",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "parse_failed"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "cart_unavailable",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "cart_unavailable",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "swiggy-mcp",
+        "id": "verified-cap",
+        "tool_name": "place_food_order",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": 11000,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 130,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 3000,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "verified_ceiling_exceeded",
+          "verified_amount_paise": 13000,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "verified_ceiling_exceeded",
+        "verified_amount_paise": 13000,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "amount-required",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "missing_declared_amount",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "missing_declared_amount",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "budget-ceiling",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "ceiling_exceeded",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "budget_ceiling_exceeded",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "budget_ceiling_exceeded",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "budget-missing",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "budget_not_configured",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "budget_not_configured",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "budget_not_configured",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "budget-unavailable-allowed",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": true,
+        "allow_unverified_cart": false,
+        "reservation": "unavailable",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_fail_open",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "budget-unavailable-blocked",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "unavailable",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "budget_unavailable",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "budget_unavailable",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "cart-mismatch-fail-closed",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 200,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": true,
+        "allow_unverified_cart": true,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "cart_mismatch",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "cart_mismatch",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "cart-paise-success",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 10000,
+          "unit": "paise"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "cart-rupees-success",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "cartless-allowed",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": true,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_fallback_accepted",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "cartless-blocked",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "cart_unavailable",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "cart_unavailable",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "confirmation-complete",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": true,
+        "confirmed": true,
+        "intent_summary_trimmed_chars": 12,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_accepted",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "confirmation-missing",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": true,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "confirmation_missing",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "confirmation_missing",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "confirmation-off",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "read",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "declared-preflight-cap",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 20000,
+        "per_order_ceiling_paise": 10000,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "declared_ceiling_exceeded",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "declared_ceiling_exceeded",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "gate-disabled",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": true,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "intent-too-short",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": true,
+        "confirmed": true,
+        "intent_summary_trimmed_chars": 11,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "confirmation_intent_too_short",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "confirmation_intent_too_short",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "percent-tolerance-boundary",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 105000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 1000,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 100000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 100000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "provided-checkout-promotes-read",
+        "tool_name": "search_items",
+        "confirm_order_argument": false,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": true,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "read",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "read",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "provider-final",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "provider-nonfinal",
+        "tool_name": "create_order",
+        "confirm_order_argument": false,
+        "provided_risk": "cart_mutation",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "cart_mutation",
+          "effective_risk": "cart_mutation",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "cart_mutation",
+        "effective_risk": "cart_mutation",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "read-precedence",
+        "tool_name": "get_payment_status",
+        "confirm_order_argument": false,
+        "provided_risk": "read",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "read",
+          "effective_risk": "read",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "read",
+        "effective_risk": "read",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "read-prefix",
+        "tool_name": "search_items",
+        "confirm_order_argument": false,
+        "provided_risk": "read",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "read",
+          "effective_risk": "read",
+          "terminal": "remote_success",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": true,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "read",
+        "effective_risk": "read",
+        "terminal": "remote_success",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": true,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "gate_bypassed",
+          "remote_called"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "remote-ambiguous-commit",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "ambiguous_failure",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_ambiguous",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_ambiguous",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "remote-error-rollback",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "definite_error",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_error",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "rollback"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_error",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "rollback",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_rolled_back"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "remote-timeout-commit",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "timeout",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_ambiguous",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_ambiguous",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "risk-mismatch",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "read",
+        "wrapper_confirmation_required": true,
+        "confirmed": true,
+        "intent_summary_trimmed_chars": 20,
+        "gate_disabled": false,
+        "declared_amount_paise": null,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "no_cart_tool"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "confirmation_risk_mismatch",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "confirmation_risk_mismatch",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "tolerance-boundary",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 12500,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 100,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "unreadable-cart-allowed",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "read_failed"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": true,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "remote_success",
+          "verified_amount_paise": 10000,
+          "reservation_acquired": true,
+          "remote_called": true,
+          "settlement": "commit"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "remote_success",
+        "verified_amount_paise": 10000,
+        "reservation_acquired": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_fallback_accepted",
+          "verified_ceiling_checked",
+          "reservation_requested",
+          "reservation_acquired",
+          "remote_called",
+          "reservation_committed"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "unreadable-cart-blocked",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": null,
+        "cart": {
+          "kind": "unavailable",
+          "reason": "parse_failed"
+        },
+        "absolute_tolerance_paise": 2500,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "cart_unavailable",
+          "verified_amount_paise": null,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "cart_unavailable",
+        "verified_amount_paise": null,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked"
+        ]
+      }
+    },
+    {
+      "case": {
+        "integration": "zepto-mcp",
+        "id": "verified-cap",
+        "tool_name": "create_order",
+        "confirm_order_argument": true,
+        "provided_risk": "checkout_or_payment",
+        "wrapper_confirmation_required": false,
+        "confirmed": false,
+        "intent_summary_trimmed_chars": 0,
+        "gate_disabled": false,
+        "declared_amount_paise": 10000,
+        "per_order_ceiling_paise": 11000,
+        "cart": {
+          "kind": "verified",
+          "raw_amount": 130,
+          "unit": "rupees"
+        },
+        "absolute_tolerance_paise": 3000,
+        "percent_tolerance_bps": 500,
+        "gate_fail_open": false,
+        "allow_unverified_cart": false,
+        "reservation": "success",
+        "remote": "success",
+        "expected": {
+          "inferred_risk": "checkout_or_payment",
+          "effective_risk": "checkout_or_payment",
+          "terminal": "verified_ceiling_exceeded",
+          "verified_amount_paise": 13000,
+          "reservation_acquired": false,
+          "remote_called": false,
+          "settlement": "none"
+        }
+      },
+      "evaluation": {
+        "inferred_risk": "checkout_or_payment",
+        "effective_risk": "checkout_or_payment",
+        "terminal": "verified_ceiling_exceeded",
+        "verified_amount_paise": 13000,
+        "reservation_acquired": false,
+        "remote_called": false,
+        "settlement": "none",
+        "steps": [
+          "risk_classified",
+          "confirmation_bypassed",
+          "declared_amount_checked",
+          "cart_verified",
+          "verified_ceiling_checked"
+        ]
+      }
+    }
+  ]
+}

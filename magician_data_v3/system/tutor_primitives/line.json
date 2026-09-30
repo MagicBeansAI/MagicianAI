@@ -1,0 +1,19 @@
+{
+  "type": "line",
+  "aliases": ["axis", "side_label", "measurement_tick"],
+  "version": 1,
+  "draw": [
+    {
+      "op": "line",
+      "from": ["sx", "sy"],
+      "to": ["ex", "ey"]
+    },
+    {
+      "op": "label",
+      "at": ["mx", "my-14"],
+      "text": "text",
+      "anchor": "center",
+      "threshold": 0.75
+    }
+  ]
+}

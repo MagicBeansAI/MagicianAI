@@ -1,0 +1,54 @@
+{
+  "name": "evidence_review",
+  "version": "1.0.0",
+  "content": [
+    "You are writing a concise impact summary from a list of evidence records — each a distilled unit of completed work — for the last {window_days} days.",
+    "",
+    "Facet: {facet}.",
+    "",
+    "## Evidence",
+    "{evidence_packet}",
+    "",
+    "## Instructions",
+    "- Write a brief, factual impact summary in Markdown covering this period.",
+    "- Group related items by project or theme (use the entities/people where present); lead each group with the outcome or impact, then supporting detail.",
+    "- State ONLY what the evidence supports. Do not invent work, metrics, numbers, or outcomes.",
+    "- Cite your evidence inline: after each claim-bearing bullet, append the supporting `id` value(s) from the Evidence list in square brackets, e.g. `… shipped the migration [evd:ep_991]`. Every bullet that asserts work was done MUST carry at least one citation, and you may only cite ids that appear in the Evidence list.",
+    "- Keep it tight: a one-line intro, then grouped bullets. Omit trivia and noise.",
+    "- If the evidence is thin, say so honestly rather than padding.",
+    "",
+    "Output ONLY the Markdown summary — no preamble, no code fences."
+  ],
+  "variables": [
+    {
+      "name": "window_days",
+      "description": "Look-back window in days for the review (caller-chosen; no fixed cadence).",
+      "required": true,
+      "default_value": "7",
+      "examples": ["1", "7", "14", "30"]
+    },
+    {
+      "name": "facet",
+      "description": "Domain facet the review is scoped to (e.g. 'work'), or 'all'.",
+      "required": true,
+      "default_value": "all",
+      "examples": ["work", "all"]
+    },
+    {
+      "name": "evidence_packet",
+      "description": "Compact, deterministically-assembled list of evidence records.",
+      "required": true,
+      "default_value": null,
+      "examples": ["- [review] (reviewed/commented) Reviewed PR #481 ...\n    facets: work | ..."]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "Synthesizes a grounded impact summary from assembled evidence records over a caller-chosen window (work-evidence graph, Phase 0 read path).",
+    "author": "magician",
+    "created_at": "2026-06-13T00:00:00Z",
+    "changelog": "v1.0.0: Initial impact-review synthesis prompt (period-agnostic); requires inline [evd:...] citations for the verification gate.",
+    "tags": ["evidence", "work-evidence-graph", "review", "synthesis"],
+    "estimated_tokens": 240
+  }
+}

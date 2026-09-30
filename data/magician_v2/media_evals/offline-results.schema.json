@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magician.local/schemas/media-offline-audio-results-v1.json",
+  "title": "Magician offline audio model evaluation results",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "captured_at",
+    "host",
+    "git_revision",
+    "config_fingerprint",
+    "suite_manifest",
+    "execution",
+    "measurements",
+    "model_summaries"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "host": { "type": "object" },
+    "git_revision": { "type": "string", "minLength": 1 },
+    "config_fingerprint": { "type": "string", "minLength": 1 },
+    "suite_manifest": { "type": "string", "minLength": 1 },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "network_policy", "magician_started", "stages", "run_kinds", "repetitions"],
+      "properties": {
+        "transport": { "const": "owned_fluid_audio_sidecar" },
+        "network_policy": { "enum": ["cached_models_only", "configured_download_policy"] },
+        "magician_started": { "const": false },
+        "stages": {
+          "type": "array",
+          "items": { "enum": ["vad", "stt", "tts", "diarization"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "run_kinds": {
+          "type": "array",
+          "items": { "enum": ["cold", "warm"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "repetitions": { "type": "integer", "minimum": 1 },
+        "contention_note": { "type": "string" }
+      }
+    },
+    "measurements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stage",
+          "mode",
+          "provider_id",
+          "adapter",
+          "model",
+          "fixture_id",
+          "run_kind",
+          "run_index",
+          "status",
+          "quality_passed",
+          "timings",
+          "resources",
+          "metrics"
+        ],
+        "properties": {
+          "stage": { "enum": ["vad", "stt", "tts", "diarization"] },
+          "mode": { "enum": ["streaming", "recording", "synthesis"] },
+          "provider_id": { "type": "string", "minLength": 1 },
+          "adapter": { "type": "string", "minLength": 1 },
+          "model": { "type": "string", "minLength": 1 },
+          "fixture_id": { "type": "string", "minLength": 1 },
+          "run_kind": { "enum": ["cold", "warm"] },
+          "run_index": { "type": "integer", "minimum": 1 },
+          "status": { "enum": ["passed", "failed", "skipped"] },
+          "quality_passed": { "type": ["boolean", "null"] },
+          "skip_reason": { "type": "string" },
+          "error": { "type": "string" },
+          "timings": {
+            "type": "object",
+            "additionalProperties": { "type": ["number", "null"] }
+          },
+          "resources": {
+            "type": "object",
+            "additionalProperties": { "type": ["number", "null"] }
+          },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": { "type": ["number", "integer", "string", "boolean", "null"] }
+          },
+          "events": {
+            "type": "array",
+            "items": { "type": "object" }
+          }
+        }
+      }
+    },
+    "model_summaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "mode", "provider_id", "run_kind", "measurement_count", "pass_rate", "quality", "performance"],
+        "properties": {
+          "stage": { "enum": ["vad", "stt", "tts", "diarization"] },
+          "mode": { "enum": ["streaming", "recording", "synthesis"] },
+          "provider_id": { "type": "string", "minLength": 1 },
+          "run_kind": { "enum": ["cold", "warm"] },
+          "measurement_count": { "type": "integer", "minimum": 0 },
+          "pass_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "quality": { "type": "object", "additionalProperties": { "type": ["number", "null"] } },
+          "performance": { "type": "object", "additionalProperties": { "type": ["number", "null"] } },
+          "pareto_preferred": { "type": "boolean" }
+        }
+      }
+    },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "fixture_id": "attention-routing-frozen-v1",
+  "schema_version": 1,
+  "policy": {"minimum_route_confidence": 0.85, "minimum_utility_margin": 0.2, "grouping_snapshot_id": "pair-v1", "grouping_model_version": "pair-logistic-v1", "min_visible_ms": 1000, "max_visible_ms": 86400000},
+  "gates": {"minimum_verified_impression_coverage": 0.99, "maximum_actionable_recall_drop": 0.0, "minimum_irrelevant_follow_up_reduction": 0.5, "maximum_event_identity_conflicts": 0},
+  "decisions": [{
+    "decision_id": "routing-eval-decision-1",
+    "complete_cross_lane_universe": true,
+    "candidate_count": 8,
+    "items": [
+      {"candidate_id":"action-1","baseline_route":"follow_up","learned_route":"follow_up","served_route":"follow_up","audited_label":"actionable","confidence":0.98,"margin":0.72,"selected":true,"grouping_snapshot_id":"pair-v1","grouping_model_version":"pair-logistic-v1"},
+      {"candidate_id":"action-2","baseline_route":"follow_up","learned_route":"follow_up","served_route":"follow_up","audited_label":"actionable","confidence":0.97,"margin":0.67,"selected":true,"grouping_snapshot_id":"pair-v1","grouping_model_version":"pair-logistic-v1"},
+      {"candidate_id":"action-3","baseline_route":"follow_up","learned_route":"follow_up","served_route":"follow_up","audited_label":"actionable","confidence":0.96,"margin":0.61,"selected":true,"grouping_snapshot_id":"pair-v1","grouping_model_version":"pair-logistic-v1"},
+      {"candidate_id":"info-1","baseline_route":"follow_up","learned_route":"worth_a_look","served_route":"worth_a_look","audited_label":"irrelevant_follow_up","confidence":0.96,"margin":0.62,"selected":true,"grouping_snapshot_id":"pair-v1","grouping_model_version":"pair-logistic-v1"},
+      {"candidate_id":"info-2","baseline_route":"follow_up","learned_route":"worth_a_look","served_route":"worth_a_look","audited_label":"irrelevant_follow_up","confidence":0.95,"margin":0.55,"selected":true,"grouping_snapshot_id":"pair-v1","grouping_model_version":"pair-logistic-v1"},
+      {"candidate_id":"info-3","baseline_route":"follow_up","learned_route":"worth_a_look","served_route":"worth_a_look","audited_label":"irrelevant_follow_up","confidence":0.94,"margin":0.49,"selected":true,"grouping_snapshot_id":"pair-v1","grouping_model_version":"pair-logistic-v1"},
+      {"candidate_id":"worth-1","baseline_route":"worth_a_look","learned_route":"worth_a_look","served_route":"worth_a_look","audited_label":"useful_information","confidence":0.91,"margin":0.38,"selected":true,"grouping_snapshot_id":"pair-v1","grouping_model_version":"pair-logistic-v1"},
+      {"candidate_id":"worth-2","baseline_route":"worth_a_look","learned_route":"worth_a_look","served_route":"worth_a_look","audited_label":"useful_information","confidence":0.90,"margin":0.34,"selected":true,"grouping_snapshot_id":"pair-v1","grouping_model_version":"pair-logistic-v1"}
+    ]
+  }],
+  "impression_events": [
+    {"event_id":"visible-action-1","decision_id":"routing-eval-decision-1","candidate_id":"action-1","visible_ms":1200,"min_visible_ms":1000},
+    {"event_id":"visible-action-2","decision_id":"routing-eval-decision-1","candidate_id":"action-2","visible_ms":1300,"min_visible_ms":1000},
+    {"event_id":"visible-action-3","decision_id":"routing-eval-decision-1","candidate_id":"action-3","visible_ms":1100,"min_visible_ms":1000},
+    {"event_id":"visible-info-1","decision_id":"routing-eval-decision-1","candidate_id":"info-1","visible_ms":1000,"min_visible_ms":1000},
+    {"event_id":"visible-info-2","decision_id":"routing-eval-decision-1","candidate_id":"info-2","visible_ms":1400,"min_visible_ms":1000},
+    {"event_id":"visible-info-3","decision_id":"routing-eval-decision-1","candidate_id":"info-3","visible_ms":1200,"min_visible_ms":1000},
+    {"event_id":"visible-worth-1","decision_id":"routing-eval-decision-1","candidate_id":"worth-1","visible_ms":1100,"min_visible_ms":1000},
+    {"event_id":"visible-worth-2","decision_id":"routing-eval-decision-1","candidate_id":"worth-2","visible_ms":400,"min_visible_ms":1000},
+    {"event_id":"visible-worth-2","decision_id":"routing-eval-decision-1","candidate_id":"worth-2","visible_ms":1350,"min_visible_ms":1000}
+  ]
+}

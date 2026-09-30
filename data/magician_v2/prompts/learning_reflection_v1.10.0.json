@@ -1,0 +1,107 @@
+{
+  "name": "learning_reflection",
+  "version": "1.10.0",
+  "content": [
+    "Reflect on this completed experience and produce durable learning candidates if warranted.",
+    "",
+    "## Reflection Boundary",
+    "{boundary}",
+    "",
+    "## Current Experience",
+    "{episode_json}",
+    "",
+    "## Related Recent Experiences",
+    "{related_episodes_json}",
+    "",
+    "## Existing Open Learning Candidates",
+    "{existing_candidates_json}",
+    "",
+    "## Existing Draft/Active Procedures",
+    "{existing_procedures_json}",
+    "",
+    "## Extra Review Context",
+    "{extra_context_json}",
+    "",
+    "## Decision Rules",
+    "1. Prefer no-op over weak candidates. The output may contain zero candidates.",
+    "2. Ground every candidate in evidence from the current experience or related recent experiences.",
+    "3. Use existing candidates to avoid duplicates. If an existing candidate already covers the learning, return no new candidate and explain that in no_op_reason.",
+    "4. Memory fact/preference candidates should be concise and scoped: user-level for explicit durable user preferences/facts/corrections, agent-level or agent_goal-level for project or strategy knowledge.",
+    "5. For each memory fact/preference candidate, include `proposed_change.memory` with `scope`, `target_tier`, `operation`, `key`, `value`, `explicit_user_request`, `explicit_user_correction`, and optional `replaces_key`.",
+    "6. For reusable procedures, use candidate_type `memory_procedure` and include `proposed_change.procedure` with title, summary, activation.use_when/avoid_when/example_goals, workflow or procedure_steps, decision_points, verification or verification_steps, failure_modes or common_failure_modes, workflow_signature, source_refs, success_count, and failure_count. Do not put reusable procedures in semantic memory.",
+    "7. Use existing draft/active procedures to avoid duplicates. If an existing procedure already covers the workflow, return no new candidate unless the current run provides a concrete improvement; in that case reference the existing procedure id in `proposed_change.procedure.existing_procedure_id`.",
+    "8. When `extra_context.procedure_feedback.used_procedures` is present, fill the top-level `procedure_feedback` array with exactly one judgement per retrieved procedure: `procedure_id`, `verdict` (`useful`, `harmful`, `stale`, `misleading`, `too_broad`, `too_narrow`, `irrelevant`, or `unknown`), `rationale`, `confidence`, and `deprecation_recommended`. Do this even if you return zero candidates. Use `irrelevant` when the procedure was not actually used, and `unknown` when the evidence is insufficient. When `deprecation_recommended=true`, the runtime creates the reviewed deprecation candidate; do not emit a duplicate candidate just to deprecate that same retrieved procedure.",
+    "9. Runtime bookkeeping records last_used_at/evidence automatically. Success/failure counters move only from explicit per-procedure feedback, so judge usefulness carefully from evidence; a procedure that was merely injected into a run, or a task that merely succeeded, is not automatically useful or harmful.",
+    "10. For procedure updates, emit candidate_type `memory_procedure` with `proposed_change.procedure.existing_procedure_id` and only the concrete delta: new/changed workflow steps, activation/use_when/avoid_when, decision_points, verification, or failure_modes. Do not emit a separate deprecation candidate for a retrieved procedure already marked with top-level `procedure_feedback.deprecation_recommended=true`; the feedback bridge owns that reviewed deprecation proposal. Procedure update candidates require review.",
+    "11. Set `review_required=false` only for low-risk user-memory fact/preference candidates grounded in an explicit user request/correction. Procedure candidates should require review and become draft/update/deprecation proposals before activation or status change.",
+    "12. For each evaluation candidate, include `proposed_change.evaluation` with `case_kind`, `priority`, optional `target_agent_id`, optional `focus_area`, `goal`, `failure_mode`, `expected_behavior`, `reproduction_steps`, `success_criteria`, optional `commands` or `regression_commands` when the eval is already executable, and `source_refs`.",
+    "13. Evaluation candidates should be created when the run revealed a missing regression test, a repeated failure mode, weak capability behavior, memory retrieval/consolidation failure, or a meta-harness review gap. They should normally require review.",
+    "14. For each capability/tool candidate, include `proposed_change.capability_evolution` with `capability_id`, `failure_pattern`, `proposed_fix_type`, `proposed_files`, `required_eval`, `promotion_gate`, `expected_behavior`, and `source_refs`.",
+    "15. Capability/tool candidates should be created when a command guide was confusing, a wrapper/schema/default caused failure, setup/auth docs were missing, a tool output shape was hard to use, tool selection repeatedly failed, or eval coverage is missing. They should require review.",
+    "16. Use skill/workflow candidates only for changing skill artifacts or broad capability behavior. If the learned content is a reusable procedure without a concrete skill-file change, prefer `memory_procedure`.",
+    "17. If an existing active procedure has repeated successful evidence and the current run shows it would reduce failures, token cost, or repeated tool choreography as a skill, emit a review-required `skill_update` or `workflow_template` with `source_procedure_id`, procedure evidence links, `proposed_files`, `required_eval`, and `promotion_gate`. Do not promote a single lucky run into a skill.",
+    "18. Use `extra_context.workflow_detection` as a cheap grouping signal plus LLM gate. Create `memory_procedure` candidates only when the grouped episodes actually show a reusable procedure, or when the user explicitly asked to make a workflow reusable.",
+    "19. Program state belongs only to harness-enabled autonomous agents and tracks the agent's own focus-area program document. For each program-state candidate, include `proposed_change.program_state_update` with `program_relative_path` set to the focus-area program document path supplied in this run's program context (do not invent or default a path such as `program.md`), optional `program_section`, optional `goal_id`, a `patch` containing only mutable runtime fields, `reason`, and `source_refs`. If this run has no program context, do not emit a program-state candidate.",
+    "20. Program-state candidates may be review-free only for low-risk runtime bookkeeping such as last-run summaries, current step/phase, open-loop status, next-action hints, stop-condition status, or a meta-harness verdict link. Durable program spec changes still require review.",
+    "21. Capability, wrapper, schema, skill, prompt, persona, docs, durable program policy, procedure activation, and evaluation candidates are proposals only and should require review unless obviously low-risk documentation.",
+    "22. For failed runs, distinguish between a one-off failure and a reusable bug, missing eval, weak guide, tool friction pattern, stale procedure, bad retrieval, or corrected procedure that would avoid recurrence.",
+    "23. For successful runs, create `memory_procedure` candidates only when the procedure is reusable, repeated in related experiences, explicitly requested by the user, or an existing retrieved procedure needs a concrete improvement.",
+    "24. For failed, questionable, or weakly evidenced runs, include a structured `proposed_change.meta_harness_diagnosis` object on the most relevant candidate, with outcome correctness, evidence quality, hallucinated completion, missed requirements, tool misuse, memory miss, bad retrieval, capability weakness, prompt weakness, evaluation gap, recommended candidate type, and recommended follow-up when supported by evidence.",
+    "25. Evaluation candidates should be actionable backlog items for the eval worker. If the run supplies an obvious local command or harness command, include it in `commands`; otherwise include enough reproduction steps and success criteria for a reviewer to materialize the eval.",
+    "",
+    "Use the structured output schema. Do not include markdown or prose outside the schema."
+  ],
+  "variables": [
+    {
+      "name": "boundary",
+      "description": "Where the reflection was triggered, such as task_terminal_execution or chat_turn_completed",
+      "required": true,
+      "default_value": "task_terminal_execution",
+      "examples": ["task_terminal_execution", "chat_turn_completed"]
+    },
+    {
+      "name": "episode_json",
+      "description": "Compact JSON summary of the current episode/experience",
+      "required": true,
+      "default_value": "{}",
+      "examples": ["{\"episode_id\":\"exec_1\",\"outcome_kind\":\"goal_achieved\"}"]
+    },
+    {
+      "name": "related_episodes_json",
+      "description": "Compact JSON array of recent related episodes for repeated-pattern detection",
+      "required": true,
+      "default_value": "[]",
+      "examples": ["[]"]
+    },
+    {
+      "name": "existing_candidates_json",
+      "description": "Compact JSON array of existing open learning candidates for duplicate avoidance",
+      "required": true,
+      "default_value": "[]",
+      "examples": ["[]"]
+    },
+    {
+      "name": "existing_procedures_json",
+      "description": "Compact JSON array of existing draft/active reusable procedures for duplicate avoidance and update routing",
+      "required": true,
+      "default_value": "[]",
+      "examples": ["[]"]
+    },
+    {
+      "name": "extra_context_json",
+      "description": "Optional meta-harness verdict, workflow detection signals, or caller-specific review context",
+      "required": true,
+      "default_value": "{}",
+      "examples": ["{\"workflow_detection\":{\"repeated_successful_workflows\":[]}}"]
+    }
+  ],
+  "metadata": {
+    "category": "Learning",
+    "description": "User prompt for post-run learning reflection candidate generation.",
+    "author": "magician",
+    "created_at": "2026-05-14T00:00:00Z",
+    "changelog": "v1.10.0: Program-state candidates must use the focus-area program document path supplied in the run's program context (no hardcoded `program.md` default) and are reserved for harness-enabled autonomous agents. v1.9.0: Requires evidence-based procedure_feedback for every retrieved procedure, even on no-op reflections. v1.8.0: Adds structured procedure retrieval feedback judgements, update-delta, deprecation proposal guidance, and procedure-to-skill promotion candidate rules. v1.7.0: Adds existing procedure context and memory_procedure draft procedure extraction rules. v1.6.0: Adds routeable program-state update decision rules and review policy. v1.5.0: Adds meta-harness diagnosis and executable eval-worker handoff guidance. v1.4.0: Adds skill/workflow candidate payload shape and workflow-signature gating. v1.3.0: Adds routeable capability-evolution payload shape and review policy. v1.2.0: Adds routeable evaluation payload shape and review policy for eval backlog routing. v1.1.0: Adds routeable memory payload shape and review policy for Phase 3 memory promotion. v1.0.0: Initial post-run reflection prompt with related-experience and duplicate-candidate context.",
+    "tags": ["learning", "reflection", "agent-growth", "capability-evolution", "skill-evolution"],
+    "estimated_tokens": 700
+  }
+}

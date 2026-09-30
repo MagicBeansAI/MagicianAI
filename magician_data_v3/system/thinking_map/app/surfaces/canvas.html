@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brainstorm canvas</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: flex;
+      flex-direction: column;
+      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #f7f7f5;
+      color: #1c1c1a;
+    }
+    header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid #d8d8d2;
+      background: #ffffff;
+    }
+    header h1 { font-size: 15px; margin: 0; }
+    header .map-title { font-weight: 600; }
+    header .revision { color: #6f6f66; font-variant-numeric: tabular-nums; }
+    header .spacer { flex: 1; }
+    header button {
+      font: inherit;
+      padding: 4px 12px;
+      border: 1px solid #b9b9b0;
+      border-radius: 6px;
+      background: #ffffff;
+      cursor: pointer;
+    }
+    main { display: flex; flex: 1; min-height: 0; }
+    aside {
+      width: 240px;
+      flex: none;
+      overflow-y: auto;
+      border-right: 1px solid #d8d8d2;
+      background: #ffffff;
+      padding: 8px;
+    }
+    aside h2 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6f6f66;
+      margin: 6px 6px 8px;
+    }
+    aside ul { list-style: none; margin: 0; padding: 0; }
+    aside li { margin: 2px 0; }
+    aside button.map {
+      display: block;
+      width: 100%;
+      text-align: left;
+      font: inherit;
+      padding: 6px 8px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      cursor: pointer;
+    }
+    aside button.map:hover { background: #efefe9; }
+    aside button.map[aria-current="true"] { background: #e3e9f5; font-weight: 600; }
+    aside button.map .meta { display: block; color: #6f6f66; font-size: 11px; }
+    aside .hint { color: #6f6f66; font-size: 11px; padding: 6px; }
+    #board {
+      flex: 1;
+      min-width: 0;
+      overflow: auto;
+      padding: 16px;
+    }
+    #board svg { display: block; }
+    #detail {
+      width: 260px;
+      flex: none;
+      overflow-y: auto;
+      border-left: 1px solid #d8d8d2;
+      background: #ffffff;
+      padding: 12px;
+    }
+    #detail h2 { font-size: 13px; margin: 0 0 8px; }
+    #detail dl { margin: 0; }
+    #detail dt {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6f6f66;
+      margin-top: 10px;
+    }
+    #detail dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+    #detail .empty { color: #6f6f66; }
+    #status {
+      flex: none;
+      padding: 5px 16px;
+      border-top: 1px solid #d8d8d2;
+      background: #ffffff;
+      color: #6f6f66;
+      font-size: 12px;
+      min-height: 26px;
+    }
+    #status[data-state="error"] { color: #8a2c1d; }
+    .node circle { fill: #dfe7f3; stroke: #5b7bb4; stroke-width: 1.5; }
+    .node.question circle { fill: #f3ecd8; stroke: #b59a4a; }
+    .node.risk circle { fill: #f3dad8; stroke: #b45a50; }
+    .node.decision circle { fill: #d9ecd9; stroke: #5a9a5a; }
+    .node circle.selected { stroke-width: 3; }
+    .node text {
+      font: 11px system-ui, sans-serif;
+      text-anchor: middle;
+      pointer-events: none;
+    }
+    .node text.kind {
+      font-size: 9px;
+      fill: #6f6f66;
+    }
+    line.edge { stroke: #9a9a90; stroke-width: 1.5; }
+    line.edge.contradicts { stroke: #b45a50; stroke-dasharray: 5 4; }
+    line.edge.answers { stroke: #5a9a5a; }
+    .boot-notice {
+      margin: 40px auto;
+      max-width: 460px;
+      padding: 16px;
+      border: 1px solid #d8d8d2;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #6f6f66;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Brainstorm canvas</h1>
+    <span class="map-title" id="map-title">No map synced</span>
+    <span class="revision" id="map-revision"></span>
+    <span class="spacer"></span>
+    <button type="button" id="refresh" hidden>Refresh library</button>
+  </header>
+  <main>
+    <aside aria-label="Map library">
+      <h2>Maps</h2>
+      <p class="hint" id="library-hint">Reading the synced library&hellip;</p>
+      <ul id="map-list"></ul>
+      <p class="hint" hidden id="sync-hint"></p>
+    </aside>
+    <section id="board" aria-label="Thinking map board">
+      <div class="boot-notice" id="boot-notice">
+        <strong>Starting the canvas&hellip;</strong>
+        This entry document boots by loading its script
+        (<code>surfaces/canvas.js</code>) as a session-scoped sibling of this
+        document: the kernel resolves the relative reference under this
+        document&rsquo;s digest-keyed address and serves the script&rsquo;s own
+        verified bundle bytes. The script negotiates
+        <code>contract_capabilities</code>, reads the synced map library over
+        the eight-operation bridge, renders the board, and removes this
+        notice. If the notice stays, the kernel refused the sibling or the
+        bridge (unknown session, stale package, review change) and this
+        closed notice is the whole surface.
+      </div>
+    </section>
+    <aside id="detail" aria-label="Selected node">
+      <h2>Node</h2>
+      <p class="empty" id="detail-empty">Tap a node to inspect it.</p>
+      <dl id="detail-fields" hidden></dl>
+    </aside>
+  </main>
+  <footer id="status" data-state="busy">Starting&hellip;</footer>
+  <script src="canvas.js"></script>
+</body>
+</html>

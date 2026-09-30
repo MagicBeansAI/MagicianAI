@@ -1,0 +1,1 @@
+{"compile":"ok","steps":2,"inputs":["query"],"data_flows":1,"write_steps":0,"answer_fields":["title"],"replay":{"inputs":{"query":"rust"},"answer":{"title":"CSRF result"}},"must_not_contain":["csrf-token-1234"],"known_failing":null}

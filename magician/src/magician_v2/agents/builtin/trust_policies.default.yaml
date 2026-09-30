@@ -1,0 +1,53 @@
+# Trust policy defaults (TRUE_AGENTS Phase 3)
+#
+# Seeded global template source:
+#   magician_data_v3/system/trust_policy_templates/trust_policies.default.yaml
+#
+# Hardened live scoped copy:
+#   magician_data_v3/scopes/<principal>/<workspace>/agent_runtime/system/trust_policies.yaml
+#
+# These defaults are intentionally strict for untrusted agents while keeping
+# builtin/local fully permissive.
+
+trust_policies:
+  - level: builtin
+    allow:
+      - tool: "*"
+        action: "*"
+    deny: []
+
+  - level: local
+    allow:
+      - tool: "*"
+        action: "*"
+    deny: []
+
+  - level: reviewed
+    allow:
+      - tool: "*"
+        action: "*"
+    deny:
+      - tool: report
+        action:
+          - email
+          - slack
+      - tool: treasurer
+        action: execute
+
+  - level: untrusted
+    allow:
+      - tool: files
+        action: read
+      - tool: search
+        action: "*"
+    deny:
+      - tool: shell
+        action: "*"
+      - tool: files
+        action: write
+      - tool: browser
+        action: execute
+      - tool: report
+        action: "*"
+      - tool: treasurer
+        action: execute

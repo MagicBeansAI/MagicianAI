@@ -1,0 +1,29 @@
+{
+  "name": "channel_pattern_synthesis_user",
+  "version": "1.0.0",
+  "content": [
+    "Monthly mail digest (newest months first):",
+    "",
+    "{digest}",
+    "",
+    "Surface the recurring topics + their timing. JSON only."
+  ],
+  "variables": [
+    {
+      "name": "digest",
+      "description": "Month-bucketed digest: per month, the top sender domains (with counts) + a sample of subjects. Metadata + locally-derived only; never a raw body.",
+      "required": true,
+      "default_value": null,
+      "examples": ["2026-05 (42 msgs): senders [insco.com×5, bank.com×8]; subjects [Policy renewal | Statement ready]"]
+    }
+  ],
+  "metadata": {
+    "category": "ChannelAssist",
+    "description": "User prompt for passive channel pattern synthesis (channel_pattern_synthesis): feeds the month-bucketed digest and asks for the recurring-topic + timing JSON.",
+    "author": "magician",
+    "created_at": "2026-07-06T00:00:00Z",
+    "changelog": "v1.0.0: Initial passive pattern-synthesis user prompt.",
+    "tags": ["channel-assist", "memory", "patterns", "passive"],
+    "estimated_tokens": 60
+  }
+}

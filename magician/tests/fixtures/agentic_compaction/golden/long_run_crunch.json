@@ -1,0 +1,120 @@
+{
+  "name": "long_run_crunch",
+  "description": "Long-run budget crunch: two old pairs summarized, a stale failure note discarded, and the ceiling still evicts the oldest summary as residue.",
+  "iteration": 12,
+  "char_budget": 620,
+  "keep_newest_pairs": 1,
+  "goal_line": "Collect current pricing for the three shortlisted vendors and produce a comparison table.",
+  "open_requirements": [
+    "Confirm the totals against the vendor API before yielding."
+  ],
+  "open_requirement_ids": [],
+  "terminal_evidence_ids": [],
+  "replay": false,
+  "items": [
+    {
+      "id": "tp_001",
+      "kind": "turn_pair",
+      "ordinal": 0,
+      "age_iterations": 4,
+      "content": "[assistant] Iteration 1: opened the vendor list page. [user tool_result call_1] {\"status\":\"ok\",\"rows\":0}................................................................................................"
+    },
+    {
+      "id": "tp_002",
+      "kind": "turn_pair",
+      "ordinal": 1,
+      "age_iterations": 3,
+      "content": "[assistant] Iteration 2: followed the pricing link. [user tool_result call_2] {\"status\":\"login_required\"}..............................................................................................."
+    },
+    {
+      "id": "tp_003",
+      "kind": "turn_pair",
+      "ordinal": 2,
+      "age_iterations": 2,
+      "content": "[assistant] Iteration 3: queried the public pricing API. [user tool_result call_3] {\"status\":\"ok\",\"rows\":14}.........................................."
+    },
+    {
+      "id": "tp_004",
+      "kind": "turn_pair",
+      "ordinal": 3,
+      "age_iterations": 1,
+      "content": "[assistant] Iteration 4: normalized the returned rows. [user tool_result call_4] {\"status\":\"ok\"}......................................................"
+    },
+    {
+      "id": "tp_005",
+      "kind": "turn_pair",
+      "ordinal": 4,
+      "age_iterations": 0,
+      "content": "[assistant] Iteration 5: began the comparison table. [user tool_result call_5] {\"status\":\"ok\"}......"
+    },
+    {
+      "id": "fn_fetch_001",
+      "kind": "failure_note",
+      "ordinal": 0,
+      "age_iterations": 3,
+      "capability": "fetch",
+      "content": "fetch: GET /pricing.html returned HTTP 500 on the first attempt........................................................."
+    },
+    {
+      "id": "fn_fetch_002",
+      "kind": "failure_note",
+      "ordinal": 1,
+      "age_iterations": 1,
+      "capability": "fetch",
+      "content": "fetch: GET /api/pricing timed out once before succeeding on retry......................................................."
+    }
+  ],
+  "patch": {
+    "patches": [
+      {
+        "id": "tp_001",
+        "action": "summarize",
+        "summary": "Iterations 1-2 scraped the vendor list page; no pricing table was present there."
+      },
+      {
+        "id": "tp_002",
+        "action": "summarize",
+        "summary": "Iteration 3 followed the pricing link; the page required login and was skipped.."
+      },
+      {
+        "id": "tp_003",
+        "action": "keep"
+      },
+      {
+        "id": "fn_fetch_001",
+        "action": "discard"
+      }
+    ],
+    "rationale": "The scrape exploration is superseded by the API path; the older fetch failure is stale and its newest sibling is retained."
+  },
+  "expect": {
+    "validation_rejected": null,
+    "protected_ids": [
+      "fn_fetch_002",
+      "tp_005"
+    ],
+    "counts": {
+      "kept": 4,
+      "summarized": 2,
+      "discarded": 1,
+      "downgraded": 0
+    },
+    "downgraded_ids": [],
+    "surviving_ids": [
+      "tp_002",
+      "tp_003",
+      "tp_004",
+      "tp_005",
+      "fn_fetch_002"
+    ],
+    "compacted_ids": [
+      "tp_002"
+    ],
+    "residue_evicted_ids": [
+      "tp_001"
+    ],
+    "chars_after_patch": 680,
+    "chars_after": 600,
+    "patch_rejected": null
+  }
+}

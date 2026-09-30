@@ -1,0 +1,1868 @@
+# Canonical Magician storage catalog (Task 0).
+# Source of truth for owner identity, class, tier, and readiness.
+# The /storage operator inventory is a projection keyed by governance_id.
+# Do not edit readiness.state without the evidence the guard requires.
+# States after discovered require every predecessor evidence key
+# (characterized … remote_ready). Values are paths or {path|tests|commit|report|locator}.
+#
+# Schema is enforced by scripts/storage_catalog_guard.py
+# (`make check-storage-catalog`).
+
+schema_version: 1
+authority:
+  source_of_truth: catalog_yaml
+  governance_inventory: projection
+  decision: 'This YAML catalog is authoritative for owner identity, class, tier, readiness, and lifecycle.
+    The /storage snapshot in magician-comms (live) and the test-fixtures copy in magician storage_governance
+    are a projection: every StorageEntry.id must appear as exactly one governance_id, and every governance_id
+    must appear in both Rust copies. Drift fails scripts/storage_catalog_guard.py.'
+measurements:
+  captured_at: '2026-08-31'
+  commit: bfefff04d82c6e802d1e1b7c541c3c27408c2097
+  notes: Task 0 replacement for the plan's provisional bound. Connection::open / open_with_flags files
+    are the direct_io allowlist (scripts/storage_catalog_guard.py). Task 21 ratchets runtime-root I/O,
+    Parquet globs, object SDKs, and ambient backend construction via scripts/check_typed_storage_boundaries.py.
+    std::fs durable-write adoption remains check-store-durability.
+  provisional_plan_bound: 60-120 closure packets
+  owner_count: 90
+  governance_entry_count: 33
+  tier1_count: 74
+  tier2_count: 11
+  device_local_count: 5
+  codegraph_audit:
+    magician_storage_crate: magician-storage
+    storage_runtime: magician-storage/src/runtime.rs
+    workspace_file_provider: magician/src/magician_v2/artifact_v2/workspace.rs
+    typed_boundary_ratchet: scripts/check_typed_storage_boundaries.py
+    uncovered_note: Filesystem owners without Connection::open remain local_active behind typed kits.
+      Task 21 does not delete retained local sources. WorkspaceFileProvider is not a remote boundary.
+  direct_io_files:
+  - path: magician/src/magician_v2/analytics/llm_trace_journal/index.rs
+    owner_id: llm_trace_journal
+    kind: sqlite
+  - path: magician-bin/src/main.rs
+    owner_id: analytics_duckdb
+    kind: duckdb
+  - path: magician-comms/src/channel_assist/governance.rs
+    owner_id: storage_governance_inventory
+    kind: duckdb
+  - path: magician-comms/src/channel_assist/ingest_imessage.rs
+    owner_id: device_local_imessage
+    kind: sqlite
+  - path: desktop/src-tauri/src/host_imessage.rs
+    owner_id: device_local_imessage
+    kind: sqlite
+  - path: magician-comms/src/channel_assist/ingest_whatsapp.rs
+    owner_id: device_local_whatsapp
+    kind: sqlite
+  - path: magician-comms/src/channel_assist/store.rs
+    owner_id: channel_assist_duckdb
+    kind: duckdb
+  - path: magician-core/src/attention_funnel_store.rs
+    owner_id: attention_funnel_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/analytics/pool.rs
+    owner_id: analytics_duckdb
+    kind: duckdb
+  - path: magician/src/magician_v2/api_mining/projection.rs
+    owner_id: api_mining
+    kind: sqlite
+  - path: magician/src/magician_v2/api_mining/projection_pipeline.rs
+    owner_id: api_mining
+    kind: sqlite
+  - path: magician/src/magician_v2/apps/registry.rs
+    owner_id: app_store_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/apps/registry/encryption_recovery.rs
+    owner_id: app_store_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/apps/registry/metrics.rs
+    owner_id: app_store_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/attention/learning/store.rs
+    owner_id: attention_learning_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/attention/resurfacing/store.rs
+    owner_id: resurfacing_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/browser_engine_analytics.rs
+    owner_id: browser_engine_usage_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/delivery_receipts/sqlite.rs
+    owner_id: delivery_receipts
+    kind: sqlite
+  - path: magician/src/magician_v2/execution/compiled_providers.rs
+    owner_id: device_local_imessage
+    kind: sqlite
+  - path: magician/src/magician_v2/execution/internal_data_provider.rs
+    owner_id: resurfacing_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/execution/native_executors.rs
+    owner_id: scratch_tool_duckdb
+    kind: duckdb
+  - path: magician/src/magician_v2/feed/store.rs
+    owner_id: feed_duckdb
+    kind: duckdb
+  - path: magician/src/magician_v2/realtime_events.rs
+    owner_id: hitl_lifecycle_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/social/store.rs
+    owner_id: social_sqlite
+    kind: sqlite
+  - path: magician/src/magician_v2/storage/list_index.rs
+    owner_id: list_index
+    kind: sqlite
+  - path: magician/src/magician_v2/storage_governance/duckdb_compaction.rs
+    owner_id: duckdb_copy_compaction
+    kind: duckdb
+  - path: magician/src/magician_v2/storage_governance/mod.rs
+    owner_id: storage_governance_inventory
+    kind: duckdb
+  - path: magician/src/magician_v2/ui_threads/store.rs
+    owner_id: ui_threads_duckdb
+    kind: duckdb
+  - path: magician/src/magician_v2/recovery/drills.rs
+    owner_id: task_outputs
+    kind: sqlite
+owners:
+- id: analytics_duckdb
+  tier: 2
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/pool.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/analytics.duckdb
+  writers:
+  - magician/src/magician_v2/analytics/pool.rs
+  - magician/src/magician_v2/storage_governance/duckdb_compaction.rs
+  - magician-bin/src/main.rs
+  - magician/src/magician_v2/database_owners/local.rs
+  readers:
+  - magician/src/magician_v2/analytics/pool.rs
+  - magician-api/src/analytics_api.rs
+  notes: Hot query catalog rebuilt from Parquet. Local analytics.duckdb remains canonical. Live DuckDB stays the specialized engine. Task 15 kit qualifies remote export of a closed file. A missing catalog must not empty Parquet families.
+  readiness: &task15_db_ready
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/database_owners/characterization.rs
+      wrapped_local: magician/src/magician_v2/database_owners/local.rs
+      callers_routed: magician/src/magician_v2/analytics/pool.rs
+      bypass_guarded: magician/src/magician_v2/database_owners/guard.rs
+      remote_implemented: magician/src/magician_v2/database_owners/remote.rs
+      remote_conformant: magician/src/magician_v2/database_owners/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/database_owners/migration.rs
+      restore_qualified: magician/src/magician_v2/database_owners/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: &id002
+    state: local_active
+    canonical_profile: local_embedded
+    fencing_generation: 0
+    last_migration_id: null
+  legacy_source: &id003
+    state: retained
+  governance_id: analytics_duckdb
+  class: regenerable
+- id: channel_assist_duckdb
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician-comms/src/channel_assist/store.rs
+  lifecycle_owner: magician-comms::channel_assist::store
+  current_layout: scopes/{principal}/{workspace}/mail_assist/mail_assist.duckdb
+  writers:
+  - magician-comms/src/channel_assist/store.rs
+  - magician/src/magician_v2/storage_governance/duckdb_compaction.rs
+  readers:
+  - magician-comms/src/channel_assist/store.rs
+  notes: Live file remains mail_assist.duckdb via channel_assist_db_path alias. Local file remains canonical. Live DuckDB stays the specialized engine. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: channel_assist_duckdb
+  class: lifecycle_managed
+- id: ui_threads_duckdb
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/ui_threads/store.rs
+  lifecycle_owner: magician::magician_v2::ui_threads
+  current_layout: scopes/{principal}/{workspace}/ui/threads/ui_threads.duckdb
+  writers:
+  - magician/src/magician_v2/ui_threads/store.rs
+  - magician/src/magician_v2/storage_governance/duckdb_compaction.rs
+  readers:
+  - magician/src/magician_v2/ui_threads/store.rs
+  notes: Soft-delete tombstones preserve thread identity. Local ui_threads.duckdb remains canonical. Live DuckDB stays the specialized engine. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: ui_threads_duckdb
+  class: authoritative
+- id: feed_duckdb
+  tier: 2
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/feed/store.rs
+  lifecycle_owner: magician::magician_v2::feed::store
+  current_layout: scopes/{principal}/{workspace}/ui/feed/feed.duckdb
+  writers:
+  - magician/src/magician_v2/feed/store.rs
+  readers:
+  - magician/src/magician_v2/feed/store.rs
+  notes: Derived Today/feed projection. Authoritative identity stays in tasks/attention. A missing feed.duckdb must not empty social or task_records. Local file remains canonical. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: feed_duckdb
+  class: regenerable
+- id: browser_engine_usage_sqlite
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/browser_engine_analytics.rs
+  lifecycle_owner: magician::magician_v2::browser_engine_analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/browser_engine_usage.sqlite3
+  writers:
+  - magician/src/magician_v2/browser_engine_analytics.rs
+  readers:
+  - magician/src/magician_v2/browser_engine_analytics.rs
+  notes: Sanitized command-attempt facts; 90 days / 50k rows. Local sqlite3 remains canonical. Live Connection::open stays specialized. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: browser_engine_usage_sqlite
+  class: observability
+- id: attention_learning_sqlite
+  tier: 1
+  scope: system
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/attention/learning/store.rs
+  lifecycle_owner: magician::magician_v2::attention::learning
+  current_layout: '{runtime_root}/attention_learning.db'
+  writers:
+  - magician/src/magician_v2/attention/learning/store.rs
+  readers:
+  - magician/src/magician_v2/attention/learning/store.rs
+  notes: Shared physical ledger with scope-owned rows. Host file at runtime root. Local attention_learning.db remains canonical. Live Connection::open stays specialized. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: attention_learning_sqlite
+  class: lifecycle_managed
+- id: app_store_sqlite
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/apps/registry.rs
+  lifecycle_owner: magician::magician_v2::apps::registry
+  current_layout: scopes/{principal}/{workspace}/apps/app_store.sqlite3
+  writers:
+  - magician/src/magician_v2/apps/registry.rs
+  readers:
+  - magician/src/magician_v2/apps/registry.rs
+  notes: SQLCipher-encrypted App registry, records, grants and receipts. Local app_store.sqlite3 remains canonical. The App owner pools authenticated connections and coordinates integrity checks, checkpoint/optimization and encrypted compaction. Explicit offline legacy-key recovery belongs to this same owner. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: app_store_sqlite
+  class: authoritative
+- id: attention_funnel_sqlite
+  tier: 1
+  scope: system
+  capability: domain_repository
+  owner_module: magician-core/src/attention_funnel_store.rs
+  lifecycle_owner: magician-core::attention_funnel_store
+  current_layout: '{runtime_root}/attention_funnel.db'
+  writers:
+  - magician-core/src/attention_funnel_store.rs
+  readers:
+  - magician-core/src/attention_funnel_store.rs
+  notes: System file; per-scope events. 30 days / 50k cap. Host file at runtime root. Local attention_funnel.db remains canonical. Live Connection::open stays specialized. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: attention_funnel_sqlite
+  class: lifecycle_managed
+- id: resurfacing_sqlite
+  tier: 1
+  scope: system
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/attention/resurfacing/store.rs
+  lifecycle_owner: magician::magician_v2::attention::resurfacing::store
+  current_layout: '{runtime_root}/resurfacing.db'
+  writers:
+  - magician/src/magician_v2/attention/resurfacing/store.rs
+  - magician/src/magician_v2/execution/internal_data_provider.rs
+  readers:
+  - magician/src/magician_v2/attention/resurfacing/store.rs
+  - magician/src/magician_v2/execution/internal_data_provider.rs
+  notes: System file; per-scope candidates and feedback. Host file at runtime root. Local resurfacing.db remains canonical. Live Connection::open stays specialized. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: resurfacing_sqlite
+  class: lifecycle_managed
+- id: hitl_lifecycle_sqlite
+  tier: 1
+  scope: system
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/realtime_events.rs
+  lifecycle_owner: magician::magician_v2::realtime_events
+  current_layout: '{runtime_root}/pending_hitl_lifecycle.v3.sqlite3'
+  writers:
+  - magician/src/magician_v2/realtime_events.rs
+  readers:
+  - magician/src/magician_v2/realtime_events.rs
+  notes: Private keyed pending/resolved HITL authority with per-scope primary keys and content-free app-owner rows. The legacy JSONL is a one-time import source guarded by a durable downgrade fence. Local SQLite remains canonical; live Connection::open stays specialized. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: restricted
+- id: social_sqlite
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/social/store.rs
+  lifecycle_owner: magician::magician_v2::social::store
+  current_layout: scopes/{principal}/{workspace}/social/social.db
+  writers:
+  - magician/src/magician_v2/social/store.rs
+  readers:
+  - magician/src/magician_v2/social/store.rs
+  notes: Omitted from storage-governance.md path table; live inventory id exists. Local social.db remains canonical. Live Connection::open stays specialized. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: social_sqlite
+  class: lifecycle_managed
+- id: app_packages
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::apps
+  current_layout: scopes/{principal}/{workspace}/apps/packages
+  writers:
+  - magician/src/magician_v2/apps/package_staging.rs
+  - magician/src/magician_v2/object_owners/blob.rs
+  readers:
+  - magician/src/magician_v2/apps/package_staging.rs
+  notes: Immutable package bytes. Local digest directories remain canonical. Task 10 object kit qualifies remote ObjectStore.
+  readiness: &task10_object_ready
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/object_owners/characterization.rs
+      wrapped_local: magician/src/magician_v2/object_owners/blob.rs
+      callers_routed: magician/src/magician_v2/object_owners/guard.rs
+      bypass_guarded: magician/src/magician_v2/object_owners/guard.rs
+      remote_implemented: magician/src/magician_v2/object_owners/object_backend.rs
+      remote_conformant: magician/src/magician_v2/object_owners/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/object_owners/migration.rs
+      restore_qualified: magician/src/magician_v2/object_owners/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: app_packages
+  class: lifecycle_managed
+- id: app_attachments
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::apps
+  current_layout: scopes/{principal}/{workspace}/apps/attachments
+  writers:
+  - magician/src/magician_v2/apps/registry.rs
+  readers:
+  - magician/src/magician_v2/apps/registry.rs
+  notes: Retained app attachments. Local layout remains canonical. Task 10 object kit qualifies remote ObjectStore.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: app_attachments
+  class: restricted
+- id: app_exports
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::apps
+  current_layout: scopes/{principal}/{workspace}/apps/exports
+  writers:
+  - magician/src/magician_v2/apps/registry.rs
+  readers:
+  - magician/src/magician_v2/apps/registry.rs
+  notes: Export archives. Local layout remains canonical. Task 10 object kit qualifies remote ObjectStore.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: app_exports
+  class: restricted
+- id: app_captures
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::apps
+  current_layout: scopes/{principal}/{workspace}/apps/captures
+  writers:
+  - magician/src/magician_v2/apps/registry.rs
+  readers:
+  - magician/src/magician_v2/apps/registry.rs
+  notes: Prompt/debug/provider captures. Local layout remains canonical. Task 10 object kit qualifies remote ObjectStore.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: app_captures
+  class: restricted
+- id: app_evaluations
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::apps
+  current_layout: scopes/{principal}/{workspace}/apps/evaluations
+  writers:
+  - magician/src/magician_v2/apps/registry.rs
+  readers:
+  - magician/src/magician_v2/apps/registry.rs
+  notes: Evaluation artifacts. Local layout remains canonical. Task 10 object kit qualifies remote ObjectStore.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: app_evaluations
+  class: restricted
+- id: events
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/events
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  - magician/src/magician_v2/dataset_owners/local.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  - magician/src/magician_v2/dataset_owners/local.rs
+  notes: Runtime events Parquet. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: &task11_dataset_ready
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/dataset_owners/characterization.rs
+      wrapped_local: magician/src/magician_v2/dataset_owners/local.rs
+      callers_routed: magician/src/magician_v2/dataset_owners/guard.rs
+      bypass_guarded: magician/src/magician_v2/dataset_owners/guard.rs
+      remote_implemented: magician/src/magician_v2/dataset_owners/remote.rs
+      remote_conformant: magician/src/magician_v2/dataset_owners/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/dataset_owners/migration.rs
+      restore_qualified: magician/src/magician_v2/dataset_owners/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: events
+  class: observability
+- id: memory_events
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/memory_events
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Memory diagnostics Parquet. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: memory_events
+  class: observability
+- id: activity_rows
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/activity_rows
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Activity spine; 7-day detail. Local dt=*/hour=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: activity_rows
+  class: observability
+- id: activity_rollups
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/activity_rollups
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: 13-month rollups of expired spine detail. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: activity_rollups
+  class: observability
+- id: llm_calls
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_calls
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Canonical LLM call facts. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_calls
+  class: observability
+- id: llm_embeddings
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_embeddings
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Local embedding telemetry. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_embeddings
+  class: observability
+- id: llm_provider_attempts
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_provider_attempts
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Provider-attempt lineage. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_provider_attempts
+  class: observability
+- id: llm_tool_calls
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_tool_calls
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Tool-call causality facts. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_tool_calls
+  class: observability
+- id: llm_capture_gaps
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_capture_gaps
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Capture-loss facts. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_capture_gaps
+  class: observability
+- id: llm_dispatch
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_dispatch
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Queue timing telemetry. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_dispatch
+  class: observability
+- id: llm_call_io
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_call_io
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Restricted request/response payloads. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_call_io
+  class: restricted
+- id: llm_context_blocks
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_context_blocks
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Restricted context provenance. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_context_blocks
+  class: restricted
+- id: llm_content_tombstones
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_content_tombstones
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Restricted-content deletion evidence. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_content_tombstones
+  class: restricted
+- id: llm_content_access_audit
+  tier: 1
+  scope: tenant
+  capability: dataset_store
+  owner_module: magician/src/magician_v2/analytics/parquet_maintenance.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_content_access_audit
+  writers:
+  - magician/src/magician_v2/analytics/parquet_maintenance.rs
+  readers:
+  - magician-api/src/analytics_api.rs
+  notes: Restricted reveal audit. Local dt=* layout remains canonical. Task 11 dataset kit qualifies remote DatasetStore.
+  readiness: *task11_dataset_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_content_access_audit
+  class: restricted
+- id: transport_log_jsonl
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/transport_log.rs
+  lifecycle_owner: magician::magician_v2::transport_log
+  current_layout: scopes/{sanitized_principal}/{sanitized_workspace}/events.jsonl
+  writers:
+  - magician/src/magician_v2/transport_log.rs
+  readers:
+  - magician/src/magician_v2/transport_log.rs
+  notes: Path uses the transport sanitizer, not ArtifactV2Workspace scope_root. Local events.jsonl remains canonical. JSONL append stays specialized. Task 16 kit qualifies remote export.
+  readiness: &task16_system_ready
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/system_owners/characterization.rs
+      wrapped_local: magician/src/magician_v2/system_owners/local.rs
+      callers_routed: magician/src/magician_v2/resource_authority/scoped_authority.rs
+      bypass_guarded: magician/src/magician_v2/system_owners/guard.rs
+      remote_implemented: magician/src/magician_v2/system_owners/remote.rs
+      remote_conformant: magician/src/magician_v2/system_owners/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/system_owners/migration.rs
+      restore_qualified: magician/src/magician_v2/system_owners/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: transport_log_jsonl
+  class: observability
+- id: llm_trace_journal
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/analytics/llm_trace_materializer.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_trace_journal
+  writers:
+  - magician/src/magician_v2/analytics/llm_trace_materializer.rs
+  readers:
+  - magician/src/magician_v2/analytics/llm_trace_materializer.rs
+  notes: Append-before-materialize recovery for canonical LLM facts. Local journal files remain canonical. recovery-index.sqlite3 is a rebuildable local index of record offsets, identity and lifecycle state; it never replaces the canonical journal or Parquet reporting data. Task 10 object kit qualifies remote ObjectStore; Parquet materialization is Task 11.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_trace_journal
+  class: authoritative
+- id: llm_restricted_journal
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/analytics/llm_trace_materializer.rs
+  lifecycle_owner: magician::magician_v2::analytics
+  current_layout: scopes/{principal}/{workspace}/analytics/llm_restricted_journal
+  writers:
+  - magician/src/magician_v2/analytics/llm_trace_materializer.rs
+  readers:
+  - magician/src/magician_v2/analytics/llm_trace_materializer.rs
+  notes: Restricted-content recovery journal. Local journal files remain canonical. Task 10 object kit qualifies remote ObjectStore; Parquet materialization is Task 11.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: llm_restricted_journal
+  class: restricted
+- id: compaction_metrics
+  tier: 2
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/storage_governance/compaction_metrics.rs
+  lifecycle_owner: magician::magician_v2::storage_governance::compaction_metrics
+  current_layout: scopes/{principal}/{workspace}/storage_governance/compaction_metrics.json
+  writers:
+  - magician/src/magician_v2/storage_governance/compaction_metrics.rs
+  readers:
+  - magician/src/magician_v2/storage_governance/compaction_metrics.rs
+  notes: Bounded content-free compaction ledger. Regenerable from compaction runs. Local compaction_metrics.json remains canonical. Task 16 kit qualifies remote export.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: compaction_metrics
+  class: observability
+- id: task_records
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/storage/file.rs
+  lifecycle_owner: magician::magician_v2::storage
+  current_layout: scopes/{principal}/{workspace}/tasks/
+  writers:
+  - magician/src/magician_v2/storage/file.rs
+  - magician/src/magician_v2/work_owners/local.rs
+  readers:
+  - magician/src/magician_v2/storage/file.rs
+  notes: User-visible task manifests and state. Plans are task_plans; large outputs are task_outputs. Monitors are ordinary scheduled tasks in this store. Local tasks/ layout remains canonical. The task multi-write journal stays the specialized local writer. Task 12 work-spine kit qualifies remote repository export.
+  readiness: &task12_work_ready
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/work_owners/characterization.rs
+      wrapped_local: magician/src/magician_v2/work_owners/local.rs
+      callers_routed: magician/src/magician_v2/storage/file.rs
+      bypass_guarded: magician/src/magician_v2/work_owners/guard.rs
+      remote_implemented: magician/src/magician_v2/work_owners/remote.rs
+      remote_conformant: magician/src/magician_v2/work_owners/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/work_owners/migration.rs
+      restore_qualified: magician/src/magician_v2/work_owners/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: internal_tasks
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/storage/file.rs
+  lifecycle_owner: magician::magician_v2::storage
+  current_layout: scopes/{principal}/{workspace}/internal_tasks/
+  writers:
+  - magician/src/magician_v2/storage/file.rs
+  - magician/src/magician_v2/work_owners/local.rs
+  readers:
+  - magician/src/magician_v2/storage/file.rs
+  notes: Non-user-visible tasks (chat-inline delegates, system tasks). Local internal_tasks/ layout remains canonical. Task 12 work-spine kit qualifies remote repository export.
+  readiness: *task12_work_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: task_plans
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/storage/file.rs
+  lifecycle_owner: magician::magician_v2::storage
+  current_layout: scopes/{principal}/{workspace}/tasks/{task_id}/plans/ and internal_tasks/{task_id}/plans/
+  writers:
+  - magician/src/magician_v2/storage/file.rs
+  - magician/src/magician_v2/work_owners/local.rs
+  readers:
+  - magician/src/magician_v2/storage/file.rs
+  notes: Task plan version history. Split from task_records. Local plans/ remains canonical. Task 12 work-spine kit qualifies remote repository export.
+  readiness: *task12_work_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: executions
+  tier: 1
+  scope: task
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/storage/file.rs
+  lifecycle_owner: magician::magician_v2::storage
+  current_layout: scopes/{principal}/{workspace}/tasks/{task_id}/executions/, internal_tasks/{task_id}/executions/, and executions/{execution_id}/
+  writers:
+  - magician/src/magician_v2/storage/file.rs
+  - magician/src/magician_v2/work_owners/local.rs
+  - runtime-core/src/storage.rs
+  readers:
+  - magician/src/magician_v2/storage/file.rs
+  - runtime-core/src/storage.rs
+  notes: Execution records and events under tasks/, internal_tasks/, and scoped executions/. Observations, outputs, downloads, and recordings stay on Task 10 object owners. FileV2Store publishes execution.json through persist_work_file. Local executions/ layout remains canonical. Task 12 work-spine kit qualifies remote repository export.
+  readiness: *task12_work_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: task_planning_recovery
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::storage
+  current_layout: scopes/{principal}/{workspace}/task_planning_recovery/
+  writers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  - magician/src/magician_v2/work_owners/local.rs
+  readers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  notes: Exact planning receipts independent of the list index. Local task_planning_recovery/ remains canonical. Task 12 work-spine kit qualifies remote repository export.
+  readiness: *task12_work_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: list_index
+  tier: 2
+  scope: tenant
+  capability: index_store
+  owner_module: magician/src/magician_v2/storage/list_index.rs
+  lifecycle_owner: magician::magician_v2::storage::list_index
+  current_layout: scopes/{principal}/{workspace}/ui/indexes/list_index.db
+  writers:
+  - magician/src/magician_v2/storage/list_index.rs
+  - magician/src/magician_v2/work_owners/local.rs
+  readers:
+  - magician/src/magician_v2/storage/list_index.rs
+  notes: Rebuildable list cache. A missing projection must not empty task_records. Local list_index.db remains canonical SQLite. Task 12 work-spine kit qualifies remote export of the closed database file; authoritative identity stays on task_records.
+  readiness: *task12_work_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: regenerable
+- id: chat_sessions
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/chat/storage.rs
+  lifecycle_owner: magician::magician_v2::chat::storage
+  current_layout: scopes/{principal}/{workspace}/ui/chat_sessions/{session_id}/session.json and .lifecycle/
+  writers:
+  - magician/src/magician_v2/chat/storage.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/chat/storage.rs
+  notes: Session metadata, file index, rollback/clear intents, and lifecycle markers. Messages are chat_messages; canonical LLM history is chat_transcripts. FileChatStore publishes session.json through persist_chat_file. Local layout remains canonical. Task 13 kit qualifies remote export.
+  readiness: &task13_chat_ready
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/chat_owners/characterization.rs
+      wrapped_local: magician/src/magician_v2/chat_owners/local.rs
+      callers_routed: magician/src/magician_v2/chat/storage.rs
+      bypass_guarded: magician/src/magician_v2/chat_owners/guard.rs
+      remote_implemented: magician/src/magician_v2/chat_owners/remote.rs
+      remote_conformant: magician/src/magician_v2/chat_owners/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/chat_owners/migration.rs
+      restore_qualified: magician/src/magician_v2/chat_owners/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: chat_messages
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/chat/storage.rs
+  lifecycle_owner: magician::magician_v2::chat::storage
+  current_layout: scopes/{principal}/{workspace}/ui/chat_sessions/{session_id}/messages/{segment}.jsonl
+  writers:
+  - magician/src/magician_v2/chat/storage.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/chat/storage.rs
+  notes: Display-history JSONL segments. Split from chat_sessions. FileChatStore append/segment rewrite stays the specialized local writer. Local messages/ remains canonical. Task 13 kit qualifies remote export.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: chat_transcripts
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/chat/storage.rs
+  lifecycle_owner: magician::magician_v2::chat::storage
+  current_layout: scopes/{principal}/{workspace}/ui/chat_sessions/{session_id}/llm_history/
+  writers:
+  - magician/src/magician_v2/chat/storage.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/chat/storage.rs
+  notes: Canonical LLM transcript. Manifest is the commit point; segments are immutable cold files. Local llm_history/ remains canonical. Task 13 kit qualifies remote export.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: chat_turn_events
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/chat/chat_turn_event_sink.rs
+  lifecycle_owner: magician::magician_v2::chat::chat_turn_event_sink
+  current_layout: scopes/{principal}/{workspace}/ui/chat_turn_events/{chat_turn_id}.jsonl
+  writers:
+  - magician/src/magician_v2/chat/chat_turn_event_sink.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/chat/chat_turn_event_sink.rs
+  - magician/src/magician_v2/chat/storage.rs
+  notes: Per-turn activity log; sole store the activity card reads. JSONL append stays the specialized local writer. Local chat_turn_events/ remains canonical. Task 13 kit qualifies remote export.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: chat_enrollments
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/chat/enrollment.rs
+  lifecycle_owner: magician::magician_v2::chat::enrollment
+  current_layout: scopes/{principal}/{workspace}/chat/enrollments.json
+  writers:
+  - magician/src/magician_v2/chat/enrollment.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/chat/enrollment.rs
+  notes: Channel address to principal mapping. Local enrollments.json remains canonical. Task 13 kit qualifies remote export.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: ui_preferences
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/ui_preferences.rs
+  lifecycle_owner: magician::magician_v2::ui_preferences
+  current_layout: scopes/{principal}/{workspace}/ui/preferences.json
+  writers:
+  - magician/src/magician_v2/ui_preferences.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/ui_preferences.rs
+  notes: Tenant UI theme and related preferences. Task 13 ChatOwner::UiPreferences classifies the locator. Local ui/preferences.json remains canonical.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: media_preferences
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/media_seam/preferences.rs
+  lifecycle_owner: magician::magician_v2::media_seam::preferences
+  current_layout: scopes/{principal}/{workspace}/media/preferences.json
+  writers:
+  - magician/src/magician_v2/media_seam/preferences.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/media_seam/preferences.rs
+  notes: Tenant media/voice preferences including per-profile realtime_voices. Task 13 ChatOwner::MediaPreferences classifies the locator. Local media/preferences.json remains canonical.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: agent_definitions
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/agents/definition_store.rs
+  lifecycle_owner: magician::magician_v2::agents::definition_store
+  current_layout: scopes/{principal}/{workspace}/agent_runtime/agents/{agent_id}/definition.agent.yaml and definitions/
+  writers:
+  - magician/src/magician_v2/agents/definition_store.rs
+  - magician/src/magician_v2/agent_owners/local.rs
+  readers:
+  - magician/src/magician_v2/agents/definition_store.rs
+  notes: Agent definitions and version archives. Approvals, proposals, and scheduler stay on agent_runtime. AgentStorage publishes classified files through persist_agent_file. Local layout remains canonical. Task 14 kit qualifies remote export.
+  readiness: &task14_agent_ready
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/agent_owners/characterization.rs
+      wrapped_local: magician/src/magician_v2/agent_owners/local.rs
+      callers_routed: magician/src/magician_v2/agents/storage.rs
+      bypass_guarded: magician/src/magician_v2/agent_owners/guard.rs
+      remote_implemented: magician/src/magician_v2/agent_owners/remote.rs
+      remote_conformant: magician/src/magician_v2/agent_owners/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/agent_owners/migration.rs
+      restore_qualified: magician/src/magician_v2/agent_owners/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: agent_runtime
+  tier: 1
+  scope: agent
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/agents/storage.rs
+  lifecycle_owner: magician::magician_v2::agents::storage
+  current_layout: scopes/{principal}/{workspace}/agent_runtime/agents/{approvals,proposals,scheduler_state,state}/
+  writers:
+  - magician/src/magician_v2/agents/storage.rs
+  - magician/src/magician_v2/agent_owners/local.rs
+  readers:
+  - magician/src/magician_v2/agents/storage.rs
+  notes: Approvals, proposals, scheduler state, and per-agent runtime state. Definitions and canonical memory are split owners. Local agent_runtime/ remains canonical. Task 14 kit qualifies remote export.
+  readiness: *task14_agent_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: memory_canonical
+  tier: 1
+  scope: agent
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/agents/memory.rs
+  lifecycle_owner: magician::magician_v2::agents::memory
+  current_layout: scopes/{principal}/{workspace}/memory/ (except index/) and legacy agent_runtime/agents/{id}/memory/
+  writers:
+  - magician/src/magician_v2/agents/memory.rs
+  - magician/src/magician_v2/agents/memory_consolidator.rs
+  - magician/src/magician_v2/agent_owners/local.rs
+  readers:
+  - magician/src/magician_v2/agents/memory.rs
+  notes: Canonical memory tiers, episodes, knowledge, evidence, entities, corrections, consolidations. Path-returning MemoryStorage stays the local adapter. JSONL appends stay specialized. Local memory/ remains canonical. Task 14 kit qualifies remote export.
+  readiness: *task14_agent_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: restricted
+- id: memory_index
+  tier: 2
+  scope: agent
+  capability: index_store
+  owner_module: magician-vector-index/src/storage_trait.rs
+  lifecycle_owner: magician-vector-index
+  current_layout: scopes/{principal}/{workspace}/memory/index/ (manifest, documents.jsonl, lancedb/)
+  writers:
+  - magician-vector-index/src/storage_trait.rs
+  - magician/src/magician_v2/agent_owners/local.rs
+  readers:
+  - magician-vector-index/src/storage_trait.rs
+  notes: Derived search. Rebuild from memory_canonical with a source watermark. A deleted LanceDB directory must not empty canonical memory. Live LanceDB stays the specialized local engine. Local index/ remains canonical. Task 14 kit qualifies remote export of closed files.
+  readiness: *task14_agent_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: regenerable
+- id: api_mining
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/api_mining/projection.rs
+  lifecycle_owner: magician::magician_v2::api_mining
+  current_layout: scopes/{principal}/{workspace}/api_mining/
+  writers:
+  - magician/src/magician_v2/api_mining/projection.rs
+  readers:
+  - magician/src/magician_v2/api_mining/projection.rs
+  notes: Capability registry, projections, captured auth refs. SQLite at api_mining/projections/_rows.db. Local files remain canonical. Live Connection::open stays specialized. Task 15 kit qualifies remote export of a closed file.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: restricted
+- id: secret_vault
+  tier: 1
+  scope: tenant
+  capability: secret_store
+  owner_module: magician/src/magician_v2/secrets/mcp_oauth_vault.rs
+  lifecycle_owner: magician::magician_v2::secrets
+  current_layout: scopes/{principal}/{workspace}/secrets/ and {runtime_root}/secrets/
+  writers:
+  - magician/src/magician_v2/secrets/mcp_oauth_vault.rs
+  readers:
+  - magician/src/magician_v2/secrets/mcp_oauth_vault.rs
+  notes: Vault partitions, provider keys, OAuth material. Values must not serialize. Export is metadata-only (secret_audit.jsonl). Local secrets/ remains canonical. Task 16 kit qualifies remote export of metadata, not clear values.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: secret
+- id: device_pairing
+  tier: 1
+  scope: device
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/device_pairing.rs
+  lifecycle_owner: magician::magician_v2::device_pairing
+  current_layout: system/device pairing roster, policy, audit
+  writers:
+  - magician/src/magician_v2/device_pairing.rs
+  readers:
+  - magician/src/magician_v2/device_pairing.rs
+  notes: Device pairing/policy/audit. Not a copied scope directory. Host files at system/paired-devices.json and device-policy.json. Local system/ runtime pairing remains canonical. Task 16 kit qualifies remote export. Device-local OS state is not stored here.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: restricted
+- id: resource_authority
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/resource_authority/gated_action.rs
+  lifecycle_owner: magician::magician_v2::resource_authority
+  current_layout: scopes/{principal}/{workspace}/resource_authority/
+  writers:
+  - magician-api/src/resource_authority_api.rs
+  readers:
+  - magician-api/src/resource_authority_api.rs
+  notes: Ceilings, freeze, ledger, token store. Local resource_authority/ remains canonical. Task 16 kit qualifies remote export.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: progress_channels
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/progress_channel_seam/event_log.rs
+  lifecycle_owner: magician::magician_v2::progress_channel_seam::event_log
+  current_layout: scopes/{principal}/{workspace}/progress_channels/events/{log_key}.jsonl
+  writers:
+  - magician/src/magician_v2/progress_channel_seam/event_log.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/progress_channel_seam/event_log.rs
+  notes: Resumable progress event shards. JSONL append stays the specialized local writer. Subscriptions and lineage are split owners. Local events/ remains canonical. Task 13 kit qualifies remote export.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: progress_subscriptions
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/progress_channel_seam/storage.rs
+  lifecycle_owner: magician::magician_v2::progress_channel_seam::storage
+  current_layout: scopes/{principal}/{workspace}/progress_channels/subscriptions.json
+  writers:
+  - magician/src/magician_v2/progress_channel_seam/storage.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/progress_channel_seam/storage.rs
+  notes: Progress subscription and cursor set. ProgressChannelStorage publishes through persist_chat_file. Local subscriptions.json remains canonical. Task 13 kit qualifies remote export.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: progress_lineage
+  tier: 2
+  scope: tenant
+  capability: index_store
+  owner_module: magician/src/magician_v2/progress_channel_seam/storage.rs
+  lifecycle_owner: magician::magician_v2::progress_channel_seam::storage
+  current_layout: scopes/{principal}/{workspace}/progress_channels/lineage_index.json
+  writers:
+  - magician/src/magician_v2/progress_channel_seam/storage.rs
+  - magician/src/magician_v2/chat_owners/local.rs
+  readers:
+  - magician/src/magician_v2/progress_channel_seam/storage.rs
+  notes: Rebuildable execution lineage index. A missing projection must not empty progress_channels. ProgressChannelStorage publishes through persist_chat_file. Local lineage_index.json remains canonical. Task 13 kit qualifies remote export.
+  readiness: *task13_chat_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: regenerable
+- id: durable_artifacts
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifacts/durable_store.rs
+  lifecycle_owner: magician::magician_v2::artifacts::durable_store
+  current_layout: scopes/{principal}/{workspace}/durable_artifacts/
+  writers:
+  - magician/src/magician_v2/artifacts/durable_store.rs
+  - magician/src/magician_v2/artifacts/object_backend.rs
+  - magician-api/src/artifact_api.rs
+  readers:
+  - magician/src/magician_v2/artifacts/durable_store.rs
+  - magician-api/src/artifact_api.rs
+  notes: Published artifact payloads. Local markdown+YAML layout remains canonical. Task 10 first object owner.
+  readiness:
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/artifacts/characterization.rs
+      wrapped_local: magician/src/magician_v2/artifacts/durable_store.rs
+      callers_routed: magician/src/magician_v2/artifacts/guard.rs
+      bypass_guarded: magician/src/magician_v2/artifacts/guard.rs
+      remote_implemented: magician/src/magician_v2/artifacts/object_backend.rs
+      remote_conformant: magician/src/magician_v2/artifacts/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/artifacts/migration.rs
+      restore_qualified: magician/src/magician_v2/artifacts/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: task_outputs
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::storage
+  current_layout: scopes/{principal}/{workspace}/tasks/{task_id}/outputs/ and internal_tasks/{task_id}/outputs/
+  writers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  - magician/src/magician_v2/object_owners/blob.rs
+  readers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  - magician-api/src/task_api_v3.rs
+  notes: Task output bytes. Local outputs/ directories remain canonical. Task manifests stay on task_records.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: execution_outputs
+  tier: 1
+  scope: task
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::tool_result_materialization
+  current_layout: scopes/{principal}/{workspace}/tasks/{task_id}/executions/{execution_id}/outputs/ and executions/{execution_id}/outputs/
+  writers:
+  - magician/src/magician_v2/tool_result_materialization.rs
+  - magician/src/magician_v2/object_owners/blob.rs
+  readers:
+  - magician/src/magician_v2/tool_result_materialization.rs
+  notes: Execution output bytes including accepted tool-result payloads. Local outputs/ remain canonical.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: execution_observations
+  tier: 1
+  scope: task
+  capability: object_store
+  owner_module: magician/src/magician_v2/execution/screenshot_cache.rs
+  lifecycle_owner: magician::magician_v2::execution::screenshot_cache
+  current_layout: scopes/{principal}/{workspace}/(tasks/{task_id}/)?executions/{execution_id}/observations/
+  writers:
+  - magician/src/magician_v2/execution/screenshot_cache.rs
+  - magician/src/magician_v2/object_owners/blob.rs
+  readers:
+  - magician/src/magician_v2/execution/screenshot_cache.rs
+  notes: Durable screenshots and SoM observation files. Live CDP screencast is not stored. Local observations/ remain canonical.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: observability
+- id: execution_downloads
+  tier: 1
+  scope: task
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::execution
+  current_layout: scopes/{principal}/{workspace}/(tasks/{task_id}/)?executions/{execution_id}/artifacts/downloads/
+  writers:
+  - magician/src/magician_v2/execution/agentic/executor.rs
+  - magician/src/magician_v2/object_owners/blob.rs
+  readers:
+  - magician/src/magician_v2/execution/agentic/executor.rs
+  notes: Completed execution downloads. Local artifacts/downloads/ remain canonical. In-flight .part files are scratch.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: execution_recordings
+  tier: 1
+  scope: task
+  capability: object_store
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::execution
+  current_layout: scopes/{principal}/{workspace}/(tasks/{task_id}/)?executions/{execution_id}/recordings/
+  writers:
+  - magician/src/magician_v2/object_owners/blob.rs
+  readers:
+  - magician/src/magician_v2/object_owners/blob.rs
+  notes: Durable execution recordings via persist_execution_recording. Live CDP screencast is not stored. Notes-provider audio stays on the notes provider. Local recordings/ remain canonical.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: observability
+- id: skills_scope
+  tier: 1
+  scope: tenant
+  capability: object_store
+  owner_module: magician-api/src/skills_api.rs
+  lifecycle_owner: magician-api::skills_api
+  current_layout: scopes/{principal}/{workspace}/skills + programs
+  writers:
+  - magician-api/src/skills_api.rs
+  readers:
+  - magician-api/src/skills_api.rs
+  notes: Installed skill packages. Local skills/ files remain canonical. Task 16A
+    materializes inputs into scratch until accepted; accepted bytes stay on this
+    Task 10 object owner.
+  readiness: *task10_object_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: lifecycle_managed
+- id: workdirs_scratch
+  tier: 2
+  scope: tenant
+  capability: scratch_store
+  owner_module: magician/src/magician_v2/subprocess_owners/local.rs
+  lifecycle_owner: magician::magician_v2::subprocess_owners
+  current_layout: scopes/{principal}/{workspace}/workdirs/
+  writers:
+  - magician/src/magician_v2/subprocess_owners/local.rs
+  - magician/src/magician_v2/artifact_v2/capabilities.rs
+  readers:
+  - magician/src/magician_v2/subprocess_owners/local.rs
+  notes: Tool workdirs. Loss expected. Local workdirs/ remain canonical and ephemeral
+    until accepted. Task 16A envelope plus persist_subprocess_file qualify the scratch
+    contract. Default startup does not upload scratch.
+  readiness: &task16a_subprocess_ready
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/subprocess_owners/characterization.rs
+      wrapped_local: magician/src/magician_v2/subprocess_owners/local.rs
+      callers_routed: magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs
+      bypass_guarded: magician/src/magician_v2/subprocess_owners/guard.rs
+      remote_implemented: magician/src/magician_v2/subprocess_owners/remote.rs
+      remote_conformant: magician/src/magician_v2/subprocess_owners/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/subprocess_owners/migration.rs
+      restore_qualified: magician/src/magician_v2/subprocess_owners/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: ephemeral
+- id: notes_provider
+  tier: device_local
+  scope: host
+  capability: notes_provider
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: notes_provider
+  current_layout: SilverBullet space / notes tree (not canonical runtime)
+  writers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  readers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  notes: Human-editable notes. Never canonical runtime storage by implication. Task 16 classifies this as external/device-local; it is not migrated as server tenant storage.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: external
+- id: silverbullet_space_runtime
+  tier: device_local
+  scope: host
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: ArtifactV2Workspace::SilverBulletSpaceWorkspaceProvider
+  current_layout: '{space}/.magician/runtime/ (local profile variant)'
+  writers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  readers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  notes: Shipped local profile variant. Track A preserves the Settings control; switching does not
+    move data. Task 16 classifies this as a local profile variant, not remote tenant storage.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: device_local
+- id: runtime_config
+  tier: 1
+  scope: host
+  capability: bootstrap
+  owner_module: magician/src/config.rs
+  lifecycle_owner: magician::config
+  current_layout: host-managed magician-config.yaml and env (outside selected stores)
+  writers:
+  - magician/src/config.rs
+  readers:
+  - magician/src/config.rs
+  notes: Bootstrap cannot live inside the selected store. Task 2 owns profile validation. Task 16 classifies this as host bootstrap, not a tenant repository.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: bootstrap
+- id: subprocess_skill_working
+  tier: 1
+  scope: task
+  capability: scratch_store
+  owner_module: magician/src/magician_v2/subprocess_owners/envelope.rs
+  lifecycle_owner: magician::magician_v2::subprocess_owners
+  current_layout: scopes/{principal}/{workspace}/workdirs/skill-working/{call_id}/
+  writers:
+  - magician/src/magician_v2/subprocess_owners/envelope.rs
+  - magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs
+  readers:
+  - magician/src/magician_v2/subprocess_owners/envelope.rs
+  notes: Task 16A. Governed launcher writes a versioned SubprocessStorageEnvelope.
+    Closed children receive no MAGICIAN_ROOT_DIR or store credentials. Unaccepted
+    scratch is scavenged. Accepted slots publish through Task 10 object owners.
+    Compatibility batches use skillshub/scripts/runtime_root_shim.py.
+  readiness: *task16a_subprocess_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: ephemeral
+- id: desktop_engine_roots
+  tier: device_local
+  scope: device
+  capability: device_local
+  owner_module: desktop/src-tauri/src/engine_roots/mod.rs
+  lifecycle_owner: desktop::engine_roots
+  current_layout: classified desktop paths; engine-owned data is reached only via engine_base_url
+  writers:
+  - desktop/src-tauri/src/config.rs
+  - desktop/src-tauri/src/engine_roots/mod.rs
+  readers:
+  - desktop/src-tauri/src/runtime_paths.rs
+  - desktop/src-tauri/src/env_file.rs
+  - desktop/src-tauri/src/voice_wake.rs
+  - desktop/src-tauri/src/container/mod.rs
+  notes: Task 16B. Wake-word models, OS permissions, and Application Support are
+    device-local or bootstrap. Engine tenant trees and engine .env files are
+    engine-owned; when is_remote_engine() the desktop uses engine_base_url and
+    refuses those filesystem reads. Local container volumes are local-engine-only.
+    Track A adds no Settings control. Default loopback behavior is unchanged.
+  readiness:
+    state: remote_ready
+    evidence:
+      characterized: desktop/src-tauri/src/engine_roots/characterization.rs
+      wrapped_local: desktop/src-tauri/src/engine_roots/mod.rs
+      callers_routed: desktop/src-tauri/src/config.rs
+      bypass_guarded: desktop/src-tauri/src/engine_roots/guard.rs
+      remote_implemented: desktop/src-tauri/src/magician_auth.rs
+      remote_conformant: desktop/src-tauri/src/engine_roots/storage_packet.rs
+      migration_qualified: desktop/src-tauri/src/engine_roots/storage_packet.rs
+      restore_qualified: desktop/src-tauri/src/engine_roots/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: device_local
+- id: device_local_imessage
+  tier: device_local
+  scope: device
+  capability: device_local
+  owner_module: magician-comms/src/channel_assist/ingest_imessage.rs
+  lifecycle_owner: magician-comms::channel_assist::ingest_imessage
+  current_layout: ~/Library/Messages/chat.db (macOS, read-only)
+  writers: []
+  readers:
+  - magician-comms/src/channel_assist/ingest_imessage.rs
+  - magician/src/magician_v2/execution/compiled_providers.rs
+  - desktop/src-tauri/src/host_imessage.rs
+  notes: Device-local Messages database. Not migrated to server storage. Task 16 device-local exception.
+    The desktop host gateway reads it read-only on behalf of a Linux container engine (Mac host tool relay).
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: device_local
+- id: device_local_whatsapp
+  tier: device_local
+  scope: device
+  capability: device_local
+  owner_module: magician-comms/src/channel_assist/ingest_whatsapp.rs
+  lifecycle_owner: magician-comms::channel_assist::ingest_whatsapp
+  current_layout: WhatsApp Desktop wu.db (read-only ingest)
+  writers: []
+  readers:
+  - magician-comms/src/channel_assist/ingest_whatsapp.rs
+  notes: Device-local WhatsApp database. Not migrated to server storage. Task 16 device-local exception.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: device_local
+- id: scratch_tool_duckdb
+  tier: 2
+  scope: task
+  capability: scratch_store
+  owner_module: magician/src/magician_v2/execution/native_executors.rs
+  lifecycle_owner: magician::magician_v2::execution::native_executors
+  current_layout: sandboxed DuckDB files under magician_data_v3 opened by native SQL tools
+  writers:
+  - magician/src/magician_v2/execution/native_executors.rs
+  readers:
+  - magician/src/magician_v2/execution/native_executors.rs
+  notes: Tool-opened DuckDB is scratch unless the owner publishes through an acceptance path. Task 15 classified this as ephemeral, not a lifecycle file. Loss is expected. It is not migrated.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: ephemeral
+- id: duckdb_copy_compaction
+  tier: 1
+  scope: system
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/storage_governance/duckdb_compaction.rs
+  lifecycle_owner: magician::magician_v2::storage_governance::duckdb_compaction
+  current_layout: in-place verified copy-compaction of cataloged DuckDB files
+  writers:
+  - magician/src/magician_v2/storage_governance/duckdb_compaction.rs
+  readers:
+  - magician/src/magician_v2/storage_governance/duckdb_compaction.rs
+  notes: Lifecycle job over analytics/channel_assist/feed/ui_threads/social. Channel and Feed additionally use a durable recovery marker and checkpointed backup under a drained owner admission gate. Not a fourth canonical source. Task 15 qualifies it as an operator job over already-closed DuckDB files.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: lifecycle_managed
+- id: storage_governance_inventory
+  tier: 2
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician-comms/src/channel_assist/governance.rs
+  lifecycle_owner: magician-comms::channel_assist::governance
+  current_layout: /storage snapshot; read-only DuckDB opens for row estimates
+  writers:
+  - magician-comms/src/channel_assist/governance.rs
+  - magician/src/magician_v2/storage_governance/mod.rs
+  readers:
+  - magician-api/src/storage_governance_api.rs
+  notes: Operator inventory projection of this catalog. Drift against governance_id fails CI. Task 15 qualifies it as a regenerable projection of catalog YAML, not a fourth canonical database.
+  readiness: *task15_db_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: observability
+- id: learning_procedures
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/learning/store.rs
+  lifecycle_owner: magician::magician_v2::learning::store
+  current_layout: scopes/{principal}/{workspace}/learning/procedures/ (except index/)
+  writers:
+  - magician/src/magician_v2/learning/store.rs
+  - magician/src/magician_v2/agent_owners/local.rs
+  readers:
+  - magician/src/magician_v2/learning/store.rs
+  notes: Learning procedure YAML and procedure decision logs. Histories and the procedure LanceDB index are split owners. LearningStore publishes classified files through persist_agent_file_sync. Local procedures/ remains canonical. Task 14 kit qualifies remote export.
+  readiness: *task14_agent_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: learning_procedure_index
+  tier: 2
+  scope: tenant
+  capability: index_store
+  owner_module: magician/src/magician_v2/learning/procedure_index.rs
+  lifecycle_owner: magician::magician_v2::learning::procedure_index
+  current_layout: scopes/{principal}/{workspace}/learning/procedures/index/ (manifest, dirty, lancedb/)
+  writers:
+  - magician/src/magician_v2/learning/procedure_index.rs
+  - magician/src/magician_v2/agent_owners/local.rs
+  readers:
+  - magician/src/magician_v2/learning/procedure_index.rs
+  notes: Derived procedure search. Rebuild from learning_procedures with a source watermark. A missing index must not empty procedures. Live LanceDB stays the specialized local engine. Local index/ remains canonical. Task 14 kit qualifies remote export of closed files.
+  readiness: *task14_agent_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: regenerable
+- id: learning_histories
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/learning/store.rs
+  lifecycle_owner: magician::magician_v2::learning::store
+  current_layout: scopes/{principal}/{workspace}/learning/{events,candidates,decisions,evaluations,skill_invocations}/
+  writers:
+  - magician/src/magician_v2/learning/store.rs
+  - magician/src/magician_v2/agent_owners/local.rs
+  readers:
+  - magician/src/magician_v2/learning/store.rs
+  notes: Learning events, candidates, evaluations, and skill-invocation evidence. JSONL appends stay specialized local writers. Local learning/ histories remain canonical. Task 14 kit qualifies remote export.
+  readiness: *task14_agent_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: content_sources
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/content_sources/cache.rs
+  lifecycle_owner: magician::magician_v2::content_sources
+  current_layout: scoped observable-source cache and selections
+  writers:
+  - magician/src/magician_v2/content_sources/cache.rs
+  readers:
+  - magician/src/magician_v2/content_sources/cache.rs
+  notes: Observable source selections and processed records. Local content_sources/ remains canonical. Task 16 kit qualifies remote export.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: delivery_receipts
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/delivery_receipts/sent_index.rs
+  lifecycle_owner: magician::magician_v2::delivery_receipts
+  current_layout: scopes/{principal}/{workspace}/delivery/index/sent/*.jsonl
+  writers:
+  - magician/src/magician_v2/delivery_receipts/sent_index.rs
+  - magician/src/magician_v2/delivery_receipts/store.rs
+  - magician-api/src/delivery_receipts_api.rs
+  readers:
+  - magician/src/magician_v2/delivery_receipts/sent_index.rs
+  - magician/src/magician_v2/delivery_receipts/ingest.rs
+  - magician/src/magician_v2/delivery_receipts/pull.rs
+  notes: Authoritative sent-index JSONL map. Maildir remains local ingest, not a second canonical source.
+  readiness:
+    state: remote_ready
+    evidence:
+      characterized: magician/src/magician_v2/delivery_receipts/characterization.rs
+      wrapped_local: magician/src/magician_v2/delivery_receipts/store.rs
+      callers_routed: magician-api/src/delivery_receipts_api.rs
+      bypass_guarded: magician/src/magician_v2/delivery_receipts/guard.rs
+      remote_implemented: magician/src/magician_v2/delivery_receipts/sqlite.rs
+      remote_conformant: magician/src/magician_v2/delivery_receipts/storage_packet.rs
+      migration_qualified: magician/src/magician_v2/delivery_receipts/migration.rs
+      restore_qualified: magician/src/magician_v2/delivery_receipts/storage_packet.rs
+      remote_ready: docs/components/magician-storage/owner-closure-reference.md
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: programs
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::artifact_v2::workspace
+  current_layout: scopes/{principal}/{workspace}/programs/
+  writers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  readers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  notes: Program specs, runtime state, anomalies, backlog. Local programs/ remains canonical. Task 16 kit qualifies remote export.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: capability_evolution
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/execution/capability_pack.rs
+  lifecycle_owner: magician::magician_v2::execution::capability_pack
+  current_layout: scopes/{principal}/{workspace}/capability_evolution/capability_packs.json
+  writers:
+  - magician/src/magician_v2/execution/capability_pack.rs
+  readers:
+  - magician/src/magician_v2/execution/capability_pack.rs
+  notes: Capability-pack catalog, rollback snapshots, and pack_promotion_audit.jsonl. Distinct from skill_evolution/. Leftover learning rows under capability_evolution/proposals and promotion_audit.jsonl remain a LearningStore merge-read, claimed by AgentOwner::SkillEvolution, not pack catalog. Local capability_evolution/ remains canonical. Task 16 kit qualifies remote export.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: skill_evolution
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/learning/store.rs
+  lifecycle_owner: magician::magician_v2::learning::store
+  current_layout: scopes/{principal}/{workspace}/skill_evolution/
+  writers:
+  - magician/src/magician_v2/learning/store.rs
+  readers:
+  - magician/src/magician_v2/learning/store.rs
+  notes: Live Skill Evolution backlog, proposals, validations, implementations, applications, and promotion audit. LearningStore still merge-reads leftover capability_evolution/ rows. Task 14 kit classifies skill_evolution/.
+  readiness: *task14_agent_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: pause_states
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::artifact_v2::workspace
+  current_layout: scopes/{principal}/{workspace}/runtime/pause_states/
+  writers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  - magician/src/magician_v2/work_owners/local.rs
+  readers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  notes: Durable pause records for resumable work. Local runtime/pause_states/ remains canonical. The pause envelope rewrite stays the specialized local writer. Task 12 work-spine kit qualifies remote repository export.
+  readiness: *task12_work_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: authoritative
+- id: runtime_resume_recovery
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: magician::magician_v2::artifact_v2::workspace
+  current_layout: scopes/{principal}/{workspace}/restricted/runtime_resume_recovery/
+  writers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  readers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  notes: Restricted HMAC-named restart authority for paused Runtime generations. Distinct from runtime/pause_states/. Task 12 work-spine kit qualifies remote export.
+  readiness: *task12_work_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: restricted
+- id: restricted_hmac_catalogs
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician/src/magician_v2/work_owners/owners.rs
+  lifecycle_owner: magician::magician_v2::work_owners
+  current_layout: scopes/{principal}/{workspace}/restricted/{accepted_runtime_launch,task_recipe_replays,execution_routing,plane_attenuation,operator_steers,manual_resume_transactions,delegated_child_recovery,execution_pipeline_rosters,execution_pipeline_progress,pipeline_terminal_settlements,delegation_round_progress,llm_capture}/
+  writers:
+  - magician/src/magician_v2/execution/trusted_store/durable_launch.rs
+  - magician/src/magician_v2/execution/trusted_store/durable_routing.rs
+  - magician/src/magician_v2/execution/trusted_store/durable_attenuation.rs
+  - magician/src/magician_v2/execution/agentic/run_loop/steer_inbox.rs
+  - magician/src/magician_v2/execution/agentic/run_loop/manual_resume_tx.rs
+  - magician/src/magician_v2/artifact_v2/service.rs
+  - magician/src/magician_v2/artifact_v2/pipeline_terminal_settlement.rs
+  - magician/src/magician_v2/artifact_v2/recipe_replay_receipt.rs
+  - magician/src/magician_v2/orchestrator/v2_orchestrator.rs
+  - magician/src/magician_v2/analytics/llm_trace_content.rs
+  readers:
+  - magician/src/magician_v2/work_owners/local.rs
+  notes: Restricted HMAC-named restart/seal catalogs other than runtime_resume_recovery. Task 12 work-spine kit qualifies remote export. Unlisted restricted/* trees stay unowned.
+  readiness: *task12_work_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: restricted
+- id: evals_runs
+  tier: 1
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician-surfaces/src/evals/store.rs
+  lifecycle_owner: magician_surfaces::evals::store
+  current_layout: scopes/{principal}/{workspace}/evals/runs/
+  writers:
+  - magician-surfaces/src/evals/store.rs
+  readers:
+  - magician-surfaces/src/evals/store.rs
+  notes: Per-run JSON eval history. Cannot be backfilled. Task 16 kit qualifies remote export.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: observability
+- id: system_templates
+  tier: 1
+  scope: system
+  capability: bootstrap
+  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
+  lifecycle_owner: ArtifactV2Workspace
+  current_layout: '{runtime_root}/system/ (seed-derived, read-only templates)'
+  writers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  readers:
+  - magician/src/magician_v2/artifact_v2/workspace.rs
+  notes: Seeded templates. Not tenant canonical data. Task 16 classifies this as bootstrap; pairing runtime files are device_pairing.
+  readiness: *task16_system_ready
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: bootstrap
+
+- id: automatic_database_maintenance_status
+  tier: 2
+  scope: tenant
+  capability: domain_repository
+  owner_module: magician-comms/src/channel_assist/governance/automatic.rs
+  lifecycle_owner: magician_comms::channel_assist::governance::automatic
+  current_layout: scopes/{principal}/{workspace}/**/*.automatic-maintenance.json
+  writers:
+  - magician-comms/src/channel_assist/governance/automatic.rs
+  readers:
+  - magician-comms/src/channel_assist/governance/automatic.rs
+  - magician-api/src/storage_governance_api.rs
+  notes: Bounded content-free latest database maintenance status. Local lifecycle status, not migrated; safe to regenerate on the next sweep.
+  readiness:
+    state: characterized
+    evidence:
+      characterized: magician-comms/src/channel_assist/governance/automatic.rs
+  authority: *id002
+  legacy_source: *id003
+  governance_id: null
+  class: observability

@@ -1,0 +1,49 @@
+name: create_proposal
+description: Create a definition proposal for a subordinate agent inside the active harness scope.
+version: "1.0.0"
+guide: |
+  Tool name: `create_proposal`
+
+  Use this when the harness has evidence for a structural improvement but should not mutate the agent directly.
+  The current scoped definition is captured as `yaml_before`, and your proposed revision becomes `yaml_after`.
+
+  Guidelines:
+  - target only subordinate agents inside scope
+  - keep any `delegation_targets` explicit and inside the active harness scope; do not use `*`
+  - keep `summary` concise and decision-ready
+  - use `payload` for supporting structured evidence, not for the full diff
+  - put the proposed full definition into `yaml_after`
+parameters:
+  - name: agent_id
+    required: true
+    param_type: string
+    description: Target agent id inside the active harness scope.
+  - name: summary
+    required: true
+    param_type: string
+    description: Short rationale summary for the proposal.
+  - name: rationale
+    param_type: string
+    description: Optional longer explanation.
+  - name: payload
+    description: Optional structured supporting metadata.
+    schema:
+      type: object
+      additionalProperties: true
+
+  - name: yaml_after
+    required: true
+    param_type: string
+    description: Proposed full YAML definition after the change.
+implementation:
+  type: compiled
+  provider_name: create_proposal
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+    - proposals
+    - approval
+  composition_category: action
+  sandbox: none

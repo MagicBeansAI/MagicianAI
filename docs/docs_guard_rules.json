@@ -1,0 +1,899 @@
+{
+  "code_extensions": [
+    ".rs",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".swift",
+    ".sh"
+  ],
+  "always_check_patterns": [
+    "Makefile",
+    "Cargo.toml",
+    "**/Cargo.toml",
+    "tool-runtime-config.yaml",
+    ".claude/settings.json",
+    ".grok/hooks/**",
+    ".gemini/settings.json",
+    ".zcode/config.json",
+    ".agents/hooks.json",
+    ".agents/mcp_config.json",
+    ".github/workflows/**",
+    ".githooks/**"
+  ],
+  "ignore_code_patterns": [
+    ".svelte-kit/**",
+    "target/**",
+    "node_modules/**",
+    "build/**",
+    "docs/**",
+    "**/*.md",
+    "**/*.mdx",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.svg",
+    "**/*.lock",
+    "**/archive/**",
+    "deprecated/tool-runtime-phase7/**",
+    "tests/**",
+    "**/tests/**",
+    "**/examples/**",
+    "**/*_test.rs",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/*.test.tsx",
+    "**/*.spec.tsx"
+  ],
+  "rules": [
+    {
+      "name": "workspace-automation",
+      "code_patterns": [
+        "Makefile",
+        ".claude/settings.json",
+        ".grok/hooks/**",
+        ".gemini/settings.json",
+        ".zcode/config.json",
+        ".agents/hooks.json",
+        ".agents/mcp_config.json",
+        ".github/workflows/**",
+        ".githooks/**"
+      ],
+      "doc_patterns": [
+        "docs/README.md",
+        "docs/process/documentation-governance.md",
+        "docs/process/ai-doc-hooks.md",
+        "CONTRIBUTING.md"
+      ]
+    },
+    {
+      "name": "workspace-runtime-config",
+      "code_patterns": [
+        "Cargo.toml",
+        "tool-runtime-config.yaml"
+      ],
+      "doc_patterns": [
+        "README.md",
+        "docs/quickstart.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "skillshub",
+      "code_patterns": [
+        "skillshub/**"
+      ],
+      "doc_patterns": [
+        "skillshub/**/SKILL.md",
+        "skillshub/README.md",
+        "skillshub/CHANGELOG.md",
+        "docs/components/magician/skills-spec.md"
+      ]
+    },
+    {
+      "name": "magician",
+      "code_patterns": [
+        "magician/Cargo.toml",
+        "magician/src/**",
+        "magician/storage/**",
+        "magician/assets/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician/**",
+        "docs/ARCHITECTURE_V2.md",
+        "docs/quickstart.md"
+      ]
+    },
+    {
+      "name": "event-taxonomy",
+      "code_patterns": [
+        "magician-event-taxonomy/Cargo.toml",
+        "magician-event-taxonomy/src/**"
+      ],
+      "doc_patterns": [
+        "docs/process/ai-doc-hooks.md",
+        "docs/components/magician/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-storage",
+      "code_patterns": [
+        "magician-storage/Cargo.toml",
+        "magician-storage/src/**",
+        "magician-storage/examples/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-storage-gate1",
+      "code_patterns": [
+        "magician-storage-gate1/Cargo.toml",
+        "magician-storage-gate1/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-storage-s3",
+      "code_patterns": [
+        "magician-storage-s3/Cargo.toml",
+        "magician-storage-s3/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-storage-state",
+      "code_patterns": [
+        "magician-storage-state/Cargo.toml",
+        "magician-storage-state/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-storage-migration",
+      "code_patterns": [
+        "magician-storage-migration/Cargo.toml",
+        "magician-storage-migration/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "task-16-system-owners",
+      "code_patterns": [
+        "magician/src/magician_v2/system_owners/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-16a-subprocess-owners",
+      "code_patterns": [
+        "magician/src/magician_v2/subprocess_owners/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-17-recovery",
+      "code_patterns": [
+        "magician/src/magician_v2/recovery/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/runbooks/2026-09-01-storage-backup-restore.md"
+      ]
+    },
+    {
+      "name": "task-18a-gate3",
+      "code_patterns": [
+        "magician/src/magician_v2/gate3/**",
+        "magician-storage/src/gate3.rs"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-18-track-a",
+      "code_patterns": [
+        "magician/src/magician_v2/track_a_acceptance/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-20-profile-acceptance",
+      "code_patterns": [
+        "magician/src/magician_v2/profile_acceptance/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "typed-io-owner-kits",
+      "code_patterns": [
+        "magician/src/magician_v2/typed_io.rs",
+        "magician/src/magician_v2/artifact_v2/workspace.rs"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "task-22-process-runtime",
+      "code_patterns": [
+        "magician/src/magician_v2/process_storage.rs",
+        "magician-storage/src/runtime.rs",
+        "magician-bin/src/main.rs"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "task-21-typed-storage-boundaries",
+      "code_patterns": [
+        "scripts/check_typed_storage_boundaries.py",
+        "scripts/test_typed_storage_boundaries.py",
+        "scripts/typed_storage_boundary_allowlist.yaml"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/components/scripts/**",
+        "docs/process/documentation-governance.md"
+      ]
+    },
+    {
+      "name": "task-19-activation",
+      "code_patterns": [
+        "magician/src/magician_v2/storage_activation/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/components/magician/storage-governance.md"
+      ]
+    },
+    {
+      "name": "task-16b-desktop-engine-roots",
+      "code_patterns": [
+        "desktop/src-tauri/src/engine_roots/**",
+        "desktop/src-tauri/src/runtime_paths.rs",
+        "desktop/src-tauri/src/magician_auth.rs"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/components/desktop/**"
+      ]
+    },
+    {
+      "name": "task-15-database-owners",
+      "code_patterns": [
+        "magician/src/magician_v2/database_owners/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-14-agent-owners",
+      "code_patterns": [
+        "magician/src/magician_v2/agent_owners/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-13-chat-owners",
+      "code_patterns": [
+        "magician/src/magician_v2/chat_owners/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-12-work-owners",
+      "code_patterns": [
+        "magician/src/magician_v2/work_owners/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-11-dataset-owners",
+      "code_patterns": [
+        "magician/src/magician_v2/dataset_owners/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "task-10-object-owners",
+      "code_patterns": [
+        "magician/src/magician_v2/object_owners/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "durable-artifacts-object-store",
+      "code_patterns": [
+        "magician/src/magician_v2/artifacts/object_backend.rs",
+        "magician/src/magician_v2/artifacts/migration.rs",
+        "magician/src/magician_v2/artifacts/guard.rs"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md"
+      ]
+    },
+    {
+      "name": "delivery-receipts-sent-index",
+      "code_patterns": [
+        "magician/src/magician_v2/delivery_receipts/store.rs",
+        "magician/src/magician_v2/delivery_receipts/sqlite.rs",
+        "magician/src/magician_v2/delivery_receipts/migration.rs",
+        "magician/src/magician_v2/delivery_receipts/guard.rs"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-storage/**",
+        "docs/components/magician/storage-abstraction.md",
+        "docs/components/magician/delivery.md"
+      ]
+    },
+    {
+      "name": "magician-vector-index",
+      "code_patterns": [
+        "magician-vector-index/Cargo.toml",
+        "magician-vector-index/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-pty",
+      "code_patterns": [
+        "magician-pty/Cargo.toml",
+        "magician-pty/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-mcp-client",
+      "code_patterns": [
+        "magician-mcp-client/Cargo.toml",
+        "magician-mcp-client/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-mcp-client/**",
+        "magician-mcp-client/CHANGELOG.md"
+      ]
+    },
+    {
+      "name": "magicutor",
+      "code_patterns": [
+        "magicutor/Cargo.toml",
+        "magicutor/src/**",
+        "magicutor/examples/**",
+        "magicutor/extension/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magicutor/**",
+        "magicutor/docs/**",
+        "magicutor/README.md",
+        "magicutor/EXTENSION_ARCHITECTURE.md",
+        "magicutor/extension/README.md",
+        "docs/quickstart.md"
+      ]
+    },
+    {
+      "name": "magicllm",
+      "code_patterns": [
+        "magicllm/Cargo.toml",
+        "magicllm/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magicllm/**",
+        "magicllm/docs/**",
+        "magicllm/CHANGELOG.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magic-supervisor",
+      "code_patterns": [
+        "magic-supervisor/Cargo.toml",
+        "magic-supervisor/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magic-supervisor/**",
+        "magic-supervisor/docs/**",
+        "docs/DEPLOYMENT.md",
+        "docs/quickstart.md"
+      ]
+    },
+    {
+      "name": "tool-runtime-core",
+      "code_patterns": [
+        "Cargo.toml",
+        "magician/tests/phase7_migration.rs",
+        "magician/tests/tool_skill_contract.rs",
+        "magician/src/magician_v2/apps/os_jail.rs",
+        "magician/src/magician_v2/apps/governed_mcp.rs"
+      ],
+      "doc_patterns": [
+        "docs/components/tool-runtime-core/**",
+        "docs/ARCHITECTURE_V2.md",
+        "docs/quickstart.md"
+      ]
+    },
+    {
+      "name": "document-to-markdown-cli",
+      "code_patterns": [
+        "document-to-markdown-cli/Cargo.toml",
+        "document-to-markdown-cli/src/**"
+      ],
+      "doc_patterns": [
+        "document-to-markdown-cli/README.md",
+        "docs/components/tool-runtime-core/**"
+      ]
+    },
+    {
+      "name": "runtime-core",
+      "code_patterns": [
+        "runtime-core/Cargo.toml",
+        "runtime-core/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/runtime-core/**",
+        "runtime-core/docs/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "unified-ui",
+      "code_patterns": [
+        "ui/unified-ui/src/**",
+        "ui/unified-ui/static/**",
+        "ui/unified-ui/scripts/**",
+        "ui/unified-ui/legacy/**",
+        "ui/unified-ui/package.json",
+        "ui/unified-ui/tailwind.config.js",
+        "ui/unified-ui/svelte.config.js",
+        "ui/unified-ui/vite.config.ts",
+        "ui/unified-ui/vitest.config.ts",
+        "ui/unified-ui/vitest.unit.config.ts",
+        "ui/unified-ui/vitest.component.config.ts",
+        "ui/unified-ui/vitest.report.config.ts"
+      ],
+      "doc_patterns": [
+        "docs/components/unified-ui/**",
+        "ui/unified-ui/README.md",
+        "ui/unified-ui/docs/**",
+        "ui/unified-ui/legacy/**/README.md",
+        "docs/quickstart.md"
+      ]
+    },
+    {
+      "name": "magios",
+      "code_patterns": [
+        "magios/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magios/**",
+        "magios/README.md",
+        "magios/CHANGELOG.md"
+      ]
+    },
+    {
+      "name": "magdroid",
+      "code_patterns": [
+        "magdroid/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magdroid/**",
+        "magdroid/README.md",
+        "magdroid/CHANGELOG.md",
+        "magdroid/docs/**"
+      ]
+    },
+    {
+      "name": "magesp",
+      "code_patterns": [
+        "magesp/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magesp/**",
+        "magesp/README.md",
+        "magesp/CHANGELOG.md",
+        "magesp/HARDWARE.md"
+      ]
+    },
+    {
+      "name": "native-macos-audio-engine",
+      "code_patterns": [
+        "native/macos-audio-engine/**"
+      ],
+      "doc_patterns": [
+        "native/macos-audio-engine/README.md",
+        "docs/components/magician/fluid-audio-*.md",
+        "docs/components/magician/realtime-media-rails.md"
+      ]
+    },
+    {
+      "name": "native-macos-speech-helper",
+      "code_patterns": [
+        "native/macos-speech-helper/**"
+      ],
+      "doc_patterns": [
+        "native/macos-speech-helper/README.md",
+        "docs/components/desktop/**",
+        "docs/components/magician/realtime-media-rails.md"
+      ]
+    },
+    {
+      "name": "capabilities",
+      "code_patterns": [
+        "capabilities/**",
+        "magician_data_v3/system/capability_templates/**",
+        "magician_data_v3/system/shared_tools/**",
+        "magician_data_v3/scopes/**/capabilities/**",
+        "tool-runtime-config.yaml"
+      ],
+      "doc_patterns": [
+        "docs/components/capabilities/**",
+        "docs/quickstart.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "mirror",
+      "code_patterns": [
+        ".mirror/**"
+      ],
+      "doc_patterns": [
+        ".mirror/README.md",
+        "docs/plans/2026-09-01-github-go-live.md",
+        "docs/archive/plans/2026-09-01-github-go-live.md"
+      ]
+    },
+    {
+      "name": "scripts",
+      "code_patterns": [
+        "scripts/**"
+      ],
+      "doc_patterns": [
+        "docs/components/scripts/**",
+        "docs/components/magician/local-channel-llm.md",
+        "docs/process/ai-doc-hooks.md",
+        "docs/process/documentation-governance.md",
+        "CONTRIBUTING.md"
+      ]
+    },
+    {
+      "name": "ollama-logical-context-chunking",
+      "code_patterns": [
+        "magicllm/src/chunking/**",
+        "magician-chunking/src/**",
+        "magician/src/magician_v2/api/llm_chunking_api.rs",
+        "scripts/eval-ollama-logical-chunking.py",
+        "data/magician_v2/llm_chunking_evals/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician/ollama-logical-context-chunking.md",
+        "docs/archive/components/magician/ollama-logical-context-chunking-phase0-baseline.md",
+        "docs/archive/plans/2026-07-14-generic-ollama-logical-context-chunking-design-implementation-plan.md",
+        "data/magician_v2/llm_chunking_evals/activation-manifest-v1.yaml",
+        "data/magician_v2/llm_chunking_evals/README.md"
+      ]
+    },
+    {
+      "name": "bots",
+      "code_patterns": [
+        "bots/sdk/src/**",
+        "bots/telegram/src/**",
+        "bots/telegram-self/src/**",
+        "bots/whatsapp/src/**",
+        "bots/kapso/src/**",
+        "bots/gmail/src/**"
+      ],
+      "doc_patterns": [
+        "docs/consumer_channels.md",
+        "docs/components/unified-ui/**"
+      ]
+    },
+    {
+      "name": "desktop",
+      "code_patterns": [
+        "desktop/src-tauri/src/**",
+        "desktop/src-tauri/build.rs",
+        "desktop/src-tauri/Cargo.toml",
+        "desktop/src/**",
+        "desktop/package.json",
+        "desktop/svelte.config.js",
+        "desktop/vite.config.ts"
+      ],
+      "doc_patterns": [
+        "docs/archive/plans/2026-04-21-containerized-deployment-execution-board.md",
+        "docs/archive/plans/2026-04-21-containerized-deployment-issue-ledger.md",
+        "docs/components/desktop/**"
+      ]
+    },
+    {
+      "name": "magician-core",
+      "code_patterns": [
+        "magician-core/Cargo.toml",
+        "magician-core/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-core/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-api",
+      "code_patterns": [
+        "magician-api/Cargo.toml",
+        "magician-api/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-api/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-bin",
+      "code_patterns": [
+        "magician-bin/Cargo.toml",
+        "magician-bin/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-bin/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-app-contract",
+      "code_patterns": [
+        "magician-app-contract/Cargo.toml",
+        "magician-app-contract/src/**"
+      ],
+      "doc_patterns": [
+        "magician-app-contract/CHANGELOG.md",
+        "docs/contracts/app-platform/**",
+        "docs/components/magician/app-platform-contract-kernel.md",
+        "docs/components/magician/typescript-apps-sdk.md"
+      ]
+    },
+    {
+      "name": "typescript-apps-sdk",
+      "code_patterns": [
+        "sdk/typescript/package.json",
+        "sdk/typescript/src/**",
+        "sdk/typescript/bin/**"
+      ],
+      "doc_patterns": [
+        "sdk/typescript/README.md",
+        "sdk/typescript/CHANGELOG.md",
+        "docs/components/magician/typescript-apps-sdk.md",
+        "docs/contracts/app-platform/**"
+      ]
+    },
+    {
+      "name": "research-planner-reference-app",
+      "code_patterns": [
+        "examples/reference-apps/research-planner/app/**",
+        "examples/reference-apps/research-planner/src/**",
+        "examples/reference-apps/research-planner/scripts/**",
+        "examples/reference-apps/research-planner/package.json",
+        "examples/reference-apps/research-planner-composition-destination/app/**",
+        "examples/reference-apps/research-planner-update-v0.2.0/app/**",
+        "examples/reference-apps/research-planner-update-v0.2.0/migrations/**"
+      ],
+      "doc_patterns": [
+        "examples/reference-apps/research-planner/README.md",
+        "examples/reference-apps/research-planner/CHANGELOG.md",
+        "examples/reference-apps/research-planner/LIFECYCLE.md",
+        "examples/reference-apps/research-planner-composition-destination/README.md",
+        "examples/reference-apps/research-planner-update-v0.2.0/README.md",
+        "docs/plans/2026-08-21-app-platform-completion-design-and-implementation.md"
+      ]
+    },
+    {
+      "name": "magician-setup",
+      "code_patterns": [
+        "magician-setup/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-setup/**",
+        "docs/plans/2026-09-02-setup-wizard-rust.md"
+      ]
+    },
+    {
+      "name": "magician-components",
+      "code_patterns": [
+        "magician-components/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-components/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-comms",
+      "code_patterns": [
+        "magician-comms/Cargo.toml",
+        "magician-comms/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-comms/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-apps",
+      "code_patterns": [
+        "magician-apps/Cargo.toml",
+        "magician-apps/src/**",
+        "magician_data_v3/system/*/app/**",
+        "magician_data_v3/system/thinking_map/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-apps/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-surfaces",
+      "code_patterns": [
+        "magician-surfaces/Cargo.toml",
+        "magician-surfaces/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-surfaces/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-chunking",
+      "code_patterns": [
+        "magician-chunking/Cargo.toml",
+        "magician-chunking/src/**",
+        "magician-chunking/src/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-chunking/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-learning",
+      "code_patterns": [
+        "magician-learning/Cargo.toml",
+        "magician-learning/src/**",
+        "magician/src/magician_v2/execution_panel/types.rs"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-learning/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-decision",
+      "code_patterns": [
+        "magician-decision/Cargo.toml",
+        "magician-decision/src/**",
+        "magician-decision/tests/**",
+        "data/magician_v2/decision_packs/**",
+        "decision-engine-contract/Cargo.toml",
+        "decision-engine-contract/src/**",
+        "decision-engine/Cargo.toml",
+        "decision-engine/src/**",
+        "decision-engine/tests/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician/structured-decision.md",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "magician-media",
+      "code_patterns": [
+        "magician-media/Cargo.toml",
+        "magician-media/src/**",
+        "magician/src/magician_v2/media_seam/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician-media/**",
+        "docs/ARCHITECTURE_V2.md"
+      ]
+    },
+    {
+      "name": "planner-tool-discovery",
+      "code_patterns": [
+        "magician/src/magician_v2/strategy/**"
+      ],
+      "doc_patterns": [
+        "docs/components/magician/plan-flow.md"
+      ]
+    },
+    {
+      "name": "kindle-thin-client",
+      "code_patterns": [
+        "kindle/**"
+      ],
+      "doc_patterns": [
+        "kindle/README.md",
+        "docs/plans/2026-08-28-kindle-pw3-thin-client-plan.md"
+      ]
+    },
+    {
+      "name": "task-recipes-eval-harness",
+      "code_patterns": [
+        "magician/evals/**",
+        "magician/examples/task_recipes_fixture_eval/**",
+        "magician/examples/task_recipes_eval.rs"
+      ],
+      "doc_patterns": [
+        "docs/testing.md",
+        "docs/components/magician/api-mining-pipeline.md",
+        "docs/runbooks/2026-09-05-task-recipes-e2e.md"
+      ]
+    }
+  ]
+}

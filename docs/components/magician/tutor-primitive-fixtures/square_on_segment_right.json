@@ -1,0 +1,31 @@
+{
+  "name": "square_on_segment — right side flips the sign",
+  "recipe": {
+    "type": "square_on_segment",
+    "draw": [
+      {
+        "op": "polygon",
+        "points": [
+          ["sx", "sy"],
+          ["ex", "ey"],
+          ["ex-(ey-sy)*side_sign", "ey+(ex-sx)*side_sign"],
+          ["sx-(ey-sy)*side_sign", "sy+(ex-sx)*side_sign"]
+        ]
+      }
+    ]
+  },
+  "shape": { "type": "square_on_segment", "x1": 0, "y1": 0, "x2": 10, "y2": 0, "side": "right" },
+  "space": { "width": 2048, "height": 1152 },
+  "expected": [
+    {
+      "op": "polygon",
+      "closed": true,
+      "points": [
+        [0, 0],
+        [10, 0],
+        [10, -10],
+        [0, -10]
+      ]
+    }
+  ]
+}

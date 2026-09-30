@@ -1,0 +1,32 @@
+[package]
+name = "decision-engine"
+version = "0.4.2"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "The decision engine process: serves typed decisions and shared tool actions to hosts over a versioned Unix-socket contract."
+
+[[bin]]
+name = "decision-engine"
+path = "src/main.rs"
+
+[features]
+default = []
+# Apple Silicon GPU models (`kev-mlx`). See magician-decision's `mlx`.
+mlx = ["magician-decision/mlx"]
+
+[dependencies]
+tempfile = "3"
+futures = "0.3"
+decision-engine-contract = { path = "../decision-engine-contract" }
+magician-decision = { path = "../magician-decision", features = ["onnx"] }
+actix-web = { version = "4.4", features = ["rustls"] }
+dotenvy = "0.15"
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+decision-engine-contract = { path = "../decision-engine-contract", features = ["client"] }

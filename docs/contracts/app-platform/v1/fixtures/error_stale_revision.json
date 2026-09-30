@@ -1,0 +1,8 @@
+{
+  "code": "stale_revision",
+  "details": {
+    "current_revision": 8
+  },
+  "disposition": "refresh_and_retry",
+  "message": "The record changed after this edit began."
+}
