@@ -1,0 +1,41 @@
+{
+  "name": "dimension_line — main segment + two perpendicular end-ticks (sqrt composition)",
+  "recipe": {
+    "type": "dimension_line",
+    "aliases": ["dimension"],
+    "defaults": { "size": 10 },
+    "draw": [
+      { "op": "line", "from": ["sx", "sy"], "to": ["ex", "ey"] },
+      {
+        "op": "line",
+        "from": [
+          "sx-(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+          "sy-((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+        ],
+        "to": [
+          "sx+(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+          "sy+((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+        ]
+      },
+      {
+        "op": "line",
+        "from": [
+          "ex-(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+          "ey-((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+        ],
+        "to": [
+          "ex+(-(ey-sy)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size",
+          "ey+((ex-sx)/sqrt((ex-sx)*(ex-sx)+(ey-sy)*(ey-sy)))*size"
+        ]
+      },
+      { "op": "label", "at": ["mx", "my-14"], "text": "text", "anchor": "center", "threshold": 0.75 }
+    ]
+  },
+  "shape": { "type": "dimension_line", "x1": 100, "y1": 100, "x2": 300, "y2": 100 },
+  "space": { "width": 2048, "height": 1152 },
+  "expected": [
+    { "op": "line", "closed": false, "points": [[100, 100], [300, 100]] },
+    { "op": "line", "closed": false, "points": [[100, 90], [100, 110]] },
+    { "op": "line", "closed": false, "points": [[300, 90], [300, 110]] }
+  ]
+}

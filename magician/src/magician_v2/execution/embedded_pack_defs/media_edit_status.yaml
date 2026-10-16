@@ -1,0 +1,29 @@
+name: media_edit_status
+description: "Poll the status of a background media_edit job by job_id. Returns {status: running|completed|failed, progress_pct?, output_path?, error?}."
+version: "1.0.0"
+guide: |
+  Tool name: `media_edit_status`
+
+  Call with the `job_id` returned by `media_edit`. While `status` is
+  `running`, `progress_pct` (0-100, may be null early on) reports ffmpeg's
+  own progress. On `completed`, `output_path` is the produced file's
+  absolute path (also registered as a chat attachment automatically). On
+  `failed`, `error` has a trimmed ffmpeg stderr tail.
+
+  Jobs do not survive a server restart — a `job_id` from before a restart
+  will report an error, not `failed`.
+parameters:
+  - name: job_id
+    required: true
+    param_type: string
+    description: The job_id returned by a prior media_edit call.
+implementation:
+  type: compiled
+  provider_name: media_edit_status
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - media
+  composition_category: action
+  sandbox: none

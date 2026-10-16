@@ -1,0 +1,44 @@
+name: magician_work_ledger
+description: Recall prior work-outcomes from the durable work ledger — a direct read of the per-agent evidence store filtered to run-grained work_outcome records.
+version: "1.0.0"
+guide: |
+  Tool name: `magician_work_ledger`
+
+  Recall what work has already been done. Each terminal agentic run stamps one
+  deterministic `work_outcome` record into the per-agent evidence store; this
+  tool reads those records back for the active harness scope. This is a direct
+  ledger read — NOT a semantic / relevance-ranked memory search.
+
+  Results are always limited to the active harness scope and sorted newest-first.
+
+  Typical use:
+  - see what a subordinate agent has completed or failed recently
+  - find open loops carried out of prior runs before assigning new work
+  - avoid re-issuing work that already shipped
+parameters:
+  - name: agent_id
+    param_type: string
+    description: Optional agent id inside the active harness scope. Omit to read every scope agent's ledger.
+  - name: kind
+    param_type: string
+    description: Optional terminal-outcome filter on the recorded work outcome.
+    enum_values: [success, failed, cannot_proceed, yield]
+  - name: since
+    param_type: string
+    description: Optional inclusive RFC3339 lower bound (UTC, e.g. ending in Z). Only records stamped at or after this instant are returned.
+  - name: limit
+    param_type: integer
+    description: Maximum number of ledger records to return. Defaults to 20, max 50.
+    default: "20"
+implementation:
+  type: compiled
+  provider_name: magician_work_ledger
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - diagnostics
+    - memory
+  composition_category: observation
+  sandbox: none

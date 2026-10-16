@@ -1,0 +1,45 @@
+name: get_task_details
+description: Fetch a single task's basic metadata, status, current/latest execution ids, and a bounded recent-execution history. Returns plain task fields only — no download URLs, chat-projected output cards, or rich text previews (those live on the chat-runtime `get_task_details_for_chat` tool).
+version: "1.0.0"
+guide: |
+  Tool name: `get_task_details`
+
+  Returns `{task_id, title, description, status, agent_id, created_at,
+  updated_at, active_execution_id, latest_execution_id,
+  recent_executions: [{execution_id, status, started_at, completed_at}]}`
+  for the scoped task. Use when you need a structured snapshot before
+  delegating, refining, or stopping a task.
+
+  Inputs:
+  - `task_id` (required) — task to fetch.
+  - `execution_limit` (optional, default 5, max 20) — cap on how many
+    recent executions to include in `recent_executions`.
+
+  Chat agents reach a richer surface (`get_task_details_for_chat`) that
+  also returns task output download URLs, projected chat output cards,
+  and continuation-pack previews. This compiled version is the
+  autonomous-friendly minimal read.
+
+  Pair with `list_tasks` to discover task ids, with
+  `get_execution_history` to read more than 20 recent executions, and
+  with `refine_task` / `update_task` / `stop_task` to act on the task.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: Task id to fetch details for.
+  - name: execution_limit
+    param_type: integer
+    description: Cap on recent executions in the response (default 5, max 20).
+    default: 5
+implementation:
+  type: compiled
+  provider_name: get_task_details
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - tasks
+    - introspection
+  composition_category: action
+  sandbox: none

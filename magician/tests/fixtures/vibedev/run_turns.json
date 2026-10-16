@@ -1,0 +1,33 @@
+{
+  "branch": "vibedev/shop-search01",
+  "project_id": "proj_shop",
+  "project_name": "Shop",
+  "run_id": "task_search",
+  "status": "completed",
+  "title": "VibeDev · Speed up product search",
+  "trusted": true,
+  "turns": [
+    {
+      "commit": "4be1c09d2a7f",
+      "cost_usd": 0.61,
+      "created_at": "2026-10-13T09:00:00Z",
+      "engine": "codex",
+      "files_changed": 2,
+      "mode": "build",
+      "prompt": "Product search takes 900 ms on large catalogs. Make it fast.",
+      "status": "completed",
+      "summary": "Search uses a trigram index: 900 ms to 38 ms.",
+      "task_id": "task_search",
+      "updated_at": "2026-10-13T09:17:00Z"
+    },
+    {
+      "created_at": "2026-10-13T09:20:00Z",
+      "engine": "codex",
+      "mode": "build",
+      "prompt": "Also cache the empty-query result for 60 seconds.",
+      "status": "running",
+      "task_id": "task_search_2",
+      "updated_at": "2026-10-13T09:24:00Z"
+    }
+  ]
+}

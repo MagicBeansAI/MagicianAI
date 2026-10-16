@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Diagram Editor Spatial Workflows</title>
+    <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+    <style>
+        .test-header {
+            background: linear-gradient(135deg, #2150ff, #0d8d8a);
+        }
+
+        .diagram-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .diagram-lane {
+            border: 1px solid #cad7ea;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.78);
+            min-height: 220px;
+            padding: 14px;
+        }
+
+        .diagram-lane.review-target {
+            box-shadow: inset 0 0 0 3px rgba(28, 121, 255, 0.18);
+        }
+
+        .diagram-lane h4,
+        .connector-node h4 {
+            margin: 0;
+            font-size: 15px;
+        }
+
+        .diagram-lane p {
+            margin: 6px 0 12px;
+            color: #68748a;
+            font-size: 13px;
+        }
+
+        .lane-stack {
+            min-height: 150px;
+        }
+
+        .diagram-node,
+        .connector-node {
+            position: relative;
+            border-radius: 16px;
+            background: linear-gradient(180deg, #ffffff 0%, #ebf2ff 100%);
+            border: 1px solid #b9c9e5;
+            box-shadow: 0 14px 28px rgba(40, 64, 112, 0.14);
+            padding: 14px;
+            user-select: none;
+        }
+
+        .diagram-node {
+            width: 180px;
+            cursor: grab;
+        }
+
+        .diagram-node strong,
+        .connector-node strong {
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .diagram-node.dragging {
+            opacity: 0.94;
+            cursor: grabbing;
+            z-index: 5;
+        }
+
+        .lane-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            background: #eef3fb;
+            color: #40506b;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .connector-board {
+            position: relative;
+            min-height: 320px;
+            background:
+                radial-gradient(circle at 18px 18px, rgba(23, 62, 133, 0.08) 2px, transparent 0) 0 0 / 36px 36px,
+                linear-gradient(180deg, #f8fbff 0%, #eff5fb 100%);
+            border-radius: 18px;
+            overflow: hidden;
+        }
+
+        .connector-board svg {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .connector-board canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+
+        .connector-node {
+            position: absolute;
+            width: 210px;
+        }
+
+        .connector-node.source {
+            left: 44px;
+            top: 86px;
+        }
+
+        .connector-node.target {
+            right: 48px;
+            top: 128px;
+        }
+
+        .connector-node.node-drag-source {
+            cursor: crosshair;
+        }
+
+        .connector-handle,
+        .connector-target {
+            position: absolute;
+            top: 50%;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            transform: translateY(-50%);
+            border: 3px solid #ffffff;
+            box-shadow: 0 6px 14px rgba(26, 40, 72, 0.2);
+        }
+
+        .connector-handle {
+            right: -9px;
+            background: #2150ff;
+            cursor: crosshair;
+        }
+
+        .connector-target {
+            left: -9px;
+            background: #0e9e65;
+        }
+
+        .connector-target.connected {
+            box-shadow: 0 0 0 8px rgba(14, 158, 101, 0.18);
+        }
+
+        .connector-node.node-drag-target.connected {
+            box-shadow: 0 0 0 8px rgba(14, 158, 101, 0.18), 0 14px 28px rgba(40, 64, 112, 0.14);
+        }
+
+        .connector-callout {
+            position: absolute;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%);
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(8, 31, 78, 0.9);
+            color: #ffffff;
+            font-weight: 600;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .connector-callout.visible {
+            opacity: 1;
+        }
+
+        .event-trace {
+            margin-top: 12px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: rgba(10, 26, 62, 0.9);
+            color: #dbe7ff;
+        }
+
+        .event-trace strong {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 12px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .event-trace pre {
+            margin: 0;
+            max-height: 180px;
+            overflow: auto;
+            white-space: pre-wrap;
+            font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        }
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "25-diagram-editor-canvas",
+        "phase": "Phase 4",
+        "title": "Diagram Editor Spatial Workflows",
+        "description": "Diagram canvas fixtures covering lane placement and pure canvas connector dragging.",
+        "totalTests": 2
+    }
+    </script>
+
+    <div class="page-shell">
+        <div class="test-header">
+            <h1>Diagram Editor Spatial Workflows</h1>
+            <p>These fixtures cover the baseline diagram interactions for canvas evaluation: lane-aware movement and a pure canvas box-to-box connector drag.</p>
+            <div class="results-summary">
+                <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+                <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+                <div class="summary-pill">Pending<strong id="pending-count">2</strong></div>
+            </div>
+        </div>
+
+        <div class="fixture-grid">
+            <section class="test-case" id="test-1" data-test-id="25-lane-placement" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">1. Move the API Gateway card into the Review lane</h2>
+                    <span class="test-case-id">25-lane-placement</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Drag the <span class="kbd">API Gateway</span> card from the Draft lane into the Review lane so the lane becomes review-ready.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Release Flow Board</h3>
+                            <p class="caption">A simplified diagram lane board with draggable cards.</p>
+                        </div>
+                        <div class="legend">
+                            <span class="lane-badge" id="review-badge">0 waiting review</span>
+                            <button class="surface-btn" type="button" id="reset-lane-board">Reset surface</button>
+                        </div>
+                    </div>
+                    <div class="workspace-surface" id="lane-board-surface">
+                        <span class="surface-label">Diagram Surface</span>
+                        <div class="diagram-grid">
+                            <div class="diagram-lane" data-lane="draft">
+                                <h4>Draft</h4>
+                                <p>In-progress shapes stay here until they are ready for review.</p>
+                                <div class="lane-stack" id="lane-draft-stack">
+                                    <div class="diagram-node" id="lane-card" tabindex="0">
+                                        <strong>API Gateway</strong>
+                                        <span class="caption">Drag to the Review lane when the service handoff is complete.</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="diagram-lane review-target" data-lane="review">
+                                <h4>Review</h4>
+                                <p>Target lane for the validation pass.</p>
+                                <div class="lane-stack" id="lane-review-stack"></div>
+                            </div>
+                            <div class="diagram-lane" data-lane="ship">
+                                <h4>Ship</h4>
+                                <p>Final release lane.</p>
+                                <div class="lane-stack" id="lane-ship-stack"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="card-in-review">The API Gateway card should end inside the Review lane.</li>
+                        <li data-check="review-counter">The Review lane badge should report one waiting review item.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" id="reset-lane-status" data-status-reset="test-1">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-2" data-test-id="25-canvas-connector-link" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">2. Draw a pure canvas connector from Gateway to Approval</h2>
+                    <span class="test-case-id">25-canvas-connector-link</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Drag from anywhere inside the left canvas-drawn <span class="kbd">Gateway Ready</span> box to anywhere inside the right canvas-drawn <span class="kbd">Approval Queue</span> box to create a release connector. This surface has no DOM handle or node elements inside the board.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Pure Canvas Connector Surface</h3>
+                            <p class="caption">This step uses a single canvas element with boxes rendered inside it instead of draggable DOM nodes.</p>
+                        </div>
+                        <button class="surface-btn" type="button" id="reset-pure-canvas-connector-board">Reset surface</button>
+                    </div>
+                    <div class="workspace-surface connector-board" id="pure-canvas-connector-board">
+                        <span class="surface-label">Canvas Connector Surface</span>
+                        <canvas id="pure-canvas-connector-canvas" width="900" height="320" aria-label="Pure canvas connector board"></canvas>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="connector-path-visible">A visible path should connect the left box to the right box.</li>
+                        <li data-check="target-armed">The right box should enter the connected state and show the release callout.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="event-trace">
+                    <strong>Input trace</strong>
+                    <pre id="pointer-trace-test-2">Awaiting pure canvas input events.</pre>
+                </div>
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" id="reset-pure-canvas-connector-status" data-status-reset="test-2">Reset</button>
+                </div>
+            </section>
+
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        (function () {
+            const laneCard = document.getElementById("lane-card");
+            const laneBoardSurface = document.getElementById("lane-board-surface");
+            const draftStack = document.getElementById("lane-draft-stack");
+            const reviewStack = document.getElementById("lane-review-stack");
+            const shipStack = document.getElementById("lane-ship-stack");
+            const reviewBadge = document.getElementById("review-badge");
+
+            const pureCanvasConnectorCanvas = document.getElementById("pure-canvas-connector-canvas");
+            const pureCanvasConnectorContext = pureCanvasConnectorCanvas.getContext("2d");
+            const pureCanvasSourceRect = { x: 58, y: 86, width: 210, height: 95 };
+            const pureCanvasTargetRect = { x: 632, y: 128, width: 210, height: 95 };
+
+            let dragState = null;
+            let pureCanvasConnectorState = null;
+            let pureCanvasConnectorConnected = false;
+            let pureCanvasConnectorLine = null;
+            let pureCanvasMouseTracking = false;
+            let pureCanvasPointerTracking = false;
+            let lastPointerInputAt = 0;
+
+            function describeNode(node) {
+                if (!node) return "null";
+                if (node === document) return "document";
+                if (node === window) return "window";
+                if (!(node instanceof Element)) return String(node.nodeName || node);
+                const id = node.id ? "#" + node.id : "";
+                const classes = typeof node.className === "string" && node.className.trim()
+                    ? "." + node.className.trim().split(/\s+/).slice(0, 2).join(".")
+                    : "";
+                return node.tagName.toLowerCase() + id + classes;
+            }
+
+            function clearPointerTrace(testId, label) {
+                const trace = document.getElementById("pointer-trace-" + testId);
+                if (!trace) return;
+                trace.textContent = label || "No pointer events yet.";
+            }
+
+            function appendPointerTrace(testId, line) {
+                const trace = document.getElementById("pointer-trace-" + testId);
+                if (!trace) return;
+                const existing = trace.textContent && !trace.textContent.startsWith("Awaiting") && trace.textContent !== "No pointer events yet."
+                    ? trace.textContent.split("\n")
+                    : [];
+                existing.push(line);
+                trace.textContent = existing.slice(-12).join("\n");
+            }
+
+            function tracePointerEvent(testId, label, event, localRectElement) {
+                if ((event.type === "pointermove" || event.type === "mousemove") && event.buttons === 0) return;
+                const rect = localRectElement?.getBoundingClientRect ? localRectElement.getBoundingClientRect() : null;
+                const localX = rect ? (event.clientX - rect.left).toFixed(1) : "?";
+                const localY = rect ? (event.clientY - rect.top).toFixed(1) : "?";
+                const hit = document.elementFromPoint(event.clientX, event.clientY);
+                const path = typeof event.composedPath === "function"
+                    ? event.composedPath().slice(0, 4).map(describeNode).join(" -> ")
+                    : "";
+                appendPointerTrace(
+                    testId,
+                    `${label} ${event.type} target=${describeNode(event.target)} current=${describeNode(event.currentTarget)} hit=${describeNode(hit)} xy=(${event.clientX.toFixed(1)},${event.clientY.toFixed(1)}) local=(${localX},${localY}) buttons=${event.buttons} path=${path}`
+                );
+            }
+
+            function traceMessage(testId, line) {
+                appendPointerTrace(testId, line);
+            }
+
+            function attachPointerTrace(target, testId, label, localRectElement) {
+                ["pointerdown", "pointermove", "pointerup", "mousedown", "mousemove", "mouseup"].forEach((type) => {
+                    target.addEventListener(
+                        type,
+                        function (event) {
+                            tracePointerEvent(testId, label, event, localRectElement || target);
+                        },
+                        true
+                    );
+                });
+            }
+
+            function markPointerInput(event) {
+                if (event.type.startsWith("pointer")) {
+                    lastPointerInputAt = Date.now();
+                }
+            }
+
+            function shouldIgnoreCompatMouse(event) {
+                return event.type.startsWith("mouse") && Date.now() - lastPointerInputAt < 400;
+            }
+
+            function inputTokenForEvent(event) {
+                return event.type.startsWith("pointer") ? "pointer:" + event.pointerId : "mouse";
+            }
+
+            function safeSetPointerCapture(target, event, testId, label) {
+                if (!event.type.startsWith("pointer")) return;
+                try {
+                    target.setPointerCapture(event.pointerId);
+                } catch (error) {
+                    traceMessage(testId, `${label} setPointerCapture failed: ${error.name}`);
+                }
+            }
+
+            function safeReleasePointerCapture(target, event, testId, label) {
+                if (!event.type.startsWith("pointer")) return;
+                try {
+                    target.releasePointerCapture(event.pointerId);
+                } catch (error) {
+                    traceMessage(testId, `${label} releasePointerCapture failed: ${error.name}`);
+                }
+            }
+
+            function beginPureCanvasMouseTracking() {
+                if (pureCanvasMouseTracking) return;
+                pureCanvasMouseTracking = true;
+                document.addEventListener("mousemove", onPureCanvasConnectorMove, true);
+                document.addEventListener("mouseup", onPureCanvasConnectorUp, true);
+            }
+
+            function endPureCanvasMouseTracking() {
+                if (!pureCanvasMouseTracking) return;
+                pureCanvasMouseTracking = false;
+                document.removeEventListener("mousemove", onPureCanvasConnectorMove, true);
+                document.removeEventListener("mouseup", onPureCanvasConnectorUp, true);
+            }
+
+            function beginPureCanvasPointerTracking() {
+                if (pureCanvasPointerTracking) return;
+                pureCanvasPointerTracking = true;
+                document.addEventListener("pointermove", onPureCanvasConnectorMove, true);
+                document.addEventListener("pointerup", onPureCanvasConnectorUp, true);
+                document.addEventListener("pointercancel", onPureCanvasConnectorCancel, true);
+            }
+
+            function endPureCanvasPointerTracking() {
+                if (!pureCanvasPointerTracking) return;
+                pureCanvasPointerTracking = false;
+                document.removeEventListener("pointermove", onPureCanvasConnectorMove, true);
+                document.removeEventListener("pointerup", onPureCanvasConnectorUp, true);
+                document.removeEventListener("pointercancel", onPureCanvasConnectorCancel, true);
+            }
+
+            function updateLaneChecks() {
+                const isInReview = reviewStack.contains(laneCard);
+                setCheckState("test-1", "card-in-review", isInReview ? "pass" : "pending");
+                reviewBadge.textContent = isInReview ? "1 waiting review" : "0 waiting review";
+                setCheckState("test-1", "review-counter", isInReview ? "pass" : "pending");
+                setResult(
+                    "test-1",
+                    isInReview ? "Card is staged in Review." : "Move the API Gateway card into Review.",
+                    isInReview ? "success" : "info"
+                );
+                if (isInReview) {
+                    setTestStatus("test-1", "pass");
+                }
+            }
+
+            function resetLaneBoard() {
+                draftStack.appendChild(laneCard);
+                laneCard.removeAttribute("style");
+                laneCard.classList.remove("dragging");
+                dragState = null;
+                setTestStatus("test-1", null);
+                setCheckState("test-1", "card-in-review", "pending");
+                setCheckState("test-1", "review-counter", "pending");
+                setResult("test-1", "Move the API Gateway card into Review.", "info");
+                updateLaneChecks();
+            }
+
+            function onLanePointerDown(event) {
+                const rect = laneCard.getBoundingClientRect();
+                const boardRect = laneBoardSurface.getBoundingClientRect();
+                dragState = {
+                    pointerId: event.pointerId,
+                    offsetX: event.clientX - rect.left,
+                    offsetY: event.clientY - rect.top
+                };
+                laneCard.classList.add("dragging");
+                laneCard.style.position = "absolute";
+                laneCard.style.left = rect.left - boardRect.left + "px";
+                laneCard.style.top = rect.top - boardRect.top + "px";
+                laneCard.style.width = rect.width + "px";
+                laneCard.style.zIndex = "10";
+                laneBoardSurface.appendChild(laneCard);
+                laneCard.setPointerCapture(event.pointerId);
+            }
+
+            function onLanePointerMove(event) {
+                if (!dragState || dragState.pointerId !== event.pointerId) return;
+                const boardRect = laneBoardSurface.getBoundingClientRect();
+                laneCard.style.left = event.clientX - boardRect.left - dragState.offsetX + "px";
+                laneCard.style.top = event.clientY - boardRect.top - dragState.offsetY + "px";
+            }
+
+            function onLanePointerUp(event) {
+                if (!dragState || dragState.pointerId !== event.pointerId) return;
+                laneCard.releasePointerCapture(event.pointerId);
+                laneCard.classList.remove("dragging");
+                laneCard.removeAttribute("style");
+                const dropTarget = document.elementFromPoint(event.clientX, event.clientY)?.closest(".diagram-lane");
+                const lane = dropTarget?.getAttribute("data-lane");
+                if (lane === "review") {
+                    reviewStack.appendChild(laneCard);
+                } else if (lane === "ship") {
+                    shipStack.appendChild(laneCard);
+                } else {
+                    draftStack.appendChild(laneCard);
+                }
+                dragState = null;
+                updateLaneChecks();
+            }
+
+            function pointInRect(point, rect) {
+                return (
+                    point.x >= rect.x &&
+                    point.x <= rect.x + rect.width &&
+                    point.y >= rect.y &&
+                    point.y <= rect.y + rect.height
+                );
+            }
+
+            function canvasConnectorCurve(start, end) {
+                const midX = start.x + (end.x - start.x) / 2;
+                return { midX };
+            }
+
+            function drawRoundedRect(ctx, rect, radius, fill, stroke) {
+                ctx.beginPath();
+                ctx.moveTo(rect.x + radius, rect.y);
+                ctx.lineTo(rect.x + rect.width - radius, rect.y);
+                ctx.quadraticCurveTo(rect.x + rect.width, rect.y, rect.x + rect.width, rect.y + radius);
+                ctx.lineTo(rect.x + rect.width, rect.y + rect.height - radius);
+                ctx.quadraticCurveTo(rect.x + rect.width, rect.y + rect.height, rect.x + rect.width - radius, rect.y + rect.height);
+                ctx.lineTo(rect.x + radius, rect.y + rect.height);
+                ctx.quadraticCurveTo(rect.x, rect.y + rect.height, rect.x, rect.y + rect.height - radius);
+                ctx.lineTo(rect.x, rect.y + radius);
+                ctx.quadraticCurveTo(rect.x, rect.y, rect.x + radius, rect.y);
+                ctx.closePath();
+                ctx.fillStyle = fill;
+                ctx.fill();
+                ctx.strokeStyle = stroke;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+
+            function drawPureCanvasConnectorBoard() {
+                const ctx = pureCanvasConnectorContext;
+                ctx.clearRect(0, 0, pureCanvasConnectorCanvas.width, pureCanvasConnectorCanvas.height);
+
+                ctx.fillStyle = "#f8fbff";
+                ctx.fillRect(0, 0, pureCanvasConnectorCanvas.width, pureCanvasConnectorCanvas.height);
+
+                ctx.strokeStyle = "rgba(23, 62, 133, 0.08)";
+                ctx.lineWidth = 1;
+                for (let x = 18; x < pureCanvasConnectorCanvas.width; x += 36) {
+                    for (let y = 18; y < pureCanvasConnectorCanvas.height; y += 36) {
+                        ctx.beginPath();
+                        ctx.arc(x, y, 2, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+
+                drawRoundedRect(ctx, pureCanvasSourceRect, 18, "#eef4ff", "#b9c9e5");
+                drawRoundedRect(
+                    ctx,
+                    pureCanvasTargetRect,
+                    18,
+                    pureCanvasConnectorConnected ? "#e8fff3" : "#eef4ff",
+                    pureCanvasConnectorConnected ? "#0e9e65" : "#b9c9e5"
+                );
+
+                ctx.fillStyle = "#163260";
+                ctx.font = "600 18px system-ui, sans-serif";
+                ctx.fillText("Gateway Ready", pureCanvasSourceRect.x + 18, pureCanvasSourceRect.y + 34);
+                ctx.fillText("Approval Queue", pureCanvasTargetRect.x + 18, pureCanvasTargetRect.y + 34);
+
+                ctx.fillStyle = "#5b6a81";
+                ctx.font = "13px system-ui, sans-serif";
+                ctx.fillText("Drag from anywhere inside this box.", pureCanvasSourceRect.x + 18, pureCanvasSourceRect.y + 60);
+                ctx.fillText("Release inside this box to connect.", pureCanvasTargetRect.x + 18, pureCanvasTargetRect.y + 60);
+
+                if (pureCanvasConnectorLine) {
+                    const { start, end } = pureCanvasConnectorLine;
+                    const { midX } = canvasConnectorCurve(start, end);
+                    ctx.strokeStyle = "#2150ff";
+                    ctx.lineWidth = 5;
+                    ctx.lineCap = "round";
+                    ctx.beginPath();
+                    ctx.moveTo(start.x, start.y);
+                    ctx.bezierCurveTo(midX, start.y, midX, end.y, end.x, end.y);
+                    ctx.stroke();
+                }
+
+                if (pureCanvasConnectorConnected) {
+                    ctx.fillStyle = "rgba(8, 31, 78, 0.9)";
+                    ctx.beginPath();
+                    ctx.roundRect(322, 272, 256, 32, 16);
+                    ctx.fill();
+                    ctx.fillStyle = "#ffffff";
+                    ctx.font = "600 14px system-ui, sans-serif";
+                    ctx.fillText("Release connector armed", 382, 293);
+                }
+            }
+
+            function pureCanvasViewportPoint(event) {
+                const rect = pureCanvasConnectorCanvas.getBoundingClientRect();
+                const scaleX = pureCanvasConnectorCanvas.width / Math.max(rect.width, 1);
+                const scaleY = pureCanvasConnectorCanvas.height / Math.max(rect.height, 1);
+                return {
+                    x: (event.clientX - rect.left) * scaleX,
+                    y: (event.clientY - rect.top) * scaleY
+                };
+            }
+
+            function updatePureCanvasConnectorChecks(connected) {
+                setCheckState("test-2", "connector-path-visible", connected ? "pass" : "pending");
+                setCheckState("test-2", "target-armed", connected ? "pass" : "pending");
+                setResult(
+                    "test-2",
+                    connected ? "Pure canvas connector created between Gateway Ready and Approval Queue." : "Drag from anywhere in the left canvas box to anywhere in the right canvas box.",
+                    connected ? "success" : "info"
+                );
+                if (connected) {
+                    setTestStatus("test-2", "pass");
+                }
+            }
+
+            function resetPureCanvasConnectorBoard() {
+                pureCanvasConnectorState = null;
+                pureCanvasConnectorConnected = false;
+                pureCanvasConnectorLine = null;
+                endPureCanvasMouseTracking();
+                endPureCanvasPointerTracking();
+                setTestStatus("test-2", null);
+                setCheckState("test-2", "connector-path-visible", "pending");
+                setCheckState("test-2", "target-armed", "pending");
+                setResult("test-2", "Drag from anywhere in the left canvas box to anywhere in the right canvas box.", "info");
+                clearPointerTrace("test-2", "Awaiting pure canvas input events.");
+                drawPureCanvasConnectorBoard();
+            }
+
+            function onPureCanvasConnectorDown(event) {
+                if (shouldIgnoreCompatMouse(event)) return;
+                if (event.type === "mousedown" && event.button !== 0) return;
+                markPointerInput(event);
+                const start = pureCanvasViewportPoint(event);
+                if (!pointInRect(start, pureCanvasSourceRect)) {
+                    traceMessage("test-2", `handler pure ${event.type} ignored start=(${start.x.toFixed(1)},${start.y.toFixed(1)}) outside sourceRect`);
+                    return;
+                }
+                pureCanvasConnectorState = { token: inputTokenForEvent(event), start };
+                safeSetPointerCapture(pureCanvasConnectorCanvas, event, "test-2", "handler pure");
+                if (event.type === "pointerdown") beginPureCanvasPointerTracking();
+                if (event.type === "mousedown") beginPureCanvasMouseTracking();
+                pureCanvasConnectorLine = { start, end: start };
+                traceMessage("test-2", `handler pure ${event.type} accepted start=(${start.x.toFixed(1)},${start.y.toFixed(1)})`);
+                drawPureCanvasConnectorBoard();
+            }
+
+            function onPureCanvasConnectorMove(event) {
+                if (!pureCanvasConnectorState || pureCanvasConnectorState.token !== inputTokenForEvent(event)) return;
+                if ((event.type === "pointermove" || event.type === "mousemove") && event.buttons === 0) return;
+                markPointerInput(event);
+                const point = pureCanvasViewportPoint(event);
+                pureCanvasConnectorLine = { start: pureCanvasConnectorState.start, end: point };
+                drawPureCanvasConnectorBoard();
+            }
+
+            function onPureCanvasConnectorUp(event) {
+                if (!pureCanvasConnectorState || pureCanvasConnectorState.token !== inputTokenForEvent(event)) return;
+                markPointerInput(event);
+                safeReleasePointerCapture(pureCanvasConnectorCanvas, event, "test-2", "handler pure");
+                if (event.type === "pointerup") endPureCanvasPointerTracking();
+                if (event.type === "mouseup") endPureCanvasMouseTracking();
+                const point = pureCanvasViewportPoint(event);
+                if (pointInRect(point, pureCanvasTargetRect)) {
+                    pureCanvasConnectorConnected = true;
+                    pureCanvasConnectorLine = { start: pureCanvasConnectorState.start, end: point };
+                    updatePureCanvasConnectorChecks(true);
+                    traceMessage("test-2", `handler pure ${event.type} insideTarget=true end=(${point.x.toFixed(1)},${point.y.toFixed(1)})`);
+                } else {
+                    pureCanvasConnectorConnected = false;
+                    pureCanvasConnectorLine = null;
+                    updatePureCanvasConnectorChecks(false);
+                    traceMessage("test-2", `handler pure ${event.type} insideTarget=false end=(${point.x.toFixed(1)},${point.y.toFixed(1)})`);
+                }
+                pureCanvasConnectorState = null;
+                drawPureCanvasConnectorBoard();
+            }
+
+            function onPureCanvasConnectorCancel(event) {
+                if (!pureCanvasConnectorState || pureCanvasConnectorState.token !== inputTokenForEvent(event)) return;
+                safeReleasePointerCapture(pureCanvasConnectorCanvas, event, "test-2", "handler pure");
+                endPureCanvasPointerTracking();
+                endPureCanvasMouseTracking();
+                pureCanvasConnectorConnected = false;
+                pureCanvasConnectorLine = null;
+                updatePureCanvasConnectorChecks(false);
+                traceMessage("test-2", `handler pure ${event.type} cancelled`);
+                pureCanvasConnectorState = null;
+                drawPureCanvasConnectorBoard();
+            }
+
+            laneCard.addEventListener("pointerdown", onLanePointerDown);
+            laneCard.addEventListener("pointermove", onLanePointerMove);
+            laneCard.addEventListener("pointerup", onLanePointerUp);
+
+            pureCanvasConnectorCanvas.addEventListener("pointerdown", onPureCanvasConnectorDown);
+            pureCanvasConnectorCanvas.addEventListener("pointermove", onPureCanvasConnectorMove);
+            pureCanvasConnectorCanvas.addEventListener("pointerup", onPureCanvasConnectorUp);
+            pureCanvasConnectorCanvas.addEventListener("mousedown", onPureCanvasConnectorDown);
+
+            attachPointerTrace(pureCanvasConnectorCanvas, "test-2", "surface", pureCanvasConnectorCanvas);
+
+            document.getElementById("reset-lane-board").addEventListener("click", resetLaneBoard);
+            document.getElementById("reset-lane-status").addEventListener("click", resetLaneBoard);
+            document.getElementById("reset-pure-canvas-connector-board").addEventListener("click", resetPureCanvasConnectorBoard);
+            document.getElementById("reset-pure-canvas-connector-status").addEventListener("click", resetPureCanvasConnectorBoard);
+
+            resetLaneBoard();
+            resetPureCanvasConnectorBoard();
+        })();
+    </script>
+
+</body>
+</html>

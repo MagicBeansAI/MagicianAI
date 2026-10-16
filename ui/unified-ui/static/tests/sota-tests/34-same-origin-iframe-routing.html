@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Same-Origin Iframe Routing (Phase 4 SoTA)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #6f42c1, #5a32a3);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .goal-section {
+            background: #e7d8ff;
+            border-left: 4px solid #6f42c1;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #432874; }
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        iframe {
+            width: 100%;
+            height: 240px;
+            border: 2px solid #6f42c1;
+            border-radius: 4px;
+            background: white;
+        }
+        .iframe-container { margin: 15px 0; }
+        .result-box {
+            background: #fff;
+            border: 1px dashed #6f42c1;
+            border-radius: 4px;
+            padding: 10px 14px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 13px;
+            color: #333;
+            min-height: 1.8em;
+        }
+        .status-controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-top: 12px;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .status-radio {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+        }
+        .status-radio.pass { color: #155724; }
+        .status-radio.fail { color: #721c24; }
+        .status-btn { font-size: 12px; padding: 4px 10px; cursor: pointer; }
+        .results-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #343a40;
+            color: white;
+            padding: 16px 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .stats { display: flex; gap: 30px; }
+        .stat { text-align: center; }
+        .stat-value { font-size: 28px; font-weight: bold; }
+        .stat-label { font-size: 12px; opacity: 0.7; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+    </style>
+</head>
+<body>
+    <!--
+      Phase 4 fixture for the OOPIF iframe-session-routing plan
+      (`docs/plans/2026-05-03-cdp-proxy-iframe-session-routing.md`).
+      Same-origin iframes via srcdoc — self-contained, deterministic,
+      regression-testable. Cross-origin OOPIF coverage is exercised
+      separately by `01-cross-origin-iframe.html` and production
+      traces.
+
+      Each test case has a page-owned success marker the agent can
+      verify without subjective judgement:
+        - Test 1: clicking the iframe button posts a "iframe-click"
+          message back to the parent; the parent's #test-1-result
+          updates to "SUCCESS: clicked at <ts>".
+        - Test 2: typing into the iframe input causes the iframe to
+          mirror the value to its #echo span; parent reads the value
+          via window.frames[0].document.getElementById('echo')
+          (same-origin, so cross-frame DOM access works) and updates
+          #test-2-result.
+        - Test 3: the iframe contains a known visible string
+          ("phase4-iframe-snapshot"); the agent asserts the string is
+          present in `snapshot -i` output of the iframe contents.
+    -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "34-same-origin-iframe-routing",
+        "phase": "Phase 4",
+        "title": "Same-Origin Iframe Routing",
+        "description": "SoTA fixture for the OOPIF iframe-session-routing plan. Verifies that agent-browser's frame-switch + interact + snapshot flows work end-to-end on a deterministic same-origin iframe (srcdoc). Cross-origin OOPIF coverage is in 01-cross-origin-iframe.html.",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 4: Same-Origin Iframe Routing</h1>
+        <p>Deterministic same-origin iframe fixture. Tests frame-switch, click, type, and snapshot flows that the OOPIF iframe-session-routing fix is upstream of.</p>
+    </div>
+
+    <!-- Test Case 1: Click a button inside a same-origin iframe -->
+    <div class="test-case" id="test-1" data-test-id="34-iframe-click" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Click button inside same-origin iframe</h3>
+            <span class="test-case-id">34-iframe-click</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click <code>#iframe-button</code> inside the iframe below. The iframe will postMessage back to this parent on click; verify <code>#test-1-result</code> updates from "Pending" to a string starting with "SUCCESS:".
+        </div>
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="result-success">Parent's <code>#test-1-result</code> text starts with "SUCCESS:"</li>
+                <li data-check="iframe-success-marker">Iframe's <code>#iframe-1-status</code> reads "clicked"</li>
+            </ul>
+        </div>
+        <div class="iframe-container">
+            <iframe
+                id="iframe-1"
+                title="Same-origin iframe with click target"
+                srcdoc='&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;style&gt;body{font-family:sans-serif;padding:20px}#iframe-button{background:%236f42c1;color:white;border:0;padding:12px 24px;border-radius:4px;cursor:pointer;font-size:15px}&lt;/style&gt;&lt;/head&gt;&lt;body&gt;&lt;p&gt;This text lives inside iframe-1.&lt;/p&gt;&lt;button id="iframe-button" type="button"&gt;Click me inside the iframe&lt;/button&gt;&lt;p id="iframe-1-status"&gt;idle&lt;/p&gt;&lt;script&gt;document.getElementById("iframe-button").addEventListener("click",function(){document.getElementById("iframe-1-status").textContent="clicked";parent.postMessage({type:"iframe-click",test:"test-1",ts:Date.now()},"*")});&lt;/script&gt;&lt;/body&gt;&lt;/html&gt;'>
+            </iframe>
+        </div>
+        <div class="result-box" id="test-1-result">Pending — click the button inside the iframe</div>
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Type text into a same-origin iframe input -->
+    <div class="test-case" id="test-2" data-test-id="34-iframe-type" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Type into input inside same-origin iframe</h3>
+            <span class="test-case-id">34-iframe-type</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Focus the <code>#iframe-input</code> input inside the iframe and type the string <code>phase4-typed-value</code>. Then click anywhere on the parent page (e.g. the document body) to defocus and trigger the read-back. <code>#test-2-result</code> should update to a line starting with "SUCCESS:" and including the typed value.
+        </div>
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="result-success">Parent's <code>#test-2-result</code> text starts with "SUCCESS:" and contains <code>phase4-typed-value</code></li>
+                <li data-check="iframe-input-value">Iframe's <code>#iframe-input</code> value equals <code>phase4-typed-value</code></li>
+            </ul>
+        </div>
+        <div class="iframe-container">
+            <iframe
+                id="iframe-2"
+                title="Same-origin iframe with text input"
+                srcdoc='&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;style&gt;body{font-family:sans-serif;padding:20px}#iframe-input{font-size:15px;padding:8px 12px;border:2px solid %236f42c1;border-radius:4px;width:300px}#echo{font-family:monospace;color:%23432874;display:block;margin-top:10px}&lt;/style&gt;&lt;/head&gt;&lt;body&gt;&lt;label&gt;Type something:&lt;/label&gt;&lt;br&gt;&lt;input id="iframe-input" type="text" autocomplete="off"&gt;&lt;span id="echo"&gt;(no input yet)&lt;/span&gt;&lt;script&gt;var inp=document.getElementById("iframe-input");inp.addEventListener("input",function(){document.getElementById("echo").textContent="echo: "+inp.value;parent.postMessage({type:"iframe-input",test:"test-2",value:inp.value},"*")});&lt;/script&gt;&lt;/body&gt;&lt;/html&gt;'>
+            </iframe>
+        </div>
+        <div class="result-box" id="test-2-result">Pending — type the value into the iframe input</div>
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Snapshot reaches into iframe content -->
+    <div class="test-case" id="test-3" data-test-id="34-iframe-snapshot" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Read iframe content via snapshot</h3>
+            <span class="test-case-id">34-iframe-snapshot</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Take an interactive snapshot (<code>snapshot -i</code>) of this page or switch into <code>#iframe-3</code> and snapshot. Verify the snapshot output contains the sentinel string <code>phase4-iframe-snapshot</code>, which only exists inside iframe-3's body. After verifying, mark Pass.
+        </div>
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="snapshot-includes-iframe-text">The snapshot output contains <code>phase4-iframe-snapshot</code></li>
+                <li data-check="iframe-heading-visible">Iframe's <code>#iframe-3-heading</code> reads "Snapshot probe"</li>
+            </ul>
+        </div>
+        <div class="iframe-container">
+            <iframe
+                id="iframe-3"
+                title="Same-origin iframe whose contents the snapshot must reach"
+                srcdoc='&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;style&gt;body{font-family:sans-serif;padding:20px}h2{color:%236f42c1;margin:0 0 10px}p{margin:6px 0}&lt;/style&gt;&lt;/head&gt;&lt;body&gt;&lt;h2 id="iframe-3-heading"&gt;Snapshot probe&lt;/h2&gt;&lt;p&gt;If you can read this in your accessibility tree, the iframe is being snapshotted correctly.&lt;/p&gt;&lt;p&gt;Sentinel: &lt;strong&gt;phase4-iframe-snapshot&lt;/strong&gt;&lt;/p&gt;&lt;p&gt;Origin: same as parent (srcdoc).&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;'>
+            </iframe>
+        </div>
+        <div class="status-controls" data-status-controls="test-3">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-3" value="pass" data-status-radio="test-3"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-3" value="fail" data-status-radio="test-3"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Same-Origin Iframe Routing</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Listen for postMessage from same-origin iframes; update the
+        // parent-side result boxes so the agent has page-owned
+        // verification evidence (no subjective judgement needed).
+        //
+        // Genuine-success detection: each [data-check] is flipped to 'pass'
+        // ONLY when its real sub-condition is confirmed. The iframes are
+        // same-origin (srcdoc), so the parent can read their DOM directly to
+        // verify the in-iframe state matches the postMessage payload.
+        const EXPECTED_TYPED_VALUE = 'phase4-typed-value';
+
+        function iframeDoc(iframeId) {
+            const frame = document.getElementById(iframeId);
+            try {
+                return frame && (frame.contentDocument || frame.contentWindow?.document) || null;
+            } catch (_) {
+                return null; // would only throw cross-origin; not the case here
+            }
+        }
+
+        window.addEventListener('message', (event) => {
+            const data = event.data || {};
+            if (data.type === 'iframe-click' && data.test === 'test-1') {
+                const ts = data.ts ? new Date(data.ts).toISOString() : '?';
+                document.getElementById('test-1-result').textContent =
+                    'SUCCESS: iframe button clicked at ' + ts;
+
+                // Check "result-success": parent result box now starts with "SUCCESS:".
+                if (document.getElementById('test-1-result').textContent.startsWith('SUCCESS:')) {
+                    window.setCheckState?.('test-1', 'result-success', 'pass');
+                }
+                // Check "iframe-success-marker": confirm the in-iframe status
+                // element actually reads "clicked" (cross-frame DOM read).
+                const doc1 = iframeDoc('iframe-1');
+                const status1 = doc1 && doc1.getElementById('iframe-1-status');
+                if (status1 && status1.textContent.trim() === 'clicked') {
+                    window.setCheckState?.('test-1', 'iframe-success-marker', 'pass');
+                }
+            } else if (data.type === 'iframe-input' && data.test === 'test-2') {
+                document.getElementById('test-2-result').textContent =
+                    'SUCCESS: iframe input value = "' + (data.value || '') + '"';
+
+                // Both checks for test-2 require the typed value to be exactly
+                // the expected string — a stray keystroke must NOT pass them.
+                const doc2 = iframeDoc('iframe-2');
+                const input2 = doc2 && doc2.getElementById('iframe-input');
+                const liveValue = input2 ? input2.value : '';
+
+                // Check "result-success": result box starts with "SUCCESS:" AND
+                // contains the expected typed value.
+                const resultText = document.getElementById('test-2-result').textContent;
+                if (resultText.startsWith('SUCCESS:') && resultText.includes(EXPECTED_TYPED_VALUE)) {
+                    window.setCheckState?.('test-2', 'result-success', 'pass');
+                }
+                // Check "iframe-input-value": the in-iframe input value equals
+                // the expected string exactly.
+                if (liveValue === EXPECTED_TYPED_VALUE) {
+                    window.setCheckState?.('test-2', 'iframe-input-value', 'pass');
+                }
+            }
+        });
+    </script>
+
+    <!-- Manual status sync (mirrors the pattern from the other SoTA fixtures). -->
+    <script>
+        (() => {
+            const VALID = ['pass', 'fail', 'pending'];
+            function normalizeManualStatus(value) {
+                if (!value) return 'pending';
+                const v = String(value).toLowerCase();
+                return VALID.includes(v) ? v : 'pending';
+            }
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

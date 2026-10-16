@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""MiniMax Hailuo video generator — `mmx video generate` artifact adapter.
+
+Subprocess-spawns the `mmx video generate` CLI with `--download <path>`
+so the call blocks until the upstream task completes and the resulting
+.mp4 lands at the requested path. Returns a structured JSON envelope
+matching the rest of the magician media-gen pipeline.
+
+Mode selection (mirrors mmx behaviour):
+  - T2V: prompt only
+  - I2V: prompt + first_frame_path
+  - SEF: prompt + first_frame_path + last_frame_path  → Hailuo-02
+  - S2V: prompt + subject_image_path                  → S2V-01
+
+Auth: reads `MMX_CONFIG_DIR` from env (injected by magician's secret
+binding when invoked via a chat session) and lets `mmx` load credentials
+from `<MMX_CONFIG_DIR>/config.json`.
+
+Output: `--output json` is sent WITHOUT `--quiet`. The two are not
+composable on this subcommand. `video generate --download` ends in
+`if (quiet) console.log(path); else console.log(format({task_id, status,
+file_id, saved, size}, output))` — the quiet branch wins and prints a bare
+filesystem path, discarding the requested format. Sending both meant every
+*successful* generation was reported as a failure ("mmx returned non-JSON
+stdout") after the API had already billed and the .mp4 was already on disk.
+Dropping `--quiet` adds nothing to stdout: the model banner, the download
+progress bar, the poll spinner and the update notice all go to stderr, and
+the progress bar and spinner are additionally suppressed when stderr is not
+a TTY, which it never is under the governed runtime.
+"""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+
+def log_event(message: str) -> None:
+    print(f"[MINIMAX-VIDEO] {message}", file=sys.stderr, flush=True)
+
+
+def _resolve_allowed_output_dirs() -> list[pathlib.Path]:
+    candidates = [
+        pathlib.Path(tempfile.gettempdir()),
+        pathlib.Path("/tmp"),
+        pathlib.Path("/private/tmp"),
+        pathlib.Path.cwd(),
+    ]
+    seen: set[str] = set()
+    resolved: list[pathlib.Path] = []
+    for c in candidates:
+        try:
+            r = c.resolve()
+        except Exception:
+            continue
+        key = str(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        if r.exists():
+            resolved.append(r)
+    return resolved
+
+
+ALLOWED_OUTPUT_DIRS = _resolve_allowed_output_dirs()
+
+
+def validate_output_path(path_str: str) -> str:
+    resolved = pathlib.Path(path_str).resolve()
+    for allowed in ALLOWED_OUTPUT_DIRS:
+        try:
+            resolved.relative_to(allowed)
+            return str(resolved)
+        except ValueError:
+            continue
+    print(
+        json.dumps(
+            {
+                "error": (
+                    f"output_path must be within {ALLOWED_OUTPUT_DIRS[0]} "
+                    f"or current working directory"
+                )
+            }
+        )
+    )
+    sys.exit(1)
+
+
+def normalize_optional_text(value: str) -> str:
+    return (value or "").strip()
+
+
+def parse_int(value: str, default: int, name: str) -> int:
+    raw = normalize_optional_text(value)
+    if not raw or raw.lower() == "none":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(json.dumps({"error": f"{name} must be an integer (got {raw!r})"}))
+        sys.exit(1)
+
+
+def parse_mmx_stdout(stdout: str) -> dict | None:
+    """Interpret `mmx` stdout for a subcommand that writes a file.
+
+    Returns the reported envelope, or None when stdout is neither a JSON
+    object nor a single path that exists on disk.
+
+    Both shapes are accepted on purpose. `--output json` prints one JSON
+    object; the CLI's `--quiet` branch prints a bare path instead and ignores
+    the requested format. The argv above no longer sends `--quiet`, so the
+    JSON shape is what arrives — but a paid, completed generation must never
+    again be reported as a failure just because the CLI chose the other
+    branch, so the bare-path shape stays understood.
+
+    The path shape is admitted only when the named file actually exists.
+    Anything else is genuinely unparseable and must surface as an error
+    rather than be guessed at.
+    """
+    stdout = stdout.strip()
+    if not stdout:
+        return {}
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+    if parsed is not None:
+        return None
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if len(lines) == 1 and os.path.exists(lines[0]):
+        return {"saved": lines[0]}
+    return None
+
+
+def resolve_mmx_binary() -> str:
+    found = shutil.which("mmx")
+    if found:
+        return found
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "node_modules" / ".bin" / "mmx"
+        if candidate.is_file():
+            return str(candidate)
+    print(
+        json.dumps(
+            {
+                "error": (
+                    "mmx CLI not found on PATH. Run `make -C skillshub install` "
+                    "(or `npm install` at the skillshub workspace root) to vendor "
+                    "mmx-cli into skillshub/node_modules/."
+                )
+            }
+        )
+    )
+    sys.exit(1)
+
+
+def main() -> None:
+    request = json.load(sys.stdin)
+    mmx_config_dir = os.environ.get("MMX_CONFIG_DIR", "").strip()
+    if not mmx_config_dir:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "MMX_CONFIG_DIR not set. Runtime must inject the temporary "
+                        "MiniMax config directory via config_directory credentials."
+                    )
+                }
+            )
+        )
+        sys.exit(1)
+
+    prompt = str(request.get("prompt", ""))
+    if not prompt:
+        print(json.dumps({"error": "prompt is required"}))
+        sys.exit(1)
+
+    output_path = normalize_optional_text(str(request.get("output_path", "")))
+    if not output_path:
+        print(json.dumps({"error": "output_path is required"}))
+        sys.exit(1)
+    output_path = validate_output_path(output_path)
+
+    first_frame = normalize_optional_text(
+        str(request.get("first_frame_path", ""))
+    )
+    last_frame = normalize_optional_text(
+        str(request.get("last_frame_path", ""))
+    )
+    subject_image = normalize_optional_text(
+        str(request.get("subject_image_path", ""))
+    )
+    model = normalize_optional_text(str(request.get("model", "")))
+    poll_interval_secs = int(request.get("poll_interval_secs", 5))
+    api_timeout_secs = 570
+
+    if last_frame and not first_frame:
+        print(
+            json.dumps(
+                {"error": "last_frame_path requires first_frame_path (SEF mode)"}
+            )
+        )
+        sys.exit(1)
+
+    mmx = resolve_mmx_binary()
+    # `MMX_CONFIG_DIR` points at a directory containing config.json, which
+    # `mmx` reads under --non-interactive.
+    argv: list[str] = [
+        mmx,
+        "--output",
+        "json",
+        "--non-interactive",
+        "--timeout",
+        str(api_timeout_secs),
+        "video",
+        "generate",
+        "--prompt",
+        prompt,
+        "--download",
+        output_path,
+        "--poll-interval",
+        str(poll_interval_secs),
+    ]
+    if model:
+        argv.extend(["--model", model])
+    if first_frame:
+        argv.extend(["--first-frame", first_frame])
+    if last_frame:
+        argv.extend(["--last-frame", last_frame])
+    if subject_image:
+        argv.extend(["--subject-image", subject_image])
+
+    mode = "T2V"
+    if subject_image:
+        mode = "S2V"
+    elif last_frame:
+        mode = "SEF"
+    elif first_frame:
+        mode = "I2V"
+
+    log_event(
+        f"video_generation started mode={mode} model={model or 'auto'} "
+        f"poll_interval_secs={poll_interval_secs} prompt_len={len(prompt)} "
+        f"api_timeout_secs={api_timeout_secs}"
+    )
+
+    started_at = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=api_timeout_secs + 30,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        f"mmx CLI hung past adapter timeout "
+                        f"({api_timeout_secs + 30}s)."
+                    )
+                }
+            )
+        )
+        sys.exit(1)
+    except Exception as e:
+        print(
+            json.dumps(
+                {"error": f"Unexpected error spawning mmx: {type(e).__name__}: {e}"}
+            )
+        )
+        sys.exit(1)
+
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+    stdout = (completed.stdout or "").strip()
+    stderr_tail = "\n".join((completed.stderr or "").strip().splitlines()[-10:])
+    log_event(f"mmx returned exit={completed.returncode} elapsed_ms={elapsed_ms}")
+
+    if completed.returncode != 0:
+        upstream_error: dict | str = stderr_tail
+        try:
+            for ln in reversed(
+                [ln for ln in (completed.stderr or "").splitlines() if ln.strip()]
+            ):
+                if ln.startswith("{"):
+                    upstream_error = json.loads(ln)
+                    break
+        except Exception:
+            pass
+        print(
+            json.dumps(
+                {
+                    "error": f"mmx video generate exit {completed.returncode}.",
+                    "upstream": upstream_error,
+                    "stdout": stdout[:2000],
+                }
+            )
+        )
+        sys.exit(1)
+
+    parsed = parse_mmx_stdout(stdout)
+    if parsed is None:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "mmx returned neither a JSON envelope nor the path of a "
+                        "written artifact."
+                    ),
+                    "stdout": stdout[:2000],
+                    "stderr_tail": stderr_tail,
+                }
+            )
+        )
+        sys.exit(1)
+
+    # `mmx video generate --download` writes the file, then reports the
+    # destination under `saved` — not `downloaded`, which this adapter read
+    # first and which the CLI has never emitted.
+    saved_path = (
+        parsed.get("saved")
+        or parsed.get("downloaded")
+        or parsed.get("path")
+        or parsed.get("file_path")
+        or output_path
+    )
+    try:
+        size_bytes = os.path.getsize(saved_path)
+    except OSError as e:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        f"mmx reported completion but the video file at "
+                        f"{saved_path} is unreadable: {e}"
+                    ),
+                    "upstream": parsed,
+                }
+            )
+        )
+        sys.exit(1)
+
+    log_event(f"saved video path={saved_path} size_bytes={size_bytes}")
+    result = {
+        "prompt": prompt,
+        "mode": mode,
+        "model": parsed.get("model") or model or None,
+        "path": saved_path,
+        "size_bytes": size_bytes,
+        "task_id": parsed.get("task_id"),
+        "file_id": parsed.get("file_id"),
+        "elapsed_ms": elapsed_ms,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

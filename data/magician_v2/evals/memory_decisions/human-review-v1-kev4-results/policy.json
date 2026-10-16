@@ -1,0 +1,278 @@
+{
+  "engine_instance": "01M3HTVM65537NYASQ77Q50TWF",
+  "policy_revision": "cc1bfb9578396a2a7402d4e3d02bab84ff8f0ea35b2eadd6a8b592bff8f536ef",
+  "contract_version": 4,
+  "action_contract_version": 4,
+  "operations": [
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "75e090d9e9af8ce49eef2f3e6e35670d6c1c1154f455f63c3c2569f6e230bc52",
+        "pack": "evidence_promote",
+        "pack_version": "1.1.0"
+      },
+      "name": "evidence_promote",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "387ca4bd6bdbd11980ceae6f147f1664310c0ad55a5b7a4d13b365f0e37a97ed",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_applicability",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "387ca4bd6bdbd11980ceae6f147f1664310c0ad55a5b7a4d13b365f0e37a97ed",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_attach",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "2c31f0ba24f83ad28961f8a97e982d27452f4419c61f93d998aae2a386ea75e5",
+        "pack": "memory_conflict_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_conflict_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "bc1acbb51edf6f76f85e4147b7ba1852d247580154d6c549472cadb187fa5df0",
+        "pack": "memory_connection_gate",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_connection_gate",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "e4f70af6bf45515b95af4db41da53afbe1cac0e2e87792d896d0d3c67510504d",
+        "pack": "memory_episode_quality",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_episode_quality",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "15653933760250018f0bca4eb51dafe3a6520bac312ff0deeaa583e5900f4c55",
+        "pack": "memory_lifecycle_relation",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_lifecycle_relation",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 8192,
+          "max_request_bytes": 131072,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "d4855e82047a61ed1d6ccfca49761e34c4cabeb5114a5a52c6475e34808382bf",
+        "pack": "memory_utility_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_utility_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "d23882122329f63628b6b97f1353788c844f4fb6e8b2c69b2ef45777c9c67342",
+        "pack": "procedure_feedback",
+        "pack_version": "1.0.0"
+      },
+      "name": "procedure_feedback",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "kev-4b"
+      ]
+    }
+  ]
+}

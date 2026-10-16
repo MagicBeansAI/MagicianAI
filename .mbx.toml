@@ -1,0 +1,7 @@
+# Portable policy only. Machine paths, storage budgets and scheduler limits
+# belong in the machine-local config written by make setup-build-cache.
+cc = true
+build_script_execution = true
+
+[linker]
+default = "system"

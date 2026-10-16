@@ -1,0 +1,72 @@
+#!/usr/bin/env node
+// Irreducible WhatsApp reaction-key repair. Ordinary commands execute `wu`
+// directly; this adapter exists only because linked-device reactions need the
+// stored `fromMe`/raw key that the upstream command currently omits.
+
+import { accessSync, constants, realpathSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const argv = process.argv.slice(2);
+if (argv[0] !== "messages" || argv[1] !== "react" || argv.length < 4 || argv.length > 5) {
+  console.error("Usage: whatsapp-reaction-adapter messages react <jid> <msg-id> [emoji]");
+  process.exit(64);
+}
+
+function resolveFromPath(name) {
+  for (const directory of (process.env.PATH || "").split(delimiter)) {
+    if (!directory) continue;
+    const candidate = resolve(directory, name);
+    try {
+      accessSync(candidate, constants.X_OK);
+      return realpathSync(candidate);
+    } catch {
+      // Continue through the runtime-owned reviewed PATH.
+    }
+  }
+  throw new Error(`${name} is unavailable on the governed PATH`);
+}
+
+function packageRootForWu() {
+  const executable = resolveFromPath("wu");
+  return resolve(dirname(executable), "../..");
+}
+
+async function importWu(relativePath) {
+  return import(pathToFileURL(join(packageRootForWu(), relativePath)).href);
+}
+
+async function main() {
+  const [jid, messageId, emoji = ""] = argv.slice(2);
+  const [{ withConnection }, { loadConfig }, { getMessage, deserializeWAMessage }] =
+    await Promise.all([
+      importWu("dist/core/connection.js"),
+      importWu("dist/config/schema.js"),
+      importWu("dist/core/store.js"),
+    ]);
+
+  loadConfig();
+  const stored = getMessage(messageId);
+  const fromMe = stored ? stored.is_from_me === 1 : false;
+  let key = { remoteJid: jid, id: messageId, fromMe };
+  if (stored?.raw) {
+    try {
+      const raw = deserializeWAMessage(stored.raw);
+      if (raw?.key && typeof raw.key === "object") {
+        key = { ...raw.key, remoteJid: jid, id: messageId, fromMe };
+      }
+    } catch {
+      // The minimal key is the upstream fallback for unreadable historical rows.
+    }
+  }
+
+  await withConnection(async (socket) => {
+    await socket.sendMessage(jid, { react: { text: emoji, key } });
+  });
+  process.stdout.write(JSON.stringify({ ok: true, jid, message_id: messageId, emoji }) + "\n");
+}
+
+main().catch((error) => {
+  console.error(error?.message || String(error));
+  process.exit(error?.exitCode || 1);
+});

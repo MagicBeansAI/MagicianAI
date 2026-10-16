@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Payment Form Verification (Typing in Iframes)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #6772e5, #5469d4);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset {
+            background: #6c757d;
+            color: white;
+        }
+        .status-btn.reset:hover { background: #545b62; }
+
+        /* Interactive elements */
+        iframe { border: 2px solid #6772e5; border-radius: 4px; }
+        .iframe-container { margin: 15px 0; }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        code {
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', monospace;
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "13-payment-form-verification",
+        "phase": "Typing Verification",
+        "title": "Payment Form Typing Verification",
+        "description": "Tests text entry verification in iframe inputs (Stripe-like payment forms)",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Payment Form Typing Verification</h1>
+        <p>Test the agent's ability to type into iframe inputs and verify the text was entered correctly (no double-typing).</p>
+    </div>
+
+    <!-- Test Case 1: Single Card Number Input -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="13-single-card-input"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Type Card Number (Single Input)</h3>
+            <span class="test-case-id">13-single-card-input</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click inside the card number field in the iframe below and type: <code>4242424242424242</code>
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="text-entered-once">Text should appear exactly ONCE (no double-typing)</li>
+                <li data-check="correct-value">Field should contain exactly "4242424242424242"</li>
+                <li data-check="verification-success">Console should show verification: true</li>
+            </ul>
+        </div>
+
+        <div class="iframe-container">
+            <iframe
+                id="single-input-iframe"
+                srcdoc='
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <style>
+                            body { margin: 0; padding: 15px; font-family: sans-serif; background: #f7f7f7; }
+                            input {
+                                width: calc(100% - 24px);
+                                padding: 12px;
+                                font-size: 16px;
+                                border: 1px solid #ccc;
+                                border-radius: 4px;
+                            }
+                            input:focus { outline: 2px solid #6772e5; border-color: #6772e5; }
+                            label { display: block; margin-bottom: 8px; color: #6b7c93; font-weight: 500; }
+                        </style>
+                    </head>
+                    <body>
+                        <label for="card-number">Card Number</label>
+                        <input type="text" id="card-number" placeholder="4242 4242 4242 4242" autocomplete="off" data-testid="card-number">
+</body>
+                    </html>
+                '
+                style="width: 100%; height: 100px;">
+            </iframe>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Multiple Form Fields -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="13-multi-field-form"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Fill Multiple Payment Fields</h3>
+            <span class="test-case-id">13-multi-field-form</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Fill in all three fields in the payment form iframe:
+            <ul>
+                <li>Card Number: <code>4111111111111111</code></li>
+                <li>Expiry: <code>12/25</code></li>
+                <li>CVC: <code>123</code></li>
+            </ul>
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="card-correct">Card number field should contain "4111111111111111"</li>
+                <li data-check="expiry-correct">Expiry field should contain "12/25"</li>
+                <li data-check="cvc-correct">CVC field should contain "123"</li>
+                <li data-check="no-double-type">No field should have duplicated text</li>
+            </ul>
+        </div>
+
+        <div class="iframe-container">
+            <iframe
+                id="multi-input-iframe"
+                srcdoc='
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <style>
+                            body { margin: 0; padding: 15px; font-family: sans-serif; background: #f7f7f7; }
+                            .form-row { display: flex; gap: 10px; }
+                            .field { flex: 1; }
+                            .field.small { max-width: 100px; }
+                            input {
+                                width: 100%;
+                                padding: 10px;
+                                font-size: 14px;
+                                border: 1px solid #ccc;
+                                border-radius: 4px;
+                                box-sizing: border-box;
+                            }
+                            input:focus { outline: 2px solid #6772e5; border-color: #6772e5; }
+                            label { display: block; margin-bottom: 5px; color: #6b7c93; font-size: 12px; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="form-row">
+                            <div class="field">
+                                <label for="card">Card Number</label>
+                                <input type="text" id="card" placeholder="Card number" autocomplete="off" data-testid="card">
+                            </div>
+                            <div class="field small">
+                                <label for="expiry">Expiry</label>
+                                <input type="text" id="expiry" placeholder="MM/YY" autocomplete="off" data-testid="expiry">
+                            </div>
+                            <div class="field small">
+                                <label for="cvc">CVC</label>
+                                <input type="text" id="cvc" placeholder="CVC" autocomplete="off" data-testid="cvc">
+                            </div>
+                        </div>
+                    </body>
+                    </html>
+                '
+                style="width: 100%; height: 90px;">
+            </iframe>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Main Page Input (Baseline) -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="13-main-page-baseline"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Main Page Input (Baseline)</h3>
+            <span class="test-case-id">13-main-page-baseline</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click on the email input below (NOT in an iframe) and type: <code>test@example.com</code>
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="email-entered">Email field should contain "test@example.com"</li>
+                <li data-check="single-entry">Text should appear exactly once</li>
+                <li data-check="main-page-works">This baseline test should always pass</li>
+            </ul>
+        </div>
+
+        <div style="margin: 15px 0;">
+            <label for="email-input" style="display: block; margin-bottom: 8px; color: #6b7c93; font-weight: 500;">Email Address</label>
+            <input
+                type="text"
+                id="email-input"
+                placeholder="test@example.com"
+                autocomplete="off"
+                data-testid="email"
+                style="width: 100%; padding: 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Payment Form Verification Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script>
+        // ---- Genuine success detection -------------------------------------
+        // The srcdoc iframes are SAME-ORIGIN with this page, so we can read
+        // their input values via contentDocument. We attach 'input' listeners
+        // and mark each [data-check] ONLY when the field holds the EXACT target
+        // value (not a prefix, not a wrong value, not a doubled value). Each
+        // check maps to its own concrete sub-condition; a check stays pending
+        // until that exact condition is met, and reverts if the value changes
+        // away from the target.
+        (() => {
+            function mark(testId, checkName, ok) {
+                if (typeof window.setCheckState === 'function') {
+                    window.setCheckState(testId, checkName, ok ? 'pass' : 'pending');
+                }
+            }
+
+            // Wait for an iframe's same-origin document, then run cb(doc).
+            function withIframeDoc(iframe, cb) {
+                function tryRun() {
+                    let doc = null;
+                    try {
+                        doc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
+                    } catch (_) {
+                        doc = null; // would only happen if cross-origin (it is not, for srcdoc)
+                    }
+                    if (doc && doc.body) {
+                        cb(doc);
+                        return true;
+                    }
+                    return false;
+                }
+                if (tryRun()) return;
+                iframe.addEventListener('load', tryRun);
+                // srcdoc may already be parsed before listeners attach; poll briefly.
+                let attempts = 0;
+                const timer = setInterval(() => {
+                    attempts += 1;
+                    if (tryRun() || attempts > 40) clearInterval(timer);
+                }, 50);
+            }
+
+            // ---- Test 1: single card number input inside same-origin iframe.
+            const CARD_1 = '4242424242424242';
+            const iframe1 = document.getElementById('single-input-iframe');
+            if (iframe1) {
+                withIframeDoc(iframe1, (doc) => {
+                    const input = doc.getElementById('card-number');
+                    if (!input) return;
+                    const evaluate = () => {
+                        const v = input.value;
+                        const exact = v === CARD_1; // exactly once, exact value
+                        // "text-entered-once": correct value present and not duplicated.
+                        mark('test-1', 'text-entered-once', exact);
+                        // "correct-value": field contains exactly the target.
+                        mark('test-1', 'correct-value', exact);
+                        // "verification-success": console verification true == value verified correct.
+                        mark('test-1', 'verification-success', exact);
+                    };
+                    input.addEventListener('input', evaluate);
+                    input.addEventListener('change', evaluate);
+                    evaluate();
+                });
+            }
+
+            // ---- Test 2: multi-field payment form inside same-origin iframe.
+            const CARD_2 = '4111111111111111';
+            const EXP_2 = '12/25';
+            const CVC_2 = '123';
+            const iframe2 = document.getElementById('multi-input-iframe');
+            if (iframe2) {
+                withIframeDoc(iframe2, (doc) => {
+                    const card = doc.getElementById('card');
+                    const expiry = doc.getElementById('expiry');
+                    const cvc = doc.getElementById('cvc');
+                    if (!card || !expiry || !cvc) return;
+                    const evaluate = () => {
+                        const cardOk = card.value === CARD_2;
+                        const expOk = expiry.value === EXP_2;
+                        const cvcOk = cvc.value === CVC_2;
+                        // Each field check fires only on its own exact value.
+                        mark('test-2', 'card-correct', cardOk);
+                        mark('test-2', 'expiry-correct', expOk);
+                        mark('test-2', 'cvc-correct', cvcOk);
+                        // "no-double-type": all three hold their exact (non-duplicated)
+                        // target values — true only when every field is correct.
+                        mark('test-2', 'no-double-type', cardOk && expOk && cvcOk);
+                    };
+                    [card, expiry, cvc].forEach((el) => {
+                        el.addEventListener('input', evaluate);
+                        el.addEventListener('change', evaluate);
+                    });
+                    evaluate();
+                });
+            }
+
+            // ---- Test 3: main-page email input (baseline, not in an iframe).
+            const EMAIL_3 = 'test@example.com';
+            const email = document.getElementById('email-input');
+            if (email) {
+                const evaluate = () => {
+                    const exact = email.value === EMAIL_3;
+                    mark('test-3', 'email-entered', exact);
+                    // "single-entry": correct value present exactly once (not doubled).
+                    mark('test-3', 'single-entry', exact);
+                    // "main-page-works": baseline succeeds once the email is correctly typed.
+                    mark('test-3', 'main-page-works', exact);
+                };
+                email.addEventListener('input', evaluate);
+                email.addEventListener('change', evaluate);
+                evaluate();
+            }
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

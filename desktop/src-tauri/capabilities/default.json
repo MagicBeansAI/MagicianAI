@@ -1,0 +1,18 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for the Magician desktop app",
+  "windows": ["*"],
+  "permissions": [
+    "magician-session:allow-get-magician-connection-auth",
+    "magician-session:allow-set-magician-bearer-token",
+    "magician-session:allow-sign-in-magician",
+    "core:default",
+    "core:event:deny-emit",
+    "core:event:deny-emit-to",
+    "shell:allow-open",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "updater:default"
+  ]
+}

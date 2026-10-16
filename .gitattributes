@@ -1,0 +1,6 @@
+# Large binary and generated showcase assets live in Git LFS.
+showcase/anatomy/media/**/*.mp3 filter=lfs diff=lfs merge=lfs -text
+showcase/anatomy/media/*.m4a filter=lfs diff=lfs merge=lfs -text
+showcase/anatomy/explorer.html filter=lfs diff=lfs merge=lfs -text
+showcase/anatomy/data/magician.json filter=lfs diff=lfs merge=lfs -text
+showcase/anatomy/data/clients.json filter=lfs diff=lfs merge=lfs -text

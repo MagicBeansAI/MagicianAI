@@ -1,0 +1,178 @@
+name: app_data_query
+description: Query one enabled app installation with the canonical AppQueryRequest protocol. Returns approved personal-agent field projections only. Delegated, outward and app-workflow callers fail closed.
+version: "2.0.0"
+result_projection:
+  contract_id: app_query_projection_v1
+  records_paths:
+    - /page/envelope/value
+  priority_fields:
+    - status
+    - error_code
+    - projection_handle
+    - handle_ref
+    - expires_at
+    - entity
+    - record_id
+    - record_revision
+    - next_cursor
+guide: |
+  Tool name: `app_data_query`
+
+  Use after `app_discover` when the owner-facing personal agent needs exact records from one
+  installed app. This is not a cross-app store read and not a workflow
+  grant. Select only discovered fields. Predicates use the canonical bounded
+  non-recursive arena (`root` plus `nodes`); ordering, opaque cursor replay,
+  and bounded relation expansions pass through the same store query contract.
+  Destination composition is a
+  separate `app_data_compose` call. Preserve the returned
+  `projection_handle.handle_ref`; composition consumes that small reference,
+  not a copied query page.
+parameters:
+  - name: installation_id
+    required: true
+    param_type: string
+    description: Enabled installation to query.
+    schema: {type: string, minLength: 1}
+  - name: entity
+    required: true
+    param_type: string
+    description: Entity name declared by the app schema.
+    schema: {type: string, minLength: 1, maxLength: 64}
+  - name: select
+    required: true
+    param_type: array
+    description: Declared field paths to project.
+    schema:
+      type: array
+      minItems: 1
+      maxItems: 256
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+  - name: predicate
+    param_type: object
+    description: Optional canonical bounded predicate arena with root and nodes. Use kind is_null for null checks; compare/in values are non-null scalars.
+    schema:
+      type: object
+      additionalProperties: false
+      required: [root, nodes]
+      properties:
+        root: {type: integer, minimum: 0, maximum: 65535}
+        nodes:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items:
+            oneOf:
+              - type: object
+                additionalProperties: false
+                required: [kind, children]
+                properties:
+                  kind: {const: all}
+                  children:
+                    type: array
+                    minItems: 1
+                    maxItems: 256
+                    uniqueItems: true
+                    items: {type: integer, minimum: 0, maximum: 65535}
+              - type: object
+                additionalProperties: false
+                required: [kind, children]
+                properties:
+                  kind: {const: any}
+                  children:
+                    type: array
+                    minItems: 1
+                    maxItems: 256
+                    uniqueItems: true
+                    items: {type: integer, minimum: 0, maximum: 65535}
+              - type: object
+                additionalProperties: false
+                required: [kind, child]
+                properties:
+                  kind: {const: not}
+                  child: {type: integer, minimum: 0, maximum: 65535}
+              - type: object
+                additionalProperties: false
+                required: [kind, field, operator, value]
+                properties:
+                  kind: {const: compare}
+                  field: {type: string, minLength: 1}
+                  operator:
+                    enum: [equal, not_equal, less_than, less_than_or_equal, greater_than, greater_than_or_equal, contains, starts_with]
+                  value: {type: [string, number, boolean], maxLength: 4096}
+              - type: object
+                additionalProperties: false
+                required: [kind, field, values]
+                properties:
+                  kind: {const: in}
+                  field: {type: string, minLength: 1}
+                  values:
+                    type: array
+                    minItems: 1
+                    maxItems: 256
+                    items: {type: [string, number, boolean], maxLength: 4096}
+              - type: object
+                additionalProperties: false
+                required: [kind, field]
+                properties:
+                  kind: {const: is_null}
+                  field: {type: string, minLength: 1}
+                  negated: {type: boolean, default: false}
+  - name: order
+    param_type: array
+    description: Optional unique field/direction ordering entries.
+    schema:
+      type: array
+      maxItems: 256
+      items:
+        type: object
+        additionalProperties: false
+        required: [field, direction]
+        properties:
+          field: {type: string, minLength: 1}
+          direction: {enum: [ascending, descending]}
+  - name: cursor
+    param_type: string
+    description: Opaque next_cursor returned by a prior identical canonical query.
+    schema: {type: string, minLength: 1}
+  - name: limit
+    param_type: integer
+    description: Maximum rows in [1, 200]. Defaults to 20.
+    default: "20"
+    schema: {type: integer, minimum: 1, maximum: 200, default: 20}
+  - name: relation_expansions
+    param_type: array
+    description: Optional bounded declared relation projections with select, max_depth and max_rows.
+    schema:
+      type: array
+      maxItems: 256
+      items:
+        type: object
+        additionalProperties: false
+        required: [relation, select, max_depth, max_rows]
+        properties:
+          relation: {type: string, minLength: 1}
+          select:
+            type: array
+            minItems: 1
+            maxItems: 256
+            uniqueItems: true
+            items: {type: string, minLength: 1}
+          max_depth: {type: integer, minimum: 1, maximum: 16}
+          max_rows: {type: integer, minimum: 1, maximum: 200}
+implementation:
+  type: compiled
+  provider_name: app_data_query
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - apps
+    - query
+  composition_category: action
+  sandbox: none
+reliability:
+  read_only: true
+  idempotent: true

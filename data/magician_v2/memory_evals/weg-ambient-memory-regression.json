@@ -1,0 +1,28 @@
+{
+  "suite_id": "weg-ambient-memory-regression",
+  "enabled": true,
+  "cases": [
+    {
+      "case_id": "ambient-work-context-recall",
+      "agent_id": "personal-assistant",
+      "query": "What work have I been doing recently in my browser and apps?",
+      "scopes": ["user"],
+      "expected_substrings": ["evd:amb"],
+      "min_selected_count": 1,
+      "max_entries": 12,
+      "max_chars": 7000,
+      "skip_if_absent": true
+    },
+    {
+      "case_id": "ambient-provenance-traceable",
+      "agent_id": "personal-assistant",
+      "query": "What have I been working on, and where did that come from?",
+      "scopes": ["user"],
+      "expected_substrings": ["ambient browsing"],
+      "min_selected_count": 1,
+      "max_entries": 12,
+      "max_chars": 7000,
+      "skip_if_absent": true
+    }
+  ]
+}

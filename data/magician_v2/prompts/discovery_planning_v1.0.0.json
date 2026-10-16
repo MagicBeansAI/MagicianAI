@@ -1,0 +1,97 @@
+{
+  "name": "discovery_planning",
+  "version": "1.0.0",
+  "content": [
+    "Generate a discovery plan for parameter '{parameter_name}' that can be discovered using available tools.",
+    "",
+    "Parameter Name: {parameter_name}",
+    "Display Name: {display_name}",
+    "Description: {description}",
+    "User Message: \"{user_message}\"",
+    "",
+    "{context_info}",
+    "",
+    "Available Discovery Tools:",
+    "1. **bash** - Execute bash commands (system info, file operations, read-only)",
+    "   Examples: \"ls -la\", \"cat config.json\", \"uname -a\", \"df -h\"",
+    "",
+    "2. **curl** - HTTP requests (API health checks, fetch data)",
+    "   Examples: \"curl -I https://example.com\", \"curl https://api.example.com/status\"",
+    "",
+    "Task: Determine if this parameter can be discovered using these tools WITHOUT user input.",
+    "",
+    "Return JSON only:",
+    "{",
+    "  \"can_discover\": true|false,",
+    "  \"method\": \"BashCommand|CurlRequest|ContextAnalysis\",",
+    "  \"command\": \"exact command to execute\" | \"\",",
+    "  \"reasoning\": \"why this approach or why cannot discover\",",
+    "  \"expected_confidence\": 0.0-1.0",
+    "}",
+    "",
+    "Guidelines:",
+    "- can_discover=true ONLY if parameter can be found using bash or curl",
+    "- method: Choose the most appropriate tool for this parameter",
+    "- command: Exact bash or curl command (must be read-only and safe)",
+    "- expected_confidence: 0.8-0.9 for high certainty, 0.7-0.8 for medium",
+    "- Examples:",
+    "  - \"current directory\" → bash: \"pwd\" (0.9)",
+    "  - \"system hostname\" → bash: \"hostname\" (0.9)",
+    "  - \"API status\" → curl: \"curl -I https://api.example.com/health\" (0.8)",
+    "  - \"user's email\" → cannot discover (needs user input) (0.0)",
+    "",
+    "If parameter cannot be discovered autonomously, set can_discover=false."
+  ],
+  "variables": [
+    {
+      "name": "parameter_name",
+      "description": "The technical name of the parameter to discover",
+      "required": true,
+      "default_value": null,
+      "examples": ["current_directory", "hostname", "api_endpoint"]
+    },
+    {
+      "name": "display_name",
+      "description": "Human-readable name for the parameter",
+      "required": true,
+      "default_value": null,
+      "examples": ["Current Directory", "System Hostname", "API Endpoint"]
+    },
+    {
+      "name": "description",
+      "description": "Description of what this parameter represents",
+      "required": true,
+      "default_value": null,
+      "examples": ["The current working directory", "The hostname of this system"]
+    },
+    {
+      "name": "user_message",
+      "description": "The user's original message or request",
+      "required": true,
+      "default_value": null,
+      "examples": ["check system info", "verify API is running"]
+    },
+    {
+      "name": "context_info",
+      "description": "Additional context including tool purpose and known parameters",
+      "required": false,
+      "default_value": "(No additional context available)",
+      "examples": ["Tool: system_diagnostics\nTool Purpose: Gather system information\n\nAlready Known Parameters:\n- os_type: linux"]
+    }
+  ],
+  "metadata": {
+    "category": "ParameterElicitation",
+    "description": "Generates discovery plans to autonomously find parameter values using bash or curl",
+    "author": "MagicianV2-ProgressiveElicitation",
+    "created_at": "2025-10-22T00:00:00Z",
+    "changelog": "Initial version for Phase 2.2 autonomous discovery",
+    "tags": [
+      "elicitation",
+      "discovery",
+      "progressive",
+      "autonomous",
+      "planning"
+    ],
+    "estimated_tokens": 380
+  }
+}

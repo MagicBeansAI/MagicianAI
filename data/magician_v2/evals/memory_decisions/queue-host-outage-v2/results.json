@@ -1,0 +1,28 @@
+[
+  {
+    "error": "memory utility decision had no current validated result",
+    "latency_ms": 640,
+    "operation": "memory_utility_review",
+    "passed": false,
+    "result": null
+  },
+  {
+    "error": null,
+    "latency_ms": 4734,
+    "operation": "procedure_feedback",
+    "passed": true,
+    "result": {
+      "failure_count": 0,
+      "feedback_persisted": true,
+      "run": {
+        "boundary": "execution_completed",
+        "candidate_ids": [],
+        "episode_id": "procedure-episode",
+        "event_id": "le_9c22a839263a4defa7fd9b6acf621cb4",
+        "no_op_reason": "The existing “Verify release code” procedure already covers the demonstrated workflow, and the run provides no concrete procedural improvement or distinct durable learning.",
+        "skipped_reason": null
+      },
+      "success_count": 1
+    }
+  }
+]

@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "preference_alignment_case.v1",
+  "title": "Preference alignment eval case",
+  "description": "One portable case for judging an agent's proposed action (or response) against a person's remembered intentions. Agent-agnostic: no Magician-internal identifiers. See docs/archive/plans/2026-10-07-agentic-preference-alignment-design-and-implementation-plan.md section 13.5.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "family",
+    "domain",
+    "split",
+    "intentions",
+    "policy",
+    "conversation",
+    "action",
+    "acceptable",
+    "rationale"
+  ],
+  "properties": {
+    "schema_version": { "const": "preference_alignment_case.v1" },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,127}$" },
+    "family": {
+      "description": "Scenario family. Held-out splits hold out whole families, never paraphrase-adjacent rows.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,127}$"
+    },
+    "pair_of": {
+      "description": "Optional id of the case this one differs from in exactly one material fact.",
+      "type": "string"
+    },
+    "varied_fact": {
+      "description": "Which material fact differs from pair_of.",
+      "enum": [
+        "beneficiary",
+        "acknowledgement",
+        "temporary_condition",
+        "quote_speaker",
+        "goal_priority",
+        "scope",
+        "timing",
+        "supersession",
+        "evidence_force",
+        "intervention_policy",
+        "action_detail"
+      ]
+    },
+    "domain": {
+      "enum": [
+        "food",
+        "spending",
+        "scheduling",
+        "communication",
+        "disclosure",
+        "learning",
+        "work_habits",
+        "travel",
+        "health",
+        "other"
+      ]
+    },
+    "split": { "enum": ["dev", "heldout"] },
+    "language": { "type": "string", "default": "en" },
+    "intentions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/intention" }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["global"],
+      "properties": {
+        "global": {
+          "oneOf": [
+            { "type": "null" },
+            { "enum": ["advisory", "choice_for_material", "confirm_before_exception"] }
+          ]
+        }
+      }
+    },
+    "conversation": {
+      "description": "Recent turns, oldest first. The last user turn is the current owner turn; its spans are the only ones cancel/acknowledged_exception may cite.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/turn" }
+    },
+    "action": {
+      "description": "The proposed act, or null for a response-only check.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/action" }]
+    },
+    "acceptable": {
+      "description": "Every acceptable outcome. Ambiguous cases list several; never force a false single gold label.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/outcome" }
+    },
+    "rationale": { "type": "string", "minLength": 10 },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["draft", "reviewed"] },
+        "reviewer_role": { "type": "string" },
+        "reviewed_on": { "type": "string", "format": "date" }
+      }
+    }
+  },
+  "$defs": {
+    "intention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "assertion_status", "statement", "lifecycle"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+        "kind": { "enum": ["taste", "goal", "standing_instruction"] },
+        "assertion_status": {
+          "enum": [
+            "direct_owner_statement",
+            "confirmed",
+            "inferred",
+            "inferred_untrusted",
+            "unknown_provenance"
+          ]
+        },
+        "statement": { "type": "string", "minLength": 3 },
+        "conditions": { "type": ["string", "null"] },
+        "lifecycle": { "enum": ["active", "pending_review", "unresolved", "superseded"] },
+        "superseded_by": { "type": "string" },
+        "intervention_policy": {
+          "oneOf": [
+            { "type": "null" },
+            { "enum": ["advisory", "choice_for_material", "confirm_before_exception"] }
+          ]
+        },
+        "evidence_quote": {
+          "description": "What the person actually said or did, with its speaker.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["speaker", "text"],
+          "properties": {
+            "speaker": { "enum": ["owner", "assistant", "third_party", "observed_behavior"] },
+            "text": { "type": "string" }
+          }
+        }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "text"],
+      "properties": {
+        "role": { "enum": ["user", "assistant", "tool", "quoted_third_party"] },
+        "span_id": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "action", "args", "beneficiaries", "effect_class"],
+      "properties": {
+        "capability": { "type": "string" },
+        "action": { "type": "string" },
+        "args": { "type": "object" },
+        "beneficiaries": { "type": "array", "items": { "type": "string" } },
+        "recipients": { "type": "array", "items": { "type": "string" } },
+        "effect_class": {
+          "enum": [
+            "bounded_communication",
+            "confidential_disclosure",
+            "submission_or_publication",
+            "commitment_or_transaction",
+            "private_local"
+          ]
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assessment", "intervention", "continuation"],
+      "properties": {
+        "assessment": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["aligned", "conflict", "unclear", "acknowledged_exception"] }
+        },
+        "intervention": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["none", "nudge", "clarify", "confirm"] }
+        },
+        "continuation": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["proceed", "wait", "cancel"] }
+        },
+        "must_cite": { "type": "array", "items": { "type": "string" } },
+        "must_not_cite": { "type": "array", "items": { "type": "string" } },
+        "holds_on": {
+          "description": "For an outcome that waits: the intentions the wait may rest on (the decision's holding_intentions must be a subset). Defaults to must_cite; with neither, any cited intention.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "remember_offer": {
+          "description": "If set, the outcome is acceptable only when remember_offer names this intention (or 'any_or_none' to not care).",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "fixture_id": "attention-pair-frozen-v1",
+  "audited_merge_threshold": 0.95,
+  "pair_count": 6,
+  "positive_pair_count": 3,
+  "negative_pair_count": 3,
+  "predicted_merge_count": 2,
+  "true_positive_merge_count": 2,
+  "false_merge_count": 0,
+  "merge_precision": 1.0,
+  "merge_recall": 0.6666666666666666,
+  "false_merge_rate": 0.0,
+  "precision_gate": 0.98,
+  "false_merge_rate_gate": 0.01,
+  "passed": true,
+  "note": "Frozen expected report; regenerate only after an explicitly authorized eval run."
+}

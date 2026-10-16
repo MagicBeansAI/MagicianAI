@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:anim/accelerate_decelerate_interpolator"
+    android:shareInterpolator="true">
+
+    <!-- Pulsing scale animation -->
+    <scale
+        android:duration="1200"
+        android:fromXScale="1.0"
+        android:fromYScale="1.0"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:repeatCount="infinite"
+        android:repeatMode="reverse"
+        android:toXScale="1.15"
+        android:toYScale="1.15" />
+
+    <!-- Pulsing alpha for breathing effect -->
+    <alpha
+        android:duration="1200"
+        android:fromAlpha="1.0"
+        android:repeatCount="infinite"
+        android:repeatMode="reverse"
+        android:toAlpha="0.6" />
+</set>

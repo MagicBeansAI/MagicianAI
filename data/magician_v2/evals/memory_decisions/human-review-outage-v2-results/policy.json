@@ -1,0 +1,296 @@
+{
+  "engine_instance": "01M3HV8FE2MJQCGMD459BQTX4K",
+  "policy_revision": "43a63798450021d285fb7dc99575fd639b3bf81d17f07103245c9b158433cacd",
+  "contract_version": 4,
+  "action_contract_version": 4,
+  "operations": [
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "c602139d16b4220392f9d23da6e725fd209b83c526016791c26078febcfd3571",
+        "pack": "evidence_promote",
+        "pack_version": "1.1.0"
+      },
+      "name": "evidence_promote",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "f025813c7eec057f0b2e2f8f4537a471ff9b8142f8ab5a4a517d39d606f3cf77",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_applicability",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 2048,
+          "max_request_bytes": 65536,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "f025813c7eec057f0b2e2f8f4537a471ff9b8142f8ab5a4a517d39d606f3cf77",
+        "pack": "memory_applicability",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_attach",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "3a0549acc76a43441531ad7b628820617adde9286c2dd6e4095daaabd15c1a39",
+        "pack": "memory_conflict_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_conflict_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "99efbda0d86fc13022db9a1f442e3fcb857537828ddbc4ec2031a1a90d2a8a8d",
+        "pack": "memory_connection_gate",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_connection_gate",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 8192,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "c297ec4c4caaee8192e35e9a7f0108415bc2ac00cabab5f485340ecab0e17b5f",
+        "pack": "memory_episode_quality",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_episode_quality",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 6000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "0b4e2c69cdb352fe66ae300ad050288e786c6cf5ee6070d3c85b1b3f3979a1f5",
+        "pack": "memory_lifecycle_relation",
+        "pack_version": "1.1.0"
+      },
+      "name": "memory_lifecycle_relation",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 8192,
+          "max_request_bytes": 131072,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "547add06459d1b8fdac354521ce69a02b4e3bd27645d6da29a6f42d1dfbea6f6",
+        "pack": "memory_utility_review",
+        "pack_version": "1.0.0"
+      },
+      "name": "memory_utility_review",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    },
+    {
+      "classification": {
+        "allow_unqualified_gate": true,
+        "limits": {
+          "max_items": 64,
+          "chunk_size": 12,
+          "item_concurrency": 6,
+          "max_context_bytes": 32768,
+          "max_item_bytes": 16384,
+          "max_request_bytes": 262144,
+          "shadow_budget_ms": 3000,
+          "decision_budget_ms": 3000
+        },
+        "qualifications": [],
+        "behavior_fingerprint": "74e60706a02ff522d2eb44381ea69cd93a24d1056f7fa56212f5c34fda16af6b",
+        "pack": "procedure_feedback",
+        "pack_version": "1.0.0"
+      },
+      "name": "procedure_feedback",
+      "shadow": false,
+      "gate": true,
+      "max_consecutive_steps": 3,
+      "sees_body": true,
+      "route_local": [
+        "jev",
+        "kev-4b"
+      ],
+      "route_cloud": [
+        "jev",
+        "kev-4b"
+      ]
+    }
+  ]
+}

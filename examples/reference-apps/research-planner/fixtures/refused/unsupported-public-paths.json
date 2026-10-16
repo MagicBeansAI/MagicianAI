@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "status": "refused",
+  "features": [
+    "recipe_retry",
+    "recipe_effects",
+    "unavailable_physical_owner",
+    "attention_destination",
+    "task_plan_destination"
+  ],
+  "must_not_fallback": true
+}

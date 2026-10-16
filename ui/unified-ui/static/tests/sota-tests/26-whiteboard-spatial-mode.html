@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Whiteboard Spatial Mode</title>
+    <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+    <style>
+        .test-header {
+            background: linear-gradient(135deg, #ff8a00, #f13a5f);
+        }
+
+        .whiteboard-stage {
+            position: relative;
+            width: min(100%, 920px);
+            min-height: 320px;
+            margin: 0 auto;
+            border-radius: 18px;
+            overflow: hidden;
+            background:
+                linear-gradient(90deg, rgba(77, 92, 128, 0.05) 1px, transparent 1px) 0 0 / 36px 36px,
+                linear-gradient(rgba(77, 92, 128, 0.05) 1px, transparent 1px) 0 0 / 36px 36px,
+                linear-gradient(180deg, #fbfdff 0%, #eef4ff 100%);
+        }
+
+        canvas.draw-surface {
+            display: block;
+            width: 100%;
+            height: 320px;
+            touch-action: none;
+            cursor: crosshair;
+        }
+
+        .tool-chip {
+            background: #ffffff;
+            border: 1px solid #cbd5e6;
+            color: #30405d;
+        }
+
+        .guide-note,
+        .target-note {
+            position: absolute;
+            right: 18px;
+            top: 18px;
+            max-width: 220px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px solid rgba(54, 75, 116, 0.14);
+            box-shadow: 0 10px 24px rgba(34, 47, 76, 0.08);
+            font-size: 13px;
+        }
+
+        .text-target {
+            position: absolute;
+            left: 140px;
+            top: 110px;
+            width: 220px;
+            height: 110px;
+            border-radius: 16px;
+            border: 2px dashed rgba(241, 58, 95, 0.55);
+            background: rgba(255, 255, 255, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #8d4f5d;
+            font-weight: 600;
+        }
+
+        .text-target.active {
+            box-shadow: 0 0 0 8px rgba(241, 58, 95, 0.1);
+        }
+
+        .inline-editor {
+            position: absolute;
+            z-index: 2;
+            width: 210px;
+            padding: 10px 12px;
+            border: 2px solid #f13a5f;
+            border-radius: 14px;
+            font: 600 18px/1.2 "Segoe UI", sans-serif;
+            outline: none;
+        }
+
+        .committed-label {
+            position: absolute;
+            left: 154px;
+            top: 146px;
+            font: 700 24px/1.1 "Segoe UI", sans-serif;
+            color: #24324d;
+        }
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "26-whiteboard-spatial-mode",
+        "phase": "Phase 4",
+        "title": "Whiteboard Spatial Mode",
+        "description": "Canvas whiteboard fixtures covering sketch strokes and text-tool entry.",
+        "totalTests": 2
+    }
+    </script>
+
+    <div class="page-shell">
+        <div class="test-header">
+            <h1>Whiteboard Spatial Mode</h1>
+            <p>These fixtures cover the two canvas-heavy behaviors that matter most in collaborative whiteboards: freehand stroke placement and text insertion after an explicit tool switch.</p>
+            <div class="results-summary">
+                <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+                <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+                <div class="summary-pill">Pending<strong id="pending-count">2</strong></div>
+            </div>
+        </div>
+
+        <div class="fixture-grid">
+            <section class="test-case" id="test-1" data-test-id="26-draw-guide-line" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">1. Draw through both guide beacons</h2>
+                    <span class="test-case-id">26-draw-guide-line</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Activate the <span class="kbd">Pen</span> tool and draw a single stroke across the two highlighted guide beacons on the canvas.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Sketch Surface</h3>
+                            <p class="caption">A real canvas surface with pointer-driven drawing.</p>
+                        </div>
+                        <div class="control-cluster">
+                            <button class="tool-chip" type="button" id="draw-pen" aria-pressed="false">Pen</button>
+                            <button class="surface-btn" type="button" id="draw-reset">Reset surface</button>
+                        </div>
+                    </div>
+                    <div class="workspace-surface whiteboard-stage">
+                        <span class="surface-label">Canvas Surface</span>
+                        <canvas id="draw-canvas" class="draw-surface" width="920" height="320"></canvas>
+                        <div class="guide-note">Guide beacons are the orange circles near the center. The stroke must pass through both.</div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="pen-tool-active">The Pen tool should be active before drawing.</li>
+                        <li data-check="guides-crossed">The completed stroke should intersect both guide beacons.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" id="draw-reset-status" data-status-reset="test-1">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-2" data-test-id="26-text-tool" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">2. Commit a text label onto the board</h2>
+                    <span class="test-case-id">26-text-tool</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Activate the <span class="kbd">Text</span> tool, click inside the dashed note target, type <code>Sprint retro</code>, and commit it with <span class="kbd">Enter</span>.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Text Placement Surface</h3>
+                            <p class="caption">Text entry should happen only after the text tool is active.</p>
+                        </div>
+                        <div class="control-cluster">
+                            <button class="tool-chip" type="button" id="text-select" aria-pressed="false">Select</button>
+                            <button class="tool-chip" type="button" id="text-tool" aria-pressed="false">Text</button>
+                            <button class="surface-btn" type="button" id="text-reset">Reset surface</button>
+                        </div>
+                    </div>
+                    <div class="workspace-surface whiteboard-stage" id="text-surface">
+                        <span class="surface-label">Canvas + Text Layer</span>
+                        <canvas id="text-canvas" class="draw-surface" width="920" height="320"></canvas>
+                        <div class="text-target" id="text-target">Click here after selecting Text</div>
+                        <div class="target-note">The committed label should stay centered on the note card after pressing Enter.</div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="text-tool-active">The Text tool should be active before the target is clicked.</li>
+                        <li data-check="text-committed">The board should show the committed label <code>Sprint retro</code>.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" id="text-reset-status" data-status-reset="test-2">Reset</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        (function () {
+            const drawCanvas = document.getElementById("draw-canvas");
+            const drawPenButton = document.getElementById("draw-pen");
+            const drawContext = drawCanvas.getContext("2d");
+            const drawGuides = [
+                { x: 250, y: 132, r: 18 },
+                { x: 520, y: 182, r: 18 }
+            ];
+            let drawTool = "idle";
+            let drawStroke = [];
+            let drawPointerId = null;
+
+            const textCanvas = document.getElementById("text-canvas");
+            const textContext = textCanvas.getContext("2d");
+            const textSurface = document.getElementById("text-surface");
+            const textTarget = document.getElementById("text-target");
+            const textToolButton = document.getElementById("text-tool");
+            const selectToolButton = document.getElementById("text-select");
+            let textTool = "select";
+            let textEditor = null;
+            let committedLabel = null;
+
+            function distance(a, b) {
+                return Math.hypot(a.x - b.x, a.y - b.y);
+            }
+
+            function drawCanvasPointFromEvent(event) {
+                const rect = drawCanvas.getBoundingClientRect();
+                const scaleX = drawCanvas.width / Math.max(rect.width, 1);
+                const scaleY = drawCanvas.height / Math.max(rect.height, 1);
+                return {
+                    x: (event.clientX - rect.left) * scaleX,
+                    y: (event.clientY - rect.top) * scaleY
+                };
+            }
+
+            function redrawDrawSurface() {
+                drawContext.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+                drawContext.fillStyle = "#ffffff";
+                drawContext.fillRect(0, 0, drawCanvas.width, drawCanvas.height);
+                drawContext.strokeStyle = "#dfe7f4";
+                drawContext.lineWidth = 1;
+                for (let x = 24; x < drawCanvas.width; x += 36) {
+                    drawContext.beginPath();
+                    drawContext.moveTo(x, 0);
+                    drawContext.lineTo(x, drawCanvas.height);
+                    drawContext.stroke();
+                }
+                for (let y = 24; y < drawCanvas.height; y += 36) {
+                    drawContext.beginPath();
+                    drawContext.moveTo(0, y);
+                    drawContext.lineTo(drawCanvas.width, y);
+                    drawContext.stroke();
+                }
+                drawGuides.forEach((guide) => {
+                    drawContext.beginPath();
+                    drawContext.fillStyle = "#ff8a00";
+                    drawContext.globalAlpha = 0.22;
+                    drawContext.arc(guide.x, guide.y, guide.r + 10, 0, Math.PI * 2);
+                    drawContext.fill();
+                    drawContext.beginPath();
+                    drawContext.fillStyle = "#ff8a00";
+                    drawContext.globalAlpha = 1;
+                    drawContext.arc(guide.x, guide.y, guide.r, 0, Math.PI * 2);
+                    drawContext.fill();
+                });
+                if (drawStroke.length > 1) {
+                    drawContext.beginPath();
+                    drawContext.strokeStyle = "#f13a5f";
+                    drawContext.lineWidth = 6;
+                    drawContext.lineCap = "round";
+                    drawContext.moveTo(drawStroke[0].x, drawStroke[0].y);
+                    for (let index = 1; index < drawStroke.length; index += 1) {
+                        drawContext.lineTo(drawStroke[index].x, drawStroke[index].y);
+                    }
+                    drawContext.stroke();
+                }
+            }
+
+            function updateDrawChecks() {
+                const penActive = drawTool === "pen";
+                const guideHit = drawGuides.every((guide) =>
+                    drawStroke.some((point) => distance(point, guide) <= guide.r + 10)
+                );
+                setCheckState("test-1", "pen-tool-active", penActive ? "pass" : "pending");
+                setCheckState("test-1", "guides-crossed", guideHit ? "pass" : "pending");
+                setResult(
+                    "test-1",
+                    guideHit ? "Stroke crossed both guide beacons." : "Select Pen and draw through both orange beacons.",
+                    guideHit ? "success" : "info"
+                );
+                if (penActive && guideHit) {
+                    setTestStatus("test-1", "pass");
+                }
+            }
+
+            function resetDrawSurface() {
+                drawTool = "idle";
+                drawStroke = [];
+                drawPointerId = null;
+                endDrawMouseTracking();
+                endDrawPointerTracking();
+                drawPenButton.setAttribute("aria-pressed", "false");
+                setTestStatus("test-1", null);
+                setCheckState("test-1", "pen-tool-active", "pending");
+                setCheckState("test-1", "guides-crossed", "pending");
+                setResult("test-1", "Select Pen and draw through both orange beacons.", "info");
+                redrawDrawSurface();
+            }
+
+            let drawMouseTracking = false;
+            let drawPointerTracking = false;
+            let lastDrawPointerInputAt = 0;
+
+            function markDrawPointerInput(event) {
+                if (event.type.startsWith("pointer")) {
+                    lastDrawPointerInputAt = Date.now();
+                }
+            }
+
+            function shouldIgnoreCompatDrawMouse(event) {
+                return event.type.startsWith("mouse") && Date.now() - lastDrawPointerInputAt < 400;
+            }
+
+            function drawInputToken(event) {
+                return event.type.startsWith("pointer") ? `pointer:${event.pointerId}` : "mouse";
+            }
+
+            function safeSetDrawPointerCapture(event) {
+                if (!event.type.startsWith("pointer")) return;
+                try {
+                    drawCanvas.setPointerCapture(event.pointerId);
+                } catch (_) {
+                    // Ignore synthetic or already-ended pointer ids.
+                }
+            }
+
+            function safeReleaseDrawPointerCapture(event) {
+                if (!event.type.startsWith("pointer")) return;
+                try {
+                    drawCanvas.releasePointerCapture(event.pointerId);
+                } catch (_) {
+                    // Ignore synthetic or already-ended pointer ids.
+                }
+            }
+
+            function beginDrawMouseTracking() {
+                if (drawMouseTracking) return;
+                drawMouseTracking = true;
+                document.addEventListener("mousemove", onDrawStrokeMove, true);
+                document.addEventListener("mouseup", onDrawStrokeUp, true);
+            }
+
+            function endDrawMouseTracking() {
+                if (!drawMouseTracking) return;
+                drawMouseTracking = false;
+                document.removeEventListener("mousemove", onDrawStrokeMove, true);
+                document.removeEventListener("mouseup", onDrawStrokeUp, true);
+            }
+
+            function beginDrawPointerTracking() {
+                if (drawPointerTracking) return;
+                drawPointerTracking = true;
+                document.addEventListener("pointermove", onDrawStrokeMove, true);
+                document.addEventListener("pointerup", onDrawStrokeUp, true);
+                document.addEventListener("pointercancel", onDrawStrokeCancel, true);
+            }
+
+            function endDrawPointerTracking() {
+                if (!drawPointerTracking) return;
+                drawPointerTracking = false;
+                document.removeEventListener("pointermove", onDrawStrokeMove, true);
+                document.removeEventListener("pointerup", onDrawStrokeUp, true);
+                document.removeEventListener("pointercancel", onDrawStrokeCancel, true);
+            }
+
+            function onDrawStrokeDown(event) {
+                if (drawTool !== "pen") return;
+                if (shouldIgnoreCompatDrawMouse(event)) return;
+                if (event.type === "mousedown" && event.button !== 0) return;
+                markDrawPointerInput(event);
+                drawPointerId = drawInputToken(event);
+                drawStroke = [drawCanvasPointFromEvent(event)];
+                safeSetDrawPointerCapture(event);
+                if (event.type === "pointerdown") beginDrawPointerTracking();
+                if (event.type === "mousedown") beginDrawMouseTracking();
+                redrawDrawSurface();
+                updateDrawChecks();
+            }
+
+            function onDrawStrokeMove(event) {
+                if (drawPointerId !== drawInputToken(event)) return;
+                if ((event.type === "pointermove" || event.type === "mousemove") && event.buttons === 0) return;
+                markDrawPointerInput(event);
+                drawStroke.push(drawCanvasPointFromEvent(event));
+                redrawDrawSurface();
+            }
+
+            function onDrawStrokeUp(event) {
+                if (drawPointerId !== drawInputToken(event)) return;
+                markDrawPointerInput(event);
+                safeReleaseDrawPointerCapture(event);
+                if (event.type === "pointerup") endDrawPointerTracking();
+                if (event.type === "mouseup") endDrawMouseTracking();
+                drawPointerId = null;
+                updateDrawChecks();
+            }
+
+            function onDrawStrokeCancel(event) {
+                if (drawPointerId !== drawInputToken(event)) return;
+                safeReleaseDrawPointerCapture(event);
+                endDrawPointerTracking();
+                endDrawMouseTracking();
+                drawPointerId = null;
+                updateDrawChecks();
+            }
+
+            function setTextTool(nextTool) {
+                textTool = nextTool;
+                textToolButton.setAttribute("aria-pressed", nextTool === "text" ? "true" : "false");
+                selectToolButton.setAttribute("aria-pressed", nextTool === "select" ? "true" : "false");
+                textTarget.classList.toggle("active", nextTool === "text");
+                setCheckState("test-2", "text-tool-active", nextTool === "text" ? "pass" : "pending");
+            }
+
+            function redrawTextSurface() {
+                textContext.clearRect(0, 0, textCanvas.width, textCanvas.height);
+                textContext.fillStyle = "#fdfdff";
+                textContext.fillRect(0, 0, textCanvas.width, textCanvas.height);
+                textContext.strokeStyle = "#e0e6f3";
+                textContext.lineWidth = 1;
+                for (let x = 26; x < textCanvas.width; x += 38) {
+                    textContext.beginPath();
+                    textContext.moveTo(x, 0);
+                    textContext.lineTo(x, textCanvas.height);
+                    textContext.stroke();
+                }
+                for (let y = 26; y < textCanvas.height; y += 38) {
+                    textContext.beginPath();
+                    textContext.moveTo(0, y);
+                    textContext.lineTo(textCanvas.width, y);
+                    textContext.stroke();
+                }
+                textContext.fillStyle = "#fff4f6";
+                textContext.strokeStyle = "rgba(241, 58, 95, 0.35)";
+                textContext.lineWidth = 2;
+                textContext.beginPath();
+                textContext.roundRect(140, 110, 220, 110, 16);
+                textContext.fill();
+                textContext.stroke();
+            }
+
+            function commitText(value) {
+                const trimmed = value.trim();
+                if (!trimmed) return;
+                if (!committedLabel) {
+                    committedLabel = document.createElement("div");
+                    committedLabel.className = "committed-label";
+                    textSurface.appendChild(committedLabel);
+                }
+                committedLabel.textContent = trimmed;
+                if (textEditor) {
+                    textEditor.remove();
+                    textEditor = null;
+                }
+                const success = trimmed === "Sprint retro";
+                setCheckState("test-2", "text-committed", success ? "pass" : "fail");
+                setResult(
+                    "test-2",
+                    success ? "Label committed to the board." : "Committed label does not match \"Sprint retro\".",
+                    success ? "success" : "error"
+                );
+                if (success && textTool === "text") {
+                    setTestStatus("test-2", "pass");
+                }
+            }
+
+            function spawnEditor() {
+                if (textTool !== "text") return;
+                if (textEditor) textEditor.remove();
+                textEditor = document.createElement("input");
+                textEditor.className = "inline-editor";
+                textEditor.type = "text";
+                textEditor.placeholder = "Type here";
+                textEditor.style.left = "148px";
+                textEditor.style.top = "142px";
+                textSurface.appendChild(textEditor);
+                textEditor.focus();
+                textEditor.addEventListener("keydown", (event) => {
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        commitText(textEditor.value);
+                    }
+                });
+            }
+
+            function resetTextSurface() {
+                if (textEditor) {
+                    textEditor.remove();
+                    textEditor = null;
+                }
+                if (committedLabel) {
+                    committedLabel.remove();
+                    committedLabel = null;
+                }
+                redrawTextSurface();
+                setTextTool("select");
+                setTestStatus("test-2", null);
+                setCheckState("test-2", "text-tool-active", "pending");
+                setCheckState("test-2", "text-committed", "pending");
+                setResult("test-2", "Select Text, click the dashed note, type Sprint retro, and press Enter.", "info");
+            }
+
+            drawPenButton.addEventListener("click", () => {
+                drawTool = drawTool === "pen" ? "idle" : "pen";
+                drawPenButton.setAttribute("aria-pressed", drawTool === "pen" ? "true" : "false");
+                updateDrawChecks();
+            });
+
+            drawCanvas.addEventListener("pointerdown", onDrawStrokeDown);
+            drawCanvas.addEventListener("pointermove", onDrawStrokeMove);
+            drawCanvas.addEventListener("pointerup", onDrawStrokeUp);
+            drawCanvas.addEventListener("mousedown", onDrawStrokeDown);
+
+            selectToolButton.addEventListener("click", () => setTextTool("select"));
+            textToolButton.addEventListener("click", () => setTextTool("text"));
+            textTarget.addEventListener("click", spawnEditor);
+
+            document.getElementById("draw-reset").addEventListener("click", resetDrawSurface);
+            document.getElementById("draw-reset-status").addEventListener("click", resetDrawSurface);
+            document.getElementById("text-reset").addEventListener("click", resetTextSurface);
+            document.getElementById("text-reset-status").addEventListener("click", resetTextSurface);
+
+            resetDrawSurface();
+            resetTextSurface();
+        })();
+    </script>
+</body>
+</html>

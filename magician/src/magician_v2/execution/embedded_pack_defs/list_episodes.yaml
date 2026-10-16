@@ -1,0 +1,44 @@
+name: list_episodes
+description: List recent episodes across the active harness scope, filtered by agent, goal, outcome, or recency.
+version: "1.0.0"
+guide: |
+  Tool name: `list_episodes`
+
+  Use this to survey recent subordinate activity before drilling into a specific trace.
+  Results are always limited to the active harness scope.
+
+  Typical use:
+  - find failures in the last 24 hours
+  - review one agent's recent runs
+  - inspect repeated outcomes for a semantic goal
+parameters:
+  - name: agent_id
+    param_type: string
+    description: Optional agent id inside the active harness scope.
+  - name: goal_id
+    param_type: string
+    description: Optional semantic goal id to filter on.
+  - name: outcome
+    param_type: string
+    description: Optional outcome filter.
+    enum_values: [succeeded, failed, paused, completed]
+  - name: since_hours
+    param_type: integer
+    description: Only include episodes completed in the last N hours. Defaults to 24.
+    default: "24"
+  - name: limit
+    param_type: integer
+    description: Maximum number of episode summaries to return. Defaults to 20, max 100.
+    default: "20"
+implementation:
+  type: compiled
+  provider_name: list_episodes
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - diagnostics
+    - memory
+  composition_category: observation
+  sandbox: none

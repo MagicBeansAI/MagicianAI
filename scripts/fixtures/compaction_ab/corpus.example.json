@@ -1,0 +1,20 @@
+[
+  {
+    "task_title": "Compare three static-site generators",
+    "description": "Research Hugo, Zola, and Eleventy for a documentation site. For each: build speed characteristics, templating model, content organization, and theming ecosystem. Produce a comparison table plus a one-paragraph recommendation with the trade-offs made explicit. Cite the sources you actually read.",
+    "agent_id": null,
+    "max_minutes": 20
+  },
+  {
+    "task_title": "Summarize local workspace runbooks",
+    "description": "Read the runbooks under docs/runbooks/ and produce a one-line index entry per runbook (what it verifies, what it requires running). Flag any runbook whose prerequisites mention a server or provider that must be live. End with a count of runbooks per prerequisite category.",
+    "agent_id": null,
+    "max_minutes": 15
+  },
+  {
+    "task_title": "Audit monitor fixture coverage",
+    "description": "List every JSON fixture under magician/tests/fixtures/monitors/ (including golden/) and, for each, state which wire shape or scenario it pins and which test file consumes it. Note any fixture no test references. Present the result as a table.",
+    "agent_id": null,
+    "max_minutes": 15
+  }
+]

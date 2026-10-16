@@ -1,0 +1,17 @@
+{
+  "name": "voice_verification_exhausted",
+  "version": "1.0.0",
+  "content": [
+    "Its code checks kept failing and the repair attempts ran out, so that code is not working yet."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "Conversational",
+    "description": "Spoken clause for verification_state `exhausted` — the checks failed, repair was attempted and gave up. This is NOT a success, and the sentence must not be reachable by anyone skimming for good news: it names the failure and the fact that the automatic attempts are over, because the next move is the user's.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial exhausted clause.",
+    "tags": ["voice", "realtime-voice", "verification", "announcement", "vibedev"],
+    "estimated_tokens": 20
+  }
+}

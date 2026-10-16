@@ -1,0 +1,17 @@
+{
+  "chain": {
+    "active_destination_action_id": "accept_plan",
+    "active_destination_installation_id": "install_contract_destination",
+    "active_source_run_ref": "run:app-action:fixture_source",
+    "hop_count": 1,
+    "hop_index": 0,
+    "origin_source_run_ref": "run:app-action:fixture_source"
+  },
+  "source_run": {
+    "action_id": "build_plan",
+    "installation_id": "install_contract_source",
+    "protocol_version": "1",
+    "run_ref": "run:app-action:fixture_source"
+  },
+  "status": "waiting"
+}

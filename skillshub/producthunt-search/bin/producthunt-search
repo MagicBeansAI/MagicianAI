@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""producthunt_search — recent Product Hunt launches matching a query.
+
+Transport is Product Hunt's public Atom feed, keyless. Self-contained,
+stdlib only.
+
+The v2 GraphQL endpoint this used to call is no longer public: it answers
+every anonymous request with
+
+    HTTP 401 {"errors":[{"error":"invalid_oauth_token",
+              "error_description":"Please supply a valid access token. …"}]}
+
+which is an authentication requirement, not the transient throttle the old
+docstring claimed. The Atom feed at https://www.producthunt.com/feed still
+serves the same launches to anyone, so that is what this reads.
+
+What the feed does not carry, this does not invent: there are no vote or
+comment counts in it, so `engagement` comes back empty rather than zeroed, and
+no topic labels, so `container` is null. The feed is also a fixed window of the
+50 most recent launches, so a `days` wider than the feed reaches returns what
+exists rather than implying a deeper search; `provider_window` in the envelope
+reports the span actually covered so the caller can see the difference.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ElementTree
+from datetime import datetime, timedelta, timezone
+
+FEED_URL = "https://www.producthunt.com/feed?category=all"
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_SNIPPET_CHARS = 1_000
+ATOM = "{http://www.w3.org/2005/Atom}"
+_PARAGRAPH_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL | re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_POST_ID_RE = re.compile(r"Post/(\d+)\s*$")
+# Terms shorter than this match as whole words only. "ai" as a bare substring
+# hits "email", "training", and "explain", which is how a category filter
+# quietly stops filtering.
+MIN_SUBSTRING_TERM_CHARS = 4
+
+
+class ProviderUnavailable(RuntimeError):
+    """The provider was not reached, or answered with something unparseable."""
+
+
+def _text(node, tag: str) -> str:
+    found = node.find(f"{ATOM}{tag}")
+    return (found.text or "").strip() if found is not None else ""
+
+
+def _to_iso(value: str) -> str | None:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _published(entry) -> datetime | None:
+    raw = _text(entry, "published") or _text(entry, "updated")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def tagline(entry) -> str:
+    """The first paragraph of the entry body is the product's tagline.
+
+    The remaining paragraphs are the feed's own Discussion/Link footer, which
+    is navigation rather than description.
+    """
+    content = entry.find(f"{ATOM}content")
+    if content is None or not content.text:
+        return ""
+    paragraphs = _PARAGRAPH_RE.findall(content.text)
+    first = paragraphs[0] if paragraphs else content.text
+    return " ".join(html.unescape(_TAG_RE.sub(" ", first)).split())[:MAX_SNIPPET_CHARS]
+
+
+def matches(query: str, haystack: str) -> bool:
+    """Whether a launch matches the query.
+
+    Long terms match as substrings so `video` finds `videos`; short terms match
+    as whole words so a two-letter category does not match every word that
+    happens to contain it.
+    """
+    haystack = haystack.lower()
+    query = query.lower().strip()
+    if not query:
+        return True
+    terms = [term for term in re.split(r"\W+", query) if term]
+    if not terms:
+        return True
+    for term in terms:
+        if len(term) >= MIN_SUBSTRING_TERM_CHARS:
+            if term in haystack:
+                return True
+        elif re.search(rf"(?<!\w){re.escape(term)}(?!\w)", haystack):
+            return True
+    return False
+
+
+def parse_feed(raw: bytes) -> list:
+    """Return the feed's entries, or raise when this is not an Atom feed.
+
+    A feed that parses with no entries means Product Hunt published nothing;
+    a body that does not parse means the request did not reach the feed. Only
+    the second is an error, and they must never both read as zero items.
+    """
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError as error:
+        raise ProviderUnavailable(
+            f"response was not an Atom feed ({error}); the endpoint is likely "
+            "blocked or has moved"
+        ) from error
+    if not root.tag.startswith(ATOM):
+        raise ProviderUnavailable(f"unexpected feed root element {root.tag!r}")
+    return root.findall(f"{ATOM}entry")
+
+
+def normalize(entry) -> dict:
+    # Explicit `is None`: an Element with no children is falsy, so `a or b`
+    # would fall through to the second lookup for every link element and pick
+    # whichever came first rather than the alternate one.
+    link = entry.find(f'{ATOM}link[@rel="alternate"]')
+    if link is None:
+        link = entry.find(f"{ATOM}link")
+    author = entry.find(f"{ATOM}author/{ATOM}name")
+    identifier = _POST_ID_RE.search(_text(entry, "id"))
+    return {
+        "title": _text(entry, "title"),
+        "url": (link.attrib.get("href") if link is not None else "") or "",
+        "snippet": tagline(entry),
+        "published_at": _to_iso(_text(entry, "published") or _text(entry, "updated")),
+        "source": "producthunt",
+        "source_native_id": identifier.group(1) if identifier else "",
+        # Deliberately empty: the public feed carries no vote or comment count,
+        # and a zero here would read as a launch nobody upvoted.
+        "engagement": {},
+        "author": ((author.text or "").strip() or None) if author is not None else None,
+        # The feed carries no topic labels.
+        "container": None,
+    }
+
+
+def get(url: str, timeout_secs: int) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout_secs) as response:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ProviderUnavailable("provider response exceeds local size limit")
+    return raw
+
+
+def fetch(query: str, days: int, limit: int, timeout_secs: int = 15) -> tuple[list[dict], int, dict]:
+    """Read the feed, window-filter, query-filter, normalize.
+
+    Returns the items, how many entries the feed actually served, and the date
+    span the feed covered — so zero items is always attributable to the window,
+    the query, or the provider rather than being an undifferentiated nothing.
+    """
+    today = datetime.now(timezone.utc).date()
+    from_date = today - timedelta(days=max(1, days))
+    entries = parse_feed(get(FEED_URL, timeout_secs))
+
+    published_dates = [moment for moment in (_published(entry) for entry in entries) if moment]
+    window = {
+        "oldest": _to_iso(min(published_dates).isoformat()) if published_dates else None,
+        "newest": _to_iso(max(published_dates).isoformat()) if published_dates else None,
+        "entries": len(entries),
+    }
+
+    out: list[dict] = []
+    for entry in entries:
+        moment = _published(entry)
+        if moment is not None and not (from_date <= moment.date() <= today):
+            continue
+        item = normalize(entry)
+        if not matches(query, f"{item['title']} {item['snippet']}"):
+            continue
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out, len(entries), window
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    query = str(request["query"])
+    days = int(request.get("days", 3))
+    limit = int(request.get("limit", 10))
+
+    today = datetime.now(timezone.utc).date()
+    from_date = today - timedelta(days=max(1, days))
+
+    started = time.monotonic()
+    error: dict | None = None
+    items: list[dict] = []
+    provider_entries = 0
+    window: dict = {"oldest": None, "newest": None, "entries": 0}
+    try:
+        items, provider_entries, window = fetch(query, days, limit)
+    except urllib.error.HTTPError as exc:
+        error = {"kind": "HTTPError", "message": f"HTTP {exc.code}: {exc.reason}"}
+    except urllib.error.URLError as exc:
+        error = {"kind": "URLError", "message": f"network: {exc.reason}"}
+    except Exception as exc:  # noqa: BLE001
+        error = {"kind": type(exc).__name__, "message": f"{type(exc).__name__}: {exc}"[:500]}
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    status = "failed" if error else "ok"
+    reason = error["message"] if error else None
+
+    parts = [
+        "[producthunt_search]",
+        f"status={status}",
+        f"count={len(items)}",
+        f"provider_entries={provider_entries}",
+        f"duration_ms={duration_ms}",
+    ]
+    if reason:
+        parts.append(f'reason="{reason}"')
+    sys.stderr.write(" ".join(parts) + "\n")
+    sys.stderr.flush()
+
+    envelope = {
+        "query": query,
+        "source": "producthunt",
+        "from_date": from_date.isoformat(),
+        "to_date": today.isoformat(),
+        "items": items,
+        "count": len(items),
+        # How many launches the feed served, and the span it covered. Zero
+        # items against a non-zero entry count is a query or window outcome,
+        # not a provider failure.
+        "provider_entries": provider_entries,
+        "provider_window": window,
+        "status": status,
+        "reason": reason,
+        "error": error,
+        "duration_ms": duration_ms,
+    }
+    print(json.dumps(envelope, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,29 @@
+name: list_agents
+description: List the current agent and every agent it can currently delegate or hand over to — including identity, description, kind, and effective definition-level tools.
+version: "1.0.0"
+guide: |
+  Tool name: `list_agents`
+
+  Returns the caller plus its currently reachable delegation/handover roster
+  for the active scope (principal/workspace). Unreachable, surface-only,
+  disabled, and system agents stay omitted.
+  Each entry carries agent_id, name, description, kind (personal /
+  service / system), disabled flag, is_primary flag, and the agent's
+  effective definition-level tool list after trust universals and whole-tool
+  deny/exclude rules.
+
+  Use when the user asks "who can do X?" or "what agents do I have?".
+  Pair with `describe_agents` to drill into a specific agent's full
+  charter + per-tool descriptions before deciding to delegate.
+parameters: []
+implementation:
+  type: compiled
+  provider_name: list_agents
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - agents
+    - introspection
+  composition_category: action
+  sandbox: none

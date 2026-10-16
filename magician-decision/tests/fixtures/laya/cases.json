@@ -1,0 +1,24 @@
+[
+  {"name": "memory_relevance",
+   "state": {"memory": "The user is allergic to peanuts and prefers Italian food.", "request": "Book a table for two at an Italian restaurant tonight"},
+   "questions": {
+     "about_cars": {"type": "noul", "instructions": "`request` is about buying a car"},
+     "relevant": {"type": "noul", "instructions": "`memory` is relevant context for answering `request`"},
+     "urgency": {"type": "score", "instructions": "How urgent is `request`?", "criteria": ["not urgent: weeks away", "soon: within days", "urgent: today"]}
+   }},
+  {"name": "sentiment_es",
+   "state": "Es un desastre, estoy muy decepcionado con el servicio.",
+   "questions": {"sentiment": {"type": "choice", "instructions": "What is the sentiment of the message?",
+      "criteria": {"negative": "the writer is unhappy, angry, or disappointed", "neutral": "no clear feeling either way", "positive": "the writer is pleased or happy"}}}},
+  {"name": "noul_with_criteria",
+   "state": "Invoice #4471 for $1,200 is due on Friday. Please confirm receipt.",
+   "questions": {"needs_reply": {"type": "noul", "instructions": "The sender is waiting on a reply",
+      "criteria": {"true": "the message asks the reader to do or confirm something", "false": "information only, nothing is asked"}}}},
+  {"name": "many_options",
+   "state": "- button \"Search flights\" [ref=e5]\n- textbox \"From\" [ref=e3]\n- textbox \"To\" [ref=e4]\n- link \"Sign in\" [ref=e9]",
+   "questions": {"next_element": {"type": "choice", "instructions": "Which element starts the flight search?",
+      "criteria": {"@e1": "banner", "@e12": "combobox Passengers", "@e2": "heading Find your flight", "@e3": "textbox From", "@e4": "textbox To", "@e5": "button Search flights", "@e9": "link Sign in"}}}},
+  {"name": "plain_choice_no_desc",
+   "state": "The customer wants a refund for a damaged blender.",
+   "questions": {"team": {"type": "choice", "instructions": "Which team should handle this?", "criteria": {"billing": "", "returns": "", "sales": ""}}}}
+]

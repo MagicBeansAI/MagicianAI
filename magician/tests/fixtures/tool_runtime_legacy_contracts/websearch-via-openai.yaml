@@ -1,0 +1,66 @@
+name: websearch-via-openai
+version: 0.1.0
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: Search query (natural language)
+- name: model
+  param_type: string
+  description: 'OpenAI model: gpt-4o-mini (cheap), gpt-4o (quality), o4-mini (reasoning)'
+  default: gpt-4o-mini
+- name: allowed_domains
+  param_type: string
+  description: Comma-separated list of domains to restrict search to
+- name: timeout_secs
+  param_type: integer
+  description: Request timeout in seconds
+  default: '65'
+native_action_schemas:
+  run:
+    description: Run the openai_websearch capability with the arguments selected from this capability guide. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after the requested result is present.
+    parameters:
+    - query
+    - model
+    - allowed_domains
+    - timeout_secs
+    required:
+    - query
+    parameter_overrides:
+      query:
+        type: string
+        description: Search query (natural language)
+      model:
+        type: string
+        description: 'OpenAI model: gpt-4o-mini (cheap), gpt-4o (quality), o4-mini (reasoning)'
+        default: gpt-4o-mini
+      allowed_domains:
+        type: string
+        description: Comma-separated list of domains to restrict search to
+      timeout_secs:
+        type: integer
+        description: Request timeout in seconds
+        default: '65'
+    skip_tool_name: true
+    timeout_secs: 65
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_QUERY: '{query}'
+    _TOOL_MODEL: '{model}'
+    _TOOL_ALLOWED_DOMAINS: '{allowed_domains}'
+    _TOOL_TIMEOUT_SECS: '{timeout_secs}'
+  timeout_secs: 65
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 65
+  categories:
+  - web
+  - search
+  - research
+  - llm
+  composition_category: web_operations
+  sandbox: shell

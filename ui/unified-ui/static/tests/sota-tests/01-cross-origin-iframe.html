@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Cross-Origin Iframe (Phase 0)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #007bff, #0056b3);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset {
+            background: #6c757d;
+            color: white;
+        }
+        .status-btn.reset:hover { background: #545b62; }
+
+        /* Interactive elements */
+        iframe { border: 2px solid #007bff; border-radius: 4px; }
+        .iframe-container { margin: 15px 0; }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+        .status-radio {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #f8fafc;
+            color: #334155;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .status-radio input {
+            margin: 0;
+        }
+
+        .status-radio.pass:has(input:checked) {
+            border-color: #16a34a;
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-radio.fail:has(input:checked) {
+            border-color: #dc2626;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "01-cross-origin-iframe",
+        "phase": "Phase 0",
+        "title": "Cross-Origin Iframe Handling",
+        "description": "Tests detection and interaction with elements inside cross-origin iframes",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 0: Cross-Origin Iframe Handling</h1>
+        <p>Test the agent's ability to detect and interact with elements inside cross-origin iframes like YouTube embeds and payment forms.</p>
+    </div>
+
+    <!-- Test Case 1: YouTube Play Button -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="01-youtube-play"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Click YouTube Play Button</h3>
+            <span class="test-case-id">01-youtube-play</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the large play button in the center of the YouTube video iframe below. Do not navigate away from this page.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="video-playing">The video should start playing (or show a preview/ad)</li>
+                <li data-check="same-page">Browser should remain on this test page URL</li>
+                <li data-check="iframe-interaction">Action was performed inside the iframe, not by navigating to YouTube</li>
+            </ul>
+        </div>
+
+        <div class="iframe-container">
+            <iframe
+                id="youtube-iframe"
+                width="560"
+                height="315"
+                src="https://www.youtube.com/embed/dQw4w9WgXcQ"
+                title="YouTube video player"
+                frameborder="0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowfullscreen>
+            </iframe>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-1" value="pass" data-status-radio="test-1"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-1" value="fail" data-status-radio="test-1"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: CodeSandbox Editor -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="01-codesandbox-type"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Type in CodeSandbox Editor</h3>
+            <span class="test-case-id">01-codesandbox-type</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click inside the code editor area in the CodeSandbox iframe below and type: <code>console.log("Hello from agent")</code>
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="text-visible">The typed text should appear in the code editor</li>
+                <li data-check="focus-in-iframe">The cursor/focus should be inside the iframe's editor</li>
+            </ul>
+        </div>
+
+        <div class="iframe-container">
+            <iframe
+                id="codesandbox-iframe"
+                src="https://codesandbox.io/embed/new?codemirror=1"
+                style="width:100%; height:400px; border:2px solid #007bff; border-radius:4px; overflow:hidden;"
+                title="CodeSandbox"
+                allow="accelerometer; ambient-light-sensor; camera; encrypted-media; geolocation; gyroscope; hid; microphone; midi; payment; usb; vr; xr-spatial-tracking"
+                sandbox="allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts">
+            </iframe>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-2" value="pass" data-status-radio="test-2"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-2" value="fail" data-status-radio="test-2"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Payment Form (Stripe-like) -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="01-payment-form"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Fill Payment Form in Iframe</h3>
+            <span class="test-case-id">01-payment-form</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Fill in the payment form inside the iframe below with:
+            <ul>
+                <li>Card Number: <code>4242424242424242</code></li>
+                <li>Expiry: <code>12/25</code></li>
+                <li>CVC: <code>123</code></li>
+            </ul>
+            Then click the "Pay $99.00" button.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="card-filled">Card number field should contain 4242424242424242</li>
+                <li data-check="expiry-filled">Expiry field should contain 12/25</li>
+                <li data-check="cvc-filled">CVC field should contain 123</li>
+                <li data-check="button-clicked">Pay button should have been clicked (check for any response)</li>
+            </ul>
+        </div>
+
+        <div class="iframe-container">
+            <iframe
+                id="payment-iframe"
+                srcdoc='
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <style>
+                            body { font-family: sans-serif; padding: 20px; background: #f7f7f7; margin: 0; }
+                            .stripe-form { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); max-width: 400px; }
+                            .stripe-form h3 { margin-top: 0; color: #32325d; }
+                            .form-row { margin-bottom: 15px; }
+                            label { display: block; color: #6b7c93; font-size: 14px; margin-bottom: 5px; }
+                            input { width: 100%; padding: 10px; border: 1px solid #e6e6e6; border-radius: 4px; font-size: 16px; box-sizing: border-box; }
+                            input:focus { border-color: #6772e5; outline: none; }
+                            button { background: #6772e5; color: white; border: none; padding: 12px 20px; border-radius: 4px; font-size: 16px; cursor: pointer; width: 100%; }
+                            button:hover { background: #5469d4; }
+                            .card-row { display: flex; gap: 10px; }
+                            .card-row > div { flex: 1; }
+                            .success-msg { display: none; background: #d4edda; color: #155724; padding: 15px; border-radius: 4px; margin-top: 15px; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="stripe-form">
+                            <h3>Payment Details</h3>
+                            <div class="form-row">
+                                <label for="card-number">Card Number</label>
+                                <input type="text" id="card-number" data-testid="card-number" placeholder="Enter card number" aria-label="Credit card number" autocomplete="off">
+                            </div>
+                            <div class="card-row">
+                                <div class="form-row">
+                                    <label for="expiry">Expiry</label>
+                                    <input type="text" id="expiry" data-testid="card-expiry" placeholder="MM/YY" aria-label="Card expiry date" autocomplete="off">
+                                </div>
+                                <div class="form-row">
+                                    <label for="cvc">CVC</label>
+                                    <input type="text" id="cvc" data-testid="card-cvc" placeholder="3 digits" aria-label="Card CVC" autocomplete="off">
+                                </div>
+                            </div>
+                            <button type="submit" data-testid="submit-payment" onclick="document.getElementById(&#39;success&#39;).style.display=&#39;block&#39;">Pay $99.00</button>
+                            <div id="success" class="success-msg">Payment submitted successfully!</div>
+                        </div>
+</body>
+                    </html>
+                '
+                style="width:100%; height:350px; border:2px solid #6772e5; border-radius:4px;">
+            </iframe>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Cross-Origin Iframe Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <!--
+        Genuine-success detection for Test 3 (payment form).
+        The payment iframe is loaded via srcdoc, so it inherits THIS document's
+        origin and the parent can read its contentDocument. Tests 1 (YouTube)
+        and 2 (CodeSandbox) load true cross-origin documents whose contents are
+        unreadable from here, so they keep their manual controls and are not
+        instrumented.
+    -->
+    <script>
+        (() => {
+            const CARD_NUMBER = '4242424242424242';
+            const EXPIRY = '12/25';
+            const CVC = '123';
+
+            function mark(check) {
+                if (typeof window.setCheckState === 'function') {
+                    window.setCheckState('test-3', check, 'pass');
+                }
+            }
+
+            function evaluateField(doc) {
+                const card = doc.getElementById('card-number');
+                const expiry = doc.getElementById('expiry');
+                const cvc = doc.getElementById('cvc');
+                if (card && card.value.replace(/\s+/g, '') === CARD_NUMBER) {
+                    mark('card-filled');
+                }
+                if (expiry && expiry.value.trim() === EXPIRY) {
+                    mark('expiry-filled');
+                }
+                if (cvc && cvc.value.trim() === CVC) {
+                    mark('cvc-filled');
+                }
+            }
+
+            function attach() {
+                const iframe = document.getElementById('payment-iframe');
+                if (!iframe) return;
+                let doc;
+                try {
+                    doc = iframe.contentDocument || iframe.contentWindow.document;
+                } catch (_) {
+                    // Genuinely cross-origin: cannot instrument. Leave for manual.
+                    return;
+                }
+                if (!doc || !doc.getElementById('card-number')) {
+                    // srcdoc not yet parsed; retry shortly.
+                    setTimeout(attach, 150);
+                    return;
+                }
+
+                ['input', 'change', 'blur', 'keyup'].forEach((evt) => {
+                    doc.addEventListener(evt, () => evaluateField(doc), true);
+                });
+
+                const payBtn = doc.querySelector('[data-testid="submit-payment"]');
+                if (payBtn) {
+                    payBtn.addEventListener('click', () => {
+                        // Re-check fields at submit time, then record the click.
+                        evaluateField(doc);
+                        mark('button-clicked');
+                    }, true);
+                }
+
+                // Catch any values already present (e.g. programmatic prefill).
+                evaluateField(doc);
+            }
+
+            if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                attach();
+            } else {
+                window.addEventListener('DOMContentLoaded', attach);
+            }
+            window.addEventListener('load', attach);
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

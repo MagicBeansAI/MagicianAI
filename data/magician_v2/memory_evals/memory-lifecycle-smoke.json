@@ -1,0 +1,21 @@
+{
+  "suite_id": "memory-lifecycle-smoke",
+  "enabled": true,
+  "cases": [
+    {
+      "case_id": "simple-data-analyst-terminal-capture-consolidation-render",
+      "kind": "lifecycle",
+      "agent_id": "simple-data-analyst",
+      "query": "How should I follow up on a Metabase GMV analysis from the Sales and Margin Dashboard?",
+      "scopes": ["agent"],
+      "expected_episode_candidate_types": ["terminal_outcome", "final_output_excerpt"],
+      "min_episode_candidates": 1,
+      "min_consolidation_records": 1,
+      "expected_consolidation_targets": ["semantic"],
+      "expected_substrings": ["Metabase"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    }
+  ]
+}

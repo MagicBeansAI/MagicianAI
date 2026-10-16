@@ -1,0 +1,101 @@
+{
+  "name": "unified_analysis",
+  "version": "1.1.0",
+  "content": [
+    "Perform a comprehensive analysis of this user query covering complexity, categories, and dependencies.",
+    "",
+    "Query: \"{query}\"",
+    "",
+    "{categories_context}",
+    "",
+    "Analyze this query systematically:",
+    "",
+    "## 1. COMPLEXITY ANALYSIS",
+    "Assign a complexity score from 0.0 to 1.0:",
+    "- **0.0-0.3**: Simple (single operation, minimal resources, immediate execution)",
+    "- **0.3-0.6**: Medium (multiple steps, moderate resources, some coordination)",
+    "- **0.6-1.0**: Complex (many operations, high coordination, extensive resources)",
+    "",
+    "Consider factors:",
+    "- Number of distinct operations",
+    "- Resource requirements (compute, network, storage)",
+    "- Coordination complexity",
+    "- Error handling requirements",
+    "- Time dependencies",
+    "",
+    "## 2. CATEGORY ANALYSIS",
+    "Identify 1-3 most relevant tool categories needed:",
+    "- Consider the primary operations required",
+    "- Match to existing categories when appropriate",
+    "- Generate new logical categories if needed",
+    "- Focus on the core functionality domains",
+    "",
+    "## 3. DEPENDENCY ANALYSIS",
+    "Determine workflow structure:",
+    "- **Single-step**: One atomic operation with no dependencies",
+    "- **Multi-step**: Sequential or parallel operations with dependencies",
+    "- Map out the execution flow",
+    "- Identify critical dependencies",
+    "- Consider error recovery points",
+    "",
+    "**Response Format (JSON only):**",
+    "```json",
+    "{{",
+    "  \"complexity\": {{",
+    "    \"score\": 0.X,",
+    "    \"factors\": [\"factor1\", \"factor2\"],",
+    "    \"reasoning\": \"Detailed complexity explanation\"",
+    "  }},",
+    "  \"categories\": {{",
+    "    \"categories\": [\"category1\", \"category2\"],",
+    "    \"reasoning\": \"Category selection explanation\"",
+    "  }},",
+    "  \"dependencies\": {{",
+    "    \"is_multi_step\": true/false,",
+    "    \"dependencies\": [\"dependency1\", \"dependency2\"],",
+    "    \"workflow_steps\": [\"step1\", \"step2\", \"step3\"],",
+    "    \"reasoning\": \"Dependency analysis explanation\"",
+    "  }}",
+    "}}",
+    "```"
+  ],
+  "variables": [
+    {
+      "name": "query",
+      "description": "The user query to analyze",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Deploy my React app to Vercel with environment variables",
+        "Find all security vulnerabilities in my Node.js dependencies",
+        "Create a CI/CD pipeline that tests, builds, and deploys my app"
+      ]
+    },
+    {
+      "name": "categories_context",
+      "description": "Available categories context",
+      "required": false,
+      "default_value": "No predefined categories available. Generate appropriate categories based on the query intent.",
+      "examples": [
+        "Available categories: filesystem, network, database, deployment, security, testing",
+        "No predefined categories available. Generate appropriate categories based on the query intent."
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "QueryAnalysis",
+    "description": "Enhanced comprehensive query analysis with improved structure and clarity",
+    "author": "MagicianV2",
+    "created_at": "2025-01-25T15:30:00Z",
+    "changelog": "v1.1.0: Improved formatting, clearer instructions, better examples, enhanced complexity factors",
+    "tags": [
+      "query_analysis",
+      "complexity",
+      "categories",
+      "dependencies",
+      "unified",
+      "enhanced"
+    ],
+    "estimated_tokens": 450
+  }
+}

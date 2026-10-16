@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "lane": "chat",
+  "description": "Chat-engine replacement: the same turns under every installed harness, graded by effect (what exists afterwards) plus proof that the harness answered. A swapped mouth's hands are the plane's executed tools plus the native mouth's own tools reached through the mouth bridge (chat-thread management, create_task, switch_personality and the other chat-runtime tools; plane/chat_turn.rs NOT_A_PLANE_EXECUTED_HAND names the ones the plane never runs itself), so effects here may use any of them: task reads and updates, the agent roster, memory, and the probes the mouth creates itself (a task, a chat thread). Existence effects (task_exists, thread_exists) name the title the rig looks for and the rig deletes what it finds. Three per-case options shape a memory oracle: delete_task_after_turn N removes the setup task once turn N has answered (a refused delete or a task still readable afterwards is a failed precondition), no_tools_turn N fails the case if turn N used any tool, and turn_answer_must_not_contain fails the case if the named turn's answer carried the withheld value, so a recall cannot be a replay of an earlier answer. stream: true sends the turns over the SSE route; min_token_events N fails the case when a streamed turn carried fewer token frames, and engines_exempt lists the engines for which that shortfall is documented (partial, not fail).",
+  "cases": [
+    {
+      "id": "pong",
+      "turns": [
+        "Reply with exactly the word PONG and nothing else."
+      ],
+      "effect": {
+        "kind": "answer_contains",
+        "value": "PONG"
+      },
+      "tools_expected": false
+    },
+    {
+      "id": "task_lookup",
+      "setup": {
+        "kind": "create_task",
+        "title": "HC-{nonce}",
+        "description": "Harness conformance probe {nonce}. The secret word is {secret}. Safe to delete."
+      },
+      "turns": [
+        "Look up my task with id `{task_id}` using your task tools and reply with the secret word from its description, and nothing else."
+      ],
+      "effect": {
+        "kind": "answer_contains",
+        "value": "{secret}"
+      },
+      "tools_expected": true
+    },
+    {
+      "id": "task_update",
+      "setup": {
+        "kind": "create_task",
+        "title": "HC-{nonce}",
+        "description": "Harness conformance probe {nonce}. Safe to delete."
+      },
+      "turns": [
+        "Update my task with id `{task_id}`: change its title to exactly `HC-{nonce}-updated`. Use your task tools and reply with the word DONE when the update has been applied."
+      ],
+      "effect": {
+        "kind": "task_field_contains",
+        "field": "title",
+        "value": "HC-{nonce}-updated"
+      },
+      "tools_expected": true
+    },
+    {
+      "id": "agent_roster",
+      "turns": [
+        "Which of my agents can do web research? Look up the agent roster with your tools and answer with the exact agent ids only."
+      ],
+      "effect": {
+        "kind": "answer_contains",
+        "value": "web-researcher"
+      },
+      "tools_expected": true
+    },
+    {
+      "id": "remember_recall",
+      "turns": [
+        "Remember this for me: my test colour is {nonce}. Save it with your memory tools, then reply with the single word SAVED.",
+        "What is my test colour? Look it up in memory and reply with just the colour."
+      ],
+      "effect": {
+        "kind": "answer_contains",
+        "value": "{nonce}",
+        "turn": 2
+      },
+      "tools_expected": true,
+      "partial_on_effect_miss": true,
+      "partial_reason": "memory writes can be deferred to owner review; the recall turn then cannot see them",
+      "hitl_answer": "Yes. Remember exactly this: my test colour is {nonce}."
+    },
+    {
+      "id": "tool_result_recall",
+      "setup": {
+        "kind": "create_task",
+        "title": "HC-{nonce}",
+        "description": "Harness conformance probe {nonce}. The secret word is {secret}. Safe to delete."
+      },
+      "turns": [
+        "Look up my task with id `{task_id}` with your task tools and read its description carefully so you remember what it says. Then reply with just the word DONE — do not include the secret word in this reply.",
+        "Without calling any tools: what was the secret word in the description of the task you looked up in the previous turn? Reply with just the word."
+      ],
+      "delete_task_after_turn": 1,
+      "no_tools_turn": 2,
+      "turn_answer_must_not_contain": {
+        "turn": 1,
+        "value": "{secret}"
+      },
+      "effect": {
+        "kind": "answer_contains",
+        "value": "{secret}",
+        "turn": 2
+      },
+      "tools_expected": true
+    },
+    {
+      "id": "streaming",
+      "turns": [
+        "In three short sentences, tell me what a personal AI runtime is. Do not use any tools."
+      ],
+      "stream": true,
+      "min_token_events": 2,
+      "engines_exempt": [
+        "codex"
+      ],
+      "effect": {
+        "kind": "answer_contains",
+        "value": "runtime"
+      },
+      "tools_expected": false
+    },
+    {
+      "id": "thread_create",
+      "turns": [
+        "Create a new chat thread titled `HC-{nonce}` (thread id `hc-{nonce}`) with your chat tools and reply with just DONE."
+      ],
+      "effect": {
+        "kind": "thread_exists",
+        "title": "HC-{nonce}"
+      },
+      "tools_expected": true
+    },
+    {
+      "id": "create_task",
+      "turns": [
+        "Create a task titled `HC-{nonce}` whose description is `Harness conformance probe {nonce}. Safe to delete.` with your task tools and reply with just DONE."
+      ],
+      "effect": {
+        "kind": "task_exists",
+        "title": "HC-{nonce}"
+      },
+      "tools_expected": true
+    }
+  ]
+}

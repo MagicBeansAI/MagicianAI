@@ -1,0 +1,93 @@
+{
+  "contract_version": 1,
+  "registry_schema_version": 1,
+  "catalog_schema_version": 1,
+  "compaction_manifest_schema_version": 2,
+  "activation": "active_by_default_phase_2f",
+  "consumer_wiring_owner": "phase_2e",
+  "content_class": "fact_only",
+  "canonical_datasets": [
+    "llm_calls",
+    "llm_provider_attempts",
+    "llm_capture_gaps"
+  ],
+  "allowlisted_relations": [
+    "llm_calls",
+    "llm_provider_attempts",
+    "llm_capture_gaps",
+    "llm_call_revisions",
+    "llm_provider_attempt_revisions"
+  ],
+  "compaction": {
+    "raw_objects_immutable": true,
+    "raw_objects_deleted": false,
+    "default_minimum_raw_files": 64,
+    "default_current_partition": "rolling_compaction_enabled",
+    "publication_order": [
+      "fingerprint_sorted_raw_source_set",
+      "validate_single_scope_single_record_kind_unique_idempotency_keys",
+      "write_temporary_compacted_parquet",
+      "fsync_and_verify_row_count",
+      "atomic_rename_compacted_parquet",
+      "fsync_compaction_directory",
+      "checksum_compacted_parquet",
+      "atomically_publish_source_bound_manifest"
+    ],
+    "governed_selection": "verified_compacted_prefix_plus_bounded_raw_tail_or_all_raw_per_partition",
+    "stale_missing_or_corrupt_manifest": "fall_back_to_raw",
+    "new_raw_sources": "remain_visible_as_bounded_tail_until_next_generation",
+    "changed_covered_source_during_generation_roll": "refuse_publication_and_keep_previous_verified_generation"
+  },
+  "stable_projection": {
+    "revision_selection": "highest_revision_non_null_coalescing_by_stable_id",
+    "logical_call_provider_fields": "enriched_from_highest_attempt_index",
+    "legacy_call_files": "typed_defaults_with_training_exclusion",
+    "legacy_embedded_scope": "ignored_in_favor_of_trusted_path_scope",
+    "empty_dataset": "typed_empty_relation",
+    "schema_evolution": "missing_optional_fact_columns_project_as_typed_null_while_identity_governance_and_lifecycle_columns_fail_closed",
+    "legacy_capture_defaults": "capture_mode_metadata_capture_status_metadata_only_training_excluded"
+  },
+  "timing_ownership": {
+    "logical_call": "queue_wait_local_preparation_and_aggregate_provider_execution_may_be_enriched_from_exact_dispatch_identity",
+    "provider_attempt": "dispatch_enrichment_only_when_the_job_has_exactly_one_physical_attempt",
+    "multi_attempt_terminal_row": "identity_usage_and_economics_retained_but_aggregate_dispatch_latency_is_not_mislabeled_as_final_attempt_latency"
+  },
+  "storage_boundary": {
+    "scoped_directory_components": "real_directories_only_no_symlink_redirection",
+    "partitions_sources_manifests_and_watermarks": "regular_entries_only_or_safe_raw_fallback"
+  },
+  "read_service": {
+    "scope": "explicit_principal_and_workspace_required_before_path_discovery",
+    "relation_names": "exact_registry_match_only",
+    "columns": "registry_allowlist_only",
+    "filters": "typed_and_registry_validated",
+    "default_time_window_hours": 24,
+    "maximum_time_window_days": 31,
+    "partition_selection": "utc_dates_intersecting_half_open_effective_range",
+    "detail_identity_window": "ulid_creation_day_through_full_31_day_bounded_window",
+    "freshness_sequence_authority": "contiguous_durable_journal_materialization_watermark_not_maximum_dataset_watermark",
+    "freshness_integrity": "watermark_sequence_and_checksum_must_resolve_to_a_verified_immutable_journal_envelope",
+    "canonical_row_integrity": "write_time_content_usage_pricing_timing_validation_capture_and_dataset_lifecycle_invariants_are_revalidated_before_any_governed_projection",
+    "cross_revision_integrity": "immutable_context_operation_route_and_timestamps_plus_cross_dataset_sequence_attempt_owner_parent_trace_and_acyclic_graph_are_revalidated_fail_closed",
+    "preterminal_payload_integrity": "call_start_and_attempt_start_or_first_token_revisions_cannot_carry_terminal_usage_pricing_validation_or_error_payloads",
+    "capture_gap_integrity": "ordered_missing_window_exact_degraded_capture_semantics_and_no_inference_or_economics_payload",
+    "pagination": {
+      "default_rows": 100,
+      "maximum_rows": 1000,
+      "maximum_offset": 1000000
+    },
+    "query_timeout_seconds": 10,
+    "maximum_serialized_bytes": 4194304,
+    "result_decode_failure": "fail_closed_never_coerce_to_unknown_null",
+    "consumer_formula_owner": "LlmAnalyticsReadService"
+  },
+  "forbidden_fact_columns": [
+    "prompt",
+    "response",
+    "messages",
+    "tool_arguments",
+    "tool_results",
+    "attachments",
+    "transcript"
+  ]
+}

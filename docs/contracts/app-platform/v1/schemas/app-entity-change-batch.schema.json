@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "AppEntityChange": {
+      "additionalProperties": false,
+      "properties": {
+        "change_sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entity": {
+          "$ref": "#/$defs/AppName"
+        },
+        "record_id": {
+          "$ref": "#/$defs/AppRecordId"
+        },
+        "record_revision": {
+          "$ref": "#/$defs/AppRevision"
+        }
+      },
+      "required": [
+        "entity",
+        "record_id",
+        "record_revision",
+        "change_sequence"
+      ],
+      "type": "object"
+    },
+    "AppInstallationId": {
+      "type": "string"
+    },
+    "AppName": {
+      "type": "string"
+    },
+    "AppRecordId": {
+      "type": "string"
+    },
+    "AppRevision": {
+      "description": "A positive, monotonically increasing contract revision.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-entity-change-batch.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "after_change_sequence": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "changes": {
+      "items": {
+        "$ref": "#/$defs/AppEntityChange"
+      },
+      "type": "array"
+    },
+    "current_change_sequence": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "has_more": {
+      "type": "boolean"
+    },
+    "installation_id": {
+      "$ref": "#/$defs/AppInstallationId"
+    },
+    "reset_required": {
+      "type": "boolean"
+    },
+    "surface_revision": {
+      "$ref": "#/$defs/AppRevision"
+    },
+    "through_change_sequence": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "installation_id",
+    "surface_revision",
+    "after_change_sequence",
+    "through_change_sequence",
+    "current_change_sequence",
+    "changes",
+    "has_more",
+    "reset_required"
+  ],
+  "title": "AppEntityChangeBatch",
+  "type": "object"
+}

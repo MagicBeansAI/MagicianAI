@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_started",
+  "version": "1.0.0",
+  "content": [
+    "Started a VibeDev {mode_label} on **{project_name}** (`{repo_path}`).",
+    "",
+    "Task `{task_id}` is running — progress and the result land on its task card, not in this reply. Ask me about it any time, or open it in the VibeDev cockpit."
+  ],
+  "variables": ["mode_label", "project_name", "repo_path", "task_id"],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply for a `@vibedev` chat turn that resolved a project and dispatched a run. The chat turn's job ends at dispatch: a build outlives the turn, so this acknowledges and detaches rather than tailing.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` dispatch acknowledgement.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply"],
+    "estimated_tokens": 60
+  }
+}

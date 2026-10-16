@@ -1,0 +1,451 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "request_id": {
+              "value_type": 1,
+              "required": true
+            },
+            "session_id": {
+              "value_type": 2,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:4c05b5a3a8cf7a846e0767a1113293f114aeb589227d6fbdecfb0ed64d5b5c7f",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:4c05b5a3a8cf7a846e0767a1113293f114aeb589227d6fbdecfb0ed64d5b5c7f",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {},
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/request_id"
+                },
+                {
+                  "kind": "literal",
+                  "value": "resume"
+                },
+                {
+                  "kind": "literal",
+                  "value": "live_session"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/session_id"
+                },
+                {
+                  "kind": "literal",
+                  "value": "recorded"
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "request_id": 3,
+                    "verb": 4,
+                    "session_id": 6
+                  }
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 8
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "request",
+                  "parts": [
+                    3
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/record_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 11
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/request_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 13,
+                  "right": 3
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/verb"
+                },
+                {
+                  "kind": "equal",
+                  "left": 15,
+                  "right": 4
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/target_kind"
+                },
+                {
+                  "kind": "equal",
+                  "left": 17,
+                  "right": 5
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/target_ref"
+                },
+                {
+                  "kind": "equal",
+                  "left": 19,
+                  "right": 6
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/gesture_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 21,
+                  "right": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/actor_ref"
+                },
+                {
+                  "kind": "equal",
+                  "left": 23,
+                  "right": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/note"
+                },
+                {
+                  "kind": "equal",
+                  "left": 25,
+                  "right": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/apply_state"
+                },
+                {
+                  "kind": "equal",
+                  "left": 27,
+                  "right": 7
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/existing/0/fields/payload_json"
+                },
+                {
+                  "kind": "equal",
+                  "left": 29,
+                  "right": 9
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    14,
+                    16,
+                    18,
+                    20,
+                    22,
+                    24,
+                    26,
+                    28,
+                    30
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 12
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    32,
+                    31
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 12
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "existing",
+                "entity": "control_request",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "request_id",
+                    "verb",
+                    "target_kind",
+                    "target_ref",
+                    "gesture_id",
+                    "actor_ref",
+                    "note",
+                    "payload_json",
+                    "apply_state",
+                    "requested_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "request_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 3
+                }
+              }
+            ],
+            "query_when": {},
+            "guards": [
+              {
+                "require": 33,
+                "reason": "request_identity_conflict"
+              }
+            ],
+            "mutations": [
+              {
+                "entity": "control_request",
+                "for_each": null,
+                "when": 34,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 10,
+                  "fields": {
+                    "request_id": 3,
+                    "verb": 4,
+                    "target_kind": 5,
+                    "target_ref": 6,
+                    "gesture_id": 0,
+                    "actor_ref": 0,
+                    "note": 0,
+                    "apply_state": 7,
+                    "requested_at": 1,
+                    "payload_json": 9
+                  }
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

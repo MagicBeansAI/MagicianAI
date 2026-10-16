@@ -1,0 +1,17 @@
+{
+  "name": "resurfacing_deep_summary_user",
+  "version": "1.0.0",
+  "content": [
+    "Create a bounded, information-complete deeper summary of the source between the source tags. Return JSON only."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "ChannelAssist",
+    "description": "User prompt paired with resurfacing_deep_summary_system. Raw source is appended after prompt rendering so prompt diagnostics never log communication content.",
+    "author": "magician",
+    "created_at": "2026-07-12T00:00:00Z",
+    "changelog": "v1.0.0: Initial user-triggered deeper-summary request.",
+    "tags": ["resurfacing", "channel-assist", "deep-summary", "local-only"],
+    "estimated_tokens": 30
+  }
+}

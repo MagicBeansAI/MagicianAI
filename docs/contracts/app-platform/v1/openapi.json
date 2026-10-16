@@ -1,0 +1,4796 @@
+{
+  "components": {
+    "schemas": {
+      "AppActionCancellationReceipt": {
+        "additionalProperties": false,
+        "description": "Stable response-loss replay receipt. `Cancelling` proves the intent is\ndurable; `Cancelled` is minted only from the protected pre-I/O proof and is\nreturned only after Artifact has committed the canonical terminal state.",
+        "properties": {
+          "generation": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/AppActionCancellationReceipt__AppReference"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionCancellationReceipt__AppProtocolVersion"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "run_ref": {
+            "$ref": "#/components/schemas/AppActionCancellationReceipt__AppReference"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AppActionCancellationReceipt__AppRunStatus"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "run_ref",
+          "generation",
+          "idempotency_key",
+          "status",
+          "requested_at"
+        ],
+        "title": "AppActionCancellationReceipt",
+        "type": "object"
+      },
+      "AppActionCancellationReceipt__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppActionCancellationReceipt__AppReference": {
+        "type": "string"
+      },
+      "AppActionCancellationReceipt__AppRunStatus": {
+        "description": "Stable public lifecycle for one logical app run.\n\nArtifact V2 owns a richer internal execution state machine. This smaller\nenum is the app protocol projection: clients never infer terminality from\nan HTTP status code or from an open-ended internal status string.",
+        "enum": [
+          "queued",
+          "planning",
+          "running",
+          "paused",
+          "deferred",
+          "waiting",
+          "blocked",
+          "cancelling",
+          "completed",
+          "failed",
+          "cancelled",
+          "archived",
+          "uncertain"
+        ],
+        "type": "string"
+      },
+      "AppActionCancellationRequest": {
+        "additionalProperties": false,
+        "description": "Closed, generation-bound cancellation request. The run identity is carried\nby the URL and authenticated workflow control, never by caller-supplied\ntask/execution identifiers.",
+        "properties": {
+          "expected_generation": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/AppActionCancellationRequest__AppReference"
+          }
+        },
+        "required": [
+          "expected_generation",
+          "idempotency_key"
+        ],
+        "title": "AppActionCancellationRequest",
+        "type": "object"
+      },
+      "AppActionCancellationRequest__AppReference": {
+        "type": "string"
+      },
+      "AppActionCompositionRequest": {
+        "additionalProperties": false,
+        "description": "Supported-public request for composing one canonical terminal action result\ninto a second reviewed app action. The source run is carried by the route so\nit cannot disagree with this body. Mapping operations are declarative data;\nthe server recompiles them against both current schemas before launch.",
+        "properties": {
+          "chain": {
+            "description": "Additional destinations in the same server-owned authority chain. The\nfirst hop remains in the four stable V1 fields above so existing\ncallers keep the exact same wire shape. Each continuation is admitted\nonly after the preceding canonical result has become composable.",
+            "items": {
+              "$ref": "#/components/schemas/AppActionCompositionRequest__AppActionCompositionHop"
+            },
+            "type": "array"
+          },
+          "destination_action_id": {
+            "$ref": "#/components/schemas/AppActionCompositionRequest__AppName"
+          },
+          "destination_installation_id": {
+            "$ref": "#/components/schemas/AppActionCompositionRequest__AppInstallationId"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/AppActionCompositionRequest__AppReference"
+          },
+          "mapping": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionCompositionRequest__AppValueMappingOperation"
+            },
+            "type": "array"
+          },
+          "subscription": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppActionCompositionSubscriptionRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional payload-free cursor read over the canonical composition/run\nowners. This is part of the existing compose operation, not a ninth\nroute and not an app-to-app subscription channel."
+          }
+        },
+        "required": [
+          "destination_installation_id",
+          "destination_action_id",
+          "mapping",
+          "idempotency_key"
+        ],
+        "title": "AppActionCompositionRequest",
+        "type": "object"
+      },
+      "AppActionCompositionRequest__AppActionCompositionHop": {
+        "additionalProperties": false,
+        "properties": {
+          "destination_action_id": {
+            "$ref": "#/components/schemas/AppActionCompositionRequest__AppName"
+          },
+          "destination_installation_id": {
+            "$ref": "#/components/schemas/AppActionCompositionRequest__AppInstallationId"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/AppActionCompositionRequest__AppReference"
+          },
+          "mapping": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionCompositionRequest__AppValueMappingOperation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "destination_installation_id",
+          "destination_action_id",
+          "mapping",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "AppActionCompositionRequest__AppActionCompositionSubscriptionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "default": 8,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "AppActionCompositionRequest__AppFieldPath": {
+        "type": "string"
+      },
+      "AppActionCompositionRequest__AppInstallationId": {
+        "type": "string"
+      },
+      "AppActionCompositionRequest__AppName": {
+        "type": "string"
+      },
+      "AppActionCompositionRequest__AppReference": {
+        "type": "string"
+      },
+      "AppActionCompositionRequest__AppRegisteredScalarConversion": {
+        "enum": [
+          "integer_to_decimal",
+          "text_to_markdown",
+          "text_to_timestamp"
+        ],
+        "type": "string"
+      },
+      "AppActionCompositionRequest__AppValueMappingOperation": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "select",
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppFieldPath"
+              },
+              "target": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppFieldPath"
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "target"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "constant",
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppFieldPath"
+              },
+              "value": true
+            },
+            "required": [
+              "kind",
+              "target",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "conversion": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppRegisteredScalarConversion"
+              },
+              "kind": {
+                "const": "convert",
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppFieldPath"
+              },
+              "target": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppFieldPath"
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "target",
+              "conversion"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "map_enum",
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppFieldPath"
+              },
+              "target": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest__AppFieldPath"
+              },
+              "values": {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/AppActionCompositionRequest__AppName"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "target",
+              "values"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AppActionInvocation": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppName"
+          },
+          "action_revision": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppRevision"
+          },
+          "caller_surface_or_execution_ref": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppReference"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppReference"
+          },
+          "input": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppDataEnvelope"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppProtocolVersion"
+          },
+          "requested_result_schema_ref": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "idempotency_key",
+          "action_id",
+          "action_revision",
+          "input",
+          "requested_result_schema_ref",
+          "caller_surface_or_execution_ref"
+        ],
+        "title": "AppActionInvocation",
+        "type": "object"
+      },
+      "AppActionInvocation__AppDataClassification": {
+        "enum": [
+          "public",
+          "ordinary",
+          "personal",
+          "sensitive",
+          "secret"
+        ],
+        "type": "string"
+      },
+      "AppActionInvocation__AppDataEnvelope": {
+        "additionalProperties": false,
+        "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+        "properties": {
+          "content_digest": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppDigest"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grant_revision": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppRevision"
+          },
+          "handling_labels": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppHandlingLabels"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppInstallationId"
+          },
+          "package_revision_ref": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppReference"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppProtocolVersion"
+          },
+          "schema_revision": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppRevision"
+          },
+          "scope_binding_ref": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppScopeBindingRef"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppDataSource"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionInvocation__AppSourceRef"
+            },
+            "type": "array"
+          },
+          "value": true,
+          "value_schema_ref": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "source",
+          "scope_binding_ref",
+          "installation_id",
+          "package_revision_ref",
+          "schema_revision",
+          "grant_revision",
+          "value_schema_ref",
+          "value",
+          "handling_labels",
+          "content_digest",
+          "produced_at"
+        ],
+        "type": "object"
+      },
+      "AppActionInvocation__AppDataSource": {
+        "enum": [
+          "user_input",
+          "app_store",
+          "app_action",
+          "artifact_projection",
+          "external_adapter",
+          "import",
+          "brokered_transfer"
+        ],
+        "type": "string"
+      },
+      "AppActionInvocation__AppDigest": {
+        "type": "string"
+      },
+      "AppActionInvocation__AppFieldPath": {
+        "type": "string"
+      },
+      "AppActionInvocation__AppHandlingLabels": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppDataClassification"
+          },
+          "model_processing": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppModelProcessing"
+          },
+          "policy_digest": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppDigest"
+          },
+          "provenance_digest": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppDigest"
+          }
+        },
+        "required": [
+          "classification",
+          "model_processing",
+          "policy_digest",
+          "provenance_digest"
+        ],
+        "type": "object"
+      },
+      "AppActionInvocation__AppInstallationId": {
+        "type": "string"
+      },
+      "AppActionInvocation__AppModelProcessing": {
+        "enum": [
+          "none",
+          "local_only",
+          "remote_allowed"
+        ],
+        "type": "string"
+      },
+      "AppActionInvocation__AppName": {
+        "type": "string"
+      },
+      "AppActionInvocation__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppActionInvocation__AppReference": {
+        "type": "string"
+      },
+      "AppActionInvocation__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppActionInvocation__AppScopeBindingRef": {
+        "type": "string"
+      },
+      "AppActionInvocation__AppSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionInvocation__AppFieldPath"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppSourceRefKind"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/AppActionInvocation__AppReference"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionInvocation__AppRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "reference"
+        ],
+        "type": "object"
+      },
+      "AppActionInvocation__AppSourceRefKind": {
+        "enum": [
+          "entity_record",
+          "entity_field",
+          "artifact",
+          "external_receipt",
+          "mutation_receipt"
+        ],
+        "type": "string"
+      },
+      "AppActionLaunchResponse": {
+        "additionalProperties": false,
+        "description": "Supported-public launch response for one logical app action.\n\nInternal task identifiers are deliberately absent. A client correlates,\npolls, and controls the action exclusively through the opaque run handle;\nexecution identity is diagnostic and may change across retry/delegation.",
+        "properties": {
+          "execution_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionLaunchResponse__AppActionResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_handle": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppRunHandle"
+          }
+        },
+        "required": [
+          "run_handle"
+        ],
+        "title": "AppActionLaunchResponse",
+        "type": "object"
+      },
+      "AppActionLaunchResponse__AppActionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppName"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionLaunchResponse__AppErrorEnvelope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "external_effect_receipt_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionLaunchResponse__AppReference"
+            },
+            "type": "array"
+          },
+          "mutation_receipt_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionLaunchResponse__AppReference"
+            },
+            "type": "array"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionLaunchResponse__AppDataEnvelope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppProtocolVersion"
+          },
+          "run_ref": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppReference",
+            "description": "Stable logical run identity, never a particular execution attempt."
+          },
+          "status": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppActionStatus"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "action_id",
+          "run_ref",
+          "status"
+        ],
+        "type": "object"
+      },
+      "AppActionLaunchResponse__AppActionStatus": {
+        "enum": [
+          "completed",
+          "waiting",
+          "failed",
+          "uncertain"
+        ],
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppDataClassification": {
+        "enum": [
+          "public",
+          "ordinary",
+          "personal",
+          "sensitive",
+          "secret"
+        ],
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppDataEnvelope": {
+        "additionalProperties": false,
+        "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+        "properties": {
+          "content_digest": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppDigest"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grant_revision": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppRevision"
+          },
+          "handling_labels": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppHandlingLabels"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppInstallationId"
+          },
+          "package_revision_ref": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppReference"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppProtocolVersion"
+          },
+          "schema_revision": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppRevision"
+          },
+          "scope_binding_ref": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppScopeBindingRef"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppDataSource"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionLaunchResponse__AppSourceRef"
+            },
+            "type": "array"
+          },
+          "value": true,
+          "value_schema_ref": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "source",
+          "scope_binding_ref",
+          "installation_id",
+          "package_revision_ref",
+          "schema_revision",
+          "grant_revision",
+          "value_schema_ref",
+          "value",
+          "handling_labels",
+          "content_digest",
+          "produced_at"
+        ],
+        "type": "object"
+      },
+      "AppActionLaunchResponse__AppDataSource": {
+        "enum": [
+          "user_input",
+          "app_store",
+          "app_action",
+          "artifact_projection",
+          "external_adapter",
+          "import",
+          "brokered_transfer"
+        ],
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppDigest": {
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppErrorCode": {
+        "description": "Stable cross-adapter error families. Concrete HTTP error strings remain a\nfiner-grained compatibility surface and are listed per operation.",
+        "enum": [
+          "invalid_request",
+          "not_authorized",
+          "not_found",
+          "conflict",
+          "stale_revision",
+          "schema_mismatch",
+          "policy_denied",
+          "resource_exhausted",
+          "rate_limited",
+          "unavailable",
+          "timeout",
+          "canceled",
+          "external_outcome_uncertain",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppErrorDisposition": {
+        "description": "Machine-interpretable recovery posture for canonical app failures.",
+        "enum": [
+          "terminal",
+          "retry_same_input",
+          "refresh_and_retry",
+          "reauthorize",
+          "user_action_required",
+          "outcome_uncertain"
+        ],
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppErrorEnvelope": {
+        "additionalProperties": false,
+        "description": "Bounded, machine-interpretable failure detail shared by every app adapter.\n`message` is display context, never the semantic error contract.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppErrorCode"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppErrorDisposition"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "disposition",
+          "message"
+        ],
+        "type": "object"
+      },
+      "AppActionLaunchResponse__AppFieldPath": {
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppHandlingLabels": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppDataClassification"
+          },
+          "model_processing": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppModelProcessing"
+          },
+          "policy_digest": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppDigest"
+          },
+          "provenance_digest": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppDigest"
+          }
+        },
+        "required": [
+          "classification",
+          "model_processing",
+          "policy_digest",
+          "provenance_digest"
+        ],
+        "type": "object"
+      },
+      "AppActionLaunchResponse__AppInstallationId": {
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppModelProcessing": {
+        "enum": [
+          "none",
+          "local_only",
+          "remote_allowed"
+        ],
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppName": {
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppReference": {
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppActionLaunchResponse__AppRunHandle": {
+        "additionalProperties": false,
+        "description": "Stable server-owned identity for one logical app action run.\n\nThe handle contains no authority: every consumer must authenticate its\nscope and reopen the durable workflow binding for status/control. Returning\nresult bytes additionally requires current installation/grant/schema and\nsource-policy revalidation. `run_ref` remains stable when the runtime\ncreates a replacement or delegated execution for the same idempotent action.",
+        "properties": {
+          "action_id": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppName"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppInstallationId"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppProtocolVersion"
+          },
+          "run_ref": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "run_ref",
+          "installation_id",
+          "action_id"
+        ],
+        "type": "object"
+      },
+      "AppActionLaunchResponse__AppScopeBindingRef": {
+        "type": "string"
+      },
+      "AppActionLaunchResponse__AppSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionLaunchResponse__AppFieldPath"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppSourceRefKind"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/AppActionLaunchResponse__AppReference"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionLaunchResponse__AppRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "reference"
+        ],
+        "type": "object"
+      },
+      "AppActionLaunchResponse__AppSourceRefKind": {
+        "enum": [
+          "entity_record",
+          "entity_field",
+          "artifact",
+          "external_receipt",
+          "mutation_receipt"
+        ],
+        "type": "string"
+      },
+      "AppActionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "$ref": "#/components/schemas/AppActionResult__AppName"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionResult__AppErrorEnvelope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "external_effect_receipt_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionResult__AppReference"
+            },
+            "type": "array"
+          },
+          "mutation_receipt_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionResult__AppReference"
+            },
+            "type": "array"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionResult__AppDataEnvelope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionResult__AppProtocolVersion"
+          },
+          "run_ref": {
+            "$ref": "#/components/schemas/AppActionResult__AppReference",
+            "description": "Stable logical run identity, never a particular execution attempt."
+          },
+          "status": {
+            "$ref": "#/components/schemas/AppActionResult__AppActionStatus"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "action_id",
+          "run_ref",
+          "status"
+        ],
+        "title": "AppActionResult",
+        "type": "object"
+      },
+      "AppActionResultComposition": {
+        "description": "Wire response for the existing compose operation. Flattening preserves the\nstable status-tagged response while adding chain correlation and an\noptional payload-free subscription page.",
+        "oneOf": [
+          {
+            "properties": {
+              "source_run": {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppRunHandle"
+              },
+              "status": {
+                "const": "waiting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "source_run"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "launch": {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppCompositionWorkflowLaunch"
+              },
+              "result_withheld_by_policy": {
+                "type": "boolean"
+              },
+              "source_run": {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppRunHandle"
+              },
+              "status": {
+                "const": "launched",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "source_run",
+              "launch",
+              "result_withheld_by_policy"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "source_run": {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppRunHandle"
+              },
+              "source_status": {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppRunStatus"
+              },
+              "status": {
+                "const": "source_terminal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "source_run",
+              "source_status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "effect_uncertain": {
+                "type": "boolean"
+              },
+              "error_code": {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppActionCompositionErrorCode"
+              },
+              "retry_class": {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppCompositionRetryClass"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "source_run": {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppRunHandle"
+              },
+              "status": {
+                "const": "unavailable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "source_run",
+              "error_code",
+              "retry_class",
+              "retryable",
+              "effect_uncertain"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "chain": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppActionCompositionChainProgress"
+          },
+          "subscription": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppActionCompositionSubscriptionPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "chain"
+        ],
+        "title": "AppActionCompositionResponse",
+        "type": "object"
+      },
+      "AppActionResultComposition__AppActionCompositionChainProgress": {
+        "additionalProperties": false,
+        "properties": {
+          "active_destination_action_id": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppName"
+          },
+          "active_destination_installation_id": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppInstallationId"
+          },
+          "active_source_run_ref": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppReference"
+          },
+          "hop_count": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hop_index": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "origin_source_run_ref": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppReference"
+          }
+        },
+        "required": [
+          "origin_source_run_ref",
+          "active_source_run_ref",
+          "active_destination_installation_id",
+          "active_destination_action_id",
+          "hop_index",
+          "hop_count"
+        ],
+        "type": "object"
+      },
+      "AppActionResultComposition__AppActionCompositionErrorCode": {
+        "enum": [
+          "outcome_unavailable",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "AppActionResultComposition__AppActionCompositionSubscriptionPage": {
+        "additionalProperties": false,
+        "properties": {
+          "after_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "current_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppReference"
+          },
+          "reset_required": {
+            "type": "boolean"
+          },
+          "through_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "updates": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionResultComposition__AppActionCompositionUpdate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "after_sequence",
+          "through_sequence",
+          "current_sequence",
+          "updates",
+          "has_more",
+          "reset_required",
+          "next_cursor",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "AppActionResultComposition__AppActionCompositionUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "destination_action_id": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppName"
+          },
+          "destination_installation_id": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppInstallationId"
+          },
+          "destination_run_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_run_ref": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppReference"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppActionCompositionUpdateStatus"
+          }
+        },
+        "required": [
+          "sequence",
+          "source_run_ref",
+          "destination_installation_id",
+          "destination_action_id",
+          "status",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "AppActionResultComposition__AppActionCompositionUpdateStatus": {
+        "enum": [
+          "waiting",
+          "launched",
+          "source_terminal",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "AppActionResultComposition__AppActionStatus": {
+        "enum": [
+          "completed",
+          "waiting",
+          "failed",
+          "uncertain"
+        ],
+        "type": "string"
+      },
+      "AppActionResultComposition__AppCompositionRetryClass": {
+        "enum": [
+          "permanent",
+          "transient",
+          "effect_uncertain",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "AppActionResultComposition__AppCompositionWorkflowLaunch": {
+        "additionalProperties": false,
+        "description": "Model-facing launch projection. Canonical workflow results keep their full\nlabeled envelope and provenance in the task sidecars; composition returns\nonly stable control identity and the eligible typed value.",
+        "properties": {
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionResultComposition__AppModelActionResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_handle": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppRunHandle"
+          }
+        },
+        "required": [
+          "run_handle"
+        ],
+        "type": "object"
+      },
+      "AppActionResultComposition__AppInstallationId": {
+        "type": "string"
+      },
+      "AppActionResultComposition__AppModelActionResult": {
+        "additionalProperties": false,
+        "description": "Model-facing projection of a canonical app result.\n\nThe durable [`AppActionResult`] deliberately retains complete provenance,\nsource references, handling labels and effect receipts for replay and audit.\nA composition tool must not serialize that internal envelope merely because\nthe result value itself is eligible for the calling model. This projection\ncarries only the typed value and stable lifecycle identity; the canonical\nresult remains available through the policy-aware app-run owner.",
+        "properties": {
+          "action_id": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppName"
+          },
+          "effect_committed": {
+            "description": "Content-free signal that the canonical result sealed at least one\nmutation or external-effect receipt. Receipt identities stay internal.",
+            "type": "boolean"
+          },
+          "output": true,
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppProtocolVersion"
+          },
+          "run_ref": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppReference"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppActionStatus"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "action_id",
+          "run_ref",
+          "status",
+          "effect_committed"
+        ],
+        "type": "object"
+      },
+      "AppActionResultComposition__AppName": {
+        "type": "string"
+      },
+      "AppActionResultComposition__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppActionResultComposition__AppReference": {
+        "type": "string"
+      },
+      "AppActionResultComposition__AppRunHandle": {
+        "additionalProperties": false,
+        "description": "Stable server-owned identity for one logical app action run.\n\nThe handle contains no authority: every consumer must authenticate its\nscope and reopen the durable workflow binding for status/control. Returning\nresult bytes additionally requires current installation/grant/schema and\nsource-policy revalidation. `run_ref` remains stable when the runtime\ncreates a replacement or delegated execution for the same idempotent action.",
+        "properties": {
+          "action_id": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppName"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppInstallationId"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppProtocolVersion"
+          },
+          "run_ref": {
+            "$ref": "#/components/schemas/AppActionResultComposition__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "run_ref",
+          "installation_id",
+          "action_id"
+        ],
+        "type": "object"
+      },
+      "AppActionResultComposition__AppRunStatus": {
+        "description": "Stable public lifecycle for one logical app run.\n\nArtifact V2 owns a richer internal execution state machine. This smaller\nenum is the app protocol projection: clients never infer terminality from\nan HTTP status code or from an open-ended internal status string.",
+        "enum": [
+          "queued",
+          "planning",
+          "running",
+          "paused",
+          "deferred",
+          "waiting",
+          "blocked",
+          "cancelling",
+          "completed",
+          "failed",
+          "cancelled",
+          "archived",
+          "uncertain"
+        ],
+        "type": "string"
+      },
+      "AppActionResult__AppActionStatus": {
+        "enum": [
+          "completed",
+          "waiting",
+          "failed",
+          "uncertain"
+        ],
+        "type": "string"
+      },
+      "AppActionResult__AppDataClassification": {
+        "enum": [
+          "public",
+          "ordinary",
+          "personal",
+          "sensitive",
+          "secret"
+        ],
+        "type": "string"
+      },
+      "AppActionResult__AppDataEnvelope": {
+        "additionalProperties": false,
+        "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+        "properties": {
+          "content_digest": {
+            "$ref": "#/components/schemas/AppActionResult__AppDigest"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grant_revision": {
+            "$ref": "#/components/schemas/AppActionResult__AppRevision"
+          },
+          "handling_labels": {
+            "$ref": "#/components/schemas/AppActionResult__AppHandlingLabels"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppActionResult__AppInstallationId"
+          },
+          "package_revision_ref": {
+            "$ref": "#/components/schemas/AppActionResult__AppReference"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppActionResult__AppProtocolVersion"
+          },
+          "schema_revision": {
+            "$ref": "#/components/schemas/AppActionResult__AppRevision"
+          },
+          "scope_binding_ref": {
+            "$ref": "#/components/schemas/AppActionResult__AppScopeBindingRef"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AppActionResult__AppDataSource"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionResult__AppSourceRef"
+            },
+            "type": "array"
+          },
+          "value": true,
+          "value_schema_ref": {
+            "$ref": "#/components/schemas/AppActionResult__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "source",
+          "scope_binding_ref",
+          "installation_id",
+          "package_revision_ref",
+          "schema_revision",
+          "grant_revision",
+          "value_schema_ref",
+          "value",
+          "handling_labels",
+          "content_digest",
+          "produced_at"
+        ],
+        "type": "object"
+      },
+      "AppActionResult__AppDataSource": {
+        "enum": [
+          "user_input",
+          "app_store",
+          "app_action",
+          "artifact_projection",
+          "external_adapter",
+          "import",
+          "brokered_transfer"
+        ],
+        "type": "string"
+      },
+      "AppActionResult__AppDigest": {
+        "type": "string"
+      },
+      "AppActionResult__AppErrorCode": {
+        "description": "Stable cross-adapter error families. Concrete HTTP error strings remain a\nfiner-grained compatibility surface and are listed per operation.",
+        "enum": [
+          "invalid_request",
+          "not_authorized",
+          "not_found",
+          "conflict",
+          "stale_revision",
+          "schema_mismatch",
+          "policy_denied",
+          "resource_exhausted",
+          "rate_limited",
+          "unavailable",
+          "timeout",
+          "canceled",
+          "external_outcome_uncertain",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "AppActionResult__AppErrorDisposition": {
+        "description": "Machine-interpretable recovery posture for canonical app failures.",
+        "enum": [
+          "terminal",
+          "retry_same_input",
+          "refresh_and_retry",
+          "reauthorize",
+          "user_action_required",
+          "outcome_uncertain"
+        ],
+        "type": "string"
+      },
+      "AppActionResult__AppErrorEnvelope": {
+        "additionalProperties": false,
+        "description": "Bounded, machine-interpretable failure detail shared by every app adapter.\n`message` is display context, never the semantic error contract.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/AppActionResult__AppErrorCode"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/AppActionResult__AppErrorDisposition"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "disposition",
+          "message"
+        ],
+        "type": "object"
+      },
+      "AppActionResult__AppFieldPath": {
+        "type": "string"
+      },
+      "AppActionResult__AppHandlingLabels": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/AppActionResult__AppDataClassification"
+          },
+          "model_processing": {
+            "$ref": "#/components/schemas/AppActionResult__AppModelProcessing"
+          },
+          "policy_digest": {
+            "$ref": "#/components/schemas/AppActionResult__AppDigest"
+          },
+          "provenance_digest": {
+            "$ref": "#/components/schemas/AppActionResult__AppDigest"
+          }
+        },
+        "required": [
+          "classification",
+          "model_processing",
+          "policy_digest",
+          "provenance_digest"
+        ],
+        "type": "object"
+      },
+      "AppActionResult__AppInstallationId": {
+        "type": "string"
+      },
+      "AppActionResult__AppModelProcessing": {
+        "enum": [
+          "none",
+          "local_only",
+          "remote_allowed"
+        ],
+        "type": "string"
+      },
+      "AppActionResult__AppName": {
+        "type": "string"
+      },
+      "AppActionResult__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppActionResult__AppReference": {
+        "type": "string"
+      },
+      "AppActionResult__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppActionResult__AppScopeBindingRef": {
+        "type": "string"
+      },
+      "AppActionResult__AppSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/AppActionResult__AppFieldPath"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AppActionResult__AppSourceRefKind"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/AppActionResult__AppReference"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppActionResult__AppRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "reference"
+        ],
+        "type": "object"
+      },
+      "AppActionResult__AppSourceRefKind": {
+        "enum": [
+          "entity_record",
+          "entity_field",
+          "artifact",
+          "external_receipt",
+          "mutation_receipt"
+        ],
+        "type": "string"
+      },
+      "AppArtifactProjection": {
+        "additionalProperties": false,
+        "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+        "properties": {
+          "content_digest": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppDigest"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grant_revision": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppRevision"
+          },
+          "handling_labels": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppHandlingLabels"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppInstallationId"
+          },
+          "package_revision_ref": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppReference"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppProtocolVersion"
+          },
+          "schema_revision": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppRevision"
+          },
+          "scope_binding_ref": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppScopeBindingRef"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppDataSource"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppArtifactProjection__AppSourceRef"
+            },
+            "type": "array"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppArtifactProjection"
+          },
+          "value_schema_ref": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "source",
+          "scope_binding_ref",
+          "installation_id",
+          "package_revision_ref",
+          "schema_revision",
+          "grant_revision",
+          "value_schema_ref",
+          "value",
+          "handling_labels",
+          "content_digest",
+          "produced_at"
+        ],
+        "title": "AppDataEnvelope",
+        "type": "object"
+      },
+      "AppArtifactProjection__AppArtifactProjection": {
+        "additionalProperties": false,
+        "description": "Artifact V2 projection carried as the value of an [`AppDataEnvelope`].\n\nThe surrounding envelope supplies scope, handling labels and provenance;\nthis descriptor supplies the exact immutable artifact, media and schema\nidentity. An artifact reference embedded in arbitrary JSON is not an\nequivalent contract.",
+        "properties": {
+          "artifact_ref": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppReference"
+          },
+          "artifact_revision": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppRevision"
+          },
+          "byte_len": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content_digest": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppDigest"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "value_schema_ref": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppReference"
+          }
+        },
+        "required": [
+          "artifact_ref",
+          "artifact_revision",
+          "media_type",
+          "byte_len",
+          "content_digest",
+          "value_schema_ref"
+        ],
+        "type": "object"
+      },
+      "AppArtifactProjection__AppDataClassification": {
+        "enum": [
+          "public",
+          "ordinary",
+          "personal",
+          "sensitive",
+          "secret"
+        ],
+        "type": "string"
+      },
+      "AppArtifactProjection__AppDataSource": {
+        "enum": [
+          "user_input",
+          "app_store",
+          "app_action",
+          "artifact_projection",
+          "external_adapter",
+          "import",
+          "brokered_transfer"
+        ],
+        "type": "string"
+      },
+      "AppArtifactProjection__AppDigest": {
+        "type": "string"
+      },
+      "AppArtifactProjection__AppFieldPath": {
+        "type": "string"
+      },
+      "AppArtifactProjection__AppHandlingLabels": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppDataClassification"
+          },
+          "model_processing": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppModelProcessing"
+          },
+          "policy_digest": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppDigest"
+          },
+          "provenance_digest": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppDigest"
+          }
+        },
+        "required": [
+          "classification",
+          "model_processing",
+          "policy_digest",
+          "provenance_digest"
+        ],
+        "type": "object"
+      },
+      "AppArtifactProjection__AppInstallationId": {
+        "type": "string"
+      },
+      "AppArtifactProjection__AppModelProcessing": {
+        "enum": [
+          "none",
+          "local_only",
+          "remote_allowed"
+        ],
+        "type": "string"
+      },
+      "AppArtifactProjection__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppArtifactProjection__AppReference": {
+        "type": "string"
+      },
+      "AppArtifactProjection__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppArtifactProjection__AppScopeBindingRef": {
+        "type": "string"
+      },
+      "AppArtifactProjection__AppSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/AppArtifactProjection__AppFieldPath"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppSourceRefKind"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/AppArtifactProjection__AppReference"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppArtifactProjection__AppRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "reference"
+        ],
+        "type": "object"
+      },
+      "AppArtifactProjection__AppSourceRefKind": {
+        "enum": [
+          "entity_record",
+          "entity_field",
+          "artifact",
+          "external_receipt",
+          "mutation_receipt"
+        ],
+        "type": "string"
+      },
+      "AppContractCapabilities": {
+        "properties": {
+          "contract_version": {
+            "type": "string"
+          },
+          "deprecations": {
+            "items": {
+              "$ref": "#/components/schemas/AppContractCapabilities__AppContractDeprecation"
+            },
+            "type": "array"
+          },
+          "json_schema_dialect": {
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/AppContractCapabilities__AppContractCapabilityLimits"
+          },
+          "operation_inventory_digest": {
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/AppContractCapabilities__AppPublicOperation"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sdk_compatibility": {
+            "$ref": "#/components/schemas/AppContractCapabilities__AppSdkCompatibilityWindow"
+          },
+          "supported_manifest_features": {
+            "items": {
+              "$ref": "#/components/schemas/AppContractCapabilities__AppManifestFeature"
+            },
+            "type": "array"
+          },
+          "supported_manifest_schema_versions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "supported_protocol_versions": {
+            "items": {
+              "$ref": "#/components/schemas/AppContractCapabilities__AppProtocolVersion"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "contract_version",
+          "supported_protocol_versions",
+          "supported_manifest_schema_versions",
+          "supported_manifest_features",
+          "json_schema_dialect",
+          "limits",
+          "sdk_compatibility",
+          "deprecations",
+          "operation_inventory_digest",
+          "operations"
+        ],
+        "title": "AppContractCapabilities",
+        "type": "object"
+      },
+      "AppContractCapabilities__AppContractCapabilityLimits": {
+        "properties": {
+          "max_collection_items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_document_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_entity_change_page_rows": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_json_depth": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_json_nodes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_page_rows": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_predicate_depth": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_predicate_nodes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_value_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_value_nodes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_document_bytes",
+          "max_json_depth",
+          "max_json_nodes",
+          "max_value_bytes",
+          "max_value_nodes",
+          "max_collection_items",
+          "max_predicate_nodes",
+          "max_predicate_depth",
+          "max_page_rows",
+          "max_entity_change_page_rows"
+        ],
+        "type": "object"
+      },
+      "AppContractCapabilities__AppContractDeprecation": {
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "removal_contract_major": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "replacement": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "replacement"
+        ],
+        "type": "object"
+      },
+      "AppContractCapabilities__AppHttpMethod": {
+        "enum": [
+          "GET",
+          "POST"
+        ],
+        "type": "string"
+      },
+      "AppContractCapabilities__AppManifestFeature": {
+        "oneOf": [
+          {
+            "enum": [
+              "typed_entities_v1",
+              "declarative_views_v1",
+              "governed_actions_v1",
+              "immutable_dependencies_v1",
+              "owner_data_plane_v1",
+              "durable_action_runs_v1",
+              "contribution_ports_v1",
+              "attention_lanes_v1",
+              "llm_operations_v1"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "custom_surfaces_v1",
+            "description": "Scripted custom interactive surfaces (plan 1.6,\n`CustomInteractiveSurfacesV1`): static web assets from the\npackage's own immutable `surfaces/` tree hosted in a sandboxed\nframe whose only authority is the eight supported-public bridge\noperations. Absent the feature, executable `surfaces/` members\nstay refused exactly as before — the feature is a review gate,\nnever implicit.",
+            "type": "string"
+          },
+          {
+            "const": "app_widgets_v1",
+            "description": "Declarative, host-rendered app widgets and ambient indicators plus\ninternal-app navigation metadata. The sibling distribution vocabulary\nis independent because a system ops package need not be surfaced. The\nfeature adds review material only; render, evaluator, slot, and route\nconsumers must still reconstruct live installation authority server-side.",
+            "type": "string"
+          },
+          {
+            "const": "app_behaviors_v1",
+            "description": "Durable host-executed scheduled behaviors. The manifest declaration is\nreview material only: an enabled installation still needs an exact\nowner-narrowed behavior grant and every fire must reopen live authority.",
+            "type": "string"
+          },
+          {
+            "const": "app_event_behaviors_v1",
+            "description": "Durable, host-projected first-party events may request an exact\nevent-triggered behavior. The declaration is inert until an owner\ngrants the complete source/projection/action/resource binding.",
+            "type": "string"
+          },
+          {
+            "const": "app_owner_notifications_v1",
+            "description": "Workflow-local, one-way briefing/escalation ports into the owner's\nnotification funnel. Questions and response authority are deliberately\noutside V1.",
+            "type": "string"
+          },
+          {
+            "const": "app_memory_read_v1",
+            "description": "Owner-controlled reads of the owner's memory (named user tiers and\nnamed agents' learned memory). The manifest block is only a request:\nthe owner grants a subset, split between interactive and background\nruns, and can narrow or revoke it at any time.",
+            "type": "string"
+          }
+        ]
+      },
+      "AppContractCapabilities__AppOperationAuthPosture": {
+        "oneOf": [
+          {
+            "const": "verified_session",
+            "description": "A middleware-verified browser, paired-device, or loopback identity.",
+            "type": "string"
+          },
+          {
+            "const": "verified_owner_scope",
+            "description": "A verified identity plus a server-bound principal/workspace scope.",
+            "type": "string"
+          }
+        ]
+      },
+      "AppContractCapabilities__AppOperationIdempotency": {
+        "enum": [
+          "read_only",
+          "client_keyed"
+        ],
+        "type": "string"
+      },
+      "AppContractCapabilities__AppOperationParameterLocation": {
+        "enum": [
+          "path",
+          "query"
+        ],
+        "type": "string"
+      },
+      "AppContractCapabilities__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppContractCapabilities__AppPublicOperation": {
+        "properties": {
+          "auth": {
+            "$ref": "#/components/schemas/AppContractCapabilities__AppOperationAuthPosture"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "idempotency": {
+            "$ref": "#/components/schemas/AppContractCapabilities__AppOperationIdempotency"
+          },
+          "method": {
+            "$ref": "#/components/schemas/AppContractCapabilities__AppHttpMethod"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "parameters": {
+            "items": {
+              "$ref": "#/components/schemas/AppContractCapabilities__AppPublicParameter"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_example": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_example": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_schema": {
+            "type": "string"
+          },
+          "success_statuses": {
+            "items": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "method",
+          "path",
+          "summary",
+          "auth",
+          "idempotency",
+          "parameters",
+          "success_statuses",
+          "response_schema",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "AppContractCapabilities__AppPublicParameter": {
+        "properties": {
+          "default": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/AppContractCapabilities__AppOperationParameterLocation"
+          },
+          "maximum": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "minimum": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "schema_format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "location",
+          "required",
+          "schema_type",
+          "description"
+        ],
+        "type": "object"
+      },
+      "AppContractCapabilities__AppSdkCompatibilityPolicy": {
+        "oneOf": [
+          {
+            "const": "current_contract_only",
+            "description": "Until the first stable SDK ships, only the current contract is a\nsupported generation target. This must be widened deliberately.",
+            "type": "string"
+          }
+        ]
+      },
+      "AppContractCapabilities__AppSdkCompatibilityWindow": {
+        "properties": {
+          "generated_by_is_authority": {
+            "type": "boolean"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/AppContractCapabilities__AppSdkCompatibilityPolicy"
+          },
+          "supported_contract_versions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "policy",
+          "supported_contract_versions",
+          "generated_by_is_authority"
+        ],
+        "type": "object"
+      },
+      "AppDataEnvelope": {
+        "additionalProperties": false,
+        "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+        "properties": {
+          "content_digest": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppDigest"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grant_revision": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppRevision"
+          },
+          "handling_labels": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppHandlingLabels"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppInstallationId"
+          },
+          "package_revision_ref": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppReference"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppProtocolVersion"
+          },
+          "schema_revision": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppRevision"
+          },
+          "scope_binding_ref": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppScopeBindingRef"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppDataSource"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppDataEnvelope__AppSourceRef"
+            },
+            "type": "array"
+          },
+          "value": true,
+          "value_schema_ref": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "source",
+          "scope_binding_ref",
+          "installation_id",
+          "package_revision_ref",
+          "schema_revision",
+          "grant_revision",
+          "value_schema_ref",
+          "value",
+          "handling_labels",
+          "content_digest",
+          "produced_at"
+        ],
+        "title": "AppDataEnvelope",
+        "type": "object"
+      },
+      "AppDataEnvelope__AppDataClassification": {
+        "enum": [
+          "public",
+          "ordinary",
+          "personal",
+          "sensitive",
+          "secret"
+        ],
+        "type": "string"
+      },
+      "AppDataEnvelope__AppDataSource": {
+        "enum": [
+          "user_input",
+          "app_store",
+          "app_action",
+          "artifact_projection",
+          "external_adapter",
+          "import",
+          "brokered_transfer"
+        ],
+        "type": "string"
+      },
+      "AppDataEnvelope__AppDigest": {
+        "type": "string"
+      },
+      "AppDataEnvelope__AppFieldPath": {
+        "type": "string"
+      },
+      "AppDataEnvelope__AppHandlingLabels": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppDataClassification"
+          },
+          "model_processing": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppModelProcessing"
+          },
+          "policy_digest": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppDigest"
+          },
+          "provenance_digest": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppDigest"
+          }
+        },
+        "required": [
+          "classification",
+          "model_processing",
+          "policy_digest",
+          "provenance_digest"
+        ],
+        "type": "object"
+      },
+      "AppDataEnvelope__AppInstallationId": {
+        "type": "string"
+      },
+      "AppDataEnvelope__AppModelProcessing": {
+        "enum": [
+          "none",
+          "local_only",
+          "remote_allowed"
+        ],
+        "type": "string"
+      },
+      "AppDataEnvelope__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppDataEnvelope__AppReference": {
+        "type": "string"
+      },
+      "AppDataEnvelope__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppDataEnvelope__AppScopeBindingRef": {
+        "type": "string"
+      },
+      "AppDataEnvelope__AppSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/AppDataEnvelope__AppFieldPath"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppSourceRefKind"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/AppDataEnvelope__AppReference"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppDataEnvelope__AppRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "reference"
+        ],
+        "type": "object"
+      },
+      "AppDataEnvelope__AppSourceRefKind": {
+        "enum": [
+          "entity_record",
+          "entity_field",
+          "artifact",
+          "external_receipt",
+          "mutation_receipt"
+        ],
+        "type": "string"
+      },
+      "AppDirectActionRequest": {
+        "additionalProperties": false,
+        "description": "Minimal owner-client request for a direct app action. Client-selected\nschema, grant, policy and provenance fields are intentionally absent; the\noptional installation binding is only a stale-render precondition. The\nserver resolves and rechecks all executable authority at admission.",
+        "properties": {
+          "expected_installation_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppDirectActionRequest__AppDirectActionExpectedInstallationBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/AppDirectActionRequest__AppReference"
+          },
+          "input": true
+        },
+        "required": [
+          "idempotency_key",
+          "input"
+        ],
+        "title": "AppDirectActionRequest",
+        "type": "object"
+      },
+      "AppDirectActionRequest__AppDirectActionExpectedInstallationBinding": {
+        "additionalProperties": false,
+        "description": "Optional client-observed installation precondition for a direct app action.\nIt carries no authority: the server compares it with live registry state or\nan exact sealed replay and still owns every admitted revision and policy.",
+        "properties": {
+          "generation": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "package_revision_ref": {
+            "$ref": "#/components/schemas/AppDirectActionRequest__AppReference"
+          }
+        },
+        "required": [
+          "generation",
+          "package_revision_ref"
+        ],
+        "type": "object"
+      },
+      "AppDirectActionRequest__AppReference": {
+        "type": "string"
+      },
+      "AppEntityChangeBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "after_change_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/AppEntityChangeBatch__AppEntityChange"
+            },
+            "type": "array"
+          },
+          "current_change_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppEntityChangeBatch__AppInstallationId"
+          },
+          "reset_required": {
+            "type": "boolean"
+          },
+          "surface_revision": {
+            "$ref": "#/components/schemas/AppEntityChangeBatch__AppRevision"
+          },
+          "through_change_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "installation_id",
+          "surface_revision",
+          "after_change_sequence",
+          "through_change_sequence",
+          "current_change_sequence",
+          "changes",
+          "has_more",
+          "reset_required"
+        ],
+        "title": "AppEntityChangeBatch",
+        "type": "object"
+      },
+      "AppEntityChangeBatch__AppEntityChange": {
+        "additionalProperties": false,
+        "properties": {
+          "change_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "entity": {
+            "$ref": "#/components/schemas/AppEntityChangeBatch__AppName"
+          },
+          "record_id": {
+            "$ref": "#/components/schemas/AppEntityChangeBatch__AppRecordId"
+          },
+          "record_revision": {
+            "$ref": "#/components/schemas/AppEntityChangeBatch__AppRevision"
+          }
+        },
+        "required": [
+          "entity",
+          "record_id",
+          "record_revision",
+          "change_sequence"
+        ],
+        "type": "object"
+      },
+      "AppEntityChangeBatch__AppInstallationId": {
+        "type": "string"
+      },
+      "AppEntityChangeBatch__AppName": {
+        "type": "string"
+      },
+      "AppEntityChangeBatch__AppRecordId": {
+        "type": "string"
+      },
+      "AppEntityChangeBatch__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppErrorEnvelope": {
+        "additionalProperties": false,
+        "description": "Bounded, machine-interpretable failure detail shared by every app adapter.\n`message` is display context, never the semantic error contract.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/AppErrorEnvelope__AppErrorCode"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/AppErrorEnvelope__AppErrorDisposition"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "disposition",
+          "message"
+        ],
+        "title": "AppErrorEnvelope",
+        "type": "object"
+      },
+      "AppErrorEnvelope__AppErrorCode": {
+        "description": "Stable cross-adapter error families. Concrete HTTP error strings remain a\nfiner-grained compatibility surface and are listed per operation.",
+        "enum": [
+          "invalid_request",
+          "not_authorized",
+          "not_found",
+          "conflict",
+          "stale_revision",
+          "schema_mismatch",
+          "policy_denied",
+          "resource_exhausted",
+          "rate_limited",
+          "unavailable",
+          "timeout",
+          "canceled",
+          "external_outcome_uncertain",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "AppErrorEnvelope__AppErrorDisposition": {
+        "description": "Machine-interpretable recovery posture for canonical app failures.",
+        "enum": [
+          "terminal",
+          "retry_same_input",
+          "refresh_and_retry",
+          "reauthorize",
+          "user_action_required",
+          "outcome_uncertain"
+        ],
+        "type": "string"
+      },
+      "AppMutationCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "atomicity": {
+            "$ref": "#/components/schemas/AppMutationCommand__AppMutationAtomicity"
+          },
+          "expected_record_revisions": {
+            "items": {
+              "$ref": "#/components/schemas/AppMutationCommand__AppExpectedRecordRevision"
+            },
+            "type": "array"
+          },
+          "expected_schema_revision": {
+            "$ref": "#/components/schemas/AppMutationCommand__AppRevision"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/AppMutationCommand__AppReference"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/AppMutationCommand__AppMutationOperation"
+            },
+            "type": "array"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppMutationCommand__AppProtocolVersion"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "idempotency_key",
+          "atomicity",
+          "expected_schema_revision",
+          "operations"
+        ],
+        "title": "AppMutationCommand",
+        "type": "object"
+      },
+      "AppMutationCommand__AppExpectedRecordRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "$ref": "#/components/schemas/AppMutationCommand__AppName"
+          },
+          "record_id": {
+            "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/AppMutationCommand__AppRevision"
+          }
+        },
+        "required": [
+          "entity",
+          "record_id",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "AppMutationCommand__AppMutationAtomicity": {
+        "enum": [
+          "all_or_nothing"
+        ],
+        "type": "string"
+      },
+      "AppMutationCommand__AppMutationOperation": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "entity": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppName"
+              },
+              "kind": {
+                "const": "create",
+                "type": "string"
+              },
+              "payload": true,
+              "record_id": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Caller-chosen record id, when the caller needs to be able to name\nthe row again later.\n\nOmitted — the default and the norm — the store mints\n`rec_<hex>` from the mutation key and the `temporary_id`. That id is\nstable under replay, which is what makes a retried create an exact\nreplay rather than a second row, but it is unknowable to whoever\nwrote the package: it depends on the mutation key.\n\nThat is a problem for exactly one shape, and it is why this field\nexists. A declared behavior resolves its input by record id\n(`AppManifestBehaviorInputSelector`), so a package that owns a\nsingleton must be able to write a row it can name in its own\nmanifest. Without this, no literal an author can spell ever\nresolves, and the behavior fails to find its source record forever.\n\nNaming a row does not widen what a caller may write. The id is\nstill confined to an entity the caller is authorized to mutate, a\ncreate against an id that already exists is refused rather than\ntreated as an overwrite, and the host-minted `rec_` namespace is\nreserved so a caller cannot aim at an id the store is about to mint."
+              },
+              "temporary_id": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppName"
+              }
+            },
+            "required": [
+              "kind",
+              "entity",
+              "temporary_id",
+              "payload"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "entity": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppName"
+              },
+              "kind": {
+                "const": "update",
+                "type": "string"
+              },
+              "patch": true,
+              "record_id": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+              }
+            },
+            "required": [
+              "kind",
+              "entity",
+              "record_id",
+              "patch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "entity": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppName"
+              },
+              "kind": {
+                "const": "delete",
+                "type": "string"
+              },
+              "record_id": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+              }
+            },
+            "required": [
+              "kind",
+              "entity",
+              "record_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "entity": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppName"
+              },
+              "kind": {
+                "const": "restore",
+                "type": "string"
+              },
+              "record_id": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+              }
+            },
+            "required": [
+              "kind",
+              "entity",
+              "record_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "expected_from_revision": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRevision"
+              },
+              "expected_to_revision": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRevision"
+              },
+              "from_record_id": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+              },
+              "kind": {
+                "const": "create_relation",
+                "type": "string"
+              },
+              "relation": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppName"
+              },
+              "to_record_id": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+              }
+            },
+            "required": [
+              "kind",
+              "relation",
+              "from_record_id",
+              "to_record_id",
+              "expected_from_revision",
+              "expected_to_revision"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "expected_from_revision": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRevision"
+              },
+              "expected_to_revision": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRevision"
+              },
+              "from_record_id": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+              },
+              "kind": {
+                "const": "delete_relation",
+                "type": "string"
+              },
+              "relation": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppName"
+              },
+              "to_record_id": {
+                "$ref": "#/components/schemas/AppMutationCommand__AppRecordId"
+              }
+            },
+            "required": [
+              "kind",
+              "relation",
+              "from_record_id",
+              "to_record_id",
+              "expected_from_revision",
+              "expected_to_revision"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AppMutationCommand__AppName": {
+        "type": "string"
+      },
+      "AppMutationCommand__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppMutationCommand__AppRecordId": {
+        "type": "string"
+      },
+      "AppMutationCommand__AppReference": {
+        "type": "string"
+      },
+      "AppMutationCommand__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppMutationReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_digest": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppDigest"
+          },
+          "change_seq_range": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppChangeSequenceRange"
+          },
+          "committed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "committed_record_revisions": {
+            "items": {
+              "$ref": "#/components/schemas/AppMutationReceipt__AppCommittedRecordRevision"
+            },
+            "type": "array"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppInstallationId"
+          },
+          "mutation_key": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppDigest"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppMutationOrigin"
+          },
+          "receipt_id": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppReference"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "installation_id",
+          "origin",
+          "mutation_key",
+          "batch_digest",
+          "committed_record_revisions",
+          "change_seq_range",
+          "committed_at"
+        ],
+        "title": "AppMutationReceipt",
+        "type": "object"
+      },
+      "AppMutationReceipt__AppChangeSequenceRange": {
+        "additionalProperties": false,
+        "properties": {
+          "first": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "first",
+          "last"
+        ],
+        "type": "object"
+      },
+      "AppMutationReceipt__AppCommittedRecordRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppName"
+          },
+          "record_id": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppRecordId"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/AppMutationReceipt__AppRevision"
+          }
+        },
+        "required": [
+          "entity",
+          "record_id",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "AppMutationReceipt__AppDigest": {
+        "type": "string"
+      },
+      "AppMutationReceipt__AppInstallationId": {
+        "type": "string"
+      },
+      "AppMutationReceipt__AppMutationOrigin": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "owner_api",
+                "type": "string"
+              },
+              "request_ref": {
+                "$ref": "#/components/schemas/AppMutationReceipt__AppReference"
+              },
+              "session_ref": {
+                "$ref": "#/components/schemas/AppMutationReceipt__AppReference"
+              }
+            },
+            "required": [
+              "kind",
+              "session_ref",
+              "request_ref"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "execution_id": {
+                "$ref": "#/components/schemas/AppMutationReceipt__AppReference"
+              },
+              "kind": {
+                "const": "workflow",
+                "type": "string"
+              },
+              "output_revision": {
+                "$ref": "#/components/schemas/AppMutationReceipt__AppRevision"
+              },
+              "source_artifact_refs": {
+                "items": {
+                  "$ref": "#/components/schemas/AppMutationReceipt__AppReference"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "execution_id",
+              "output_revision"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "client_mutation_id": {
+                "$ref": "#/components/schemas/AppMutationReceipt__AppReference"
+              },
+              "kind": {
+                "const": "surface",
+                "type": "string"
+              },
+              "surface_session_id": {
+                "$ref": "#/components/schemas/AppMutationReceipt__AppReference"
+              }
+            },
+            "required": [
+              "kind",
+              "surface_session_id",
+              "client_mutation_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "migration",
+                "type": "string"
+              },
+              "migration_batch": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "migration_run_id": {
+                "$ref": "#/components/schemas/AppMutationReceipt__AppReference"
+              }
+            },
+            "required": [
+              "kind",
+              "migration_run_id",
+              "migration_batch"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AppMutationReceipt__AppName": {
+        "type": "string"
+      },
+      "AppMutationReceipt__AppRecordId": {
+        "type": "string"
+      },
+      "AppMutationReceipt__AppReference": {
+        "type": "string"
+      },
+      "AppMutationReceipt__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppQueryPage": {
+        "additionalProperties": false,
+        "properties": {
+          "envelope": {
+            "$ref": "#/components/schemas/AppQueryPage__AppDataEnvelope"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppQueryPage__AppReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result_schema_ref": {
+            "$ref": "#/components/schemas/AppQueryPage__AppReference"
+          }
+        },
+        "required": [
+          "envelope",
+          "result_schema_ref"
+        ],
+        "title": "AppQueryPage",
+        "type": "object"
+      },
+      "AppQueryPage__AppDataClassification": {
+        "enum": [
+          "public",
+          "ordinary",
+          "personal",
+          "sensitive",
+          "secret"
+        ],
+        "type": "string"
+      },
+      "AppQueryPage__AppDataEnvelope": {
+        "additionalProperties": false,
+        "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+        "properties": {
+          "content_digest": {
+            "$ref": "#/components/schemas/AppQueryPage__AppDigest"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grant_revision": {
+            "$ref": "#/components/schemas/AppQueryPage__AppRevision"
+          },
+          "handling_labels": {
+            "$ref": "#/components/schemas/AppQueryPage__AppHandlingLabels"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppQueryPage__AppInstallationId"
+          },
+          "package_revision_ref": {
+            "$ref": "#/components/schemas/AppQueryPage__AppReference"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppQueryPage__AppProtocolVersion"
+          },
+          "schema_revision": {
+            "$ref": "#/components/schemas/AppQueryPage__AppRevision"
+          },
+          "scope_binding_ref": {
+            "$ref": "#/components/schemas/AppQueryPage__AppScopeBindingRef"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AppQueryPage__AppDataSource"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppQueryPage__AppSourceRef"
+            },
+            "type": "array"
+          },
+          "value": {
+            "items": {
+              "$ref": "#/components/schemas/AppQueryPage__AppRecordProjection"
+            },
+            "type": "array"
+          },
+          "value_schema_ref": {
+            "$ref": "#/components/schemas/AppQueryPage__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "source",
+          "scope_binding_ref",
+          "installation_id",
+          "package_revision_ref",
+          "schema_revision",
+          "grant_revision",
+          "value_schema_ref",
+          "value",
+          "handling_labels",
+          "content_digest",
+          "produced_at"
+        ],
+        "type": "object"
+      },
+      "AppQueryPage__AppDataSource": {
+        "enum": [
+          "user_input",
+          "app_store",
+          "app_action",
+          "artifact_projection",
+          "external_adapter",
+          "import",
+          "brokered_transfer"
+        ],
+        "type": "string"
+      },
+      "AppQueryPage__AppDigest": {
+        "type": "string"
+      },
+      "AppQueryPage__AppFieldPath": {
+        "type": "string"
+      },
+      "AppQueryPage__AppHandlingLabels": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/AppQueryPage__AppDataClassification"
+          },
+          "model_processing": {
+            "$ref": "#/components/schemas/AppQueryPage__AppModelProcessing"
+          },
+          "policy_digest": {
+            "$ref": "#/components/schemas/AppQueryPage__AppDigest"
+          },
+          "provenance_digest": {
+            "$ref": "#/components/schemas/AppQueryPage__AppDigest"
+          }
+        },
+        "required": [
+          "classification",
+          "model_processing",
+          "policy_digest",
+          "provenance_digest"
+        ],
+        "type": "object"
+      },
+      "AppQueryPage__AppInstallationId": {
+        "type": "string"
+      },
+      "AppQueryPage__AppModelProcessing": {
+        "enum": [
+          "none",
+          "local_only",
+          "remote_allowed"
+        ],
+        "type": "string"
+      },
+      "AppQueryPage__AppName": {
+        "type": "string"
+      },
+      "AppQueryPage__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppQueryPage__AppRecordId": {
+        "type": "string"
+      },
+      "AppQueryPage__AppRecordProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "$ref": "#/components/schemas/AppQueryPage__AppName"
+          },
+          "fields": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "record_id": {
+            "$ref": "#/components/schemas/AppQueryPage__AppRecordId"
+          },
+          "record_revision": {
+            "$ref": "#/components/schemas/AppQueryPage__AppRevision"
+          }
+        },
+        "required": [
+          "entity",
+          "record_id",
+          "record_revision",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "AppQueryPage__AppReference": {
+        "type": "string"
+      },
+      "AppQueryPage__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppQueryPage__AppScopeBindingRef": {
+        "type": "string"
+      },
+      "AppQueryPage__AppSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/AppQueryPage__AppFieldPath"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AppQueryPage__AppSourceRefKind"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/AppQueryPage__AppReference"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppQueryPage__AppRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "reference"
+        ],
+        "type": "object"
+      },
+      "AppQueryPage__AppSourceRefKind": {
+        "enum": [
+          "entity_record",
+          "entity_field",
+          "artifact",
+          "external_receipt",
+          "mutation_receipt"
+        ],
+        "type": "string"
+      },
+      "AppQueryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppQueryRequest__AppReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entity": {
+            "$ref": "#/components/schemas/AppQueryRequest__AppName"
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "order": {
+            "items": {
+              "$ref": "#/components/schemas/AppQueryRequest__AppQueryOrder"
+            },
+            "type": "array"
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/AppQueryRequest__AppQueryPagination",
+            "description": "Live keyset pages seek through current indexed heads; snapshots freeze membership."
+          },
+          "predicate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppQueryRequest__AppPredicate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppQueryRequest__AppProtocolVersion"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/AppQueryRequest__AppName"
+          },
+          "relation_expansions": {
+            "items": {
+              "$ref": "#/components/schemas/AppQueryRequest__AppRelationExpansion"
+            },
+            "type": "array"
+          },
+          "select": {
+            "items": {
+              "$ref": "#/components/schemas/AppQueryRequest__AppFieldPath"
+            },
+            "type": "array"
+          },
+          "source_installation_id": {
+            "$ref": "#/components/schemas/AppQueryRequest__AppInstallationId"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "source_installation_id",
+          "entity",
+          "select",
+          "limit",
+          "purpose"
+        ],
+        "title": "AppQueryRequest",
+        "type": "object"
+      },
+      "AppQueryRequest__AppComparisonOperator": {
+        "enum": [
+          "equal",
+          "not_equal",
+          "less_than",
+          "less_than_or_equal",
+          "greater_than",
+          "greater_than_or_equal",
+          "contains",
+          "starts_with"
+        ],
+        "type": "string"
+      },
+      "AppQueryRequest__AppFieldPath": {
+        "type": "string"
+      },
+      "AppQueryRequest__AppInstallationId": {
+        "type": "string"
+      },
+      "AppQueryRequest__AppName": {
+        "type": "string"
+      },
+      "AppQueryRequest__AppOrderDirection": {
+        "enum": [
+          "ascending",
+          "descending"
+        ],
+        "type": "string"
+      },
+      "AppQueryRequest__AppPredicate": {
+        "additionalProperties": false,
+        "description": "A non-recursive, bounded query predicate arena.",
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/AppQueryRequest__AppPredicateNode"
+            },
+            "type": "array"
+          },
+          "root": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "root",
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "AppQueryRequest__AppPredicateNode": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "children": {
+                "items": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "all",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "children"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "children": {
+                "items": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "any",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "children"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "child": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "not",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "child"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "$ref": "#/components/schemas/AppQueryRequest__AppFieldPath"
+              },
+              "kind": {
+                "const": "compare",
+                "type": "string"
+              },
+              "operator": {
+                "$ref": "#/components/schemas/AppQueryRequest__AppComparisonOperator"
+              },
+              "value": true
+            },
+            "required": [
+              "kind",
+              "field",
+              "operator",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "$ref": "#/components/schemas/AppQueryRequest__AppFieldPath"
+              },
+              "kind": {
+                "const": "in",
+                "type": "string"
+              },
+              "values": {
+                "items": true,
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "field",
+              "values"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "$ref": "#/components/schemas/AppQueryRequest__AppFieldPath"
+              },
+              "kind": {
+                "const": "is_null",
+                "type": "string"
+              },
+              "negated": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "field"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AppQueryRequest__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppQueryRequest__AppQueryOrder": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "$ref": "#/components/schemas/AppQueryRequest__AppOrderDirection"
+          },
+          "field": {
+            "$ref": "#/components/schemas/AppQueryRequest__AppFieldPath"
+          }
+        },
+        "required": [
+          "field",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "AppQueryRequest__AppQueryPagination": {
+        "enum": [
+          "snapshot",
+          "keyset"
+        ],
+        "type": "string"
+      },
+      "AppQueryRequest__AppReference": {
+        "type": "string"
+      },
+      "AppQueryRequest__AppRelationExpansion": {
+        "additionalProperties": false,
+        "properties": {
+          "max_depth": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_rows": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "relation": {
+            "$ref": "#/components/schemas/AppQueryRequest__AppName"
+          },
+          "select": {
+            "items": {
+              "$ref": "#/components/schemas/AppQueryRequest__AppFieldPath"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "relation",
+          "max_depth",
+          "max_rows"
+        ],
+        "type": "object"
+      },
+      "AppRunSnapshot": {
+        "additionalProperties": false,
+        "description": "Canonical status/result projection returned by every app-run read.\n\n`task_id` is deliberately absent. It remains only on the legacy launch\nadapter; this response is addressed and correlated exclusively by\n`run_handle`.",
+        "properties": {
+          "cancellation_generation": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "execution_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppProtocolVersion"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppRunSnapshot__AppActionResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result_withheld": {
+            "description": "A terminal result exists but current app/source policy forbids\ndisclosing its bytes through this request. This is distinct from a\nmissing/corrupt result and lets status remain available after\nrevocation without weakening the result boundary.",
+            "type": "boolean"
+          },
+          "run_handle": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppRunHandle"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppRunStatus"
+          },
+          "terminal": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "run_handle",
+          "status",
+          "terminal",
+          "result_withheld"
+        ],
+        "title": "AppRunSnapshot",
+        "type": "object"
+      },
+      "AppRunSnapshot__AppActionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppName"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppRunSnapshot__AppErrorEnvelope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "external_effect_receipt_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppRunSnapshot__AppReference"
+            },
+            "type": "array"
+          },
+          "mutation_receipt_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppRunSnapshot__AppReference"
+            },
+            "type": "array"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppRunSnapshot__AppDataEnvelope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppProtocolVersion"
+          },
+          "run_ref": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppReference",
+            "description": "Stable logical run identity, never a particular execution attempt."
+          },
+          "status": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppActionStatus"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "action_id",
+          "run_ref",
+          "status"
+        ],
+        "type": "object"
+      },
+      "AppRunSnapshot__AppActionStatus": {
+        "enum": [
+          "completed",
+          "waiting",
+          "failed",
+          "uncertain"
+        ],
+        "type": "string"
+      },
+      "AppRunSnapshot__AppDataClassification": {
+        "enum": [
+          "public",
+          "ordinary",
+          "personal",
+          "sensitive",
+          "secret"
+        ],
+        "type": "string"
+      },
+      "AppRunSnapshot__AppDataEnvelope": {
+        "additionalProperties": false,
+        "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+        "properties": {
+          "content_digest": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppDigest"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grant_revision": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppRevision"
+          },
+          "handling_labels": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppHandlingLabels"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppInstallationId"
+          },
+          "package_revision_ref": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppReference"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppProtocolVersion"
+          },
+          "schema_revision": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppRevision"
+          },
+          "scope_binding_ref": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppScopeBindingRef"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppDataSource"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AppRunSnapshot__AppSourceRef"
+            },
+            "type": "array"
+          },
+          "value": true,
+          "value_schema_ref": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "source",
+          "scope_binding_ref",
+          "installation_id",
+          "package_revision_ref",
+          "schema_revision",
+          "grant_revision",
+          "value_schema_ref",
+          "value",
+          "handling_labels",
+          "content_digest",
+          "produced_at"
+        ],
+        "type": "object"
+      },
+      "AppRunSnapshot__AppDataSource": {
+        "enum": [
+          "user_input",
+          "app_store",
+          "app_action",
+          "artifact_projection",
+          "external_adapter",
+          "import",
+          "brokered_transfer"
+        ],
+        "type": "string"
+      },
+      "AppRunSnapshot__AppDigest": {
+        "type": "string"
+      },
+      "AppRunSnapshot__AppErrorCode": {
+        "description": "Stable cross-adapter error families. Concrete HTTP error strings remain a\nfiner-grained compatibility surface and are listed per operation.",
+        "enum": [
+          "invalid_request",
+          "not_authorized",
+          "not_found",
+          "conflict",
+          "stale_revision",
+          "schema_mismatch",
+          "policy_denied",
+          "resource_exhausted",
+          "rate_limited",
+          "unavailable",
+          "timeout",
+          "canceled",
+          "external_outcome_uncertain",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "AppRunSnapshot__AppErrorDisposition": {
+        "description": "Machine-interpretable recovery posture for canonical app failures.",
+        "enum": [
+          "terminal",
+          "retry_same_input",
+          "refresh_and_retry",
+          "reauthorize",
+          "user_action_required",
+          "outcome_uncertain"
+        ],
+        "type": "string"
+      },
+      "AppRunSnapshot__AppErrorEnvelope": {
+        "additionalProperties": false,
+        "description": "Bounded, machine-interpretable failure detail shared by every app adapter.\n`message` is display context, never the semantic error contract.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppErrorCode"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppErrorDisposition"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "disposition",
+          "message"
+        ],
+        "type": "object"
+      },
+      "AppRunSnapshot__AppFieldPath": {
+        "type": "string"
+      },
+      "AppRunSnapshot__AppHandlingLabels": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppDataClassification"
+          },
+          "model_processing": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppModelProcessing"
+          },
+          "policy_digest": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppDigest"
+          },
+          "provenance_digest": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppDigest"
+          }
+        },
+        "required": [
+          "classification",
+          "model_processing",
+          "policy_digest",
+          "provenance_digest"
+        ],
+        "type": "object"
+      },
+      "AppRunSnapshot__AppInstallationId": {
+        "type": "string"
+      },
+      "AppRunSnapshot__AppModelProcessing": {
+        "enum": [
+          "none",
+          "local_only",
+          "remote_allowed"
+        ],
+        "type": "string"
+      },
+      "AppRunSnapshot__AppName": {
+        "type": "string"
+      },
+      "AppRunSnapshot__AppProtocolVersion": {
+        "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+        "enum": [
+          "1"
+        ],
+        "type": "string"
+      },
+      "AppRunSnapshot__AppReference": {
+        "type": "string"
+      },
+      "AppRunSnapshot__AppRevision": {
+        "description": "A positive, monotonically increasing contract revision.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "AppRunSnapshot__AppRunHandle": {
+        "additionalProperties": false,
+        "description": "Stable server-owned identity for one logical app action run.\n\nThe handle contains no authority: every consumer must authenticate its\nscope and reopen the durable workflow binding for status/control. Returning\nresult bytes additionally requires current installation/grant/schema and\nsource-policy revalidation. `run_ref` remains stable when the runtime\ncreates a replacement or delegated execution for the same idempotent action.",
+        "properties": {
+          "action_id": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppName"
+          },
+          "installation_id": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppInstallationId"
+          },
+          "protocol_version": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppProtocolVersion"
+          },
+          "run_ref": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppReference"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "run_ref",
+          "installation_id",
+          "action_id"
+        ],
+        "type": "object"
+      },
+      "AppRunSnapshot__AppRunStatus": {
+        "description": "Stable public lifecycle for one logical app run.\n\nArtifact V2 owns a richer internal execution state machine. This smaller\nenum is the app protocol projection: clients never infer terminality from\nan HTTP status code or from an open-ended internal status string.",
+        "enum": [
+          "queued",
+          "planning",
+          "running",
+          "paused",
+          "deferred",
+          "waiting",
+          "blocked",
+          "cancelling",
+          "completed",
+          "failed",
+          "cancelled",
+          "archived",
+          "uncertain"
+        ],
+        "type": "string"
+      },
+      "AppRunSnapshot__AppScopeBindingRef": {
+        "type": "string"
+      },
+      "AppRunSnapshot__AppSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/AppRunSnapshot__AppFieldPath"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppSourceRefKind"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/AppRunSnapshot__AppReference"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppRunSnapshot__AppRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "reference"
+        ],
+        "type": "object"
+      },
+      "AppRunSnapshot__AppSourceRefKind": {
+        "enum": [
+          "entity_record",
+          "entity_field",
+          "artifact",
+          "external_receipt",
+          "mutation_receipt"
+        ],
+        "type": "string"
+      }
+    }
+  },
+  "info": {
+    "description": "Supported-public Apps operations only. Authentication is established by the Magician host and is not a portable credential contract.",
+    "title": "Magician App Data Plane",
+    "version": "1.5.0"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/magician/v2/apps/action-runs/{run_ref}": {
+      "get": {
+        "operationId": "get_action_run",
+        "parameters": [
+          {
+            "description": "Opaque logical action-run reference in the canonical run:app-action: namespace; it carries no authority.",
+            "in": "path",
+            "name": "run_ref",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppRunSnapshot"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppRunSnapshot"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical supported-public error. Retry and uncertainty behavior is determined only by disposition, never by status or display text.",
+            "x-magician-error-reasons": [
+              "authenticated_app_session_required",
+              "app_scope_mismatch",
+              "app_workspace_required",
+              "stale_authenticated_request",
+              "invalid_authentication_revision",
+              "loopback_peer_required",
+              "app_authority_rejected",
+              "invalid_app_contract",
+              "app_workflow_not_found",
+              "app_workflow_stale",
+              "app_workflow_not_authorized",
+              "app_workflow_invalid",
+              "app_task_runtime_unavailable",
+              "app_run_state_invalid",
+              "app_run_identity_changed",
+              "app_terminal_result_missing",
+              "app_workflow_failed"
+            ]
+          }
+        },
+        "summary": "Read the typed lifecycle and currently disclosable result for a logical run.",
+        "x-magician-auth-established-out-of-band": true,
+        "x-magician-auth-posture": "verified_owner_scope",
+        "x-magician-idempotency": "read_only",
+        "x-magician-response-fixture": "action_run_completed"
+      }
+    },
+    "/api/magician/v2/apps/action-runs/{run_ref}/cancel": {
+      "post": {
+        "operationId": "cancel_action_run",
+        "parameters": [
+          {
+            "description": "Opaque logical action-run reference in the canonical run:app-action: namespace; it carries no authority.",
+            "in": "path",
+            "name": "run_ref",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppActionCancellationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppActionCancellationReceipt"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppActionCancellationReceipt"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical supported-public error. Retry and uncertainty behavior is determined only by disposition, never by status or display text.",
+            "x-magician-error-reasons": [
+              "authenticated_app_session_required",
+              "app_scope_mismatch",
+              "app_workspace_required",
+              "stale_authenticated_request",
+              "invalid_authentication_revision",
+              "loopback_peer_required",
+              "app_authority_rejected",
+              "invalid_app_contract",
+              "unsupported_app_action_cancellation_media_type",
+              "app_action_cancellation_body_too_large",
+              "app_action_cancellation_body_read_failed",
+              "app_action_cancellation_body_timeout",
+              "invalid_app_action_cancellation",
+              "app_workflow_not_found",
+              "app_workflow_stale",
+              "app_workflow_not_authorized",
+              "app_action_not_started",
+              "app_action_already_completed",
+              "app_action_cancellation_conflict",
+              "app_task_runtime_unavailable",
+              "app_action_cancellation_failed"
+            ]
+          }
+        },
+        "summary": "Request generation-bound cancellation of one logical action run.",
+        "x-magician-auth-established-out-of-band": true,
+        "x-magician-auth-posture": "verified_owner_scope",
+        "x-magician-idempotency": "client_keyed",
+        "x-magician-request-fixture": "action_cancellation_request",
+        "x-magician-response-fixture": "action_cancellation_receipt"
+      }
+    },
+    "/api/magician/v2/apps/action-runs/{run_ref}/compositions": {
+      "post": {
+        "operationId": "compose_action_run",
+        "parameters": [
+          {
+            "description": "Opaque logical action-run reference in the canonical run:app-action: namespace; it carries no authority.",
+            "in": "path",
+            "name": "run_ref",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppActionCompositionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppActionResultComposition"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppActionResultComposition"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical supported-public error. Retry and uncertainty behavior is determined only by disposition, never by status or display text.",
+            "x-magician-error-reasons": [
+              "authenticated_app_session_required",
+              "app_scope_mismatch",
+              "app_workspace_required",
+              "stale_authenticated_request",
+              "invalid_authentication_revision",
+              "loopback_peer_required",
+              "app_authority_rejected",
+              "invalid_app_contract",
+              "unsupported_app_data_media_type",
+              "app_data_body_too_large",
+              "app_data_body_read_failed",
+              "app_data_body_timeout",
+              "invalid_app_action_composition",
+              "app_action_composition_not_authorized",
+              "app_action_composition_unavailable",
+              "app_action_composition_failed",
+              "app_workflow_not_found",
+              "app_workflow_stale",
+              "app_workflow_not_authorized",
+              "app_workflow_invalid",
+              "app_task_runtime_unavailable",
+              "app_workflow_failed"
+            ]
+          }
+        },
+        "summary": "Map one canonical action result through a bounded reviewed action chain and read cursor-bound progress.",
+        "x-magician-auth-established-out-of-band": true,
+        "x-magician-auth-posture": "verified_owner_scope",
+        "x-magician-idempotency": "client_keyed",
+        "x-magician-request-fixture": "action_composition_request",
+        "x-magician-response-fixture": "action_composition_waiting"
+      }
+    },
+    "/api/magician/v2/apps/contract-capabilities": {
+      "get": {
+        "operationId": "contract_capabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppContractCapabilities"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical supported-public error. Retry and uncertainty behavior is determined only by disposition, never by status or display text.",
+            "x-magician-error-reasons": [
+              "authenticated_app_session_required",
+              "stale_authenticated_request"
+            ]
+          }
+        },
+        "summary": "Negotiate the supported Apps public contract.",
+        "x-magician-auth-established-out-of-band": true,
+        "x-magician-auth-posture": "verified_session",
+        "x-magician-idempotency": "read_only",
+        "x-magician-response-fixture": "contract_capabilities"
+      }
+    },
+    "/api/magician/v2/apps/installations/{installation_id}/actions/{action_id}/runs": {
+      "post": {
+        "operationId": "launch_action",
+        "parameters": [
+          {
+            "description": "Opaque installation identity in the authenticated owner scope.",
+            "in": "path",
+            "name": "installation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Manifest-declared action name.",
+            "in": "path",
+            "name": "action_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppDirectActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppActionLaunchResponse"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical supported-public error. Retry and uncertainty behavior is determined only by disposition, never by status or display text.",
+            "x-magician-error-reasons": [
+              "authenticated_app_session_required",
+              "app_scope_mismatch",
+              "app_workspace_required",
+              "stale_authenticated_request",
+              "invalid_authentication_revision",
+              "loopback_peer_required",
+              "app_authority_rejected",
+              "unsupported_app_data_media_type",
+              "app_data_body_too_large",
+              "app_data_body_read_failed",
+              "app_data_body_timeout",
+              "invalid_app_contract",
+              "app_workflow_not_found",
+              "app_workflow_stale",
+              "app_workflow_not_authorized",
+              "app_workflow_invalid",
+              "app_workflow_failed",
+              "app_projection_too_large",
+              "app_projection_expired",
+              "app_projection_not_authorized",
+              "app_projection_store_unavailable"
+            ]
+          }
+        },
+        "summary": "Launch an admitted action from minimal owner-supplied input.",
+        "x-magician-auth-established-out-of-band": true,
+        "x-magician-auth-posture": "verified_owner_scope",
+        "x-magician-idempotency": "client_keyed",
+        "x-magician-response-fixture": "action_launch"
+      }
+    },
+    "/api/magician/v2/apps/installations/{installation_id}/data/mutations": {
+      "post": {
+        "operationId": "mutate_data",
+        "parameters": [
+          {
+            "description": "Opaque installation identity in the authenticated owner scope.",
+            "in": "path",
+            "name": "installation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppMutationCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppMutationReceipt"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical supported-public error. Retry and uncertainty behavior is determined only by disposition, never by status or display text.",
+            "x-magician-error-reasons": [
+              "authenticated_app_session_required",
+              "app_scope_mismatch",
+              "app_workspace_required",
+              "stale_authenticated_request",
+              "invalid_authentication_revision",
+              "loopback_peer_required",
+              "app_authority_rejected",
+              "invalid_app_contract",
+              "unsupported_app_data_media_type",
+              "app_data_body_too_large",
+              "app_data_body_read_failed",
+              "app_data_body_timeout",
+              "app_data_authority_rejected",
+              "app_installation_not_found",
+              "app_surface_stale",
+              "app_data_projection_denied",
+              "invalid_app_data_contract",
+              "app_data_encoding_failed",
+              "app_data_overloaded",
+              "app_data_not_found",
+              "invalid_app_data_mutation",
+              "app_data_conflict",
+              "app_data_limit_exceeded",
+              "app_data_mutation_failed"
+            ]
+          }
+        },
+        "summary": "Commit an idempotent optimistic mutation batch.",
+        "x-magician-auth-established-out-of-band": true,
+        "x-magician-auth-posture": "verified_owner_scope",
+        "x-magician-idempotency": "client_keyed",
+        "x-magician-request-fixture": "mutation_command"
+      }
+    },
+    "/api/magician/v2/apps/installations/{installation_id}/data/query": {
+      "post": {
+        "operationId": "query_data",
+        "parameters": [
+          {
+            "description": "Opaque installation identity in the authenticated owner scope.",
+            "in": "path",
+            "name": "installation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppQueryPage"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical supported-public error. Retry and uncertainty behavior is determined only by disposition, never by status or display text.",
+            "x-magician-error-reasons": [
+              "authenticated_app_session_required",
+              "app_scope_mismatch",
+              "app_workspace_required",
+              "stale_authenticated_request",
+              "invalid_authentication_revision",
+              "loopback_peer_required",
+              "app_authority_rejected",
+              "invalid_app_contract",
+              "unsupported_app_data_media_type",
+              "app_data_body_too_large",
+              "app_data_body_read_failed",
+              "app_data_body_timeout",
+              "app_installation_mismatch",
+              "app_data_authority_rejected",
+              "app_installation_not_found",
+              "app_surface_stale",
+              "app_data_projection_denied",
+              "invalid_app_data_contract",
+              "app_data_encoding_failed",
+              "app_data_overloaded",
+              "app_data_not_found",
+              "app_data_cursor_unavailable",
+              "app_data_stale",
+              "invalid_app_data_cursor",
+              "app_data_query_failed",
+              "invalid_app_data_query",
+              "app_data_limit_exceeded",
+              "app_data_cursor_capacity",
+              "app_data_keyset_index_required"
+            ]
+          }
+        },
+        "summary": "Query admitted records owned by one installation.",
+        "x-magician-auth-established-out-of-band": true,
+        "x-magician-auth-posture": "verified_owner_scope",
+        "x-magician-idempotency": "read_only",
+        "x-magician-request-fixture": "query_request",
+        "x-magician-response-fixture": "query_page"
+      }
+    },
+    "/api/magician/v2/apps/installations/{installation_id}/entity-changes": {
+      "get": {
+        "operationId": "read_entity_changes",
+        "parameters": [
+          {
+            "description": "Opaque installation identity in the authenticated owner scope.",
+            "in": "path",
+            "name": "installation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Last applied durable change sequence, or zero for the initial page.",
+            "in": "query",
+            "name": "after_change_sequence",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Positive surface revision whose projection is being refreshed.",
+            "in": "query",
+            "name": "surface_revision",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Bounded page size; the server default is 64 and the maximum is 128.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 64,
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppEntityChangeBatch"
+                }
+              }
+            },
+            "description": "Successful admitted operation."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical supported-public error. Retry and uncertainty behavior is determined only by disposition, never by status or display text.",
+            "x-magician-error-reasons": [
+              "authenticated_app_session_required",
+              "app_scope_mismatch",
+              "app_workspace_required",
+              "stale_authenticated_request",
+              "invalid_authentication_revision",
+              "loopback_peer_required",
+              "app_authority_rejected",
+              "invalid_app_contract",
+              "app_surface_not_found",
+              "app_surface_stale",
+              "app_change_cursor_ahead",
+              "invalid_app_change_limit",
+              "app_surface_overloaded",
+              "app_registry_failed",
+              "app_entity_changes_failed"
+            ]
+          }
+        },
+        "summary": "Read a bounded identifier-only durable change page.",
+        "x-magician-auth-established-out-of-band": true,
+        "x-magician-auth-posture": "verified_owner_scope",
+        "x-magician-idempotency": "read_only"
+      }
+    }
+  },
+  "x-magician-operation-inventory-digest": "blake3:4de33a2c5a1637e6d54c57ab9b0de814f0c27bfc0b3e9250f184fa8f2c498d16",
+  "x-magician-protocol-version": "1",
+  "x-magician-runtime-routes-enabled": true,
+  "x-magician-schema-digest": "blake3:d82ada41bfe2205a0f1bac83bd9b43874d1b0670cc2988057d02b43ea632d819"
+}

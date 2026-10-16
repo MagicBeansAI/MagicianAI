@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="@dimen/spacing_small"
+    android:background="@drawable/bg_card_wave"
+    android:elevation="@dimen/elevation_card"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:padding="@dimen/card_padding">
+
+    <!-- Status Icon -->
+    <TextView
+        android:id="@+id/permissionStatusIcon"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:gravity="center"
+        android:text="✗"
+        android:textColor="@color/status_error"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <!-- Text Content -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/spacing_small"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/permissionTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Permission Name"
+            android:textAppearance="@style/TextAppearance.Magdroid.TitleSmall" />
+
+        <TextView
+            android:id="@+id/permissionDescription"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Description"
+            android:textAppearance="@style/TextAppearance.Magdroid.BodySmall"
+            android:textColor="@color/text_medium_emphasis" />
+
+    </LinearLayout>
+
+    <!-- Action Button -->
+    <Button
+        android:id="@+id/permissionButton"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_marginStart="@dimen/spacing_small"
+        android:backgroundTint="@color/wave_blue"
+        android:text="GRANT"
+        android:textAppearance="@style/TextAppearance.Magdroid.LabelMedium"
+        android:textColor="@color/md_theme_light_onPrimary" />
+
+</LinearLayout>

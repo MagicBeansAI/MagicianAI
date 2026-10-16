@@ -1,0 +1,153 @@
+# Build artifacts
+target/
+node_modules/
+
+# Git
+.git/
+.github/
+
+# Live runtime data is the MOUNTED runtime root (MAGICIAN_ROOT_DIR) — never baked.
+.magician_data/
+# magician_data_v3 is the read-only SEED (agent/db/trust templates + config
+# templates) and IS baked into the image. Exclude only the regenerable / secret /
+# per-scope bits so live data never leaks into the image. Narrow exceptions
+# below keep non-secret default harness seeds packaged.
+magician_data_v3/system/skills/
+magician_data_v3/system/secrets/
+magician_data_v3/scopes/**
+magician_data_v3/**/.artifact_v2.lock
+
+# Desktop sources embedded by the backend's macOS/Android owner digests.
+# These are compile-time contract inputs, not a desktop build or host binaries.
+desktop/
+!desktop/
+desktop/*
+!desktop/src-tauri/
+desktop/src-tauri/*
+!desktop/src-tauri/src/
+desktop/src-tauri/src/*
+!desktop/src-tauri/src/app_android_authority.rs
+!desktop/src-tauri/src/app_macos_host.rs
+!desktop/src-tauri/src/app_macos_identity.rs
+!desktop/src-tauri/src/app_macos_pairing.rs
+!desktop/src-tauri/src/host_gateway.rs
+!desktop/src-tauri/src/main.rs
+!desktop/src/
+desktop/src/*
+!desktop/src/lib/
+desktop/src/lib/*
+!desktop/src/lib/AndroidAppsAuthority.svelte
+!desktop/src/lib/MacosAppPairing.svelte
+!desktop/src/lib/macosPairingUiModel.js
+!desktop/src/lib/Settings.svelte
+
+# Documentation (not needed in image)
+docs/
+*.md
+
+# This contract is compiled into production Apps code via include_bytes!.
+# Keep the exception narrow; the rest of docs is not image input.
+!docs/
+docs/*
+!docs/contracts/
+docs/contracts/*
+!docs/contracts/app-platform/
+docs/contracts/app-platform/*
+!docs/contracts/app-platform/components/
+docs/contracts/app-platform/components/*
+!docs/contracts/app-platform/components/v1/
+docs/contracts/app-platform/components/v1/*
+!docs/contracts/app-platform/components/v1/contract.json
+
+# Default harness reliability seeds. These files are non-secret shipped
+# defaults; the mounted runtime root still owns the live mutable copies.
+!magician_data_v3/scopes/
+!magician_data_v3/scopes/anonymous/
+!magician_data_v3/scopes/anonymous/default/
+!magician_data_v3/scopes/anonymous/default/agent_runtime/
+!magician_data_v3/scopes/anonymous/default/agent_runtime/agents/
+!magician_data_v3/scopes/anonymous/default/agent_runtime/agents/cto/
+!magician_data_v3/scopes/anonymous/default/agent_runtime/agents/cto/definition.agent.yaml
+!magician_data_v3/scopes/anonymous/default/agent_runtime/agents/harness-sre/
+!magician_data_v3/scopes/anonymous/default/agent_runtime/agents/harness-sre/definition.agent.yaml
+!magician_data_v3/scopes/anonymous/default/agent_runtime/agents/internal-system-analyst/
+!magician_data_v3/scopes/anonymous/default/agent_runtime/agents/internal-system-analyst/definition.agent.yaml
+!magician_data_v3/scopes/anonymous/default/programs/
+!magician_data_v3/scopes/anonymous/default/programs/harness_reliability.md
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# Claude Code
+.claude/
+
+# Miscellaneous
+backups/
+test-environments/
+test-servers/
+examples/
+*.log
+
+# skillshub: ship the skill SOURCE so materialized scope symlinks resolve in the
+# image (the runtime sets MAGICIAN_SKILLSHUB_ROOT=/app/skillshub and rewrites the
+# host-absolute symlinks to it). EXCLUDE the macOS-built / regenerable dep trees —
+# they are wrong-arch and MUST be rebuilt for Linux/glibc in the image, never
+# copied from the host. (`node_modules/` is already excluded globally above; the
+# explicit nested rules below belt-and-braces it for skillshub.)
+skillshub/node_modules/
+skillshub/**/node_modules/
+skillshub/.venv/
+skillshub/**/.venv/
+skillshub/.node/
+skillshub/.cache/
+# Native/generated tool outputs must come from the Linux tools builder.
+skillshub/document-to-markdown/bin/
+skillshub/metabase/bin/
+skillshub/metabase/.pp-build/
+skillshub/higgsfield/bin/
+skillshub/officecli-runtime/bin/
+skillshub/office-word/bin/
+skillshub/office-excel/bin/
+skillshub/office-powerpoint/bin/
+skillshub/**/__pycache__/
+skillshub/**/_vendor/
+# ...but DO keep the agent-browser patch source — the `agentbrowser` builder
+# stage COPYs it to build the patched glibc binary in-image. The vendored
+# darwin-arm64 *binary* under _vendor/ stays excluded (wrong arch, large).
+# Re-include each parent explicitly. Apple Container's BuildKit file transfer
+# requires the parent directory entries before the included patch file.
+!skillshub/browser/_vendor/
+skillshub/browser/_vendor/*
+!skillshub/browser/_vendor/v0.38.1-Magician.0/
+skillshub/browser/_vendor/v0.38.1-Magician.0/*
+!skillshub/browser/_vendor/v0.38.1-Magician.0/patches/
+skillshub/browser/_vendor/v0.38.1-Magician.0/patches/*
+!skillshub/browser/_vendor/v0.38.1-Magician.0/patches/*.patch
+skillshub/**/.DS_Store
+# Re-include skill markdown — the global `*.md` rule above would otherwise drop
+# every SKILL.md, which the loader needs.
+!skillshub/**/*.md
+# ...but don't let that broad re-include drag dependency-tree markdown (READMEs
+# under node_modules/_vendor/.venv) back into the context. Later patterns win,
+# so these re-excludes drop ~1k dep-tree .md files while keeping each skill's
+# own SKILL.md (which lives directly under skillshub/<name>/, not under these).
+skillshub/**/node_modules/**/*.md
+skillshub/**/_vendor/**/*.md
+skillshub/**/.venv/**/*.md
+skillshub/**/__pycache__/**/*.md
+
+.cache/
+.playwright-mcp/
+
+# Host-staged dev binaries at the repo root (the image uses freshly-built /out
+# binaries from the builder stage, not these). ~650MB if left in.
+*.bin
+.extracted/

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "fixture_id": "attention-rank-recompute-frozen-v1",
+  "outcome_job_uniqueness_rate": 1.0,
+  "accepted_outcome_survival_rate": 1.0,
+  "terminal_idempotency_rate": 1.0,
+  "completed_rank_binding_rate": 1.0,
+  "stale_cas_rejection_rate": 1.0,
+  "complete_union_reconciliation_rate": 1.0,
+  "list_and_page_model_invocations": 0,
+  "defaults_paused": true,
+  "gate_passed": true
+}

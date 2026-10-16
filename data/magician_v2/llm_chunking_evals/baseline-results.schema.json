@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magician.local/schemas/llm-chunking-baseline-results-v1.json",
+  "title": "Logical-context chunking baseline/eval result",
+  "type": "object",
+  "required": ["schema_version", "report_id", "status", "source", "operations", "queue_latency"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_id": {"type": "string", "minLength": 1},
+    "generated_at": {"type": ["string", "null"], "format": "date-time"},
+    "status": {
+      "enum": ["historical_snapshot", "not_run_by_request", "completed", "failed", "partial"]
+    },
+    "baseline_role": {"type": "string"},
+    "implementation_target": {
+      "type": "object",
+      "required": ["provider", "model", "physical_context_tokens", "thinking"],
+      "properties": {
+        "provider": {"const": "ollama"},
+        "model": {"type": "string", "minLength": 1},
+        "physical_context_tokens": {"type": "integer", "minimum": 1},
+        "thinking": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "source": {
+      "type": "object",
+      "required": ["kind", "window_start", "window_end"],
+      "properties": {
+        "kind": {"enum": ["existing_parquet", "deterministic_eval", "live_eval"]},
+        "window_start": {"type": "string", "format": "date"},
+        "window_end": {"type": "string", "format": "date"},
+        "fixture_suite": {"type": ["string", "null"]},
+        "repeat_count": {"type": ["integer", "null"], "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["operation", "status", "calls", "successes", "failures"],
+        "properties": {
+          "operation": {"type": "string"},
+          "status": {"enum": ["observed", "not_observed", "not_run_by_request", "completed", "failed"]},
+          "calls": {"type": "integer", "minimum": 0},
+          "successes": {"type": "integer", "minimum": 0},
+          "failures": {"type": "integer", "minimum": 0},
+          "retried_jobs": {"type": ["integer", "null"], "minimum": 0},
+          "physical_attempts": {"type": ["integer", "null"], "minimum": 0},
+          "prompt_tokens": {"type": ["integer", "null"], "minimum": 0},
+          "cached_tokens": {"type": ["integer", "null"], "minimum": 0},
+          "completion_tokens": {"type": ["integer", "null"], "minimum": 0},
+          "reasoning_tokens": {"type": ["integer", "null"], "minimum": 0},
+          "p50_prompt_tokens": {"type": ["number", "null"], "minimum": 0},
+          "p90_prompt_tokens": {"type": ["number", "null"], "minimum": 0},
+          "max_prompt_tokens": {"type": ["integer", "null"], "minimum": 0},
+          "p50_latency_ms": {"type": ["number", "null"], "minimum": 0},
+          "p90_latency_ms": {"type": ["number", "null"], "minimum": 0},
+          "estimated_cost_usd": {"type": ["number", "null"], "minimum": 0},
+          "schema_valid_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "fallback_calls": {"type": ["integer", "null"], "minimum": 0},
+          "notes": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "queue_latency": {
+      "type": "object",
+      "required": ["high_priority_ollama"],
+      "properties": {
+        "high_priority_ollama": {"$ref": "#/$defs/queueSlice"},
+        "normal_priority_ollama_proxy": {"$ref": "#/$defs/queueSlice"},
+        "background_ollama": {"$ref": "#/$defs/queueSlice"}
+      },
+      "additionalProperties": true
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "queueSlice": {
+      "type": "object",
+      "required": ["status", "observations"],
+      "properties": {
+        "status": {"enum": ["observed", "not_observed", "not_run_by_request"]},
+        "observations": {"type": "integer", "minimum": 0},
+        "successes": {"type": ["integer", "null"], "minimum": 0},
+        "p50_wait_ms": {"type": ["number", "null"], "minimum": 0},
+        "p90_wait_ms": {"type": ["number", "null"], "minimum": 0},
+        "p99_wait_ms": {"type": ["number", "null"], "minimum": 0},
+        "max_wait_ms": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

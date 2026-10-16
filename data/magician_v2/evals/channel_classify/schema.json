@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "projection_version",
+    "input",
+    "expected",
+    "review"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "projection_version": {
+      "const": "channel_classify_projection/1"
+    },
+    "input": {
+      "type": "object",
+      "required": [
+        "state",
+        "context"
+      ],
+      "properties": {
+        "state": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "context": {
+          "type": "object"
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "required": [
+        "lane",
+        "follow_up_kind",
+        "action_owner",
+        "urgency",
+        "repeat_of_recently_handled"
+      ],
+      "properties": {
+        "lane": {
+          "enum": [
+            "needs_reply",
+            "follow_up",
+            "fyi",
+            "no_action"
+          ]
+        },
+        "follow_up_kind": {
+          "enum": [
+            "needs_reply",
+            "owner_owes",
+            "other_owes",
+            "waiting_on",
+            "check_back",
+            "schedule",
+            "none"
+          ]
+        },
+        "action_owner": {
+          "enum": [
+            "owner",
+            "counterparty",
+            "agent",
+            "unknown"
+          ]
+        },
+        "urgency": {
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ]
+        },
+        "repeat_of_recently_handled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "approved",
+            "synthetic"
+          ]
+        }
+      }
+    }
+  }
+}

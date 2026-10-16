@@ -1,0 +1,15 @@
+name: Manga
+prompt_fragment: |
+  Japanese manga style illustration. Black and white or muted color palette,
+  screen-tone shading, sharp ink outlines (1-3px), expressive faces with large
+  detailed eyes, dynamic action lines for motion, dramatic camera angles
+  (low-angle hero shots, top-down for vulnerability). Backgrounds are
+  detailed but selective — focus characters with crisp inks, background
+  with looser linework. Speech bubbles are white with thick black borders;
+  thought bubbles are cloud-shaped. Panel borders are uniform 3-5px black.
+  Avoid Western-comic flat coloring; prefer manga toning patterns.
+ip_safe_note: |
+  Generic manga aesthetic only. Do NOT reference specific manga IP
+  (Naruto, One Piece, Demon Slayer characters etc.) by name in panel
+  descriptions. Use the style as a visual language for original characters
+  in the user's story.

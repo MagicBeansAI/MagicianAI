@@ -1,0 +1,146 @@
+{
+  "name": "channel_classify_user",
+  "version": "1.0.0",
+  "content": [
+    "Classify this {channel} thread ({lane} mailbox). Respond with ONLY the JSON object.",
+    "",
+    "Subject: {subject}",
+    "From: {sender}",
+    "Recipient domains: {recipient_domains}",
+    "Labels: {label_ids}",
+    "Messages in thread: {message_count}",
+    "Last activity: {age}",
+    "Latest distilled message: {latest_message_id} ({latest_message_age})",
+    "Latest direction: {latest_direction}",
+    "Distilled intent: {latest_intent}",
+    "Needs reply hint: {needs_reply_hint}",
+    "Follow-up hint: {follow_up_hint}",
+    "Recent handled follow-ups: {recent_handled_followups}",
+    "",
+    "Local summary:",
+    "{summary}"
+  ],
+  "variables": [
+    {
+      "name": "channel",
+      "description": "Channel word ('email' | 'chat' | 'message'), from channel_providers::channel_label — kept generic.",
+      "required": true,
+      "default_value": null,
+      "examples": ["email"]
+    },
+    {
+      "name": "lane",
+      "description": "Whose mailbox this is, in words ('the owner's' | 'the agent's (Presto's)').",
+      "required": true,
+      "default_value": "the owner's",
+      "examples": ["the owner's"]
+    },
+    {
+      "name": "subject",
+      "description": "Thread subject (metadata; redacted rows never reach the classifier).",
+      "required": true,
+      "default_value": "(none)",
+      "examples": ["Re: follow-up"]
+    },
+    {
+      "name": "sender",
+      "description": "Latest sender as 'Name <address>' (metadata only).",
+      "required": true,
+      "default_value": "(unknown)",
+      "examples": ["Sender <sender@example.com>"]
+    },
+    {
+      "name": "recipient_domains",
+      "description": "Distinct recipient DOMAINS only (never full addresses), comma-joined.",
+      "required": false,
+      "default_value": "(none)",
+      "examples": ["example.org"]
+    },
+    {
+      "name": "label_ids",
+      "description": "Provider label ids on the thread (e.g. inbox, sent), comma-joined.",
+      "required": false,
+      "default_value": "(none)",
+      "examples": ["inbox"]
+    },
+    {
+      "name": "message_count",
+      "description": "Number of messages in the thread.",
+      "required": true,
+      "default_value": "1",
+      "examples": ["3"]
+    },
+    {
+      "name": "age",
+      "description": "How long since the last message ('today' | 'N days ago' | 'unknown').",
+      "required": false,
+      "default_value": "unknown",
+      "examples": ["2 days ago"]
+    },
+    {
+      "name": "latest_message_id",
+      "description": "Message id for the newest distilled message this classification is based on.",
+      "required": true,
+      "default_value": null,
+      "examples": ["msg_123"]
+    },
+    {
+      "name": "latest_message_age",
+      "description": "How long since the newest distilled message.",
+      "required": true,
+      "default_value": "unknown",
+      "examples": ["today"]
+    },
+    {
+      "name": "latest_direction",
+      "description": "Latest distilled message direction relative to the account owner ('inbound' | 'outbound' | 'unknown').",
+      "required": true,
+      "default_value": "unknown",
+      "examples": ["inbound"]
+    },
+    {
+      "name": "latest_intent",
+      "description": "The local distiller's intent for the latest distilled message.",
+      "required": true,
+      "default_value": "unknown",
+      "examples": ["action_request"]
+    },
+    {
+      "name": "needs_reply_hint",
+      "description": "The local distiller's boolean reply hint.",
+      "required": true,
+      "default_value": "false",
+      "examples": ["true"]
+    },
+    {
+      "name": "follow_up_hint",
+      "description": "The local distiller's compact follow-up hint JSON, or 'none'.",
+      "required": true,
+      "default_value": "none",
+      "examples": ["{\"kind\":\"needs_reply\",\"actor\":\"owner\",\"due_text\":\"soon\"}"]
+    },
+    {
+      "name": "recent_handled_followups",
+      "description": "Bounded JSON array of recent acknowledged/dismissed follow-ups in this same provider/account/thread, or 'none'. Used only to decide repeat_of_recently_handled.",
+      "required": false,
+      "default_value": "none",
+      "examples": ["[{\"state\":\"acknowledged\",\"label\":\"needs_reply\",\"handled\":\"1 day ago\"}]"]
+    },
+    {
+      "name": "summary",
+      "description": "The locally-derived thread summary — the ONLY content the classifier sees; never a raw body.",
+      "required": true,
+      "default_value": null,
+      "examples": ["Sender asked for a response about the pending item."]
+    }
+  ],
+  "metadata": {
+    "category": "ChannelAssist",
+    "description": "User prompt for channel-assist thread classification (channel_classify): metadata + LOCALLY-DERIVED summary/signals of ONE thread -> {label, confidence, reason, follow_up_kind, action_owner, due_text, urgency, repeat_of_recently_handled, proposed_action}. Body-blind by design — the classifier sees only local derived signals and metadata, never a raw body — so it may run on a local OR remote profile bound to operation `channel_classify`.",
+    "author": "magician",
+    "created_at": "2026-07-05T00:00:00Z",
+    "changelog": "v1.0.0: Initial channel-assist thread classification user prompt.",
+    "tags": ["channel-assist", "classification", "triage"],
+    "estimated_tokens": 220
+  }
+}

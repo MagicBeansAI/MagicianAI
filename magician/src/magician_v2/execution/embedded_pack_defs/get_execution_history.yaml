@@ -1,0 +1,35 @@
+name: get_execution_history
+description: List a task's execution history sorted newest-first — `execution_id`, status, started_at / completed_at timestamps.
+version: "1.0.0"
+guide: |
+  Tool name: `get_execution_history`
+
+  Inputs:
+  - `task_id` (required) — task whose execution history should be read.
+  - `limit` (optional) — max entries (clamped 1..=100, default 10).
+
+  Returns: `[{execution_id, status, started_at, completed_at}]` ordered
+  by `started_at` descending. Use to answer "did task X run last
+  night?" / "how many times has this task been re-run?" before
+  digging into a specific execution's artifacts via `list_artifacts`.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: Task whose execution history should be read.
+  - name: limit
+    param_type: integer
+    description: Maximum entries to return. Clamped to [1, 100]; defaults to 10.
+    default: "10"
+implementation:
+  type: compiled
+  provider_name: get_execution_history
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - executions
+    - tasks
+    - introspection
+  composition_category: action
+  sandbox: none

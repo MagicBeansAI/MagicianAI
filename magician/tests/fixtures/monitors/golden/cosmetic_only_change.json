@@ -1,0 +1,107 @@
+{
+  "name": "cosmetic_only_change",
+  "description": "Cosmetic-only drift: reworded summary, retitled casing/whitespace, and a tracking-param + fragment URL variant. None of these are fact fields (or they normalize away), so the fingerprint is identical and the run must read `unchanged` — no update, no notification (§7.2: cosmetic changes are not material).",
+  "notification_policy": "material_changes",
+  "notify_initial_baseline": false,
+  "steps": [
+    {
+      "label": "baseline scan",
+      "execution_id": "exec_cos_1",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_cos_1",
+        "monitor_revision": 3,
+        "started_at": "2026-07-22T12:00:00Z",
+        "completed_at": "2026-07-22T12:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://acme.example/docs/changelog",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 1
+          }
+        ],
+        "counts": { "scanned": 1, "new": 0, "updated": 0, "unchanged": 1, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "url:acme.example/docs/changelog",
+            "title": "Changelog - July release",
+            "canonical_url": "https://Acme.example/docs/changelog",
+            "source": "https://acme.example/docs/changelog",
+            "observed_at": "2026-07-22T12:00:30Z",
+            "published_at": null,
+            "summary": "The July release notes page.",
+            "why_it_matters": "Tracked docs page.",
+            "entities": ["July release"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_6001",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_6001",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "baseline",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": true,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 1, "updated": 0, "unchanged": 0, "possibly_removed": 0 }
+      }
+    },
+    {
+      "label": "cosmetic rescan: reworded prose, cased/whitespaced title, tracking-param URL",
+      "execution_id": "exec_cos_2",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_cos_2",
+        "monitor_revision": 3,
+        "started_at": "2026-07-23T12:00:00Z",
+        "completed_at": "2026-07-23T12:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://acme.example/docs/changelog",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 1
+          }
+        ],
+        "counts": { "scanned": 1, "new": 0, "updated": 0, "unchanged": 1, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "url:acme.example/docs/changelog",
+            "title": "changelog   -   JULY Release",
+            "canonical_url": "https://acme.example/docs/changelog?utm_source=rss&utm_medium=feed#latest",
+            "source": "https://acme.example/docs/changelog",
+            "observed_at": "2026-07-23T12:00:30Z",
+            "published_at": null,
+            "summary": "Release notes for July, freshly reworded by the page template.",
+            "why_it_matters": "Tracked docs page.",
+            "entities": ["july   RELEASE"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_6001",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_6002",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "unchanged",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": false,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 0, "updated": 0, "unchanged": 1, "possibly_removed": 0 },
+        "classifications": { "url:acme.example/docs/changelog": "unchanged" }
+      }
+    }
+  ]
+}

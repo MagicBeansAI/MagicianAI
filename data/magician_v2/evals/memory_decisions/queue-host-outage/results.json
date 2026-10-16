@@ -1,0 +1,9 @@
+[
+  {
+    "error": "compatible facts mishandled: MemoryContradictionSweepSummary { scanned_targets: 2, reviewed: 1, superseded: 0, keep_existing: 0, keep_both: 0, missing_decisions: 1, skipped_targets: [], changed_targets: [] }",
+    "latency_ms": 4083,
+    "operation": "memory_conflict_review",
+    "passed": false,
+    "result": null
+  }
+]

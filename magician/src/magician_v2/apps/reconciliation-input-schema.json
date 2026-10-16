@@ -1,0 +1,9 @@
+{
+  "version": "v1",
+  "root": 0,
+  "handling_floor": { "classification": "public", "model_processing": "remote_allowed" },
+  "nodes": [
+    { "kind": "record", "fields": { "mode": { "value_type": 1, "required": true } } },
+    { "kind": "enum", "values": ["snapshot"] }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "name": "adversarial_discard_all",
+  "description": "Adversarial patch discards every id including protected ones; protected discards downgrade to keep and nothing load-bearing is lost.",
+  "iteration": 9,
+  "char_budget": 1000,
+  "keep_newest_pairs": 1,
+  "goal_line": "Renew the workspace TLS certificate and verify the endpoint serves it.",
+  "open_requirements": [
+    "Verify the served certificate fingerprint after renewal."
+  ],
+  "open_requirement_ids": [],
+  "terminal_evidence_ids": [],
+  "replay": false,
+  "items": [
+    {
+      "id": "tp_001",
+      "kind": "turn_pair",
+      "ordinal": 0,
+      "age_iterations": 2,
+      "content": "[assistant] Iteration 1: listed current certificates. [user tool_result call_1] {\"status\":\"ok\"}....."
+    },
+    {
+      "id": "tp_002",
+      "kind": "turn_pair",
+      "ordinal": 1,
+      "age_iterations": 1,
+      "content": "[assistant] Iteration 2: requested the renewal. [user tool_result call_2] {\"status\":\"pending\"}......"
+    },
+    {
+      "id": "tp_003",
+      "kind": "turn_pair",
+      "ordinal": 2,
+      "age_iterations": 0,
+      "content": "[assistant] Iteration 3: polled the renewal status. [user tool_result call_3] {\"status\":\"ok\"}......."
+    },
+    {
+      "id": "fn_auth_001",
+      "kind": "failure_note",
+      "ordinal": 0,
+      "age_iterations": 1,
+      "capability": "auth",
+      "content": "auth: the ACME account key was rejected once before re-registration............."
+    }
+  ],
+  "patch": {
+    "patches": [
+      {
+        "id": "tp_001",
+        "action": "discard"
+      },
+      {
+        "id": "tp_002",
+        "action": "discard"
+      },
+      {
+        "id": "tp_003",
+        "action": "discard"
+      },
+      {
+        "id": "fn_auth_001",
+        "action": "discard"
+      }
+    ],
+    "rationale": "All prior context is unnecessary; the run can proceed from a clean window."
+  },
+  "expect": {
+    "validation_rejected": null,
+    "protected_ids": [
+      "fn_auth_001",
+      "tp_003"
+    ],
+    "counts": {
+      "kept": 2,
+      "summarized": 0,
+      "discarded": 2,
+      "downgraded": 2
+    },
+    "downgraded_ids": [
+      "tp_003",
+      "fn_auth_001"
+    ],
+    "surviving_ids": [
+      "tp_003",
+      "fn_auth_001"
+    ],
+    "compacted_ids": [],
+    "residue_evicted_ids": [],
+    "chars_after_patch": 180,
+    "chars_after": 180,
+    "patch_rejected": null
+  }
+}

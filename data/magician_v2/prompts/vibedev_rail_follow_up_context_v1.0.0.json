@@ -1,0 +1,21 @@
+{
+  "name": "vibedev_rail_follow_up_context",
+  "version": "1.0.0",
+  "content": [
+    "- run_coding_task auto-derives the stable VibeDev coding session from this task chain, so the parent run's work is already loaded; session_name, persist_session, and pi_binary overrides are rejected.",
+    "- If the parent produced a PLAN, read it in full first — it is the parent's plan.md output and the shared session holds it — and implement or refine it faithfully rather than re-planning from scratch.",
+    "- If the parent produced CODE, treat the real workspace as the source of truth but let run_coding_task inspect that state first; do not assume a prior proposal was applied unless the returned real_working_dir state shows it.",
+    "- Keep this an incremental follow-up. Prefer focused diffs over reworking unrelated areas, and stay inside the same VibeDev project.",
+    "- If the parent run still has unresolved code-review HITL, stop and ask for that review to be resolved before creating new changes."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Prose half of the `@vibedev` chat rail's follow-up continuation block. The machine-read `Parent task:` line of that block is assembled in Rust and deliberately NOT stored here: `execution/compiled_handlers/run_coding_task.rs` string-matches it back out to walk the run chain, and a prompt-store edit must not be able to break that contract silently. Mirrors the prose of the cockpit's client-side followUpContextBlock (ui/unified-ui/src/lib/shell/vibe/conversation/submit.ts) collapsed into one mode-agnostic block, because the rail selects a parent rather than being handed one and both parent kinds must read correctly.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` rail follow-up continuation prose. Stage 1f: session/binary overrides are rejected, not optional.",
+    "tags": ["vibedev", "coding", "vibedev-rail", "continuation", "follow-up"],
+    "estimated_tokens": 190
+  }
+}

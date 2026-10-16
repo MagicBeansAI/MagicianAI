@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "product_name": "Magican",
+  "host_app_name": "Magican Desktop",
+  "assistant_fallback_name": "Assistant"
+}

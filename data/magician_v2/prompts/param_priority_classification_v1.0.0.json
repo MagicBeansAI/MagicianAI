@@ -1,0 +1,82 @@
+{
+  "name": "param_priority_classification",
+  "version": "1.0.0",
+  "content": [
+    "Classify this parameter for progressive elicitation:",
+    "",
+    "Parameter: {parameter_name}",
+    "Step Tool: {step_tool}",
+    "Step Description: {step_description}",
+    "User Request: {user_request}",
+    "",
+    "Respond with JSON only:",
+    "{",
+    "  \"priority\": \"Critical|PreExecution|JustInTime|Optional|Inferrable\",",
+    "  \"ask_timing\": \"PreExecution|JustInTime|Never\",",
+    "  \"discovery_timing\": \"PreExecution|JustInTime|Auto\",",
+    "  \"inference_hints\": [\"hint1\", \"hint2\", ...]",
+    "}",
+    "",
+    "Guidelines:",
+    "- Critical: Security (passwords, tokens), authentication, irreversible actions (delete, destroy)",
+    "- PreExecution: Important context (paths, files, URLs, targets)",
+    "- JustInTime: Optimization parameters (timeouts, limits, retries)",
+    "- Optional: Nice-to-have (descriptions, labels, comments)",
+    "- Inferrable: Can be determined from context (dates, usernames, formats)",
+    "",
+    "Ask Timing:",
+    "- PreExecution: Ask before execution starts",
+    "- JustInTime: Ask right before needed",
+    "- Never: Don't ask, use defaults/inference",
+    "",
+    "Discovery Timing:",
+    "- PreExecution: Discover autonomously before execution",
+    "- JustInTime: Discover when needed",
+    "- Auto: Let system decide based on priority"
+  ],
+  "variables": [
+    {
+      "name": "parameter_name",
+      "description": "The name of the parameter to classify",
+      "required": true,
+      "default_value": null,
+      "examples": ["target_host", "api_key", "timeout_ms", "description"]
+    },
+    {
+      "name": "step_tool",
+      "description": "The tool being used in this step",
+      "required": true,
+      "default_value": null,
+      "examples": ["network_diagnostics", "file_operations", "database_query"]
+    },
+    {
+      "name": "step_description",
+      "description": "Description of what this step does",
+      "required": true,
+      "default_value": null,
+      "examples": ["Check network connectivity to target", "Delete user records from database"]
+    },
+    {
+      "name": "user_request",
+      "description": "The original user request or query",
+      "required": true,
+      "default_value": null,
+      "examples": ["ping google.com", "delete inactive users", "check API health"]
+    }
+  ],
+  "metadata": {
+    "category": "ParameterElicitation",
+    "description": "Classifies parameter priority and timing for progressive elicitation system",
+    "author": "MagicianV2-ProgressiveElicitation",
+    "created_at": "2025-10-22T00:00:00Z",
+    "changelog": "Initial version for Phase 1.2 parameter classification during plan generation",
+    "tags": [
+      "elicitation",
+      "classification",
+      "progressive",
+      "priority",
+      "timing"
+    ],
+    "estimated_tokens": 320
+  }
+}

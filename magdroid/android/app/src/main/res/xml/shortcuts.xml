@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Long-press the app icon.
+
+  The same entry points iOS exposes to Siri — new chat, ask Tutor, start
+  listening. Android has no Siri, but the launcher long-press is the platform's
+  own answer to the same question: begin somewhere specific without going in
+  through the app's front door first.
+
+  Static rather than dynamic: these three exist whatever the account is doing,
+  and a dynamic shortcut has to be re-pushed on every launch to survive.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:shortcutId="new_chat"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_chat"
+        android:shortcutShortLabel="@string/shortcut_new_chat_short"
+        android:shortcutLongLabel="@string/shortcut_new_chat_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="magican://new-chat"
+            android:targetPackage="ai.magicbeans.magican"
+            android:targetClass="ai.magicbeans.magdroid.ui.ChatActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="ask_tutor"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_tutor"
+        android:shortcutShortLabel="@string/shortcut_tutor_short"
+        android:shortcutLongLabel="@string/shortcut_tutor_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="magican://tutor"
+            android:targetPackage="ai.magicbeans.magican"
+            android:targetClass="ai.magicbeans.magdroid.ui.ChatActivity" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="start_listening"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_listen"
+        android:shortcutShortLabel="@string/shortcut_listen_short"
+        android:shortcutLongLabel="@string/shortcut_listen_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="magican://listen"
+            android:targetPackage="ai.magicbeans.magican"
+            android:targetClass="ai.magicbeans.magdroid.ui.ChatActivity" />
+    </shortcut>
+
+</shortcuts>

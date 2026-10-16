@@ -1,0 +1,1256 @@
+[
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "accounting_complete": true,
+      "application_cache_hit": false,
+      "behavior_fingerprint": "176e89ccc1c75d89d22d7cbba806cafcf6d9b10ec3962e4fd4ebf8f3965b5be0",
+      "calls": [
+        {
+          "adapter": "typesafe",
+          "attempt": 1,
+          "batch_id": "01M3J9DKW0HMGR89S8XPW387Y1",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9DKWCGN2J9SVTPC0VDZPE",
+          "completed_at_ms": 1790541484440,
+          "error_class": null,
+          "input_tokens": 676,
+          "item_ids": [
+            "0:0"
+          ],
+          "latency_ms": 524,
+          "local": false,
+          "model": "jev-1.13.0",
+          "operation": "memory_utility_review",
+          "output_tokens": 79,
+          "provider": "decision:typesafe",
+          "queue_wait_ms": 0,
+          "requested_model": "jev-1.13.0",
+          "retry_group_id": "01M3J9DKWBQY80MCRB2XS2GFPB",
+          "started_at_ms": 1790541483916,
+          "status": "succeeded"
+        }
+      ],
+      "case_id": "ab6e7028147689b3b7679994beaf6251edea61e99815c194a1f3e0a6b46d5922",
+      "comparison_id": "01M3J9DMCWJN93DYBS3BHZB2CA",
+      "discovery_latency_ms": 0,
+      "engine_instance": "01M3J8MQAFRQ65TQGHCB5BACQR",
+      "engine_latency_ms": 530,
+      "foreground_latency_ms": 539,
+      "items": [
+        {
+          "eligible_answers": {
+            "utility": "operator-enabled:176e89ccc1c75d89d22d7cbba806cafcf6d9b10ec3962e4fd4ebf8f3965b5be0"
+          },
+          "error": null,
+          "item_id": "0:0",
+          "latency_ms": 526,
+          "response": {
+            "answers": {
+              "utility": {
+                "choice": "load_bearing",
+                "confidence": 0.76,
+                "probabilities": {
+                  "harmful": 0.0,
+                  "irrelevant": 0.12,
+                  "load_bearing": 0.8,
+                  "referenced": 0.02,
+                  "stale": 0.0,
+                  "unknown": 0.03,
+                  "useful": 0.03
+                },
+                "type": "choice"
+              }
+            },
+            "model": {
+              "adapter": "typesafe",
+              "model": "jev-1.13.0"
+            },
+            "pack_id": "memory_utility_review",
+            "pack_version": "1.0.0",
+            "usage": {
+              "input_tokens": 676,
+              "output_tokens": 79
+            }
+          },
+          "status": "answered",
+          "thresholds": {
+            "utility": 0.7
+          }
+        }
+      ],
+      "mode": "gate",
+      "offered": 1,
+      "offered_item_ids": [
+        "0:0"
+      ],
+      "operation": "memory_utility_review",
+      "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+      "pricing": {
+        "01M3J9DKWCGN2J9SVTPC0VDZPE": {
+          "cache_cost_usd": null,
+          "cost_source": "computed",
+          "cost_usd": 0.000028392000000000002,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+          "reasoning_cost_usd": null
+        }
+      },
+      "projection_version": "memory_utility_v1",
+      "reference": null,
+      "reference_attempted": false,
+      "reference_version": "88db5191ff48b99510869811ca0cea980e05d50c64b9fa20c41d96ba187be62f",
+      "required_questions": [
+        "utility"
+      ],
+      "requires_completion": true,
+      "schema_version": 1,
+      "scope": {
+        "call_role": "judge",
+        "execution_id": "memory_utility_review-exec",
+        "llm_call_id": "01M3J9DKW0FT9WRWV8SJJM5RQ5",
+        "root_execution_id": "memory_utility_review-exec",
+        "scope": {
+          "principal": "memory-owner-eval",
+          "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+        },
+        "scope_resolution": "explicit",
+        "task_id": "memory_utility_review",
+        "trace_id": "memory_utility_review-exec",
+        "workload_class": "ambient"
+      },
+      "threshold_fingerprints": {
+        "0:0": "cf4f5d855603975fd4db3e7eb3c643ac3b87a60804b5906dcfe18ae9be8a998f"
+      },
+      "wall_latency_ms": 539
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "comparison_id": "01M3J9DMCWJN93DYBS3BHZB2CA",
+      "foreground_ms": 2440,
+      "result_validated": true,
+      "schema_version": 1,
+      "stage": "completion",
+      "text_attempted": true,
+      "text_call": {
+        "attempts_complete": true,
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "cost_usd": 0.0000627,
+        "input_tokens": 277,
+        "model": "gpt-6-luna",
+        "operation": "memory_temperature_utility_review",
+        "output_tokens": 70,
+        "pricing_version": "pricing-row-v1:2b3eaf109b38eeb4e62856dabea6bb13345c310290c1cca0445c63aec4f47c64",
+        "profile": "op-memory-utility-review-remote",
+        "provider": "openai",
+        "receipt": {
+          "context": {
+            "call_role": "primary",
+            "execution_id": "memory_utility_review-exec",
+            "llm_call_id": "01M3J9DMCX34TG5G6EW3GK2RJ5",
+            "root_execution_id": "memory_utility_review-exec",
+            "scope": {
+              "principal": "memory-owner-eval",
+              "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+            },
+            "scope_resolution": "inherited",
+            "task_id": "memory_utility_review",
+            "trace_id": "memory_utility_review-exec",
+            "workload_class": "memory"
+          },
+          "provider_attempt_count": 1,
+          "provider_attempt_id": "01M3J9DMCX34TG5G6EW3GK2RJ5:a1",
+          "response_reused": false
+        }
+      }
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "accounting_complete": true,
+      "application_cache_hit": false,
+      "behavior_fingerprint": "5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c",
+      "calls": [
+        {
+          "adapter": "typesafe",
+          "attempt": 1,
+          "batch_id": "01M3J9DPBWYASPFXMES6SJG51Q",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9DPBXJD8FPQWWX136MXWM",
+          "completed_at_ms": 1790541486884,
+          "error_class": null,
+          "input_tokens": 1382,
+          "item_ids": [
+            "m1"
+          ],
+          "latency_ms": 423,
+          "local": false,
+          "model": "jev-1.13.0",
+          "operation": "memory_lifecycle_relation",
+          "output_tokens": 210,
+          "provider": "decision:typesafe",
+          "queue_wait_ms": 0,
+          "requested_model": "jev-1.13.0",
+          "retry_group_id": "01M3J9DPBXEE0AZHJE7ZD4VZ99",
+          "started_at_ms": 1790541486461,
+          "status": "succeeded"
+        }
+      ],
+      "case_id": "76b41eb48670ceebb9a6e222952a3cc423b043baa9353f4960767ec3ec739176",
+      "comparison_id": "01M3J9DPS62MHY90G45PG6B76P",
+      "discovery_latency_ms": 0,
+      "engine_instance": "01M3J8MQAFRQ65TQGHCB5BACQR",
+      "engine_latency_ms": 424,
+      "foreground_latency_ms": 426,
+      "items": [
+        {
+          "eligible_answers": {
+            "explicit_correction": "operator-enabled:5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c",
+            "incoming_coverage": "operator-enabled:5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c",
+            "kind": "operator-enabled:5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c",
+            "relation": "operator-enabled:5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c",
+            "same_context": "operator-enabled:5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c",
+            "same_subject_and_aspect": "operator-enabled:5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c"
+          },
+          "error": null,
+          "item_id": "m1",
+          "latency_ms": 424,
+          "response": {
+            "answers": {
+              "explicit_correction": {
+                "noul": 0.03,
+                "type": "noul"
+              },
+              "incoming_coverage": {
+                "choice": "unknown",
+                "confidence": 1.0,
+                "probabilities": {
+                  "full": 0.0,
+                  "partial": 0.0,
+                  "unknown": 1.0
+                },
+                "type": "choice"
+              },
+              "kind": {
+                "choice": "preference",
+                "confidence": 1.0,
+                "probabilities": {
+                  "fact": 0.0,
+                  "goal": 0.0,
+                  "instruction": 0.0,
+                  "observation": 0.0,
+                  "preference": 1.0
+                },
+                "type": "choice"
+              },
+              "relation": {
+                "choice": "coexist",
+                "confidence": 1.0,
+                "probabilities": {
+                  "ask_owner": 0.0,
+                  "coexist": 1.0,
+                  "duplicate": 0.0,
+                  "reinforce": 0.0,
+                  "supersede": 0.0
+                },
+                "type": "choice"
+              },
+              "same_context": {
+                "noul": 0.04,
+                "type": "noul"
+              },
+              "same_subject_and_aspect": {
+                "noul": 0.03,
+                "type": "noul"
+              }
+            },
+            "model": {
+              "adapter": "typesafe",
+              "model": "jev-1.13.0"
+            },
+            "pack_id": "memory_lifecycle_relation",
+            "pack_version": "1.1.0",
+            "usage": {
+              "input_tokens": 1382,
+              "output_tokens": 210
+            }
+          },
+          "status": "answered",
+          "thresholds": {
+            "explicit_correction": 0.9,
+            "incoming_coverage": 0.9,
+            "kind": 0.9,
+            "relation": 0.9,
+            "same_context": 0.9,
+            "same_subject_and_aspect": 0.9
+          }
+        }
+      ],
+      "mode": "gate",
+      "offered": 1,
+      "offered_item_ids": [
+        "m1"
+      ],
+      "operation": "memory_lifecycle_relation",
+      "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+      "pricing": {
+        "01M3J9DPBXJD8FPQWWX136MXWM": {
+          "cache_cost_usd": null,
+          "cost_source": "computed",
+          "cost_usd": 0.000058044,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+          "reasoning_cost_usd": null
+        }
+      },
+      "projection_version": "memory_lifecycle_pair_v1",
+      "reference": null,
+      "reference_attempted": false,
+      "reference_version": "d863d93d952fb7c1c46f1a3ddd2d9f998f7a66fbb9d47aa98a1515778b205c4b",
+      "required_questions": [
+        "kind",
+        "relation",
+        "incoming_coverage",
+        "same_subject_and_aspect",
+        "same_context",
+        "explicit_correction"
+      ],
+      "requires_completion": true,
+      "schema_version": 1,
+      "scope": {
+        "call_role": "judge",
+        "execution_id": "memory_lifecycle_relation-exec",
+        "llm_call_id": "01M3J9DPBVXZ2PXBW5R62GNVPC",
+        "root_execution_id": "memory_lifecycle_relation-exec",
+        "scope": {
+          "principal": "memory-owner-eval",
+          "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+        },
+        "scope_resolution": "explicit",
+        "task_id": "memory_lifecycle_relation",
+        "trace_id": "memory_lifecycle_relation-exec",
+        "workload_class": "ambient"
+      },
+      "threshold_fingerprints": {
+        "m1": "7a0d8d349dd12d8248aa85792e6931df6462569f184c2afd2f598adc72bc955a"
+      },
+      "wall_latency_ms": 426
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "comparison_id": "01M3J9DPS62MHY90G45PG6B76P",
+      "foreground_ms": 4279,
+      "result_validated": true,
+      "schema_version": 1,
+      "stage": "completion",
+      "text_attempted": true,
+      "text_call": {
+        "attempts_complete": true,
+        "cache_read_tokens": null,
+        "cache_write_tokens": 1557,
+        "cost_usd": 0.000305425,
+        "input_tokens": 1560,
+        "model": "gpt-6-luna",
+        "operation": "memory_lifecycle_review",
+        "output_tokens": 221,
+        "pricing_version": "pricing-row-v1:2b3eaf109b38eeb4e62856dabea6bb13345c310290c1cca0445c63aec4f47c64",
+        "profile": "gpt6luna-responses-toolsany",
+        "provider": "openai",
+        "receipt": {
+          "context": {
+            "call_role": "primary",
+            "execution_id": "memory_lifecycle_relation-exec",
+            "llm_call_id": "01M3J9DPS66J6JB01PKXQA7RVN",
+            "root_execution_id": "memory_lifecycle_relation-exec",
+            "scope": {
+              "principal": "memory-owner-eval",
+              "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+            },
+            "scope_resolution": "inherited",
+            "task_id": "memory_lifecycle_relation",
+            "trace_id": "memory_lifecycle_relation-exec",
+            "workload_class": "memory"
+          },
+          "provider_attempt_count": 1,
+          "provider_attempt_id": "01M3J9DPS66J6JB01PKXQA7RVN:a1",
+          "response_reused": false
+        }
+      }
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "accounting_complete": true,
+      "application_cache_hit": false,
+      "behavior_fingerprint": "9c46298ca08b31878500b623aea053eadccbd39ff0d144d6e2db2af6a82bbcb8",
+      "calls": [
+        {
+          "adapter": "typesafe",
+          "attempt": 1,
+          "batch_id": "01M3J9DTJB7YBZWTB2XCPM2GPB",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9DTJCMMAYP0XVAV15ST4E",
+          "completed_at_ms": 1790541491095,
+          "error_class": null,
+          "input_tokens": 717,
+          "item_ids": [
+            "0"
+          ],
+          "latency_ms": 331,
+          "local": false,
+          "model": "jev-1.13.0",
+          "operation": "evidence_promote",
+          "output_tokens": 34,
+          "provider": "decision:typesafe",
+          "queue_wait_ms": 0,
+          "requested_model": "jev-1.13.0",
+          "retry_group_id": "01M3J9DTJC115GMKHDKENNSWKD",
+          "started_at_ms": 1790541490764,
+          "status": "succeeded"
+        }
+      ],
+      "case_id": "20313ac4b7469c70ce29cf77e68dc8a2a3a669a4e55e48a53053d03366b0287b",
+      "comparison_id": "01M3J9DTWS2RXM05B5161GY10P",
+      "discovery_latency_ms": 0,
+      "engine_instance": "01M3J8MQAFRQ65TQGHCB5BACQR",
+      "engine_latency_ms": 331,
+      "foreground_latency_ms": 333,
+      "items": [
+        {
+          "eligible_answers": {
+            "importance": "operator-enabled:9c46298ca08b31878500b623aea053eadccbd39ff0d144d6e2db2af6a82bbcb8",
+            "promote": "operator-enabled:9c46298ca08b31878500b623aea053eadccbd39ff0d144d6e2db2af6a82bbcb8"
+          },
+          "error": null,
+          "item_id": "0",
+          "latency_ms": 331,
+          "response": {
+            "answers": {
+              "importance": {
+                "confidence": 0.95,
+                "probabilities": [
+                  0.0,
+                  0.01,
+                  0.01,
+                  0.97,
+                  0.01
+                ],
+                "score": 2.97,
+                "type": "score"
+              },
+              "promote": {
+                "noul": 0.74,
+                "type": "noul"
+              }
+            },
+            "model": {
+              "adapter": "typesafe",
+              "model": "jev-1.13.0"
+            },
+            "pack_id": "evidence_promote",
+            "pack_version": "1.1.0",
+            "usage": {
+              "input_tokens": 717,
+              "output_tokens": 34
+            }
+          },
+          "status": "answered",
+          "thresholds": {
+            "importance": 0.7,
+            "promote": 0.7
+          }
+        }
+      ],
+      "mode": "gate",
+      "offered": 1,
+      "offered_item_ids": [
+        "0"
+      ],
+      "operation": "evidence_promote",
+      "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+      "pricing": {
+        "01M3J9DTJCMMAYP0XVAV15ST4E": {
+          "cache_cost_usd": null,
+          "cost_source": "computed",
+          "cost_usd": 0.000030114,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+          "reasoning_cost_usd": null
+        }
+      },
+      "projection_version": "evidence_promote_v1_importance_quarters",
+      "reference": null,
+      "reference_attempted": false,
+      "reference_version": "8053b6945a8be20de5f32bc453c5148a258ae6d5a2e75ec57724431644e857d7",
+      "required_questions": [
+        "promote",
+        "importance"
+      ],
+      "requires_completion": true,
+      "schema_version": 1,
+      "scope": {
+        "call_role": "judge",
+        "execution_id": "evidence_promote-exec",
+        "llm_call_id": "01M3J9DTJBKWXS7TEGWYZVWXZ7",
+        "root_execution_id": "evidence_promote-exec",
+        "scope": {
+          "principal": "memory-owner-eval",
+          "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+        },
+        "scope_resolution": "explicit",
+        "task_id": "evidence_promote",
+        "trace_id": "evidence_promote-exec",
+        "workload_class": "ambient"
+      },
+      "threshold_fingerprints": {
+        "0": "ebf853570874efd1a5662000ff69170717b962a65ff845beb2efed171695b3b8"
+      },
+      "wall_latency_ms": 333
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "comparison_id": "01M3J9DTWS2RXM05B5161GY10P",
+      "foreground_ms": 4181,
+      "result_validated": true,
+      "schema_version": 1,
+      "stage": "completion",
+      "text_attempted": true,
+      "text_call": {
+        "attempts_complete": true,
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "cost_usd": 0.000264,
+        "input_tokens": 755,
+        "model": "gpt-6-luna",
+        "operation": "tier_evidence_distill",
+        "output_tokens": 377,
+        "pricing_version": "pricing-row-v1:2b3eaf109b38eeb4e62856dabea6bb13345c310290c1cca0445c63aec4f47c64",
+        "profile": "op-memory-evidence-distillation-fast",
+        "provider": "openai",
+        "receipt": {
+          "context": {
+            "call_role": "primary",
+            "execution_id": "evidence_promote-exec",
+            "llm_call_id": "01M3J9DTWTMHYJ8B19PKQ4K93T",
+            "root_execution_id": "evidence_promote-exec",
+            "scope": {
+              "principal": "memory-owner-eval",
+              "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+            },
+            "scope_resolution": "inherited",
+            "task_id": "evidence_promote",
+            "trace_id": "evidence_promote-exec",
+            "workload_class": "system"
+          },
+          "provider_attempt_count": 1,
+          "provider_attempt_id": "01M3J9DTWTMHYJ8B19PKQ4K93T:a1",
+          "response_reused": false
+        }
+      }
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "accounting_complete": true,
+      "application_cache_hit": false,
+      "behavior_fingerprint": "3f15e308ec5164cde5a206a5e4127fe33802bad817ae420057cf8105c6401bf4",
+      "calls": [
+        {
+          "adapter": "typesafe",
+          "attempt": 1,
+          "batch_id": "01M3J9DYNT9FVRB7PV45QQZVE0",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9DYNWBC2821WHGX28XH3Z",
+          "completed_at_ms": 1790541495450,
+          "error_class": null,
+          "input_tokens": 687,
+          "item_ids": [
+            "0"
+          ],
+          "latency_ms": 477,
+          "local": false,
+          "model": "jev-1.13.0",
+          "operation": "memory_connection_gate",
+          "output_tokens": 70,
+          "provider": "decision:typesafe",
+          "queue_wait_ms": 0,
+          "requested_model": "jev-1.13.0",
+          "retry_group_id": "01M3J9DYNW5Z3YCW5MY9V1E6JS",
+          "started_at_ms": 1790541494972,
+          "status": "succeeded"
+        }
+      ],
+      "case_id": "82369569a19bfae9259242d23a9e662424403707047e7bae3d4756a6aff5465f",
+      "comparison_id": "01M3J9DZ4V83B8V9R2NY05FG20",
+      "discovery_latency_ms": 0,
+      "engine_instance": "01M3J8MQAFRQ65TQGHCB5BACQR",
+      "engine_latency_ms": 478,
+      "foreground_latency_ms": 480,
+      "items": [
+        {
+          "eligible_answers": {
+            "surface": "operator-enabled:3f15e308ec5164cde5a206a5e4127fe33802bad817ae420057cf8105c6401bf4",
+            "worth_surfacing": "operator-enabled:3f15e308ec5164cde5a206a5e4127fe33802bad817ae420057cf8105c6401bf4"
+          },
+          "error": null,
+          "item_id": "0",
+          "latency_ms": 478,
+          "response": {
+            "answers": {
+              "surface": {
+                "choice": "for_you",
+                "confidence": 0.98,
+                "probabilities": {
+                  "for_you": 0.99,
+                  "hitl": 0.01,
+                  "none": 0.0,
+                  "worth_a_look": 0.0
+                },
+                "type": "choice"
+              },
+              "worth_surfacing": {
+                "noul": 0.84,
+                "type": "noul"
+              }
+            },
+            "model": {
+              "adapter": "typesafe",
+              "model": "jev-1.13.0"
+            },
+            "pack_id": "memory_connection_gate",
+            "pack_version": "1.1.0",
+            "usage": {
+              "input_tokens": 687,
+              "output_tokens": 70
+            }
+          },
+          "status": "answered",
+          "thresholds": {
+            "surface": 0.7,
+            "worth_surfacing": 0.7
+          }
+        }
+      ],
+      "mode": "gate",
+      "offered": 1,
+      "offered_item_ids": [
+        "0"
+      ],
+      "operation": "memory_connection_gate",
+      "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+      "pricing": {
+        "01M3J9DYNWBC2821WHGX28XH3Z": {
+          "cache_cost_usd": null,
+          "cost_source": "computed",
+          "cost_usd": 0.000028854000000000002,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+          "reasoning_cost_usd": null
+        }
+      },
+      "projection_version": "memory_connection_sources_v1",
+      "reference": null,
+      "reference_attempted": false,
+      "reference_version": "52ad76027f9c240f27cb2ad595e9a075bf6a858c6f50ebd3e7d4bd93b5e307f7",
+      "required_questions": [
+        "worth_surfacing",
+        "surface"
+      ],
+      "requires_completion": true,
+      "schema_version": 1,
+      "scope": {
+        "call_role": "judge",
+        "execution_id": "memory_connection_gate-exec",
+        "llm_call_id": "01M3J9DYNT2WPW6014K5NEDYA2",
+        "root_execution_id": "memory_connection_gate-exec",
+        "scope": {
+          "principal": "memory-owner-eval",
+          "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+        },
+        "scope_resolution": "explicit",
+        "task_id": "memory_connection_gate",
+        "trace_id": "memory_connection_gate-exec",
+        "workload_class": "ambient"
+      },
+      "threshold_fingerprints": {
+        "0": "909a6db3890458a3bf1cb07ed4b81564142312090bdeeb1ddf4b255766c89150"
+      },
+      "wall_latency_ms": 480
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "comparison_id": "01M3J9DZ4V83B8V9R2NY05FG20",
+      "foreground_ms": 4737,
+      "result_validated": true,
+      "schema_version": 1,
+      "stage": "completion",
+      "text_attempted": true,
+      "text_call": {
+        "attempts_complete": true,
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "cost_usd": 0.0001499,
+        "input_tokens": 624,
+        "model": "gpt-6-luna",
+        "operation": "memory_connection_review",
+        "output_tokens": 175,
+        "pricing_version": "pricing-row-v1:2b3eaf109b38eeb4e62856dabea6bb13345c310290c1cca0445c63aec4f47c64",
+        "profile": "gpt6luna-responses-toolsany",
+        "provider": "openai",
+        "receipt": {
+          "context": {
+            "call_role": "primary",
+            "execution_id": "memory_connection_gate-exec",
+            "llm_call_id": "01M3J9DZ4VDNF1KRPRSG01GER2",
+            "root_execution_id": "memory_connection_gate-exec",
+            "scope": {
+              "principal": "memory-owner-eval",
+              "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+            },
+            "scope_resolution": "inherited",
+            "task_id": "memory_connection_gate",
+            "trace_id": "memory_connection_gate-exec",
+            "workload_class": "memory"
+          },
+          "provider_attempt_count": 1,
+          "provider_attempt_id": "01M3J9DZ4VDNF1KRPRSG01GER2:a1",
+          "response_reused": false
+        }
+      }
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "accounting_complete": true,
+      "application_cache_hit": false,
+      "behavior_fingerprint": "3431a9eb00c49dac525fb70892aceef4d8063341819a797402a1ae5640000180",
+      "calls": [
+        {
+          "adapter": "typesafe",
+          "attempt": 1,
+          "batch_id": "01M3J9E3BD3PCVB6RGVKZ99JT4",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9E3BD75JDXHB9WD39DNBW",
+          "completed_at_ms": 1790541500170,
+          "error_class": null,
+          "input_tokens": 799,
+          "item_ids": [
+            "0"
+          ],
+          "latency_ms": 412,
+          "local": false,
+          "model": "jev-1.13.0",
+          "operation": "procedure_feedback",
+          "output_tokens": 110,
+          "provider": "decision:typesafe",
+          "queue_wait_ms": 0,
+          "requested_model": "jev-1.13.0",
+          "retry_group_id": "01M3J9E3BDQC399MQ8MWZYC28G",
+          "started_at_ms": 1790541499757,
+          "status": "succeeded"
+        }
+      ],
+      "case_id": "ba2267ae6f682f1938ee29488bccd947a4ef6a15e41329978a6e74d2632337bd",
+      "comparison_id": "01M3J9E3RBSF5PVRZ0GZQM0G1B",
+      "discovery_latency_ms": 0,
+      "engine_instance": "01M3J8MQAFRQ65TQGHCB5BACQR",
+      "engine_latency_ms": 412,
+      "foreground_latency_ms": 414,
+      "items": [
+        {
+          "eligible_answers": {
+            "deprecation_recommended": "operator-enabled:3431a9eb00c49dac525fb70892aceef4d8063341819a797402a1ae5640000180",
+            "verdict": "operator-enabled:3431a9eb00c49dac525fb70892aceef4d8063341819a797402a1ae5640000180"
+          },
+          "error": null,
+          "item_id": "0",
+          "latency_ms": 412,
+          "response": {
+            "answers": {
+              "deprecation_recommended": {
+                "noul": 0.06,
+                "type": "noul"
+              },
+              "verdict": {
+                "choice": "useful",
+                "confidence": 0.92,
+                "probabilities": {
+                  "harmful": 0.0,
+                  "irrelevant": 0.0,
+                  "misleading": 0.0,
+                  "stale": 0.0,
+                  "too_broad": 0.0,
+                  "too_narrow": 0.0,
+                  "unknown": 0.06,
+                  "useful": 0.94
+                },
+                "type": "choice"
+              }
+            },
+            "model": {
+              "adapter": "typesafe",
+              "model": "jev-1.13.0"
+            },
+            "pack_id": "procedure_feedback",
+            "pack_version": "1.0.0",
+            "usage": {
+              "input_tokens": 799,
+              "output_tokens": 110
+            }
+          },
+          "status": "answered",
+          "thresholds": {
+            "deprecation_recommended": 0.9,
+            "verdict": 0.9
+          }
+        }
+      ],
+      "mode": "gate",
+      "offered": 1,
+      "offered_item_ids": [
+        "0"
+      ],
+      "operation": "procedure_feedback",
+      "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+      "pricing": {
+        "01M3J9E3BD75JDXHB9WD39DNBW": {
+          "cache_cost_usd": null,
+          "cost_source": "computed",
+          "cost_usd": 0.000033558,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+          "reasoning_cost_usd": null
+        }
+      },
+      "projection_version": "procedure_feedback_used_v1",
+      "reference": null,
+      "reference_attempted": false,
+      "reference_version": "012d9764c78319479f50017a5f7e4871dd28a2eccd3c803fe09c71942e711808",
+      "required_questions": [
+        "verdict",
+        "deprecation_recommended"
+      ],
+      "requires_completion": true,
+      "schema_version": 1,
+      "scope": {
+        "call_role": "judge",
+        "execution_id": "procedure_feedback-exec",
+        "llm_call_id": "01M3J9E3BCSBDR1MBSW364GJMW",
+        "root_execution_id": "procedure_feedback-exec",
+        "scope": {
+          "principal": "memory-owner-eval",
+          "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+        },
+        "scope_resolution": "explicit",
+        "task_id": "procedure_feedback",
+        "trace_id": "procedure_feedback-exec",
+        "workload_class": "ambient"
+      },
+      "threshold_fingerprints": {
+        "0": "cffe69a01cf03b2179b35d80043508c683b76337687335e90764d8fef7155643"
+      },
+      "wall_latency_ms": 414
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "comparison_id": "01M3J9E3RBSF5PVRZ0GZQM0G1B",
+      "foreground_ms": 3062,
+      "result_validated": true,
+      "schema_version": 1,
+      "stage": "completion",
+      "text_attempted": true,
+      "text_call": {
+        "attempts_complete": true,
+        "cache_read_tokens": 3318,
+        "cache_write_tokens": 2440,
+        "cost_usd": 0.00044978,
+        "input_tokens": 5884,
+        "model": "gpt-6-luna",
+        "operation": "learning_reflection",
+        "output_tokens": 198,
+        "pricing_version": "pricing-row-v1:2b3eaf109b38eeb4e62856dabea6bb13345c310290c1cca0445c63aec4f47c64",
+        "profile": "op-learning-reflection-standard",
+        "provider": "openai",
+        "receipt": {
+          "context": {
+            "call_role": "primary",
+            "execution_id": "procedure_feedback-exec",
+            "llm_call_id": "01M3J9E3RBV65BQBFJ336YSJPT",
+            "root_execution_id": "procedure_feedback-exec",
+            "scope": {
+              "principal": "memory-owner-eval",
+              "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+            },
+            "scope_resolution": "inherited",
+            "task_id": "procedure_feedback",
+            "trace_id": "procedure_feedback-exec",
+            "workload_class": "system"
+          },
+          "provider_attempt_count": 1,
+          "provider_attempt_id": "01M3J9E3RBV65BQBFJ336YSJPT:a1",
+          "response_reused": false
+        }
+      }
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "accounting_complete": true,
+      "application_cache_hit": false,
+      "behavior_fingerprint": "f07739c69c0b8f994f5c5014975a9b72ea2eecf670405fb795462e5b9b0f6fb6",
+      "calls": [
+        {
+          "adapter": "typesafe",
+          "attempt": 1,
+          "batch_id": "01M3J9E6DGHGAAD3ZN09ZBNZD4",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9E6DH9JYSFGKXRQR3NSJ5",
+          "completed_at_ms": 1790541503315,
+          "error_class": null,
+          "input_tokens": 874,
+          "item_ids": [
+            "0"
+          ],
+          "latency_ms": 418,
+          "local": false,
+          "model": "jev-1.13.0",
+          "operation": "memory_episode_quality",
+          "output_tokens": 94,
+          "provider": "decision:typesafe",
+          "queue_wait_ms": 0,
+          "requested_model": "jev-1.13.0",
+          "retry_group_id": "01M3J9E6DHJ2CE8K5FRT8Z9DGJ",
+          "started_at_ms": 1790541502897,
+          "status": "succeeded"
+        },
+        {
+          "adapter": "kev-mlx",
+          "attempt": 1,
+          "batch_id": "01M3J9E6DGHGAAD3ZN09ZBNZD4",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9E6TKKY5HXHMH3JTT64TG",
+          "completed_at_ms": 1790541507980,
+          "error_class": null,
+          "input_tokens": 448,
+          "item_ids": [
+            "0"
+          ],
+          "latency_ms": 4664,
+          "local": true,
+          "model": "kev-4b-mlx",
+          "operation": "memory_episode_quality",
+          "output_tokens": 0,
+          "provider": "decision:kev-mlx",
+          "queue_wait_ms": 0,
+          "requested_model": "kev-4b-mlx",
+          "retry_group_id": "01M3J9E6TK1VG23BVM1KAWC8E5",
+          "started_at_ms": 1790541503315,
+          "status": "succeeded"
+        }
+      ],
+      "case_id": "dc9e71c06a70e588020846aa9ca132e9f9bd573a133220d4e4f5eabbb7fd1ce5",
+      "comparison_id": "01M3J9EBCFWG6P4JM9CXV6YA5Y",
+      "discovery_latency_ms": 0,
+      "engine_instance": "01M3J8MQAFRQ65TQGHCB5BACQR",
+      "engine_latency_ms": 5083,
+      "foreground_latency_ms": 5087,
+      "items": [
+        {
+          "eligible_answers": {
+            "classification": "operator-enabled:f07739c69c0b8f994f5c5014975a9b72ea2eecf670405fb795462e5b9b0f6fb6"
+          },
+          "error": null,
+          "item_id": "0",
+          "latency_ms": 5083,
+          "response": {
+            "answers": {
+              "classification": {
+                "choice": "high_signal",
+                "confidence": 0.7,
+                "probabilities": {
+                  "high_signal": 0.8,
+                  "mixed_signal": 0.17,
+                  "progress_only_or_low_signal": 0.03
+                },
+                "type": "choice"
+              },
+              "priority": {
+                "choice": "high",
+                "confidence": 0.34,
+                "probabilities": {
+                  "high": 0.56,
+                  "low": 0.18,
+                  "normal": 0.26
+                },
+                "type": "choice"
+              },
+              "score": {
+                "confidence": 0.0,
+                "probabilities": [
+                  0.41,
+                  0.08,
+                  0.13,
+                  0.03,
+                  0.19,
+                  0.1,
+                  0.06
+                ],
+                "score": 2.02,
+                "type": "score"
+              }
+            },
+            "model": {
+              "adapter": "typesafe",
+              "model": "jev-1.13.0"
+            },
+            "pack_id": "memory_episode_quality",
+            "pack_version": "1.0.0",
+            "usage": {
+              "input_tokens": 874,
+              "output_tokens": 94
+            }
+          },
+          "status": "answered",
+          "thresholds": {
+            "classification": 0.7,
+            "priority": 0.7,
+            "score": 0.7
+          }
+        }
+      ],
+      "mode": "gate",
+      "offered": 1,
+      "offered_item_ids": [
+        "0"
+      ],
+      "operation": "memory_episode_quality",
+      "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+      "pricing": {
+        "01M3J9E6DH9JYSFGKXRQR3NSJ5": {
+          "cache_cost_usd": null,
+          "cost_source": "computed",
+          "cost_usd": 0.00003670800000000001,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+          "reasoning_cost_usd": null
+        },
+        "01M3J9E6TKKY5HXHMH3JTT64TG": {
+          "cache_cost_usd": null,
+          "cost_source": "local",
+          "cost_usd": 0.0,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+          "reasoning_cost_usd": null
+        }
+      },
+      "projection_version": "episode_quality_v1_score_round_0_6",
+      "reference": null,
+      "reference_attempted": false,
+      "reference_version": "196d98d4a16bafd7ff17c19fe00e230258a6c4fa59d278152bc3f2a93fb08a55",
+      "required_questions": [
+        "classification",
+        "priority",
+        "score"
+      ],
+      "requires_completion": true,
+      "schema_version": 1,
+      "scope": {
+        "call_role": "judge",
+        "execution_id": "memory_episode_quality-exec",
+        "llm_call_id": "01M3J9E6DGMYGGFP4CH4AG42PN",
+        "root_execution_id": "memory_episode_quality-exec",
+        "scope": {
+          "principal": "memory-owner-eval",
+          "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+        },
+        "scope_resolution": "explicit",
+        "task_id": "memory_episode_quality",
+        "trace_id": "memory_episode_quality-exec",
+        "workload_class": "ambient"
+      },
+      "threshold_fingerprints": {
+        "0": "940d8935925669cf924624341e3dde0435c4c7b483658c80d784f8130982d24d"
+      },
+      "wall_latency_ms": 5087
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "comparison_id": "01M3J9EBCFWG6P4JM9CXV6YA5Y",
+      "foreground_ms": 5087,
+      "result_validated": true,
+      "schema_version": 1,
+      "stage": "completion",
+      "text_attempted": false,
+      "text_call": null
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  },
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "accounting_complete": true,
+      "application_cache_hit": false,
+      "behavior_fingerprint": "b1e38ecb78587e4c9d1e06c7a313920dc88e1e53bfb0dec5432d78919c3b8103",
+      "calls": [
+        {
+          "adapter": "typesafe",
+          "attempt": 1,
+          "batch_id": "01M3J9ECS93ZZNZHPTQBAGM8AT",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9ECSA9TSBF6WQ791ZM93Q",
+          "completed_at_ms": 1790541509872,
+          "error_class": null,
+          "input_tokens": 605,
+          "item_ids": [
+            "0"
+          ],
+          "latency_ms": 454,
+          "local": false,
+          "model": "jev-1.13.0",
+          "operation": "memory_conflict_review",
+          "output_tokens": 44,
+          "provider": "decision:typesafe",
+          "queue_wait_ms": 0,
+          "requested_model": "jev-1.13.0",
+          "retry_group_id": "01M3J9ECSA88BN01231EM07AF9",
+          "started_at_ms": 1790541509418,
+          "status": "succeeded"
+        }
+      ],
+      "case_id": "f39a3239fd76e17123f94d494e18f6a68a5d5503fae162ff2ef11e89249ece80",
+      "comparison_id": "01M3J9ED7H83EBNMWYRMPER6QM",
+      "discovery_latency_ms": 0,
+      "engine_instance": "01M3J8MQAFRQ65TQGHCB5BACQR",
+      "engine_latency_ms": 454,
+      "foreground_latency_ms": 456,
+      "items": [
+        {
+          "eligible_answers": {
+            "resolution": "operator-enabled:b1e38ecb78587e4c9d1e06c7a313920dc88e1e53bfb0dec5432d78919c3b8103"
+          },
+          "error": null,
+          "item_id": "0",
+          "latency_ms": 454,
+          "response": {
+            "answers": {
+              "resolution": {
+                "choice": "keep_both",
+                "confidence": 1.0,
+                "probabilities": {
+                  "keep_both": 1.0,
+                  "keep_existing": 0.0,
+                  "replace_existing": 0.0
+                },
+                "type": "choice"
+              }
+            },
+            "model": {
+              "adapter": "typesafe",
+              "model": "jev-1.13.0"
+            },
+            "pack_id": "memory_conflict_review",
+            "pack_version": "1.0.0",
+            "usage": {
+              "input_tokens": 605,
+              "output_tokens": 44
+            }
+          },
+          "status": "answered",
+          "thresholds": {
+            "resolution": 0.9
+          }
+        }
+      ],
+      "mode": "gate",
+      "offered": 1,
+      "offered_item_ids": [
+        "0"
+      ],
+      "operation": "memory_conflict_review",
+      "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+      "pricing": {
+        "01M3J9ECSA9TSBF6WQ791ZM93Q": {
+          "cache_cost_usd": null,
+          "cost_source": "computed",
+          "cost_usd": 0.00002541,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+          "reasoning_cost_usd": null
+        }
+      },
+      "projection_version": "memory_conflict_pair_v1",
+      "reference": null,
+      "reference_attempted": false,
+      "reference_version": "9f12757df37767f3772f31af8fd129cd738117147585ae60ca991b6fda30a69f",
+      "required_questions": [
+        "resolution"
+      ],
+      "requires_completion": false,
+      "schema_version": 1,
+      "scope": {
+        "call_role": "judge",
+        "execution_id": "memory_conflict_review-exec",
+        "llm_call_id": "01M3J9ECS9M9DXNT0W4K3FAZ6M",
+        "root_execution_id": "memory_conflict_review-exec",
+        "scope": {
+          "principal": "memory-owner-eval",
+          "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+        },
+        "scope_resolution": "explicit",
+        "task_id": "memory_conflict_review",
+        "trace_id": "memory_conflict_review-exec",
+        "workload_class": "ambient"
+      },
+      "threshold_fingerprints": {
+        "0": "e7eba9b8c7823239ff34aaf2068c290cd6a99531fae4bb8906b420499aa9f8d2"
+      },
+      "wall_latency_ms": 456
+    },
+    "workspace": "01M3J9DKAN2PE7BXV1Q7WNXXDM"
+  }
+]

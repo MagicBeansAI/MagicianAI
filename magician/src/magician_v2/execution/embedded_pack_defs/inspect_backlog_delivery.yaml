@@ -1,0 +1,29 @@
+name: inspect_backlog_delivery
+description: Inspect the task, output previews, and persisted material artifacts linked to a promoted company-backlog item before reviewing its delivery.
+version: "1.0.0"
+guide: |
+  Tool name: `inspect_backlog_delivery`
+
+  Read the bounded delivery packet for a promoted backlog item. Compare the
+  original requested outcome with the linked task status, output previews, and
+  persisted artifacts before calling `review_backlog_delivery`.
+
+  Raw tool-discovery/control captures are labeled non-material. An empty
+  `material_evidence_refs` list means the task has no persisted proof of delivery
+  and must not be accepted merely because its status or summary says completed.
+parameters:
+  - name: backlog_item_id
+    required: true
+    param_type: string
+    description: The promoted backlog item whose linked task should be inspected.
+implementation:
+  type: compiled
+  provider_name: inspect_backlog_delivery
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+    - introspection
+  composition_category: action
+  sandbox: none

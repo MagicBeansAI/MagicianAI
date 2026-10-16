@@ -1,0 +1,56 @@
+name: append_note
+description: Append to an existing note, or to that day's Inbox page when no target is given. Use instead of rewriting a note you did not author.
+version: "1.0.0"
+guide: |
+  Tool name: `append_note`
+
+  Adds to an EXISTING note without rewriting it. With no `target_path` the
+  entry goes to that day's page in `Inbox` (`Inbox/YYYY-MM-DD.md`), which is
+  the right home for something worth recording that does not deserve a page of
+  its own.
+
+  Prefer this over reading a note, editing the text, and writing it back with
+  `create_note`. That pattern loses anything written in between, and holds the
+  gap open for as long as your turn takes. The provider does the append under
+  a lock, so it cannot lose a concurrent agent's write — it still reads and
+  rewrites the file, so an edit made in the owner's notes app during that
+  moment can be lost.
+
+  Use `create_note` instead when the note does not exist yet, or when the
+  content is substantial enough that the owner would look for it under its own
+  name.
+
+  `title` is optional and only names the section your text is added under; it
+  does not rename the page. `body` is Markdown.
+
+  Read the response rather than assuming it: `provider` is where the append
+  ACTUALLY landed, and when `used_fallback` is true it went somewhere other
+  than the requested provider, with `fallback_reason` explaining why. Report
+  where it really went.
+
+  On error, `retryable` distinguishes a provider outage — worth one retry —
+  from a bad target path, which retrying unchanged cannot fix.
+parameters:
+  - name: body
+    required: true
+    param_type: string
+    description: Markdown to append.
+  - name: target_path
+    param_type: string
+    description: Path of the note to append to, relative to the Notes space. Omit to append to today's daily page.
+  - name: title
+    param_type: string
+    description: Optional heading for the appended section. Does not rename the page.
+  - name: provider
+    param_type: string
+    description: Optional notes provider override. Normally omit — the scope's configured default and fallback already apply.
+implementation:
+  type: compiled
+  provider_name: append_note
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - notes
+  composition_category: action
+  sandbox: none

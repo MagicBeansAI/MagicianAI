@@ -1,0 +1,2380 @@
+{
+ "features": [
+  {
+   "id": "thinking-maps",
+   "name": "Live Thinking Maps",
+   "oneLine": "Turns your speech and brainstorming into a typed, revisable map of ideas, questions, decisions and risks.",
+   "maturity": "shipped",
+   "maturityEvidence": "docs/components/magician/live-thinking-map.md: 'The feature is unconditionally routed (no config flag)'; routes mounted at magician-bin/src/main.rs:13421; web (ui/unified-ui/src/routes/(app)/thinking-maps) and iOS (docs/components/magios/thinking-map-canonical.md) clients both exist.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/thinking_map_models.rs",
+     "type": "ThinkingMap",
+     "fn": null,
+     "line": 347,
+     "why": "Revisioned board of typed nodes, edges, clarifications, proposals"
+    },
+    {
+     "file": "magician/src/magician_v2/thinking_map_operations.rs",
+     "type": "MapOperation",
+     "fn": null,
+     "line": 100,
+     "why": "22-variant bounded operation protocol; model-accessible subset"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/reducer.rs",
+     "type": null,
+     "fn": "apply_envelope",
+     "line": 55,
+     "why": "Deterministic, atomic, idempotent apply of operation envelopes"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/interpreter.rs",
+     "type": null,
+     "fn": "interpret",
+     "line": 628,
+     "why": "Utterance to bounded proposed operations via LLM"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/llm_router_adapter.rs",
+     "type": "RouterInterpreterLlm",
+     "fn": null,
+     "line": 47,
+     "why": "Binds interpreter to the router's model operation"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/store.rs",
+     "type": "ThinkingMapStore",
+     "fn": "apply_and_persist",
+     "line": 492,
+     "why": "Scope-owned durable persistence and event log"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/coordinator.rs",
+     "type": "ThinkingMapSessionCoordinator",
+     "fn": "map_utterance",
+     "line": 324,
+     "why": "Auto-maps finalized speech from attached sessions"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/consolidation.rs",
+     "type": null,
+     "fn": "consolidate",
+     "line": 234,
+     "why": "Stages owner-confirmable restructure proposals"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/replay.rs",
+     "type": null,
+     "fn": "startup_repair_all",
+     "line": 838,
+     "why": "Crash-recovery repair sweep run at boot"
+    },
+    {
+     "file": "magician-api/src/thinking_maps_api.rs",
+     "type": null,
+     "fn": "configure",
+     "line": 1767,
+     "why": "Registers every /thinking-maps REST route"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor_map_context.rs",
+     "type": null,
+     "fn": "build_tutor_map_context",
+     "line": 141,
+     "why": "Builds map digest handed to tutor sessions"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/thinkingMaps/ThinkingMapCanvas.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "D3 tree canvas rendering nodes and edges"
+    }
+   ],
+   "configKeys": [
+    "(none in magician-config.yaml; doc: 'no config flag')",
+    "llm-router.yaml operation_mapping.thinking_map_interpret (llm-router.yaml:4677)"
+   ],
+   "routes": [
+    "POST|GET /api/magician/v2/thinking-maps",
+    "GET|PATCH|DELETE /api/magician/v2/thinking-maps/{map_id}",
+    "POST /api/magician/v2/thinking-maps/{map_id}/operations",
+    "POST /api/magician/v2/thinking-maps/{map_id}/interpret",
+    "POST /api/magician/v2/thinking-maps/{map_id}/consolidate",
+    "POST /api/magician/v2/thinking-maps/{map_id}/proposals/{proposal_id}/decision",
+    "GET /api/magician/v2/thinking-maps/{map_id}/events",
+    "GET /api/magician/v2/thinking-maps/{map_id}/replay",
+    "GET /api/magician/v2/thinking-maps/{map_id}/export/markdown",
+    "POST /api/magician/v2/thinking-maps/{map_id}/restore",
+    "POST /api/magician/v2/thinking-maps/{map_id}/nodes/{node_id}/promote",
+    "POST /api/magician/v2/thinking-maps/{map_id}/sessions",
+    "DELETE /api/magician/v2/thinking-maps/{map_id}/sessions/{source_session_id}",
+    "POST /api/magician/v2/thinking-maps/{map_id}/tutor-context",
+    "DELETE /api/magician/v2/thinking-maps/{map_id}/tutor-context/{session_id}",
+    "WS notice ThinkingMapUpdated / ThinkingMapInterpretProgress (docs/components/unified-ui/thinking-map.md)"
+   ],
+   "uiSurface": "/thinking-maps library and /thinking-maps/{map_id} canvas+inspector (ui/unified-ui/src/routes/(app)/thinking-maps/+page.svelte, ui/unified-ui/src/routes/(app)/thinking-maps/[map_id]/+page.svelte); iOS LTM client (magios/Magios/ThinkingMapCanonical/)",
+   "tour": [
+    {
+     "file": "magician-api/src/thinking_maps_api.rs",
+     "type": null,
+     "fn": "interpret_handler",
+     "line": 828,
+     "title": "Ask to continue",
+     "say": "When you press Continue or Break open, the server loads your map and asks the interpreter to grow the branch you currently have selected.",
+     "evidence": "thinking_maps_api.rs:828,1782; docs/components/unified-ui/thinking-map.md (focus_node_id)"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/interpreter.rs",
+     "type": null,
+     "fn": "interpret",
+     "line": 628,
+     "title": "Model proposes moves",
+     "say": "The model never rewrites the whole board; it proposes a short list of typed operations, which are translated and checked before anything changes.",
+     "evidence": "interpreter.rs:249 translate, :628 interpret; live-thinking-map.md 'the model proposes bounded operations'"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/reducer.rs",
+     "type": null,
+     "fn": "apply_envelope",
+     "line": 55,
+     "title": "Deterministic reducer",
+     "say": "A deterministic reducer applies the whole batch atomically, rejecting it entirely if any operation breaks authority, revision, or structural rules.",
+     "evidence": "reducer.rs:55; live-thinking-map.md 'Reducer guarantees'"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/store.rs",
+     "type": "ThinkingMapStore",
+     "fn": "apply_and_persist",
+     "line": 492,
+     "title": "Durable map history",
+     "say": "Accepted changes are saved per workspace with an event log, so maps can be replayed, restored as branches, or repaired after a crash.",
+     "evidence": "store.rs:492,704; replay.rs:503,838; main.rs:10398"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/coordinator.rs",
+     "type": "ThinkingMapSessionCoordinator",
+     "fn": "map_utterance",
+     "line": 324,
+     "title": "Map builds itself",
+     "say": "In listen mode, each finalized thing you say in an attached voice or meeting session is mapped automatically, using the message id to avoid duplicates.",
+     "evidence": "coordinator.rs:1-11, :320-324 (idempotency_key interp:<message_id>); main.rs:8841,10136"
+    },
+    {
+     "file": "magician-surfaces/src/thinking_map/consolidation.rs",
+     "type": null,
+     "fn": "consolidate",
+     "line": 234,
+     "title": "Reorganize on approval",
+     "say": "Reorganize asks the model for a restructure proposal, and nothing moves until you confirm or reject it on the proposal card.",
+     "evidence": "consolidation.rs:234; thinking_maps_api.rs:976,1083"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/thinkingMaps/ThinkingMapCanvas.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Canvas shows provenance",
+     "say": "The web canvas lays nodes out as a tree and draws AI-suggested ideas dashed, so you can tell them apart from what you said.",
+     "evidence": "docs/components/unified-ui/thinking-map.md 'model_inferred/provisional render dashed'"
+    }
+   ]
+  },
+  {
+   "id": "tutor",
+   "name": "Personal Tutor and App Copilot",
+   "oneLine": "Say @tutor or @copilot to get narrated on-screen drawings that teach a concept or guide you through an app.",
+   "maturity": "shipped",
+   "maturityEvidence": "Invoke words gate the runtime on any chat thread (docs/components/magician/personal-tutor.md); UI routes /hud and /draw-overlay exist (ui/unified-ui/src/routes/hud, ui/unified-ui/src/routes/draw-overlay); cancel endpoint in magician-api/src/chat_api.rs:22,2514.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/tutor.rs",
+     "type": null,
+     "fn": "parse_voice_guided_flow_invocation",
+     "line": 378,
+     "why": "Detects tutor/copilot invoke words in user text"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "preseed_explicit_tutor_run_for_turn",
+     "line": 11588,
+     "why": "Starts or reuses run before first model call"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor.rs",
+     "type": "TutorRunStore",
+     "fn": "start_run",
+     "line": 2412,
+     "why": "Scoped registry of active tutor runs"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor.rs",
+     "type": "TutorRun",
+     "fn": null,
+     "line": 1141,
+     "why": "Run model: mode, steps, pending action, failures"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor.rs",
+     "type": "TutorLessonContract",
+     "fn": null,
+     "line": 984,
+     "why": "Milestone plan enforcing lesson pacing floors"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/tools_runtime.rs",
+     "type": "StartTutorRunTool",
+     "fn": null,
+     "line": 348,
+     "why": "Chat tool to start a tutor run"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/tools_runtime.rs",
+     "type": "ProposeTutorStepTool",
+     "fn": null,
+     "line": 747,
+     "why": "Chat tool proposing observe/draw/act/verify steps"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "dispatch_screen_draw_pack",
+     "line": 35776,
+     "why": "Dispatches screen-draw shapes to the overlay"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor/copilot_rail.rs",
+     "type": "CopilotActionCheckReceipt",
+     "fn": null,
+     "line": 40,
+     "why": "Single-use receipt gating copilot automation"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor.rs",
+     "type": "TutorRun",
+     "fn": "complete",
+     "line": 1527,
+     "why": "Completion checks lesson progress and cleanup"
+    },
+    {
+     "file": "magician-api/src/chat_api.rs",
+     "type": null,
+     "fn": "cancel_tutor_run_for_scope",
+     "line": 2523,
+     "why": "Backs the scoped tutor cancel endpoint"
+    },
+    {
+     "file": "magician-api/src/tutor_api.rs",
+     "type": null,
+     "fn": "configure_tutor_routes",
+     "line": 102,
+     "why": "Serves merged tutor drawing primitive recipes"
+    }
+   ],
+   "configKeys": [
+    "(no dedicated magician-config.yaml key found; prompt policy lives in PromptManager parts personal_tutor_policy_v1.1.0.json, app_copilot_policy_v1.1.0.json, visual_storyboard_runtime_v1.2.0.json per personal-tutor.md)"
+   ],
+   "routes": [
+    "GET /api/magician/v2/tutor/primitives",
+    "POST /api/magician/v2/chat/sessions/{id}/tutor/cancel",
+    "realtime event tutor.draw.shape (magician-event-taxonomy/src/lib.rs:565) and tutor.* progress events"
+   ],
+   "uiSurface": "/hud chat HUD, /draw-overlay transparent drawing layer, /screen-region-picker (ui/unified-ui/src/routes/hud/+page.svelte, ui/unified-ui/src/routes/draw-overlay/+page.svelte); progress rows in ChatTurnProgress.svelte (docs/components/unified-ui/personal-tutor-overlay.md)",
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/tutor.rs",
+     "type": null,
+     "fn": "parse_voice_guided_flow_invocation",
+     "line": 378,
+     "title": "Invoke words gate",
+     "say": "Saying at-tutor or at-copilot in any chat is the gate; the backend recognizes these invoke words and separates teaching from operating an app.",
+     "evidence": "tutor.rs:378; personal-tutor.md 'The invoke words are the gate'"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "preseed_explicit_tutor_run_for_turn",
+     "line": 11588,
+     "title": "Run is preseeded",
+     "say": "Before the model's first call, the chat service starts or reuses a scoped tutor run, so the model continues a lesson instead of deciding whether to begin.",
+     "evidence": "service.rs:11588,11698; personal-tutor.md 'Preseeded start'"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor.rs",
+     "type": "TutorLessonContract",
+     "fn": null,
+     "line": 984,
+     "title": "Lesson contract",
+     "say": "Each tutor run carries a lesson contract of milestones like setup, core and example, so completion depends on real narrated drawings rather than turn counts.",
+     "evidence": "tutor.rs:984,1305,1382; personal-tutor.md 'Lesson contract (Tutor)'"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/tools_runtime.rs",
+     "type": "ProposeTutorStepTool",
+     "fn": null,
+     "line": 747,
+     "title": "Model proposes steps",
+     "say": "The model proposes observe, resolve, draw, act and verify steps through chat tools, and the run validates their order before accepting each one.",
+     "evidence": "tools_runtime.rs:747-752; personal-tutor.md runtime contract; tutor.rs:1486 propose_step"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "dispatch_screen_draw_pack",
+     "line": 35776,
+     "title": "Drawing on screen",
+     "say": "Drawing steps become screen-draw shapes delivered to the transparent overlay, so the explanation appears directly on top of what the user is looking at.",
+     "evidence": "service.rs:35570-35586; personal-tutor-overlay.md (/draw-overlay, tutor.draw.shape)"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor/copilot_rail.rs",
+     "type": "CopilotActionCheckReceipt",
+     "fn": null,
+     "line": 40,
+     "title": "Copilot acts safely",
+     "say": "For App Copilot, a short-lived receipt confirms the user has not already clicked the target before automation is delegated to the Mac operator.",
+     "evidence": "copilot_rail.rs:40; personal-tutor.md 'App Copilot steps'"
+    },
+    {
+     "file": "magician/src/magician_v2/tutor.rs",
+     "type": "TutorRun",
+     "fn": "complete",
+     "line": 1527,
+     "title": "Finish or cancel",
+     "say": "A run completes only once its lesson or cleanup requirements are met, and the user can cancel an active lesson at any moment.",
+     "evidence": "tutor.rs:1527-1560; chat_api.rs:2514"
+    }
+   ]
+  },
+  {
+   "id": "memory",
+   "name": "Memory (tiers, vector index, recall)",
+   "oneLine": "Remembers your preferences, facts and past conversations, and recalls the relevant ones automatically or when you search.",
+   "maturity": "shipped",
+   "maturityEvidence": "memory: block active in magician-config.yaml:456; runtime.retrieval.vector_search: ann (magician-config.yaml:51); POST /memory/search mounted at magician-bin/src/main.rs:12177; background MemoryIndexMaintainer (magician/src/magician_v2/analytics/memory_index_maintainer.rs:66).",
+   "locations": [
+    {
+     "file": "magician-vector-index/src/memory_tiers.rs",
+     "type": "MemoryTierDefinition",
+     "fn": null,
+     "line": 17,
+     "why": "Declares tier schema, scope, retention, consolidation"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory.rs",
+     "type": "AgentMemoryService",
+     "fn": "persist_user_knowledge",
+     "line": 1240,
+     "why": "Writes user knowledge; bumps intention generation"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory.rs",
+     "type": "AgentMemoryService",
+     "fn": "append_native_episode",
+     "line": 1668,
+     "why": "Stores conversation episodes; journals index change"
+    },
+    {
+     "file": "magician-vector-index/src/memory_index.rs",
+     "type": "MemoryIndexChange",
+     "fn": null,
+     "line": 225,
+     "why": "Durable change journal entry for derived index"
+    },
+    {
+     "file": "magician-vector-index/src/memory_index.rs",
+     "type": null,
+     "fn": "rebuild_scope_memory_index",
+     "line": 919,
+     "why": "Builds LanceDB BM25 plus vector index"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/memory_index_maintainer.rs",
+     "type": "MemoryIndexMaintainer",
+     "fn": null,
+     "line": 66,
+     "why": "Worker reconciling derived index incrementally"
+    },
+    {
+     "file": "magician-vector-index/src/memory_candidates.rs",
+     "type": "MemoryCandidateDocument",
+     "fn": null,
+     "line": 74,
+     "why": "Indexed row with provenance to canonical memory"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_prompt_blocks.rs",
+     "type": null,
+     "fn": "score_hybrid_index_for_prompt",
+     "line": 687,
+     "why": "Hybrid-scores candidates for automatic prompt injection"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_prompt_blocks.rs",
+     "type": "MemoryPromptLaneBudgets",
+     "fn": null,
+     "line": 288,
+     "why": "Per-lane prompt packing budgets"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/compiled_handlers/search_memory.rs",
+     "type": null,
+     "fn": "search_memory_recall",
+     "line": 120,
+     "why": "Shared recall behind tool and API"
+    },
+    {
+     "file": "magician-api/src/web_api.rs",
+     "type": null,
+     "fn": "search_owner_memory_handler",
+     "line": 25842,
+     "why": "POST /memory/search handler"
+    },
+    {
+     "file": "ui/unified-ui/src/routes/(app)/memory/+page.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Memory page: search, tiers, preferences tab"
+    },
+    {
+     "file": "magician/src/magician_v2/context_retrieval.rs",
+     "type": null,
+     "fn": "retrieve_turn_context",
+     "line": 1770,
+     "why": "Deadline-bound staged context retrieval"
+    },
+    {
+     "file": "magician/src/magician_v2/context_retrieval.rs",
+     "type": null,
+     "fn": "retrieve_staged_pair",
+     "line": 1297,
+     "why": "Memory and procedures share deadline"
+    },
+    {
+     "file": "magician/src/magician_v2/context_retrieval.rs",
+     "type": "StagedContextCoordinator",
+     "fn": null,
+     "line": 677,
+     "why": "Slow stage cannot erase siblings"
+    },
+    {
+     "file": "magician-vector-index/src/vector_toolkit.rs",
+     "type": "VectorTable",
+     "fn": "search",
+     "line": 1284,
+     "why": "Generic LanceDB vector search"
+    },
+    {
+     "file": "magician-vector-index/src/vector_toolkit.rs",
+     "type": "OllamaEmbedder",
+     "fn": "embed_query",
+     "line": 343,
+     "why": "Ollama query embeddings"
+    }
+   ],
+   "configKeys": [
+    "memory.prompt_snapshot",
+    "memory.prompt_scope_budgets",
+    "memory.prompt_lane_budgets",
+    "memory.taste_profile",
+    "runtime.retrieval.vector_search",
+    "llm-router.yaml operation_mapping.memory_episode_rerank (commented/unbound)"
+   ],
+   "routes": [
+    "POST /api/magician/v2/memory/search",
+    "GET /api/magician/v2/memory/user-knowledge",
+    "POST /api/magician/v2/agents/{id}/consolidate-user-memory",
+    "POST /api/magician/v2/chat/memory/search"
+   ],
+   "uiSurface": "/memory page (ui/unified-ui/src/routes/(app)/memory/+page.svelte) with search showing scope/tier/semantic type (docs/components/magician/memory-index.md)",
+   "tour": [
+    {
+     "file": "magician-vector-index/src/memory_tiers.rs",
+     "type": "MemoryTierDefinition",
+     "fn": null,
+     "line": 17,
+     "title": "Typed memory tiers",
+     "say": "Memory lives in typed JSON tiers for the user and each agent, and those tiers stay the source of truth for everything remembered.",
+     "evidence": "memory_tiers.rs:17; memory-index.md 'does not replace tiered memory JSON as the source of truth'"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory.rs",
+     "type": "AgentMemoryService",
+     "fn": "persist_user_knowledge",
+     "line": 1240,
+     "title": "Saving with history",
+     "say": "Saving a preference or fact goes through shared ingress that keeps revisions and evidence, then schedules a reviewer to reconcile duplicates and conflicts.",
+     "evidence": "memory.rs:1240; docs/components/magician/memory-lifecycle.md"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory.rs",
+     "type": "AgentMemoryService",
+     "fn": "append_native_episode",
+     "line": 1668,
+     "title": "Conversations become episodes",
+     "say": "Each admitted chat turn is kept as an episode with its full source text, and the write is journaled so the search index catches up.",
+     "evidence": "memory.rs:1668; memory-index.md 'Episode writes are incremental'; memory-recall.md"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/memory_index_maintainer.rs",
+     "type": "MemoryIndexMaintainer",
+     "fn": null,
+     "line": 66,
+     "title": "Hybrid index maintained",
+     "say": "A background maintainer folds journaled changes into a derived LanceDB index that combines keyword search with vector embeddings and an approximate-neighbour shortlist.",
+     "evidence": "memory_index_maintainer.rs:1-12,66; memory_index.rs:919; memory-index.md Storage"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_prompt_blocks.rs",
+     "type": null,
+     "fn": "score_hybrid_index_for_prompt",
+     "line": 687,
+     "title": "Automatic recall",
+     "say": "Before a turn, hybrid scores rank candidate memories, and lane budgets decide how many preferences, procedures and episodes fit into the prompt.",
+     "evidence": "memory_prompt_blocks.rs:288,687,875; magician-config.yaml:474 prompt_lane_budgets"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/compiled_handlers/search_memory.rs",
+     "type": null,
+     "fn": "search_memory_recall",
+     "line": 120,
+     "title": "Explicit search",
+     "say": "Explicit recall, from the search memory tool or the Memory page, uses the same shared search and returns passages with their sources.",
+     "evidence": "search_memory.rs:120; web_api.rs:25774; memory-index.md '/memory/search and the search_memory tool share one recall'"
+    }
+   ]
+  },
+  {
+   "id": "attention-nudges",
+   "name": "Nudges and attention (funnel, resurfacing)",
+   "oneLine": "Decides what deserves your attention, sorting items into Needs you, Follow-ups, and a small Worth a look band.",
+   "maturity": "shipped",
+   "maturityEvidence": "resurfacing block fully enabled (magician-config.yaml:1220-1236); attention_learning.enabled: true (magician-config.yaml:1125); /today and /feed/attention routes (magician-bin/src/main.rs:13506,13520); Today UI ResurfacingBand.svelte.",
+   "locations": [
+    {
+     "file": "magician-core/src/attention_funnel.rs",
+     "type": "AttentionLane",
+     "fn": null,
+     "line": 161,
+     "why": "Lanes: Needs you, Follow-ups, Worth a look, more"
+    },
+    {
+     "file": "magician-core/src/attention_funnel.rs",
+     "type": null,
+     "fn": "route_attention_candidate",
+     "line": 512,
+     "why": "Deterministic router picking lane or drop reason"
+    },
+    {
+     "file": "magician-core/src/attention_funnel_store.rs",
+     "type": "AttentionFunnelStore",
+     "fn": "append_events",
+     "line": 228,
+     "why": "Bounded SQLite log of route events"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/resurfacing/scorer.rs",
+     "type": null,
+     "fn": "run_scorer_pass",
+     "line": 105,
+     "why": "Hourly watermark-driven scoring, no LLM"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/resurfacing/scoring.rs",
+     "type": null,
+     "fn": "score_item",
+     "line": 283,
+     "why": "Blends category-free salience signals"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/resurfacing/centrality.rs",
+     "type": "EmbeddingCentrality",
+     "fn": null,
+     "line": 184,
+     "why": "Embedding centrality signal; fails to zero"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/resurfacing/store.rs",
+     "type": "ResurfacingStore",
+     "fn": "list_top_candidates",
+     "line": 1903,
+     "why": "Top non-cooldown shortlist for curator"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/resurfacing/curator.rs",
+     "type": null,
+     "fn": "run_curation_pass_with_attention",
+     "line": 129,
+     "why": "Daily curator surfaces a few via router"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/resurfacing/worker.rs",
+     "type": "ResurfacingWorker",
+     "fn": null,
+     "line": 785,
+     "why": "Runs scorer and curator cadences"
+    },
+    {
+     "file": "magician-api/src/resurfacing_api.rs",
+     "type": null,
+     "fn": "post_resurfacing_action_handler",
+     "line": 2259,
+     "why": "Open, acknowledge, dismiss feedback with cooldown"
+    },
+    {
+     "file": "magician-api/src/feed_api.rs",
+     "type": null,
+     "fn": "today_handler",
+     "line": 9198,
+     "why": "Today lanes, routed and recorded"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/ResurfacingBand.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Worth a look band on Today"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/canonical_attention.rs",
+     "type": null,
+     "fn": "project_canonical_attention_union",
+     "line": 1975,
+     "why": "Merges follow-ups and Worth a look"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/canonical_attention.rs",
+     "type": null,
+     "fn": "get_canonical_attention_delivery_handler",
+     "line": 3067,
+     "why": "Serves paged attention delivery"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/resurfacing/actions.rs",
+     "type": "ResurfacingActionService",
+     "fn": "execute_for",
+     "line": 739,
+     "why": "Idempotent actions on resurfaced cards"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/resurfacing/interaction.rs",
+     "type": "ResurfacingInteractionRegistry",
+     "fn": "resolve_original",
+     "line": 282,
+     "why": "Fetches live source on request"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/resurfacing/memory_connections.rs",
+     "type": "ConnectionRuntime",
+     "fn": "pass",
+     "line": 798,
+     "why": "Links memories to attention items"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/attention_learning/historical_bootstrap.rs",
+     "type": "AttentionHistoricalBootstrapWorker",
+     "fn": "drain_historical_worth_before_live",
+     "line": 128,
+     "why": "Old mail feedback seeds learning"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/attention_learning/semantic_extraction.rs",
+     "type": "SemanticExtractionWorker",
+     "fn": "spawn",
+     "line": 161,
+     "why": "Backfills semantic envelopes for follow-ups"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/attention_learning/rank_recompute.rs",
+     "type": "AttentionRankRecomputeWorker",
+     "fn": "run_once",
+     "line": 168,
+     "why": "Recomputes rank diagnostics in batches"
+    }
+   ],
+   "configKeys": [
+    "resurfacing.surface_cap",
+    "resurfacing.recommendations_enabled",
+    "resurfacing.rich_briefs_enabled",
+    "resurfacing.centrality_reference_timeout_secs",
+    "resurfacing.centrality_query_timeout_secs",
+    "attention_learning.enabled",
+    "attention_learning.semantic_ranking_enabled",
+    "attention_learning.routing",
+    "channel_assist.distillation",
+    "llm-router.yaml operation_mapping.resurfacing_curate"
+   ],
+   "routes": [
+    "GET /api/magician/v2/today",
+    "GET /api/magician/v2/feed/attention",
+    "GET /api/magician/v2/channel-assist/resurfacing/today",
+    "GET /api/magician/v2/channel-assist/resurfacing/{candidate_id}/detail",
+    "POST /api/magician/v2/channel-assist/resurfacing/{candidate_id}/action",
+    "POST /api/magician/v2/channel-assist/resurfacing/{candidate_id}/recommendation-event",
+    "GET /api/magician/v2/channel-assist/resurfacing/stats",
+    "GET /api/magician/v2/channel-assist/follow-ups",
+    "GET /api/magician/v2/attention-funnel/observability"
+   ],
+   "uiSurface": "/today (Worth a look band, triage deck) and /attention, /resurfacing, /observe/stats (ui/unified-ui/src/routes/(app)/today/+page.svelte, ui/unified-ui/src/lib/today/ResurfacingBand.svelte, ui/unified-ui/src/routes/(app)/attention/+page.svelte)",
+   "tour": [
+    {
+     "file": "magician-core/src/attention_funnel.rs",
+     "type": null,
+     "fn": "route_attention_candidate",
+     "line": 512,
+     "title": "One shared router",
+     "say": "Every candidate from mail, tasks or memory passes one deterministic router that picks a lane like Follow-ups or Worth a look, or records why it dropped.",
+     "evidence": "attention_funnel.rs:161,512; attention-routing-funnel.md 'Routing boundary'"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/resurfacing/scoring.rs",
+     "type": null,
+     "fn": "score_item",
+     "line": 283,
+     "title": "Hourly salience scoring",
+     "say": "About hourly, a scorer pulls only new items and blends recency, frequency, centrality, dormancy and date anchors into a category-free salience score.",
+     "evidence": "scorer.rs:105; scoring.rs:283; resurfacing.md 'Two-speed architecture', 'scoring'"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/resurfacing/curator.rs",
+     "type": null,
+     "fn": "run_curation_pass_with_attention",
+     "line": 129,
+     "title": "Daily curator picks few",
+     "say": "Once a day the curator reviews the top shortlist outside cooldown and surfaces only a few, letting a model phrase why each matters now.",
+     "evidence": "store.rs:1903; curator.rs:129; resurfacing.md; magician-config.yaml:1230 surface_cap"
+    },
+    {
+     "file": "magician-core/src/attention_funnel_store.rs",
+     "type": "AttentionFunnelStore",
+     "fn": "append_events",
+     "line": 228,
+     "title": "Every decision logged",
+     "say": "Each route or drop is written to a bounded event table, so the observability page can show where items went and why they were withheld.",
+     "evidence": "attention_funnel_store.rs:129,228; attention-routing-funnel.md 'Route-event observability'"
+    },
+    {
+     "file": "magician-api/src/feed_api.rs",
+     "type": null,
+     "fn": "today_handler",
+     "line": 9198,
+     "title": "Today assembles lanes",
+     "say": "The Today endpoint assembles the lanes into cursor-paged sections, which the web app renders as the triage deck and the Worth a look band.",
+     "evidence": "feed_api.rs:9198; main.rs:13520; attention-routing-funnel.md 'Producers and lane facade'"
+    },
+    {
+     "file": "magician-api/src/resurfacing_api.rs",
+     "type": null,
+     "fn": "post_resurfacing_action_handler",
+     "line": 2259,
+     "title": "Feedback shapes future",
+     "say": "Opening or acknowledging a card counts as positive feedback, while dismissing applies a penalty and cooldown, shaping what gets resurfaced next time.",
+     "evidence": "resurfacing_api.rs:2259,2382; resurfacing.md diagram 'Open/Ack = +, Dismiss = − + cooldown'"
+    }
+   ]
+  },
+  {
+   "id": "api-mining",
+   "name": "API mining",
+   "oneLine": "Learns the hidden web APIs behind sites you use, so repeated browser tasks can run as direct HTTP calls.",
+   "maturity": "wip",
+   "maturityEvidence": "Owner set wip (2026-10-13). Earlier scan notes: api_mining.recipe_verification.enabled: false and auto_replay_validation.dry_run: true (magician-config.yaml:2229-2265); api-mining-pipeline.md: recipes 'do not ... guarantee a recipe for arbitrary traffic' and 'Mining does not serve a value embedded in prose'.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/api_mining/trace_manager.rs",
+     "type": "TraceManager",
+     "fn": null,
+     "line": 20,
+     "why": "Buffers browser network traces per tab"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/miner.rs",
+     "type": "ApiMiner",
+     "fn": "cluster_traces",
+     "line": 833,
+     "why": "Clusters compatible traces into endpoint groups"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/miner.rs",
+     "type": "ApiMiner",
+     "fn": "cluster_to_capability",
+     "line": 906,
+     "why": "Templates a cluster into a capability"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/capability.rs",
+     "type": "ApiCapability",
+     "fn": null,
+     "line": 36,
+     "why": "Learned per-origin API capability record"
+    },
+    {
+     "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
+     "type": null,
+     "fn": "run_mining_pipeline",
+     "line": 3608,
+     "why": "Reads traces, clusters, registers capabilities"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/router.rs",
+     "type": "ApiRouter",
+     "fn": "route_action_context",
+     "line": 515,
+     "why": "Replaces browser steps with replay or falls back"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/origin_policy.rs",
+     "type": "OriginPolicyStore",
+     "fn": null,
+     "line": 146,
+     "why": "Per-origin replay modes like replay_reads"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/recipe.rs",
+     "type": "TaskRecipe",
+     "fn": null,
+     "line": 82,
+     "why": "Rail 1 task-start cross-origin request DAG"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/recipe_matcher.rs",
+     "type": null,
+     "fn": "llm_match",
+     "line": 225,
+     "why": "Matches a task shape to stored recipes"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/projection_pipeline.rs",
+     "type": null,
+     "fn": "pipeline_for_scope",
+     "line": 619,
+     "why": "Scoped projection pipeline over mined responses"
+    },
+    {
+     "file": "magician-api/src/api_mining_api.rs",
+     "type": null,
+     "fn": "get_overview",
+     "line": 2357,
+     "why": "Bounded dashboard overview payload"
+    },
+    {
+     "file": "ui/unified-ui/src/routes/(app)/api-mining/+page.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Recipes, Learned APIs, Activity, Auth tabs"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/recipe_compiler/mod.rs",
+     "type": null,
+     "fn": "compile_task_recipe_with_evidence",
+     "line": 124,
+     "why": "Browser run compiled to recipe"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/recipe_runner.rs",
+     "type": "RecipeRunner",
+     "fn": "run",
+     "line": 630,
+     "why": "Replays a recipe over HTTP"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/recipe_runner.rs",
+     "type": null,
+     "fn": "validate_recipe_preflight",
+     "line": 1948,
+     "why": "Checks recipe before any call"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/workflow_replay/engine.rs",
+     "type": "WorkflowReplayEngine",
+     "fn": "replay",
+     "line": 51,
+     "why": "Walks a workflow graph by HTTP"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/workflow_replay/engine.rs",
+     "type": null,
+     "fn": "replay_until_browser_fallback",
+     "line": 327,
+     "why": "Hands off to browser when needed"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/replay.rs",
+     "type": "ApiRunner",
+     "fn": "replay_with_reqwest_pinned",
+     "line": 869,
+     "why": "Direct API call, pinned DNS"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/registry.rs",
+     "type": "CapabilityRegistry",
+     "fn": "register",
+     "line": 459,
+     "why": "Indexes learned capabilities"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/registry.rs",
+     "type": "CapabilityRegistry",
+     "fn": "find_by_action_context",
+     "line": 848,
+     "why": "Matches an action to a capability"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/recipe_compiler/resolve.rs",
+     "type": null,
+     "fn": "resolve_request",
+     "line": 453,
+     "why": "Traces each token to its source"
+    }
+   ],
+   "configKeys": [
+    "api_mining.enabled",
+    "api_mining.enable_trace_capture",
+    "api_mining.enable_mining",
+    "api_mining.enable_replay",
+    "api_mining.enable_xhr_validation",
+    "api_mining.auto_replay_validation",
+    "api_mining.recipes",
+    "api_mining.recipe_verification",
+    "api_mining.takeover_min_samples_per_method"
+   ],
+   "routes": [
+    "GET /api/magician/v2/api-mining/overview (main.rs:12619; other detail/mutation endpoints in magician-api/src/api_mining_api.rs)"
+   ],
+   "uiSurface": "/api-mining (ui/unified-ui/src/routes/(app)/api-mining/+page.svelte; docs/components/unified-ui/api-mining-native-route.md)",
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/api_mining/trace_manager.rs",
+     "type": "TraceManager",
+     "fn": null,
+     "line": 20,
+     "title": "Capture network traffic",
+     "say": "While the browser runs tasks, network requests are captured into per-tab buffers, and noisy telemetry, analytics and page documents are filtered out.",
+     "evidence": "trace_manager.rs:20,111; api-mining-pipeline.md 'Capture And Aggregation'"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/miner.rs",
+     "type": "ApiMiner",
+     "fn": "cluster_traces",
+     "line": 833,
+     "title": "Cluster into templates",
+     "say": "The miner groups similar requests and turns each group into a URL template with methods, parameters, schema hints and a side-effect classification.",
+     "evidence": "miner.rs:833,906; api-mining-pipeline.md 'Capability Formation'"
+    },
+    {
+     "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
+     "type": null,
+     "fn": "run_mining_pipeline",
+     "line": 3608,
+     "title": "Register learned APIs",
+     "say": "The orchestrator runs this pipeline over traces from recent tasks and registers the learned capabilities per website, along with replay statistics.",
+     "evidence": "v2_orchestrator.rs:3604-3608 'read stored traces → cluster → create capabilities → register'"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/router.rs",
+     "type": "ApiRouter",
+     "fn": "route_action_context",
+     "line": 515,
+     "title": "Replay instead of browse",
+     "say": "Mid-task, the router checks whether a browser step can be replaced by a direct API call, honouring each site's replay policy and falling back otherwise.",
+     "evidence": "router.rs:515; origin_policy.rs:146; api-mining-pipeline.md 'Replay Loop'"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/recipe_matcher.rs",
+     "type": null,
+     "fn": "llm_match",
+     "line": 225,
+     "title": "Whole-task recipes",
+     "say": "Separately, recipes capture a task's starting request chain and are matched by task shape, so some tasks finish over HTTP before any browser starts.",
+     "evidence": "recipe.rs:82; recipe_matcher.rs:225; api-mining-pipeline.md 'Rail 1 — Task Recipes'"
+    },
+    {
+     "file": "magician-api/src/api_mining_api.rs",
+     "type": null,
+     "fn": "get_overview",
+     "line": 2357,
+     "title": "Inspect what was learned",
+     "say": "The API Mining page shows recipes, learned APIs grouped by site, activity counters and auth metadata from one bounded overview request.",
+     "evidence": "api_mining_api.rs:2355-2357; api-mining-native-route.md"
+    }
+   ]
+  },
+  {
+   "id": "capability-evolution",
+   "name": "Self-improving skills and capability evolution",
+   "oneLine": "Turns what worked in past runs into reusable procedures and skills, promoting them only after they prove reliable.",
+   "maturity": "hardening",
+   "maturityEvidence": "Code review 2026-10-13. Skill evolution (self-improving skills) is built end to end: reflection → backlog → proposal → eval → validation → dry-run/apply → promotion → post-promotion monitor → rollback (magician-api/src/learning_api.rs; ~32 routes under /learning/skill-evolution, main.rs:14150; steward every 6h, drafting only; UI at /skills/evolution). Apply and promotion stay behind owner approval on purpose. Capability-pack evolution (API-mined capabilities) is enabled in the shipped yaml but its api_replay packs stay catalog/audit records until a generated-pack provider exists (execution/capability_pack.rs:600, 655-660). Owner set hardening.",
+   "locations": [
+    {
+     "file": "magician/src/config.rs",
+     "type": "CapabilityEvolutionConfig",
+     "fn": null,
+     "line": 9417,
+     "why": "Flags and promotion thresholds; documented default-off"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/reflection.rs",
+     "type": null,
+     "fn": "spawn_learning_reflection",
+     "line": 929,
+     "why": "Post-run reflection creates learning candidates"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/procedure_skill_promotion.rs",
+     "type": "LearningProcedureSkillPromotionBridge",
+     "fn": "maybe_promote_after_feedback",
+     "line": 104,
+     "why": "Promotes proven procedures into skill candidates"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/capability_bridge.rs",
+     "type": "LearningCapabilityEvolutionBridge",
+     "fn": "route_candidate",
+     "line": 62,
+     "why": "Routes candidates into capability-evolution backlog"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/capability_pack.rs",
+     "type": "CapabilityPromotionBridge",
+     "fn": "promote_api_capabilities",
+     "line": 765,
+     "why": "Turns mined APIs into generated capability packs"
+    },
+    {
+     "file": "magician/src/magician_v2/api_mining/skill_emitter.rs",
+     "type": null,
+     "fn": "emit_evolved_skill",
+     "line": 79,
+     "why": "Writes evolved SKILL.md under skills/evolved"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/capability_eval.rs",
+     "type": "CapabilityLifecycleStatus",
+     "fn": null,
+     "line": 12,
+     "why": "Trial, validated, trusted, deprecated lifecycle"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/capability_eval.rs",
+     "type": null,
+     "fn": "evaluate_transition",
+     "line": 93,
+     "why": "Promotes or demotes by attempts and success"
+    },
+    {
+     "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
+     "type": null,
+     "fn": "configure_capability_evolution",
+     "line": 3319,
+     "why": "Registers or removes generated runtime providers"
+    },
+    {
+     "file": "magician-api/src/learning_api.rs",
+     "type": null,
+     "fn": "list_learning_capability_evolution_handler",
+     "line": 1709,
+     "why": "Lists the skill-evolution backlog"
+    },
+    {
+     "file": "magician-api/src/learning_api.rs",
+     "type": null,
+     "fn": "run_learning_capability_evolution_steward_handler",
+     "line": 2561,
+     "why": "Runs the capability-evolution steward pass"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/learning/LearningEvolutionDashboard.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Skill evolution dashboard UI"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/store.rs",
+     "type": "LearningStore",
+     "fn": "create_procedure",
+     "line": 676,
+     "why": "Persists learned procedures"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/store.rs",
+     "type": "LearningStore",
+     "fn": "transition_procedure_status",
+     "line": 890,
+     "why": "Procedure status with decision history"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/procedure_bridge.rs",
+     "type": "LearningProcedureBridge",
+     "fn": "route_candidate",
+     "line": 189,
+     "why": "Routes procedure candidates into store"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/procedure_bridge.rs",
+     "type": "LearningProcedureBridge",
+     "fn": "promote_reviewed_candidate",
+     "line": 292,
+     "why": "Promotes reviewed candidate to procedure"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/procedure_feedback.rs",
+     "type": "LearningProcedureFeedbackBridge",
+     "fn": "collect_usage_context_for_episode",
+     "line": 168,
+     "why": "Which procedures a run used"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/procedure_feedback.rs",
+     "type": "LearningProcedureFeedbackBridge",
+     "fn": "record_post_run_feedback",
+     "line": 198,
+     "why": "Records procedure success after runs"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/growth_eval.rs",
+     "type": null,
+     "fn": "run_learning_growth_evaluation",
+     "line": 94,
+     "why": "Rolls up learning-flywheel evidence"
+    }
+   ],
+   "configKeys": [
+    "capability_evolution.enabled",
+    "capability_evolution.enable_api_mined_bridge",
+    "capability_evolution.trial_to_validated_min_attempts",
+    "capability_evolution.trial_to_validated_min_success_rate",
+    "capability_evolution.validated_to_trusted_min_attempts",
+    "capability_evolution.validated_to_trusted_min_success_rate",
+    "capability_evolution.max_failure_rate_before_demotion",
+    "capability_evolution.max_runtime_generated_packs",
+    "capability_evolution.include_trial_packs_in_runtime"
+   ],
+   "routes": [
+    "GET /api/magician/v2/learning/skill-evolution",
+    "/api/magician/v2/learning/skill-evolution/steward/run",
+    "GET /api/magician/v2/learning/skill-evolution/steward/runs",
+    "GET /api/magician/v2/learning/skill-evolution/steward/runs/{run_id}",
+    "/api/magician/v2/learning/candidates[/{id}[/state]]",
+    "/api/magician/v2/learning/procedures[/{procedure_id}[/status|/skill-promotion]]",
+    "/api/magician/v2/learning/evaluations, /learning/growth-evaluations, /learning/audit"
+   ],
+   "uiSurface": "/skills/evolution (ui/unified-ui/src/routes/(app)/skills/evolution/+page.svelte, LearningEvolutionDashboard.svelte)",
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/learning/reflection.rs",
+     "type": null,
+     "fn": "spawn_learning_reflection",
+     "line": 929,
+     "title": "Reflect after runs",
+     "say": "After a run, a reflection pass judges what was useful and records learning candidates that keep their provenance and decision history.",
+     "evidence": "reflection.rs:929; callers chat/service.rs:17650, artifact_v2/service.rs:27444; learning/mod.rs header"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/procedure_skill_promotion.rs",
+     "type": "LearningProcedureSkillPromotionBridge",
+     "fn": "maybe_promote_after_feedback",
+     "line": 104,
+     "title": "Procedures become skills",
+     "say": "Procedures that keep succeeding when retrieved can be promoted into skill candidates, instead of silently editing prompts or skill files in place.",
+     "evidence": "procedure_skill_promotion.rs:84,104; learning-procedures.md TL;DR"
+    },
+    {
+     "file": "magician/src/magician_v2/learning/capability_bridge.rs",
+     "type": "LearningCapabilityEvolutionBridge",
+     "fn": "route_candidate",
+     "line": 62,
+     "title": "Backlog and evaluation",
+     "say": "Skill and capability candidates are routed into a capability-evolution backlog and evaluation queue before anything reaches the runtime catalog.",
+     "evidence": "capability_bridge.rs:30,62; learning-procedures.md"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/capability_pack.rs",
+     "type": "CapabilityPromotionBridge",
+     "fn": "promote_api_capabilities",
+     "line": 765,
+     "title": "Mined APIs become packs",
+     "say": "When the API-mined bridge is enabled, learned website APIs become generated capability packs and are written out as evolved skills on disk.",
+     "evidence": "v2_orchestrator.rs:3978-3990; capability_pack.rs:765,814; skill_emitter.rs:79"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/capability_eval.rs",
+     "type": null,
+     "fn": "evaluate_transition",
+     "line": 93,
+     "title": "Earn trust gradually",
+     "say": "Each generated capability starts in trial and moves to validated or trusted only after enough attempts at a high success rate, or gets demoted.",
+     "evidence": "capability_eval.rs:12,56,93-137; magician-config.yaml:2276-2285"
+    },
+    {
+     "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
+     "type": null,
+     "fn": "configure_capability_evolution",
+     "line": 3319,
+     "title": "Runtime registration",
+     "say": "At configuration time the orchestrator registers generated providers, removing them when the feature is off and excluding trial packs unless explicitly allowed.",
+     "evidence": "v2_orchestrator.rs:3319,3485-3495"
+    }
+   ]
+  },
+  {
+   "id": "thompson-ranking",
+   "name": "Thompson sampling for For you and Worth a look",
+   "oneLine": "Personalizes the order of your For you and Worth a look cards based on how you react to them.",
+   "maturity": "experimental",
+   "maturityEvidence": "Owner (2026-10-13): built, nothing left to do; kept experimental. It ships in shadow mode, serving the baseline order while it learns, and promotes to canary after 40 posterior updates. Earlier scan notes: attention_learning.bandit.mode: shadow, snapshot_id: null (magician-config.yaml:1196-1218); attention-routing-funnel.md: shadow 'serves baseline order', promotes to canary after 40 posterior updates (training/bandit.rs:29, training/worker.rs:218); AttentionBanditMode default Disabled (config.rs:2989).",
+   "locations": [
+    {
+     "file": "magician/src/config.rs",
+     "type": "AttentionBanditMode",
+     "fn": null,
+     "line": 3031,
+     "why": "Disabled, shadow, canary serving modes"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/bandit.rs",
+     "type": "AttentionBanditPolicySnapshot",
+     "fn": null,
+     "line": 78,
+     "why": "Immutable prior, features, rewards, seed contract"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/bandit.rs",
+     "type": "AttentionBanditPosteriorState",
+     "fn": "update",
+     "line": 380,
+     "why": "Bayesian linear posterior update per outcome"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/bandit.rs",
+     "type": null,
+     "fn": "extract_bandit_features",
+     "line": 549,
+     "why": "Builds per-card feature vector"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/bandit.rs",
+     "type": null,
+     "fn": "finite_probability_matching_rank",
+     "line": 608,
+     "why": "Thompson draws rank first-page cards"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/mod.rs",
+     "type": "AttentionSurface",
+     "fn": null,
+     "line": 182,
+     "why": "FollowUp (For you) and WorthALook surfaces"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/mod.rs",
+     "type": "AttentionLearningService",
+     "fn": "resolve_bandit",
+     "line": 998,
+     "why": "Chooses snapshot and canary assignment per scope"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/mod.rs",
+     "type": "AttentionLearningService",
+     "fn": "apply_personal_bandit_ranking",
+     "line": 1378,
+     "why": "Reorders first page after eligibility and routing"
+    },
+    {
+     "file": "magician-api/src/resurfacing_api.rs",
+     "type": null,
+     "fn": "project_worth_learning",
+     "line": 785,
+     "why": "Applies bandit to Worth a look page"
+    },
+    {
+     "file": "magician-api/src/channel_assist_api.rs",
+     "type": null,
+     "fn": "project_follow_up_learning",
+     "line": 2413,
+     "why": "Applies bandit to For you follow-ups"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/store.rs",
+     "type": null,
+     "fn": "apply_bandit_outcome_update",
+     "line": 9396,
+     "why": "Attributed feedback updates posterior once"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/training/worker.rs",
+     "type": null,
+     "fn": "run_bandit_scope",
+     "line": 155,
+     "why": "Trains prior; canary after 40 updates"
+    }
+   ],
+   "configKeys": [
+    "attention_learning.bandit.mode",
+    "attention_learning.bandit.snapshot_id",
+    "attention_learning.bandit.canary_fraction",
+    "attention_learning.bandit.delivery_default_page_size",
+    "attention_learning.bandit.delivery_ttl_secs",
+    "attention_learning.bandit.delivery_retention_days",
+    "attention_learning.bandit.training",
+    "attention_learning.routing",
+    "attention_learning.actionability"
+   ],
+   "routes": [
+    "GET /api/magician/v2/channel-assist/attention-learning/canonical-deliveries/{lane} (lane = follow_up | worth_a_look)",
+    "GET /api/magician/v2/channel-assist/attention-learning/delivery-health",
+    "/api/magician/v2/channel-assist/attention-learning/impressions",
+    "GET /api/magician/v2/channel-assist/resurfacing/today",
+    "GET /api/magician/v2/channel-assist/follow-ups"
+   ],
+   "uiSurface": "/today triage deck For you and Worth a look tabs (ui/unified-ui/src/lib/today/TodayTriageDeck.svelte:38-63), delivery client ui/unified-ui/src/lib/stores/attentionDeliveryStore.ts, AttentionLearningHealthStrip.svelte",
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/attention/learning/training/worker.rs",
+     "type": null,
+     "fn": "run_bandit_scope",
+     "line": 155,
+     "title": "Train a prior",
+     "say": "A background trainer fits a prior ranking policy from the owner's labelled history and installs it in shadow mode, where it learns without reordering anything.",
+     "evidence": "training/bandit.rs:60; training/worker.rs:155-222; attention-routing-funnel.md 'Shipped YAML is bandit.mode: shadow'"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/mod.rs",
+     "type": "AttentionLearningService",
+     "fn": "resolve_bandit",
+     "line": 998,
+     "title": "Pick policy per scope",
+     "say": "For each workspace, the service resolves which snapshot applies and whether this scope is in canary, the only mode allowed to actually reorder cards.",
+     "evidence": "mod.rs:998-1060; attention-routing-funnel.md 'Shadow serves baseline order'"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/mod.rs",
+     "type": "AttentionLearningService",
+     "fn": "apply_personal_bandit_ranking",
+     "line": 1378,
+     "title": "Rank after eligibility",
+     "say": "Ranking runs only after eligibility, routing and grouping are settled, and only on the first page of For you or Worth a look.",
+     "evidence": "mod.rs:1375-1378; resurfacing_api.rs:975; channel_assist_api.rs:2629"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/bandit.rs",
+     "type": null,
+     "fn": "finite_probability_matching_rank",
+     "line": 608,
+     "title": "Thompson draws",
+     "say": "Thompson sampling draws from the posterior a fixed number of times with a deterministic seed, ranks cards by those draws, and records each position's probability.",
+     "evidence": "bandit.rs:23 seed contract, :25 MAX_BANDIT_POSTERIOR_DRAWS, :608; attention-routing-funnel.md 'Bandit serving'"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/bandit.rs",
+     "type": "AttentionBanditPosteriorState",
+     "fn": "update",
+     "line": 380,
+     "title": "Learn from reactions",
+     "say": "When the owner opens, acts on, or dismisses a delivered card, the attributed outcome updates the Bayesian posterior at most once.",
+     "evidence": "bandit.rs:380; store.rs:9396; mod.rs:2369; attention-routing-funnel.md 'outcome replay updates the posterior at most once'"
+    },
+    {
+     "file": "magician/src/magician_v2/attention/learning/training/worker.rs",
+     "type": null,
+     "fn": "run_bandit_scope",
+     "line": 155,
+     "title": "Shadow to canary",
+     "say": "After forty posterior updates the scope promotes itself from shadow to canary, so personalized ordering starts appearing in the Today lanes.",
+     "evidence": "training/bandit.rs:29 MIN_CANARY_POSTERIOR_UPDATES = 40; training/worker.rs:216-222"
+    }
+   ]
+  },
+  {
+   "id": "observations",
+   "name": "Observations (observe connectors, evidence)",
+   "oneLine": "Lets Magician follow chosen mail, chat, calendar, screen and web sources and distil them into reviewable work evidence.",
+   "maturity": "shipped",
+   "maturityEvidence": "content_acquisition.observe.enabled: true (magician-config.yaml:1527-1528); /observe and /evidence routes mounted (magician-bin/src/main.rs:12441-12554); UI pages ui/unified-ui/src/routes/(app)/observe and /evidence.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/observe_connectors.rs",
+     "type": "ObserveConfig",
+     "fn": null,
+     "line": 16,
+     "why": "Per-producer consent and cadence config"
+    },
+    {
+     "file": "magician/src/magician_v2/observe_connectors.rs",
+     "type": "ChannelObserveConfig",
+     "fn": null,
+     "line": 100,
+     "why": "Unified observed-and-assisted account set"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/channel_observe.rs",
+     "type": null,
+     "fn": "load_or_migrate",
+     "line": 182,
+     "why": "Loads or migrates channel_observe config"
+    },
+    {
+     "file": "magician-api/src/observe_connectors_api.rs",
+     "type": null,
+     "fn": "get_observe_accounts_handler",
+     "line": 279,
+     "why": "Lists discoverable accounts to observe"
+    },
+    {
+     "file": "magician/src/magician_v2/observe_catchup.rs",
+     "type": "ObserveCatchUpPolicy",
+     "fn": null,
+     "line": 56,
+     "why": "Bounded startup catch-up after downtime"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/evidence_bridge.rs",
+     "type": "ChannelEvidenceBridgeWorker",
+     "fn": null,
+     "line": 281,
+     "why": "Bridges distilled mail/chat into evidence tiers"
+    },
+    {
+     "file": "magician/src/magician_v2/evidence/tier_distill_run.rs",
+     "type": null,
+     "fn": "distill_tier_producer",
+     "line": 32,
+     "why": "Distils tier entries into evidence records"
+    },
+    {
+     "file": "magician/src/magician_v2/evidence/screen_distill.rs",
+     "type": null,
+     "fn": "cluster_screen_observations",
+     "line": 104,
+     "why": "Clusters screen observations for distillation"
+    },
+    {
+     "file": "magician/src/magician_v2/evidence/ambient_distill.rs",
+     "type": null,
+     "fn": "cluster_signals",
+     "line": 153,
+     "why": "Clusters ambient browsing signals"
+    },
+    {
+     "file": "magician/src/magician_v2/evidence/mod.rs",
+     "type": "EvidenceRecord",
+     "fn": null,
+     "line": 199,
+     "why": "Faceted evidence record with producer tag"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory.rs",
+     "type": "AgentMemoryService",
+     "fn": "load_scoped_evidence",
+     "line": 1095,
+     "why": "Unified agent plus user evidence read"
+    },
+    {
+     "file": "magician-api/src/evidence_api.rs",
+     "type": null,
+     "fn": "list_evidence_handler",
+     "line": 365,
+     "why": "Lists evidence for the review page"
+    }
+   ],
+   "configKeys": [
+    "content_acquisition.observe",
+    "channel_assist.distillation",
+    "privacy"
+   ],
+   "routes": [
+    "GET /api/magician/v2/observe/accounts",
+    "GET /api/magician/v2/observe/{producer}/status",
+    "/api/magician/v2/observe/{producer}/config",
+    "GET|PUT /api/magician/v2/observe/catch-up",
+    "/api/magician/v2/observe/sources",
+    "/api/magician/v2/observe/sources/observability",
+    "/api/magician/v2/observe/subscriptions[/{id}[/run|/runs]]",
+    "GET|PUT /api/magician/v2/channel-assist/channels",
+    "GET /api/magician/v2/evidence",
+    "POST /api/magician/v2/evidence/review",
+    "/api/magician/v2/evidence/correct",
+    "/api/magician/v2/evidence/dashboard",
+    "/api/magician/v2/evidence/reviews",
+    "/api/magician/v2/evidence/review/feedback"
+   ],
+   "uiSurface": "/observe Sources pane (Mail & chat toggles, ObserveCatchUpPanel) and /observe/stats; /evidence review page (ui/unified-ui/src/routes/(app)/observe/+page.svelte, ui/unified-ui/src/routes/(app)/evidence/+page.svelte)",
+   "tour": [
+    {
+     "file": "magician-api/src/observe_connectors_api.rs",
+     "type": null,
+     "fn": "get_observe_accounts_handler",
+     "line": 279,
+     "title": "Choose what to observe",
+     "say": "On the Observe page the owner picks which mail and chat accounts to follow; one toggle makes an account both observed and assisted.",
+     "evidence": "observe_connectors_api.rs:279; docs/components/unified-ui/observe-channel-toggles.md"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/channel_observe.rs",
+     "type": null,
+     "fn": "load_or_migrate",
+     "line": 182,
+     "title": "One unified config",
+     "say": "That choice is stored in a single channel observe configuration, migrated from the older, separate email digest and channel assist settings.",
+     "evidence": "channel_observe.rs:116,182; observe-channel-toggles.md 'Why one surface'"
+    },
+    {
+     "file": "magician/src/magician_v2/observe_catchup.rs",
+     "type": "ObserveCatchUpPolicy",
+     "fn": null,
+     "line": 56,
+     "title": "Bounded catch-up",
+     "say": "After Magician has been offline, a catch-up policy limits how far back and how many items each source may recover on startup.",
+     "evidence": "observe_catchup.rs:56,115; observe-channel-toggles.md 'Startup catch-up'"
+    },
+    {
+     "file": "magician-comms/src/channel_assist/evidence_bridge.rs",
+     "type": "ChannelEvidenceBridgeWorker",
+     "fn": null,
+     "line": 281,
+     "title": "Bridge distilled messages",
+     "say": "Locally distilled message summaries, never raw bodies, are written by a bridge worker into the email and chat evidence memory tiers.",
+     "evidence": "evidence_bridge.rs:1-20,190,281"
+    },
+    {
+     "file": "magician/src/magician_v2/evidence/tier_distill_run.rs",
+     "type": null,
+     "fn": "distill_tier_producer",
+     "line": 32,
+     "title": "Distil into evidence",
+     "say": "Tier distillation clusters those entries, alongside screen and ambient browsing signals, and asks a model to produce grounded evidence records.",
+     "evidence": "tier_distill_run.rs:32; tier_distill.rs:187,239; screen_distill.rs:104; ambient_distill.rs:153"
+    },
+    {
+     "file": "magician/src/magician_v2/evidence/mod.rs",
+     "type": "EvidenceRecord",
+     "fn": null,
+     "line": 199,
+     "title": "Faceted evidence records",
+     "say": "Each evidence record carries a producer tag, facets, confidence and sensitivity, and is read together from agent-scoped and user-owned lanes.",
+     "evidence": "evidence/mod.rs:198; memory.rs:1034,1095; work-evidence-graph.md 'Records & storage'"
+    },
+    {
+     "file": "magician-api/src/evidence_api.rs",
+     "type": null,
+     "fn": "list_evidence_handler",
+     "line": 365,
+     "title": "Review and correct",
+     "say": "The evidence API feeds the review page, where the owner can correct records and generate work reviews that cite their sources.",
+     "evidence": "evidence_api.rs:179,365,844; evidence/mod.rs:664,791"
+    }
+   ]
+  },
+  {
+   "id": "meeting-bots",
+   "name": "Meeting bots (meetings, meet audio)",
+   "oneLine": "Sends an agent into your Meet or WhatsApp call that listens, summarizes, and can speak when addressed.",
+   "maturity": "shipped",
+   "maturityEvidence": "docs/components/magician/meetings.md documents macOS and Linux setup (make setup-meet-bot) and join/listen/speak; /meetings routes mounted (magician-bin/src/main.rs:12792-12846); MeetingSession::start drives BrowserJoin and capture (meeting_session_engine.rs:671-760). Note: that file's header comment still calls it a 'SKELETON' (lines 1-9) and is stale.",
+   "locations": [
+    {
+     "file": "magician-api/src/meetings_api.rs",
+     "type": null,
+     "fn": "join_meeting_handler",
+     "line": 573,
+     "why": "POST /meetings/join starts an attendee bot"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_manager.rs",
+     "type": "MeetingSessionManager",
+     "fn": "join",
+     "line": 296,
+     "why": "Spawns and tracks per-meeting sessions"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/browser_join.rs",
+     "type": "BrowserJoin",
+     "fn": null,
+     "line": 43,
+     "why": "Seam for joining via stealth browser"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_session_engine.rs",
+     "type": "MeetingSession",
+     "fn": "start",
+     "line": 671,
+     "why": "Join, capture, transcribe, respond lifecycle"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_audio.rs",
+     "type": "AudioSource",
+     "fn": null,
+     "line": 53,
+     "why": "Meeting audio into the bot's ears"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_audio.rs",
+     "type": "AudioSink",
+     "fn": null,
+     "line": 64,
+     "why": "Bot's voice into the meeting mic"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_bridge_macos.rs",
+     "type": "ScreenCaptureAudioSource",
+     "fn": null,
+     "line": 49,
+     "why": "ScreenCaptureKit capture via meet-audio helper"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_bridge_macos.rs",
+     "type": "CoreAudioSink",
+     "fn": null,
+     "line": 264,
+     "why": "Plays synthesized speech into virtual mic"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_responder.rs",
+     "type": "MeetingResponder",
+     "fn": null,
+     "line": 52,
+     "why": "Generates spoken replies when addressed"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_summarizer.rs",
+     "type": "Summarizer",
+     "fn": null,
+     "line": 64,
+     "why": "Rolling meeting summaries"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_memory.rs",
+     "type": "MeetingMemoryWriter",
+     "fn": null,
+     "line": 166,
+     "why": "Persists meeting notes into memory"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_passive.rs",
+     "type": "PassiveMeetingSessionManager",
+     "fn": null,
+     "line": 783,
+     "why": "Listen-only passive capture sessions"
+    }
+   ],
+   "configKeys": [
+    "media.surface_profiles (default_mapping.meeting: meeting-vad-gated-v1)",
+    "media.streaming_stt",
+    "media.tts",
+    "media.vad",
+    "media.diarization",
+    "llm-router.yaml operation_mapping.meeting_summary"
+   ],
+   "routes": [
+    "POST /api/magician/v2/meetings/join",
+    "/api/magician/v2/meetings/listen",
+    "/api/magician/v2/meetings/{id}/audio",
+    "GET /api/magician/v2/meetings/active",
+    "GET /api/magician/v2/meetings/upcoming",
+    "GET /api/magician/v2/meetings/{id}",
+    "/api/magician/v2/meetings/{id}/stop",
+    "/api/magician/v2/meetings/{id}/pause",
+    "/api/magician/v2/meetings/{id}/resume",
+    "GET|POST /api/magician/v2/meetings/whatsapp-ring"
+   ],
+   "uiSurface": "/meetings/{thread} (ui/unified-ui/src/routes/(app)/meetings/[thread]/+page.svelte), meetings sections on /observe, meetingsStore.ts; meetings system app package (docs/components/magician/meetings-surface.md)",
+   "tour": [
+    {
+     "file": "magician-api/src/meetings_api.rs",
+     "type": null,
+     "fn": "join_meeting_handler",
+     "line": 573,
+     "title": "Send an attendee",
+     "say": "A join request with a Meet or WhatsApp Web link asks Magician to send an attendee that can hear the call and speak into it.",
+     "evidence": "meetings_api.rs:573; main.rs:12816; meetings.md 'WhatsApp Web voice calls'"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_manager.rs",
+     "type": "MeetingSessionManager",
+     "fn": "join",
+     "line": 296,
+     "title": "Session is spawned",
+     "say": "The session manager wires platform audio, a memory writer and a browser joiner together, then spawns one tracked session for the meeting.",
+     "evidence": "meeting_manager.rs:100,296-300"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_session_engine.rs",
+     "type": "MeetingSession",
+     "fn": "start",
+     "line": 671,
+     "title": "Join through browser",
+     "say": "The session first drives a fingerprint-resistant browser into the meeting, then points audio capture at that browser before transcription begins.",
+     "evidence": "meeting_session_engine.rs:671-711 (BrowserJoin, set_capture_target); meetings.md 'Joining' (cloak-browser)"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_bridge_macos.rs",
+     "type": "ScreenCaptureAudioSource",
+     "fn": null,
+     "line": 49,
+     "title": "Hear the meeting",
+     "say": "On a Mac, a ScreenCaptureKit helper streams the meeting's audio into streaming speech-to-text and a wake-word gate that keeps the bot quiet.",
+     "evidence": "meeting_audio.rs:53; meeting_bridge_macos.rs:49; meetings.md 'Two audio seams'"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_responder.rs",
+     "type": "MeetingResponder",
+     "fn": null,
+     "line": 52,
+     "title": "Speak when addressed",
+     "say": "When addressed, a responder produces a spoken reply that is played through the BlackHole virtual microphone, so participants hear it in the room.",
+     "evidence": "meeting_responder.rs:52; meeting_audio.rs:64; meeting_bridge_macos.rs:264; meetings.md Setup"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/meeting_summarizer.rs",
+     "type": "Summarizer",
+     "fn": null,
+     "line": 64,
+     "title": "Summaries into memory",
+     "say": "Transcript turns feed a rolling summarizer that runs off the audio loop, and the summaries are saved into the owner's meeting memory.",
+     "evidence": "meeting_session_engine.rs:535-554,593; meeting_summarizer.rs:64; meeting_memory.rs:166,194"
+    }
+   ]
+  },
+  {
+   "id": "outcome-learning-data-room",
+   "name": "Learning (outcome learning, data room)",
+   "oneLine": "Shares documents through audited data rooms and learns which versions of your outreach actually got results.",
+   "maturity": "experimental",
+   "maturityEvidence": "Code review 2026-10-13: data room backend live end to end (magician-learning/src/data_room, owner routes main.rs:13360, reader routes main.rs:12056, follow-up sweep spawned at main.rs:9703; 161 tests). Outcome learning built and wired (outcome_learning ~10k lines, workers spawned main.rs:9718/9728, 148 tests) but the maturity sweep ships off (outcome_maturity.enabled: false), only `silent` is recorded today, and neither has a UI page. Owner set experimental.",
+   "locations": [
+    {
+     "file": "magician-learning/src/data_room/store.rs",
+     "type": "DataRoomStore",
+     "fn": "add_document",
+     "line": 250,
+     "why": "Adds revision-pinned artifact refs to audience room"
+    },
+    {
+     "file": "magician-learning/src/data_room/disclosure_bridge.rs",
+     "type": null,
+     "fn": "record_room_disclosures",
+     "line": 175,
+     "why": "Records disclosure acts before granting access"
+    },
+    {
+     "file": "magician-api/src/data_room_api.rs",
+     "type": null,
+     "fn": "configure_data_room_routes",
+     "line": 1707,
+     "why": "Owner grant surface routes"
+    },
+    {
+     "file": "magician-api/src/data_room_reader_api.rs",
+     "type": null,
+     "fn": "read_room_handler",
+     "line": 1275,
+     "why": "Reader endpoint for shared rooms"
+    },
+    {
+     "file": "magician-learning/src/data_room/access_store.rs",
+     "type": "AccessStore",
+     "fn": "record_access",
+     "line": 155,
+     "why": "Audit log of reader visits"
+    },
+    {
+     "file": "magician-learning/src/data_room/sweep.rs",
+     "type": null,
+     "fn": "sweep_follow_ups",
+     "line": 368,
+     "why": "Identifies follow-up obligations from access"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/store.rs",
+     "type": "OutcomeStore",
+     "fn": "record",
+     "line": 126,
+     "why": "Append-only observations of act results"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/maturity.rs",
+     "type": "MaturityPolicy",
+     "fn": null,
+     "line": 50,
+     "why": "Window after which silence counts"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/sweep.rs",
+     "type": null,
+     "fn": "run_maturity_sweep",
+     "line": 417,
+     "why": "The one writer: records matured silences"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/book.rs",
+     "type": null,
+     "fn": "spawn_configured_maturity_sweep",
+     "line": 414,
+     "why": "Boots sweep from outcome_maturity config"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/proposal.rs",
+     "type": null,
+     "fn": "propose",
+     "line": 226,
+     "why": "Compares versioned cohorts into candidates"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/composition/worker.rs",
+     "type": "OutcomeProposalWorker",
+     "fn": null,
+     "line": 293,
+     "why": "Periodic proposal pass over filled cohorts"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/feeders.rs",
+     "type": "EvidenceFloor",
+     "fn": null,
+     "line": 94,
+     "why": "Minimum usable evidence before proposing"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/feeders.rs",
+     "type": null,
+     "fn": "candidates_to_learning",
+     "line": 264,
+     "why": "Turns proposals into learning candidates"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/feeders.rs",
+     "type": null,
+     "fn": "room_attention_from_access",
+     "line": 450,
+     "why": "Room visits become attention signals"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/feeders.rs",
+     "type": null,
+     "fn": "claim_uses_from_index",
+     "line": 611,
+     "why": "Outward claim uses become cohorts"
+    },
+    {
+     "file": "magician/src/magician_v2/share_links/mod.rs",
+     "type": "ShareLinkStore",
+     "fn": "issue",
+     "line": 310,
+     "why": "Expiring link, only hash stored"
+    },
+    {
+     "file": "magician/src/magician_v2/share_links/mod.rs",
+     "type": null,
+     "fn": "present",
+     "line": 509,
+     "why": "Verifies a presented link secret"
+    },
+    {
+     "file": "magician/src/magician_v2/share_links/mod.rs",
+     "type": null,
+     "fn": "revoke",
+     "line": 457,
+     "why": "Forward-only link revocation"
+    }
+   ],
+   "configKeys": [
+    "outcome_maturity.enabled",
+    "outcome_maturity.paused",
+    "outcome_maturity.tick_interval_secs",
+    "outcome_maturity.default_window_days",
+    "outcome_maturity.variant_window_days",
+    "outcome_maturity.scopes",
+    "outcome_proposal.enabled",
+    "outcome_proposal.minimum_usable"
+   ],
+   "routes": [
+    "GET|POST /api/magician/v2/data-rooms",
+    "GET /api/magician/v2/data-rooms/{room_id}",
+    "POST|DELETE /api/magician/v2/data-rooms/{room_id}/documents",
+    "POST /api/magician/v2/data-rooms/{room_id}/links",
+    "POST /api/magician/v2/data-rooms/{room_id}/links/rotate",
+    "POST /api/magician/v2/data-rooms/{room_id}/links/revoke",
+    "POST /api/magician/v2/data-rooms/{room_id}/close",
+    "GET /rooms/{room_id} (app root, outside Cloudflare Access)",
+    "GET /rooms/{room_id}/document"
+   ],
+   "uiSurface": "No unified-ui page found; recipients use the backend reader at /rooms/{room_id} (magician-api/src/data_room_reader_api.rs:1373)",
+   "tour": [
+    {
+     "file": "magician-learning/src/data_room/store.rs",
+     "type": "DataRoomStore",
+     "fn": "add_document",
+     "line": 250,
+     "title": "Open a data room",
+     "say": "An owner opens a data room for an audience and adds documents pinned to exact revisions, keeping references rather than copies.",
+     "evidence": "data_room/store.rs:171,250; data-room.md 'References, never copies'"
+    },
+    {
+     "file": "magician-learning/src/data_room/disclosure_bridge.rs",
+     "type": null,
+     "fn": "record_room_disclosures",
+     "line": 175,
+     "title": "Disclosure is recorded",
+     "say": "Before a document is added or a share link is minted, each disclosure to each admitted holder is recorded, and a failed record blocks the grant.",
+     "evidence": "disclosure_bridge.rs:175; data-room.md 'Recording the disclosure fails the grant'"
+    },
+    {
+     "file": "magician-api/src/data_room_reader_api.rs",
+     "type": null,
+     "fn": "read_room_handler",
+     "line": 1275,
+     "title": "Recipients visit",
+     "say": "When a recipient opens the room link, the reader endpoint checks the room's standing and logs the visit in an access audit store.",
+     "evidence": "data_room_reader_api.rs:1107,1132,1275; access_store.rs:155"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/store.rs",
+     "type": "OutcomeStore",
+     "fn": "record",
+     "line": 126,
+     "title": "Record what happened",
+     "say": "Outcome learning records which version of an act produced which result, refusing entries without a version so cohorts stay comparable.",
+     "evidence": "outcome_learning/store.rs:126; outcome-learning.md 'The cohort key is not optional'"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/sweep.rs",
+     "type": null,
+     "fn": "run_maturity_sweep",
+     "line": 417,
+     "title": "Silence becomes fact",
+     "say": "A maturity sweep, shipped turned off, records silence only after each act's waiting window closes, so no reply is never assumed too early.",
+     "evidence": "sweep.rs:417; maturity.rs:50,166; outcome-learning.md 'The sweep ships off'; magician-config.yaml:1338-1339"
+    },
+    {
+     "file": "magician-learning/src/outcome_learning/proposal.rs",
+     "type": null,
+     "fn": "propose",
+     "line": 226,
+     "title": "Propose improvements",
+     "say": "A proposal pass compares versioned cohorts and files candidates for the owner to accept or reject, withholding any that fall below the evidence floor.",
+     "evidence": "proposal.rs:226; composition/worker.rs:293; feeders.rs:94,264; magician-bin/src/main.rs:9728"
+    }
+   ]
+  },
+  {
+   "id": "analytics",
+   "name": "Analytics",
+   "oneLine": "Records system and LLM activity into local DuckDB so you can query usage, sessions, tasks and model calls.",
+   "maturity": "shipped",
+   "maturityEvidence": "analytics.llm_trace.enabled: true (magician-config.yaml:207-209); /analytics routes mounted (magician-bin/src/main.rs:13867-13924); docs/components/magician/duckdb-analytics.md describes running sink, retention and Parquet mirror; UI /llm page.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/analytics/mod.rs",
+     "type": null,
+     "fn": "emit",
+     "line": 149,
+     "why": "Fire-and-forget global analytics event write"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/mod.rs",
+     "type": "AnalyticsDispatcher",
+     "fn": null,
+     "line": 60,
+     "why": "Owns one DuckDB pool per scope"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/event_sink.rs",
+     "type": "AnalyticsEvent",
+     "fn": null,
+     "line": 23,
+     "why": "Schemaless event with typed constructors"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/event_sink.rs",
+     "type": "AnalyticsEventSink",
+     "fn": "flush_batch",
+     "line": 393,
+     "why": "Batched DuckDB write plus Parquet mirror"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/event_sink.rs",
+     "type": "AnalyticsEventSink",
+     "fn": "sweep_retention",
+     "line": 356,
+     "why": "Retention: recent window plus per-type floor"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/pool.rs",
+     "type": "DuckDbPool",
+     "fn": null,
+     "line": 29,
+     "why": "Scoped file-backed DuckDB pool"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/views.rs",
+     "type": null,
+     "fn": "create_views",
+     "line": 112,
+     "why": "Read views: logs, chats, tasks, artifacts"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/llm_sql_guard.rs",
+     "type": null,
+     "fn": "parse_analytics_sql",
+     "line": 27,
+     "why": "Depth-bounded SQL parsing guard"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/llm_parquet_sink.rs",
+     "type": "LlmParquetSink",
+     "fn": null,
+     "line": 104,
+     "why": "Writes LLM call facts to Parquet"
+    },
+    {
+     "file": "magician-api/src/analytics_api.rs",
+     "type": null,
+     "fn": "query_handler",
+     "line": 1190,
+     "why": "Read-only analytics SQL endpoint"
+    },
+    {
+     "file": "magician-api/src/analytics_api.rs",
+     "type": null,
+     "fn": "llm_observability_overview_handler",
+     "line": 549,
+     "why": "LLM observability overview"
+    },
+    {
+     "file": "ui/unified-ui/src/routes/(app)/llm/+page.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "LLM calls and traces page"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/runtime_activity_layer.rs",
+     "type": "RuntimeActivityLayer",
+     "fn": "on_new_span",
+     "line": 1272,
+     "why": "Spans become live activity rows"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/runtime_activity_layer.rs",
+     "type": null,
+     "fn": "spawn_activity_forwarder",
+     "line": 827,
+     "why": "Drains activity channel onto bus"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/parquet_maintenance.rs",
+     "type": null,
+     "fn": "compact_dataset_since",
+     "line": 258,
+     "why": "Compacts completed Parquet partitions"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/parquet_maintenance.rs",
+     "type": null,
+     "fn": "apply_retention",
+     "line": 726,
+     "why": "Drops partitions past retention"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/parquet_maintenance.rs",
+     "type": null,
+     "fn": "compact_activity_rows",
+     "line": 940,
+     "why": "Folds activity spans into rollups"
+    }
+   ],
+   "configKeys": [
+    "analytics.llm_trace.enabled",
+    "analytics.llm_trace.content_mode",
+    "analytics.llm_trace.retention",
+    "analytics.llm_trace.redaction",
+    "analytics.llm_trace.training_default_eligible",
+    "analytics.llm_trace.operation_overrides",
+    "analytics.llm_trace.scope_overrides"
+   ],
+   "routes": [
+    "/api/magician/v2/analytics/schema",
+    "/api/magician/v2/analytics/query",
+    "/api/magician/v2/analytics/llm_calls/query",
+    "/api/magician/v2/analytics/llm_calls/query_batch",
+    "/api/magician/v2/analytics/llm_embeddings/query",
+    "/api/magician/v2/analytics/llm/overview",
+    "/api/magician/v2/analytics/llm/catalog",
+    "/api/magician/v2/analytics/llm/schema",
+    "/api/magician/v2/analytics/llm/calls",
+    "/api/magician/v2/analytics/llm/traces",
+    "/api/magician/v2/analytics/llm/traces/{trace_id}"
+   ],
+   "uiSurface": "/llm (ui/unified-ui/src/routes/(app)/llm/+page.svelte, CallsTable.svelte); Today pulse band queries analytics (ui/unified-ui/src/lib/today/pulseQueries.ts)",
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/analytics/mod.rs",
+     "type": null,
+     "fn": "emit",
+     "line": 149,
+     "title": "Fire and forget",
+     "say": "Anywhere in the runtime, code fires an analytics event without waiting, and if analytics was never initialized the call quietly does nothing.",
+     "evidence": "analytics/mod.rs:153,159; duckdb-analytics.md 'global analytics::emit() fire-and-forget'"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/event_sink.rs",
+     "type": "AnalyticsEventSink",
+     "fn": "flush_batch",
+     "line": 393,
+     "title": "Batched local storage",
+     "say": "A batched sink flushes every hundred events or half second into a per-workspace DuckDB file and also writes a Parquet mirror for recovery.",
+     "evidence": "event_sink.rs:211,393; duckdb-analytics.md 'batched event sink', 'dual-written to a version-stable Parquet mirror'"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/event_sink.rs",
+     "type": "AnalyticsEventSink",
+     "fn": "sweep_retention",
+     "line": 356,
+     "title": "Bounded retention",
+     "say": "Every few minutes retention trims old rows, while always keeping the last day and the newest thousand rows of each event type.",
+     "evidence": "event_sink.rs:344,356,543; duckdb-analytics.md retention bullet"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/views.rs",
+     "type": null,
+     "fn": "create_views",
+     "line": 112,
+     "title": "Readable views",
+     "say": "Convenience views project the single schemaless events table into readable shapes like logs, chat sessions, task executions and artifacts.",
+     "evidence": "views.rs:11-101,112"
+    },
+    {
+     "file": "magician-api/src/analytics_api.rs",
+     "type": null,
+     "fn": "query_handler",
+     "line": 1190,
+     "title": "Safe SQL queries",
+     "say": "Read-only query endpoints accept SQL only after a depth-bounded parser checks it, protecting the server from deeply nested queries that could crash it.",
+     "evidence": "analytics_api.rs:1190; llm_sql_guard.rs:21,27; duckdb-analytics.md"
+    },
+    {
+     "file": "magician-api/src/analytics_api.rs",
+     "type": null,
+     "fn": "llm_observability_overview_handler",
+     "line": 549,
+     "title": "LLM observability",
+     "say": "Separate LLM trace facts, captured as content-free metadata by default, power the LLM page that lists model calls and their traces.",
+     "evidence": "analytics_api.rs:549,623,633; magician-config.yaml:208-212 content_mode: metadata; llm_parquet_sink.rs:104"
+    }
+   ]
+  },
+  {
+   "id": "preference-alignment",
+   "name": "Preference alignment",
+   "oneLine": "Checks outward actions like sends or bookings against your preferences and nudges, offers alternatives, or asks first.",
+   "maturity": "shipped",
+   "maturityEvidence": "Owner confirmed complete (2026-10-13). Doc caveats found by the scan, kept for reference: docs/components/magician/preference-alignment.md: 'Status: in development on branch pref-alignment' with admission wired into native loop and executor backstop; magician-config.yaml:2413-2414 sets mode: \"enforce\"; classify.rs coverage limited (published v1 limit: unclassified effects fall through to PrivateLocal).",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
+     "type": null,
+     "fn": "gate_preference_alignment",
+     "line": 2668,
+     "why": "Native loop gate before executing an act"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/service.rs",
+     "type": null,
+     "fn": "check_action",
+     "line": 264,
+     "why": "Single entry point for an action check"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/classify.rs",
+     "type": null,
+     "fn": "classify_dispatch",
+     "line": 56,
+     "why": "Decides which outward acts get checked"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/inventory.rs",
+     "type": null,
+     "fn": "collect_inventory",
+     "line": 54,
+     "why": "Read-only intention view over memory"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/collect.rs",
+     "type": null,
+     "fn": "build_inputs",
+     "line": 181,
+     "why": "Splits intentions into bounded judge batches"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/judge.rs",
+     "type": null,
+     "fn": "judge_batches",
+     "line": 277,
+     "why": "Runs judge batches in parallel"
+    },
+    {
+     "file": "magician-alignment/src/composer.rs",
+     "type": null,
+     "fn": "compose",
+     "line": 504,
+     "why": "Typed-model composer using calibrated bars"
+    },
+    {
+     "file": "magician-alignment/src/intention.rs",
+     "type": "AssertionStatus",
+     "fn": null,
+     "line": 34,
+     "why": "Evidence strength of each intention"
+    },
+    {
+     "file": "magician-alignment/src/contract.rs",
+     "type": null,
+     "fn": "validate_decision",
+     "line": 236,
+     "why": "Caps force to what evidence can carry"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/judge.rs",
+     "type": null,
+     "fn": "combine",
+     "line": 308,
+     "why": "Folds outcomes by precedence, cancel first"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/backstop.rs",
+     "type": null,
+     "fn": "backstop",
+     "line": 98,
+     "why": "Shared executor backstop for unchecked acts"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/ledger.rs",
+     "type": null,
+     "fn": "consume",
+     "line": 268,
+     "why": "Consume-once ledger of owner answers"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/sources/native.rs",
+     "type": null,
+     "fn": "project_native_intentions",
+     "line": 118,
+     "why": "User knowledge projected as intentions"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/sources/native.rs",
+     "type": null,
+     "fn": "assertion_status",
+     "line": 304,
+     "why": "Lowers authority it cannot verify"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/sources/app_memory.rs",
+     "type": null,
+     "fn": "app_memory_intentions",
+     "line": 19,
+     "why": "App memory source adapter"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/sources/taste_profile.rs",
+     "type": null,
+     "fn": "collect_taste_profile",
+     "line": 223,
+     "why": "Taste note lines as intentions"
+    }
+   ],
+   "configKeys": [
+    "preference_alignment.mode",
+    "preference_alignment.enforce_scopes",
+    "preference_alignment.budgets",
+    "preference_alignment.holds",
+    "preference_alignment.recovery",
+    "preference_alignment.composer",
+    "preference_alignment.judge",
+    "memory.taste_profile",
+    "llm-router.yaml operation_mapping.action_alignment_judge"
+   ],
+   "routes": [
+    "GET|PUT /api/magician/v2/preference-alignment/policy",
+    "GET /api/magician/v2/preference-alignment/status",
+    "GET /api/magician/v2/preference-alignment/notices",
+    "POST /api/magician/v2/preference-alignment/notices/{id}/answer",
+    "/api/magician/v2/preference-alignment/intentions",
+    "/api/magician/v2/preference-alignment/intentions/{id}",
+    "/api/magician/v2/preference-alignment/intentions/{id}/history",
+    "/api/magician/v2/preference-alignment/history",
+    "GET /api/magician/v2/hitl/{correlation_id}/alignment"
+   ],
+   "uiSurface": "Preferences tab on /memory (ui/unified-ui/src/lib/preferences/PreferencesTab.svelte), HITL ask fields (ui/unified-ui/src/lib/hitl/AlignmentAskFields.svelte), plane preference checks panel (ui/unified-ui/src/lib/plane/preferenceChecks.ts)",
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
+     "type": null,
+     "fn": "gate_preference_alignment",
+     "line": 2668,
+     "title": "Gate before acting",
+     "say": "Before the agent loop carries out an outward act like sending, booking or purchasing, it pauses at a preference alignment gate.",
+     "evidence": "apply.rs:2668,2853; preference-alignment.md intro"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/classify.rs",
+     "type": null,
+     "fn": "classify_dispatch",
+     "line": 56,
+     "title": "Which acts count",
+     "say": "A classifier decides whether the act is outward or a commitment; private local actions are only steered and never get an action-level check.",
+     "evidence": "classify.rs:35,56; preference-alignment.md 'classify.rs'"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/collect.rs",
+     "type": null,
+     "fn": "build_inputs",
+     "line": 181,
+     "title": "Gather intentions",
+     "say": "The host reads the owner's preferences, goals and standing instructions from memory and splits them into bounded batches, explicit instructions first.",
+     "evidence": "inventory.rs:54; collect.rs:181; preference-alignment.md 'Batches'"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/judge.rs",
+     "type": null,
+     "fn": "judge_batches",
+     "line": 277,
+     "title": "Judge decides meaning",
+     "say": "A judge, by default the decision engine's typed model with calibrated thresholds, decides whether each intention applies and whether a conflict is material.",
+     "evidence": "judge.rs:277; composer.rs:504; magician-config.yaml composer bars and judge: \"engine\""
+    },
+    {
+     "file": "magician-alignment/src/contract.rs",
+     "type": null,
+     "fn": "validate_decision",
+     "line": 236,
+     "title": "Evidence caps force",
+     "say": "The host then caps the answer to what the evidence can support, so a merely inferred preference can never force a confirmation hold.",
+     "evidence": "contract.rs:215,236; intention.rs:34; preference-alignment.md evidence table"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/judge.rs",
+     "type": null,
+     "fn": "combine",
+     "line": 308,
+     "title": "Pick one response",
+     "say": "Batch outcomes fold by precedence: cancel, then confirmation, unresolved, clarification and choice holds, then a gentle nudge, and finally proceed.",
+     "evidence": "judge.rs:308; preference-alignment.md 'order of precedence'"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/ledger.rs",
+     "type": null,
+     "fn": "consume",
+     "line": 268,
+     "title": "Owner answers once",
+     "say": "A held act becomes a deadline-bound ask, and the owner's answer is stored in a consume-once ledger tied to that exact action.",
+     "evidence": "ledger.rs:231,268; hold.rs:178; magician-config.yaml holds.foreground_deadline_secs; preference-alignment.md Status"
+    }
+   ]
+  }
+ ]
+}

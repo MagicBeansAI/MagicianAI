@@ -1,0 +1,113 @@
+{
+  "frames": 610,
+  "width": 1280,
+  "height": 720,
+  "pattern": "f%03d.webp",
+  "fps": 12,
+  "version": 3,
+  "matchCut": {
+    "screen": {
+      "x": 345,
+      "y": 80,
+      "w": 656,
+      "h": 476
+    },
+    "case": {
+      "x": 236,
+      "y": 19,
+      "w": 825,
+      "h": 701
+    },
+    "surround": [
+      0,
+      0,
+      0
+    ],
+    "screenTint": [
+      36,
+      42,
+      42
+    ]
+  },
+  "beats": [
+    {
+      "id": "bang",
+      "start": 1,
+      "end": 61
+    },
+    {
+      "id": "earth",
+      "start": 62,
+      "end": 122
+    },
+    {
+      "id": "dive",
+      "start": 123,
+      "end": 183
+    },
+    {
+      "id": "life-a",
+      "start": 184,
+      "end": 244
+    },
+    {
+      "id": "life-b",
+      "start": 245,
+      "end": 305
+    },
+    {
+      "id": "fire",
+      "start": 306,
+      "end": 366
+    },
+    {
+      "id": "stone",
+      "start": 367,
+      "end": 427
+    },
+    {
+      "id": "industry",
+      "start": 428,
+      "end": 488
+    },
+    {
+      "id": "desk",
+      "start": 489,
+      "end": 549
+    },
+    {
+      "id": "screen",
+      "start": 550,
+      "end": 610
+    }
+  ],
+  "captions": [
+    {
+      "text": "life learns to walk",
+      "a": 257,
+      "b": 273,
+      "c": 309,
+      "d": 323
+    },
+    {
+      "text": "the first tool",
+      "a": 323,
+      "b": 339,
+      "c": 377,
+      "d": 391
+    },
+    {
+      "text": "ours — every tool since",
+      "a": 409,
+      "b": 425,
+      "c": 491,
+      "d": 505
+    }
+  ],
+  "aria": {
+    "bang": "The big bang",
+    "evo": "Evolution — from fish to humans",
+    "fire": "Fire — the first tool",
+    "blade": "The stone blade"
+  }
+}

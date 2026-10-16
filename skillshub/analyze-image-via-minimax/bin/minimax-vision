@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""MiniMax VLM image analysis — `mmx vision describe` artifact adapter.
+
+Subprocess-spawns the `mmx` CLI shipped by `mmx-cli` (npm) instead of
+calling the REST API directly. Matches the canonical magician pattern
+(claude / codex / agy / dugite / image-generation-via-minimax all
+wrap their upstream CLI rather than reimplementing auth + retry + JSON
+formatting on top of raw HTTP).
+
+Adapter responsibilities:
+  - Map the governed canonical JSON request into the right
+    `mmx vision describe` flags.
+  - Read `MMX_CONFIG_DIR` from the environment and let `mmx` consume
+    credentials from `<MMX_CONFIG_DIR>/config.json`. This is the same path as
+    a `ConfigDirectory` credential placement and keeps the token off the argv.
+  - Pin `--output json --quiet --non-interactive` so the CLI emits a
+    stable JSON shape and skips region-detection prompts.
+  - Parse the CLI's `{"content": "<text>", ...}` response and emit the
+    `{description, voice_summary, ...}` envelope the rest of the
+    magician vision toolchain expects (matches the shape of the
+    compiled `analyze_image_via_openai` skill so callers can swap
+    providers without reshaping the result).
+
+Auth: reads `MMX_CONFIG_DIR` from env (injected by magician's secret
+binding when invoked via a chat session).
+"""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+
+
+DEFAULT_QUESTION = (
+    "Describe this image in detail. Note any visible text, objects, layout, "
+    "people, charts, code, UI elements, and other salient context. Lead with "
+    "a one-sentence summary in the first line, then a structured description."
+)
+
+
+def emit_error(message: str) -> None:
+    """Print a JSON error envelope to stdout and exit non-zero. Single
+    shape across every failure mode so the magician dispatcher's
+    JSON-parsing of tool-result stdout always succeeds."""
+    print(json.dumps({"status": "error", "error": message}))
+    sys.exit(1)
+
+
+def resolve_mmx_binary() -> str:
+    """Find the `mmx` binary.
+
+    Looks first on PATH (which the magician inner-loop dispatcher
+    pre-prepends `skillshub/node_modules/.bin/` onto), then falls back
+    to walking up from this script to the npm root in case PATH
+    wasn't massaged.
+    """
+    found = shutil.which("mmx")
+    if found:
+        return found
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "node_modules" / ".bin" / "mmx"
+        if candidate.is_file():
+            return str(candidate)
+    emit_error(
+        "mmx CLI not found on PATH. Run `make -C skillshub install` "
+        "(or `npm install` at the skillshub workspace root) to vendor "
+        "mmx-cli into skillshub/node_modules/."
+    )
+    raise SystemExit(1)  # unreachable; emit_error exits
+
+
+def derive_voice_summary(description: str) -> str:
+    """First paragraph of the description, truncated at a sentence
+    boundary at ~280 chars. Matches the same derivation the compiled
+    `analyze_image_via_openai` skill uses so both providers produce
+    identically-shaped `voice_summary` values."""
+    if not description:
+        return ""
+    paragraph = description.split("\n\n", 1)[0].strip()
+    budget = 280
+    if len(paragraph) <= budget:
+        return paragraph
+    # Find the last sentence boundary at-or-before `budget` chars.
+    last_boundary = -1
+    for i, ch in enumerate(paragraph[:budget]):
+        if ch in ".!?":
+            next_idx = i + 1
+            if next_idx >= len(paragraph) or paragraph[next_idx].isspace():
+                last_boundary = next_idx
+    if last_boundary >= 0:
+        return paragraph[:last_boundary].rstrip()
+    return paragraph[:budget].rstrip() + "…"
+
+
+def main() -> None:
+    mmx_config_dir = os.environ.get("MMX_CONFIG_DIR", "").strip()
+    if not mmx_config_dir:
+        emit_error(
+            "MMX_CONFIG_DIR not set. Runtime must inject the temporary MiniMax "
+            "config directory via config_directory credentials."
+        )
+
+    request = json.load(sys.stdin)
+    image_ref = str(request.get("image_ref", "")).strip()
+    if not image_ref:
+        emit_error("image_ref is required")
+
+    question = str(request.get("question", "")).strip() or DEFAULT_QUESTION
+    timeout_secs = 90
+    if timeout_secs <= 0:
+        timeout_secs = 90
+
+    mmx = resolve_mmx_binary()
+
+    # Detect whether image_ref is a pre-uploaded file id (`file-…`),
+    # a URL, or a local path. CLI flag differs:
+    #   --file-id <id>     for pre-uploaded files
+    #   --image <ref>      for local paths AND URLs (CLI handles both)
+    if image_ref.startswith("file-"):
+        image_flag = ["--file-id", image_ref]
+    else:
+        image_flag = ["--image", image_ref]
+
+    argv = [
+        mmx,
+        "--output",
+        "json",
+        "--quiet",
+        "--non-interactive",
+        "--timeout",
+        str(timeout_secs),
+        "vision",
+        "describe",
+        *image_flag,
+        "--prompt",
+        question,
+    ]
+
+    try:
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_secs + 30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        emit_error(
+            f"mmx vision describe timed out after {timeout_secs + 30}s "
+            "(API timeout: {timeout_secs}s)"
+        )
+        return
+
+    if completed.returncode != 0:
+        # mmx emits structured JSON errors on stderr when --output json
+        # is set; fall back to the raw tail if parsing fails.
+        stderr_tail = (completed.stderr or "").strip().splitlines()
+        last_line = stderr_tail[-1] if stderr_tail else ""
+        try:
+            err_obj = json.loads(last_line) if last_line else {}
+            err_message = (
+                err_obj.get("error", {}).get("message")
+                if isinstance(err_obj.get("error"), dict)
+                else err_obj.get("error")
+            )
+            if err_message:
+                emit_error(f"mmx vision describe failed: {err_message}")
+        except json.JSONDecodeError:
+            pass
+        emit_error(
+            f"mmx vision describe exited {completed.returncode}: "
+            f"{(completed.stderr or completed.stdout or '').strip()[:500]}"
+        )
+
+    stdout = (completed.stdout or "").strip()
+    if not stdout:
+        emit_error("mmx vision describe produced no stdout")
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        emit_error(f"mmx vision describe stdout was not valid JSON: {e}")
+        return
+
+    # The `mmx vision describe` JSON envelope is `{"content": "<text>",
+    # ...}` — the CLI's text-mode prints `o.content` verbatim. Fall
+    # back to a couple of alternate keys in case the CLI shape changes
+    # in a future version.
+    description = ""
+    if isinstance(payload, dict):
+        for key in ("content", "description", "text"):
+            v = payload.get(key)
+            if isinstance(v, str) and v.strip():
+                description = v.strip()
+                break
+
+    if not description:
+        emit_error(
+            "mmx vision describe returned no usable text content. "
+            f"Raw payload: {json.dumps(payload)[:500]}"
+        )
+
+    label = None
+    if not image_ref.startswith("file-") and not image_ref.startswith("http"):
+        label = pathlib.Path(image_ref).name
+
+    result = {
+        "status": "ok",
+        "image_ref": image_ref,
+        "label": label,
+        "question": question,
+        "description": description,
+        "voice_summary": derive_voice_summary(description),
+        "provider": "minimax",
+        "raw": payload,
+    }
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

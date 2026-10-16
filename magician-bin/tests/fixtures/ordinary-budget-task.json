@@ -1,0 +1,39 @@
+{
+  "manifest": {
+    "task_id": "task_budget_contract",
+    "principal": "anonymous",
+    "workspace": "default",
+    "title": "Synthetic budget continuation",
+    "description": "Local fixture only",
+    "agent_id": "agent",
+    "ui_thread_id": "general",
+    "tags": [],
+    "created_by": "user",
+    "depends_on": [],
+    "approved": true,
+    "output_mode": "accumulate",
+    "lifecycle": "persistent",
+    "sync_mode": "deferred",
+    "created_at": "2026-10-13T02:15:56.550310+00:00",
+    "updated_at": "2026-10-13T02:15:56.550310+00:00"
+  },
+  "state": {
+    "task_id": "task_budget_contract",
+    "status": "paused",
+    "active_root_execution_id": null,
+    "latest_root_execution_id": null,
+    "last_completed_root_execution_id": null,
+    "default_task_agent_output_id": null,
+    "primary_user_output_id": null,
+    "schedule_fire_count": 0,
+    "synthesis_pending_executions": [],
+    "updated_at": "2026-10-13T02:15:56.550310+00:00"
+  },
+  "refs": {
+    "task_id": "task_budget_contract",
+    "outputs": [],
+    "default_task_agent_output_id": null,
+    "primary_user_output_id": null,
+    "updated_at": "2026-10-13T02:15:56.550310+00:00"
+  }
+}

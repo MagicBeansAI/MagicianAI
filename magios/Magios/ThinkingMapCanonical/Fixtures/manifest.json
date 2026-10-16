@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "map_id": "map-1",
+  "principal": "anonymous",
+  "workspace": "default",
+  "title": "iOS thinking map migration",
+  "source": {
+    "kind": "meeting",
+    "thread_id": "thread-42"
+  },
+  "lifecycle": "active",
+  "latest_revision": 4,
+  "latest_sequence": 1,
+  "latest_semantic_hash": "sha256:deadbeefcafef00d",
+  "created_at": "2026-07-20T00:00:00Z",
+  "updated_at": "2026-07-20T01:00:00Z"
+}

@@ -1,0 +1,33 @@
+{
+  "atomicity": "all_or_nothing",
+  "expected_record_revisions": [
+    {
+      "entity": "saved_video",
+      "record_id": "video_01",
+      "revision": 7
+    }
+  ],
+  "expected_schema_revision": 3,
+  "idempotency_key": "mutation-key:fixture:create-video",
+  "operations": [
+    {
+      "entity": "saved_video",
+      "kind": "create",
+      "payload": {
+        "source_url": "https://example.test/watch/42",
+        "status": "queued",
+        "title": "A smaller, clearer film"
+      },
+      "temporary_id": "new_video"
+    },
+    {
+      "entity": "saved_video",
+      "kind": "update",
+      "patch": {
+        "status": "archived"
+      },
+      "record_id": "video_01"
+    }
+  ],
+  "protocol_version": "1"
+}

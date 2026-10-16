@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Magician transcribes meeting audio on-device with macOS Speech for the Google-Meet bot.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Magician captures meeting audio for the Google-Meet bot.</string>
+</dict>
+</plist>

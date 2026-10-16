@@ -1,0 +1,80 @@
+name: app_data_compose
+description: Revalidate one governed app query row, map it into another app's current action schema, and launch that action with durable transfer provenance. Never grants direct app-to-app store access.
+version: "2.0.0"
+result_projection:
+  contract_id: app_composition_launch_v2
+  priority_fields:
+    - status
+    - error_code
+    - retry_class
+    - retryable
+    - effect_uncertain
+    - launch
+    - result_withheld_by_policy
+guide: |
+  Tool name: `app_data_compose`
+
+  Use after `app_data_query` or `app_data_search` when the owner-facing
+  agent wants output from app A as input to app B. Supply the exact query
+  projection handle returned by the source tool, select a record when the
+  projection contains multiple rows, and provide a deterministic typed mapping plus an
+  idempotency key. The server reopens the source row, resolves the current
+  destination installation/grant/action contracts, persists the complete
+  transfer receipt only with the workflow binding, and launches the destination
+  action. Receipt digests, source-field sets, and authority revisions are never
+  projected into the model-facing result.
+  A launch exposes only its stable `run_handle` and an optional guarded result;
+  internal task and execution identifiers are deliberately not model-visible.
+
+  A simple select/rename entry is `{source: "title", target: "name"}`.
+  Typed entries use the mapping IR `kind` discriminator (`select`,
+  `constant`, `convert`, or `map_enum`).
+  Mapping remains total over the reviewed selected schema; current field
+  presence, nullness, or enum membership does not silently relax it.
+
+  A synchronously completed result is included only when its joined handling
+  labels permit disclosure to the exact physical calling model. Otherwise the
+  response sets `result_withheld_by_policy: true`; the canonical result remains
+  sealed with the task for a policy-aware owner result reader.
+
+  Protected failures use the same bounded retry vocabulary as action-result
+  composition. Retry only when `retryable: true`, and always reuse the exact
+  idempotency key. A cancelled pre-launch outcome is non-retryable; an error
+  after the canonical invocation boundary is marked effect-uncertain rather
+  than claiming no destination effect occurred.
+parameters:
+  - name: source_projection_handle
+    required: true
+    param_type: string
+    description: Opaque projection_handle.handle_ref returned by app_data_query or app_data_search.
+  - name: source_record_id
+    required: false
+    param_type: string
+    description: Record to compose when the source projection contains more than one row.
+  - name: destination_installation_id
+    required: true
+    param_type: string
+    description: Destination installation that will receive the transfer.
+  - name: destination_action_id
+    required: true
+    param_type: string
+    description: Declared destination action id.
+  - name: mapping
+    required: true
+    param_type: array
+    description: Bounded typed operations from source fields to destination fields.
+  - name: idempotency_key
+    required: true
+    param_type: string
+    description: Stable caller key; retries replay the same destination workflow launch.
+implementation:
+  type: compiled
+  provider_name: app_data_compose
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - apps
+    - composition
+  composition_category: action
+  sandbox: none

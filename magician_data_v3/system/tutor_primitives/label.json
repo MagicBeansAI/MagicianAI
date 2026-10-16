@@ -1,0 +1,13 @@
+{
+  "type": "label",
+  "aliases": ["unit_label", "timeline_tick", "formula"],
+  "version": 1,
+  "draw": [
+    {
+      "op": "label",
+      "at": ["x", "y"],
+      "text": "text",
+      "anchor": "leading"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+name: authorize_content_read
+description: Ask the owner for one scoped authenticated browser read or interaction approval, including return of private page observations to the configured assistant model, and return an opaque short-lived grant. Use only after content_read reports an authenticated boundary.
+version: "1.1.0"
+guide: |
+  Call this only when `content_read` returns `approval_required` for a URL the user wants read.
+  The owner sees the domain, exact requested authority, and that private page content will be
+  returned to the assistant model configured for the task. On approval, pass the returned
+  `authority_grant_id` back to `content_read` with the matching maximum authority and exact
+  allowed action. Read approval never authorizes interaction. Interaction approval returns a
+  typed, domain-bound browser handoff whose page effects retain the normal browser verification
+  and HITL gates. Neither authority permits API writes.
+parameters:
+  - name: url
+    required: true
+    param_type: string
+    description: Exact page URL whose domain will be bound into the approval receipt.
+  - name: authority
+    required: false
+    param_type: string
+    default: authenticated_read
+    enum_values: [authenticated_read, authenticated_interact]
+    description: Exact identity-bearing authority to request. Read and interaction grants are not interchangeable.
+implementation:
+  type: compiled
+  provider_name: authorize_content_read
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 310
+  categories: [web, read, approval]
+  composition_category: action
+  sandbox: none

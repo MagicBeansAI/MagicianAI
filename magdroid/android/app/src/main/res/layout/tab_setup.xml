@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="@dimen/spacing_medium">
+
+        <!-- Progress Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginBottom="@dimen/spacing_medium">
+
+            <TextView
+                android:id="@+id/permissionProgressLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PERMISSIONS 0/5"
+                android:textAppearance="@style/TextAppearance.Magdroid.LabelLarge"
+                android:textColor="@color/wave_purple"
+                android:textStyle="bold" />
+
+            <ProgressBar
+                android:id="@+id/permissionProgressBar"
+                style="@android:style/Widget.ProgressBar.Horizontal"
+                android:layout_width="match_parent"
+                android:layout_height="8dp"
+                android:layout_marginTop="@dimen/spacing_small"
+                android:max="5"
+                android:progress="0"
+                android:progressDrawable="@drawable/bg_permission_progress" />
+
+        </LinearLayout>
+
+        <!-- Permission Cards Container -->
+        <LinearLayout
+            android:id="@+id/permissionCardsContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <!-- Magician pairing. The companion dials out; nothing listens here. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="20dp"
+            android:padding="18dp"
+            android:background="@drawable/bg_bridge_card">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/bridge_section_eyebrow"
+                android:textColor="@color/md_theme_light_primary"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.12" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/bridge_section_title"
+                android:textColor="@color/text_high_emphasis"
+                android:textSize="19sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/bridgeStatusLine"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/bridge_status_unpaired"
+                android:textColor="@color/text_medium_emphasis"
+                android:textSize="13sp"
+                android:lineSpacingExtra="3dp" />
+
+            <EditText
+                android:id="@+id/accessHostInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:hint="@string/access_host_hint"
+                android:inputType="textUri"
+                android:importantForAutofill="no"
+                android:textColor="@color/text_high_emphasis"
+                android:textColorHint="@color/text_disabled"
+                android:textSize="14sp"
+                android:padding="12dp"
+                android:background="@drawable/bg_bridge_field" />
+
+            <EditText
+                android:id="@+id/accessClientIdInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:hint="@string/access_client_id_hint"
+                android:inputType="text"
+                android:importantForAutofill="no"
+                android:textColor="@color/text_high_emphasis"
+                android:textColorHint="@color/text_disabled"
+                android:textSize="14sp"
+                android:padding="12dp"
+                android:background="@drawable/bg_bridge_field" />
+
+            <EditText
+                android:id="@+id/accessClientSecretInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:hint="@string/access_client_secret_hint"
+                android:inputType="textPassword"
+                android:importantForAutofill="no"
+                android:textColor="@color/text_high_emphasis"
+                android:textColorHint="@color/text_disabled"
+                android:textSize="14sp"
+                android:padding="12dp"
+                android:background="@drawable/bg_bridge_field" />
+
+            <EditText
+                android:id="@+id/bridgePairingTokenInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:hint="@string/bridge_pairing_token_hint"
+                android:inputType="textPassword"
+                android:importantForAutofill="no"
+                android:textColor="@color/text_high_emphasis"
+                android:textColorHint="@color/text_disabled"
+                android:textSize="14sp"
+                android:padding="12dp"
+                android:background="@drawable/bg_bridge_field" />
+
+            <Button
+                android:id="@+id/bridgeSaveButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/access_save"
+                android:textColor="@color/md_theme_light_onPrimary"
+                android:textAllCaps="false"
+                android:textStyle="bold"
+                android:backgroundTint="@color/md_theme_light_primary" />
+
+            <TextView
+                android:id="@+id/bridgeDeviceIdLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:textColor="@color/text_disabled"
+                android:textSize="11sp"
+                android:fontFamily="monospace" />
+        </LinearLayout>
+
+    </LinearLayout>
+
+</ScrollView>

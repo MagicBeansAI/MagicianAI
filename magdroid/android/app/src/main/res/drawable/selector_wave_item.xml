@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Pressed state -->
+    <item android:state_pressed="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/item_pressed" />
+                    <corners android:radius="12dp" />
+                </shape>
+            </item>
+            <item>
+                <vector
+                    android:width="360dp"
+                    android:height="56dp"
+                    android:viewportWidth="360"
+                    android:viewportHeight="56">
+                    <path
+                        android:fillAlpha="0.15"
+                        android:fillColor="@color/primary"
+                        android:pathData="M0,20 Q90,16 180,20 T360,20 L360,36 Q270,40 180,36 T0,36 Z" />
+                </vector>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- Selected state -->
+    <item android:state_selected="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/item_selected" />
+                    <corners android:radius="12dp" />
+                </shape>
+            </item>
+            <item android:left="4dp">
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/primary" />
+                    <size android:width="4dp" />
+                    <corners
+                        android:topLeftRadius="12dp"
+                        android:bottomLeftRadius="12dp" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- Focused state -->
+    <item android:state_focused="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/item_focused" />
+                    <corners android:radius="12dp" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- Default state -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/transparent" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+</selector>

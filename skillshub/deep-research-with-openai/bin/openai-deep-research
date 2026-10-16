@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Bounded OpenAI deep-research protocol adapter.
+
+The governed runtime validates the public action and delivers one canonical
+JSON object on stdin. This executable owns only the provider protocol,
+continuation polling, and normalized output.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+API_ORIGIN = "https://api.openai.com"
+RESPONSES_URL = f"{API_ORIGIN}/v1/responses"
+MAX_INPUT_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 20 * 1024 * 1024
+MAX_OUTPUT_TEXT = 8 * 1024 * 1024
+MAX_SOURCES = 2_000
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect denied", headers, fp)
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def fail(message: str) -> int:
+    print(json.dumps({"error": message}, separators=(",", ":")))
+    return 1
+
+
+def read_input() -> dict:
+    raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("input exceeds adapter limit")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("input must be a JSON object")
+    return value
+
+
+def request_json(request: urllib.request.Request, timeout: int) -> dict:
+    with OPENER.open(request, timeout=timeout) as response:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("provider response exceeds adapter limit")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("provider response is not an object")
+    return value
+
+
+def post_response(api_key: str, body: dict) -> dict:
+    request = urllib.request.Request(
+        RESPONSES_URL,
+        data=json.dumps(body, separators=(",", ":")).encode(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "uuaa/openai-deep-research",
+        },
+    )
+    return request_json(request, 30)
+
+
+def get_response(api_key: str, response_id: str) -> dict:
+    if not response_id or len(response_id) > 256 or not response_id.replace("_", "").isalnum():
+        raise ValueError("provider returned an invalid response id")
+    request = urllib.request.Request(
+        f"{RESPONSES_URL}/{response_id}",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "uuaa/openai-deep-research",
+        },
+    )
+    return request_json(request, 20)
+
+
+def bounded_text(value, limit: int) -> str:
+    return value[:limit] if isinstance(value, str) else ""
+
+
+def normalize(response: dict, response_id: str, attempts: int) -> dict:
+    answer_parts: list[str] = []
+    sources: list[dict] = []
+    answer_bytes = 0
+    for item in response.get("output", []):
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for block in item.get("content", []):
+            if not isinstance(block, dict) or block.get("type") != "output_text":
+                continue
+            text = bounded_text(block.get("text"), MAX_OUTPUT_TEXT - answer_bytes)
+            if text:
+                answer_parts.append(text)
+                answer_bytes += len(text)
+            for annotation in block.get("annotations", []):
+                if not isinstance(annotation, dict) or annotation.get("type") != "url_citation":
+                    continue
+                url = bounded_text(annotation.get("url"), 8_192)
+                if url.startswith(("https://", "http://")) and len(sources) < MAX_SOURCES:
+                    sources.append({
+                        "title": bounded_text(annotation.get("title"), 2_048),
+                        "url": url,
+                    })
+    unique_sources: list[dict] = []
+    seen: set[str] = set()
+    for source in sources:
+        if source["url"] not in seen:
+            seen.add(source["url"])
+            unique_sources.append(source)
+    usage = response.get("usage")
+    return {
+        "answer": "\n".join(answer_parts)[:MAX_OUTPUT_TEXT],
+        "sources": unique_sources,
+        "model": bounded_text(response.get("model"), 256),
+        "usage": usage if isinstance(usage, dict) else {},
+        "response_id": response_id,
+        "poll_attempts": attempts,
+    }
+
+
+def main() -> int:
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return fail("OpenAI credential is unavailable")
+    try:
+        params = read_input()
+        query = params["query"]
+        model = params.get("model", "o4-mini-deep-research")
+        poll_interval = params.get("poll_interval_secs", 10)
+        max_polls = params.get("max_poll_attempts", 60)
+        max_tool_calls = params.get("max_tool_calls")
+        if not isinstance(query, str) or not query:
+            raise ValueError("query is required")
+        body = {
+            "model": model,
+            "input": query,
+            "background": True,
+            "tools": [{"type": "web_search"}],
+        }
+        if max_tool_calls is not None:
+            body["max_tool_calls"] = max_tool_calls
+        response = post_response(api_key, body)
+        if response.get("error"):
+            return fail("OpenAI rejected the research request")
+        response_id = response.get("id", "")
+        status = response.get("status", "")
+        if not response_id:
+            return fail("OpenAI returned no research response id")
+        attempts = 0
+        while status not in {"completed", "failed", "cancelled", "expired"} and attempts < max_polls:
+            time.sleep(poll_interval)
+            attempts += 1
+            response = get_response(api_key, response_id)
+            status = response.get("status", "unknown")
+        if status != "completed":
+            return fail(f"research did not complete (status: {bounded_text(status, 32)})")
+        print(json.dumps(normalize(response, response_id, attempts), ensure_ascii=False))
+        return 0
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return fail("invalid research input or provider response")
+    except urllib.error.HTTPError as error:
+        return fail(f"OpenAI request failed with HTTP {error.code}")
+    except (urllib.error.URLError, TimeoutError):
+        return fail("OpenAI request was unavailable")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

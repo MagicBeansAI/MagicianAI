@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_empty_prompt",
+  "version": "1.1.0",
+  "content": [
+    "I need something to build. Put the request right after the invoke — say \"start a vibedev build fix the footer spacing\", or type @vibedev fix the footer spacing.",
+    "",
+    "For a written plan instead of a code change, say \"start a vibedev plan should we split this module\", or type @vibedev #discuss should we split this module."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply when a VibeDev-rail turn carries the invoke but no request. No task is created. The invoke parser reports a bare invoke as a real rail turn with an empty prompt and leaves the decision here, because only the chat turn can say so in the user's own thread. This reply is also SPOKEN back on the hands-free voice road, so it names both the spoken phrase and the typed marker and stays free of markup that reads badly aloud.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` empty-request refusal. v1.1.0: Covers the spoken invoke as well as the typed marker, and drops the code fences and the \"on the same line\" instruction, which are wrong when the reply is read aloud to a hands-free caller.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply", "refusal", "voice"],
+    "estimated_tokens": 70
+  }
+}

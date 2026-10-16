@@ -1,0 +1,54 @@
+{
+  "counts": {
+    "done": 1,
+    "needs_you": 1,
+    "working": 1
+  },
+  "runs": [
+    {
+      "last_progress_at": "2026-10-13T09:40:30Z",
+      "live_task_id": "task_ask",
+      "project_id": "proj_shop",
+      "project_name": "Shop",
+      "run_id": "task_ask",
+      "state": "needs_you",
+      "status": "running",
+      "title": "Add dark-mode screenshots",
+      "turns": 1,
+      "started_at": "2026-10-13T09:12:00Z",
+      "approval_id": "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30",
+      "updated_at": "2026-10-13T09:41:00Z"
+    },
+    {
+      "crew_id": "crew_7f3a",
+      "lane": "API",
+      "last_progress_at": "2026-10-13T09:40:30Z",
+      "live_task_id": "task_api",
+      "project_id": "proj_shop",
+      "project_name": "Shop",
+      "run_id": "task_api",
+      "state": "working",
+      "status": "running",
+      "step": "Editing src/api/auth/codes.ts",
+      "title": "API · Login with email codes",
+      "turns": 1,
+      "started_at": "2026-10-13T09:12:00Z",
+      "updated_at": "2026-10-13T09:41:00Z"
+    },
+    {
+      "last_progress_at": "2026-10-13T09:40:30Z",
+      "live_task_id": "task_search",
+      "project_id": "proj_shop",
+      "project_name": "Shop",
+      "run_id": "task_search",
+      "state": "done",
+      "status": "completed",
+      "summary": "Search uses a trigram index: 900 ms to 38 ms.",
+      "title": "Speed up product search",
+      "turns": 1,
+      "started_at": "2026-10-13T09:12:00Z",
+      "cost_usd": 0.88,
+      "updated_at": "2026-10-13T09:41:00Z"
+    }
+  ]
+}

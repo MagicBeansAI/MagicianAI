@@ -1,0 +1,47 @@
+name: screenshot_preview
+description: Capture a screenshot of the project's running dev-server preview and register it as an attachment you can pass back to run_coding_task, so you can SEE the rendered UI and visually self-correct.
+version: "1.0.0"
+guide: |
+  Tool name: `screenshot_preview`
+
+  Captures a PNG of the project's live preview (its running dev server) and
+  registers it as a `#vibedev` attachment. Returns `{ ok, attachment_id,
+  attachment_session_id, preview_url, screenshot_path, full_page }`.
+
+  This is how you SEE what you built. The visual self-correction loop:
+    1. Make a visible change, then `apply_code_proposal` and `run_project_checks`
+       so the preview reflects it.
+    2. `screenshot_preview { project_id }` → note `attachment_id` +
+       `attachment_session_id`.
+    3. `run_coding_task` with `attachment_ids: [attachment_id]` and the matching
+       `attachment_session_id`, asking it to critique the rendered UI against the
+       goal and patch what looks wrong (spacing, overflow, contrast, alignment,
+       broken layout).
+    4. apply + check, then `screenshot_preview` again to verify. Stop when it
+       looks right or after 3 visual passes — do NOT loop forever.
+
+  Pass `project_id` (required) and optional `full_page:true` for the whole
+  scrollable page (default is the viewport / above-the-fold shot). If `ok` is
+  false because no preview is running, start the dev server first — or skip
+  visual self-correction entirely for non-visual changes. Requires a coding
+  profile that supports image inputs (the run will tell you if it does not).
+parameters:
+  - name: project_id
+    required: true
+    param_type: string
+    description: The VibeDev project whose running preview to screenshot.
+  - name: full_page
+    required: false
+    param_type: boolean
+    description: Capture the entire scrollable page instead of just the viewport. Defaults to false (viewport).
+implementation:
+  type: compiled
+  provider_name: screenshot_preview
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 90
+  categories:
+    - coding
+    - browser
+  composition_category: action
+  sandbox: none

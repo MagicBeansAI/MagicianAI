@@ -1,0 +1,23 @@
+# Cross-compilation linker configuration for containerized builds.
+# These are used when building outside Docker (e.g., cross-compiling from macOS).
+# The Debian-based Docker builder uses its native GNU/glibc target, so these
+# musl linker overrides apply only to explicit cross-compilation commands.
+
+# No tracked target-dir: the build location is machine-specific. The root
+# Makefile exports CARGO_TARGET_DIR for every target; raw `cargo` invocations
+# set it explicitly (see CLAUDE.md / CONTRIBUTING.md). Without it, cargo uses
+# the default ./target.
+
+# The extracted libraries (MagicRun, MagicVault) are public git pins. Fetching
+# them through the git CLI keeps them on the same credential, proxy and TLS
+# path as any normal clone, which is what let them move from private to public
+# without a manifest change. Do not embed credentials or require a one-off
+# environment flag.
+[net]
+git-fetch-with-cli = true
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"

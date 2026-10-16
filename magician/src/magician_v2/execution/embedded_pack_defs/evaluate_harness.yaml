@@ -1,0 +1,41 @@
+name: evaluate_harness
+description: Evaluate the active harness using focus-area history, proposal impact, and program success metrics.
+version: "1.0.0"
+guide: |
+  Tool name: `evaluate_harness`
+
+  Use this when the harness should review its own operating loop before deciding
+  what to do next. The result stays inside the current harness scope.
+
+  The evaluation includes:
+  - stable focus-area outcome history for the harness owner
+  - before/after impact summaries for applied proposals created by this harness
+  - progress against supported `Success Metrics` entries in the active program docs
+
+  Supported success metric forms:
+  - `harness_success_rate_30d >= 0.7`
+  - `scope_success_rate_14d >= 0.6`
+  - `completed_tasks_7d >= 5`
+  - `open_tasks <= 8`
+  - `applied_proposals_30d >= 1`
+parameters:
+  - name: proposal_limit
+    param_type: integer
+    description: Maximum number of recent applied proposals to include.
+    default: "20"
+  - name: impact_window_days
+    param_type: integer
+    description: Symmetric before/after window size for proposal impact evaluation.
+    default: "7"
+implementation:
+  type: compiled
+  provider_name: evaluate_harness
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 20
+  categories:
+    - harness
+    - evaluation
+    - reporting
+  composition_category: read
+  sandbox: none

@@ -1,0 +1,46 @@
+{
+  "suite_id": "simple-data-analyst-regression",
+  "enabled": true,
+  "cases": [
+    {
+      "case_id": "metabase-discovery-flow",
+      "agent_id": "simple-data-analyst",
+      "query": "How do I search and discover existing Metabase cards or questions for a metric?",
+      "scopes": ["agent"],
+      "expected_substrings": ["find_search", "Metabase"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "metabase-native-sql-dependencies",
+      "agent_id": "simple-data-analyst",
+      "query": "Which Metabase native SQL dependency syntax has been unreliable for downstream cards?",
+      "scopes": ["agent"],
+      "expected_substrings": ["native SQL", "{{#"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "reliable-query-templates",
+      "agent_id": "simple-data-analyst",
+      "query": "Which reliable query templates should I reuse to confirm saved-question references in SQL cards?",
+      "scopes": ["agent"],
+      "expected_substrings": ["reliable_query_templates", "saved-question"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "artifact-data-source-locations",
+      "agent_id": "simple-data-analyst",
+      "query": "Where can I locate generated files and HTML or Markdown outputs from past executions?",
+      "scopes": ["agent"],
+      "expected_substrings": ["data_source_locations", "artifact_output_excerpt"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    }
+  ]
+}

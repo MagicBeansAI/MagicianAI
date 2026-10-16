@@ -1,0 +1,34 @@
+name: system_status
+description: Report the operational status of agents in the active harness scope, including pending work.
+version: "1.0.0"
+guide: |
+  Tool name: `system_status`
+
+  Use this when you want a compact operational snapshot:
+  - working / idle / stuck state
+  - task counts by status
+  - pending task previews
+parameters:
+  - name: agent_id
+    param_type: string
+    description: Optional agent id inside the active harness scope.
+  - name: include_tasks
+    param_type: boolean
+    description: Include pending task previews. Defaults to true.
+    default: "true"
+  - name: pending_task_limit
+    param_type: integer
+    description: Maximum pending tasks to include per agent. Defaults to 10.
+    default: "10"
+implementation:
+  type: compiled
+  provider_name: system_status
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - diagnostics
+    - status
+  composition_category: observation
+  sandbox: none

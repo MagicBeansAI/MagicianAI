@@ -1,0 +1,46 @@
+name: android_snapshot
+description: Read the Android phone's current screen as addressable structure. This is how you see the phone — use it before acting, and again after, to confirm what changed.
+version: "1.0.0"
+guide: |
+  Tool name: `android_snapshot`
+
+  Returns what is on the phone's screen as rows you can act on: the app in the
+  foreground, and each control with its text, description, resource id and
+  bounds.
+
+  This is your primary sight. Read it before every action and again afterwards —
+  Android screens change under you, and acting on a snapshot you took three steps
+  ago is how an agent taps the wrong thing.
+
+  Most native apps name their controls well, so the snapshot is usually enough on
+  its own. Reach for `android_screenshot` only when it is not: an unlabelled
+  canvas, a chart, an image you must actually look at. A screen whose rows are
+  all unnamed full-screen containers is that case, and is also what a still
+  loading app looks like — wait and snapshot again before concluding the app is
+  opaque.
+
+  `filter` defaults to `interactive`, which is what you want: the full tree is
+  mostly layout containers you cannot act on. Use `all` only when hunting for
+  something the interactive view is hiding.
+
+  With one phone connected you do not need `device`. With several, name one.
+parameters:
+  - name: filter
+    param_type: string
+    description: "`interactive` (default) for controls, `all` for every element, `text` for text-bearing only."
+  - name: max_depth
+    param_type: integer
+    description: Limit tree depth. Omit for unlimited.
+  - name: device
+    param_type: string
+    description: Which phone, when more than one is connected. Omit when there is only one.
+implementation:
+  type: compiled
+  provider_name: android_snapshot
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 45
+  categories:
+    - android
+  composition_category: read
+  sandbox: none

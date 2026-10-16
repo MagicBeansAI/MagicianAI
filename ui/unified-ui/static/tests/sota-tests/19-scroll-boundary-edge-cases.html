@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: scroll (boundary edge cases) - Shadow DOM, Iframes, Off-Screen Containers</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+            min-height: 100vh;
+            overflow-y: auto;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        .edge-case-label {
+            background: #e74c3c;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+        .status-btn:hover { filter: brightness(1.1); }
+
+        .interactive-area {
+            margin: 15px 0;
+            padding: 15px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+
+        .results-summary {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border: 1px solid #ddd;
+            z-index: 9999;
+        }
+        .results-summary h3 { margin: 0 0 10px 0; }
+        .results-summary .counts { display: flex; gap: 15px; }
+        .results-summary .count { font-weight: bold; }
+        .results-summary .passed { color: #28a745; }
+        .results-summary .failed { color: #dc3545; }
+        .results-summary .pending { color: #6c757d; }
+
+        /* Spacer to push tests off-screen for Test 1 */
+        .spacer-block {
+            background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px 20px;
+            text-align: center;
+            color: #6c757d;
+            margin: 20px 0;
+        }
+        .spacer-block h3 { margin: 0 0 10px 0; color: #495057; }
+
+        /* Test 1: Off-screen container */
+        #off-screen-table-wrapper {
+            height: 300px;
+            overflow-y: auto;
+            border: 2px solid #333;
+            border-radius: 8px;
+        }
+        #off-screen-table-wrapper table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        #off-screen-table-wrapper thead {
+            position: sticky;
+            top: 0;
+            background: #2c3e50;
+            color: white;
+        }
+        #off-screen-table-wrapper th,
+        #off-screen-table-wrapper td {
+            padding: 10px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        #off-screen-table-wrapper .action-btn {
+            padding: 5px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            background: #3498db;
+            color: white;
+        }
+        .target-row { background: #d4edda !important; }
+        .target-row td { font-weight: bold; }
+
+        /* Test 3: overflow:clip container */
+        .clip-outer {
+            overflow: clip;
+            height: 250px;
+            border: 3px solid #9b59b6;
+            border-radius: 8px;
+            position: relative;
+        }
+        .clip-inner-scroll {
+            height: 100%;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .clip-item {
+            padding: 10px 15px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+        }
+        .clip-item:hover { background: #f0f0f0; }
+        .clip-item.target-clip { background: #d4edda; font-weight: bold; }
+
+        /* Test 4: Same-origin iframe */
+        .iframe-container {
+            border: 3px solid #e67e22;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .iframe-container iframe {
+            width: 100%;
+            height: 350px;
+            border: none;
+        }
+
+        /* Test 5: Nested scroll containers */
+        .outer-scroll {
+            height: 350px;
+            overflow-y: auto;
+            border: 3px solid #1abc9c;
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .inner-scroll {
+            height: 200px;
+            overflow-y: auto;
+            border: 2px solid #16a085;
+            border-radius: 6px;
+            margin: 10px 0;
+            background: white;
+        }
+        .scroll-section-header {
+            background: #1abc9c;
+            color: white;
+            padding: 10px 15px;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+        }
+        .nested-item {
+            padding: 8px 15px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+        }
+        .nested-item:hover { background: #f0f0f0; }
+        .nested-item.target-nested { background: #d4edda; font-weight: bold; }
+
+        .scroll-indicator {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: monospace;
+        }
+
+    </style>
+
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "19-scroll-boundary-edge-cases",
+        "phase": "Phase 8b",
+        "title": "scroll (boundary edge cases) - Shadow DOM, Iframes, Off-Screen, overflow:clip",
+        "description": "Tests scroll container detection across boundary-crossing edge cases: off-screen containers, shadow DOM roots, same-origin iframes, overflow:clip ancestors, and nested scroll containers.",
+        "totalTests": 5,
+        "action": "scroll"
+    }
+    </script>
+</head>
+<body>
+    <div class="test-header">
+        <h1>Scroll Boundary Edge Cases</h1>
+        <p>Phase 8b: Test scroll container detection across shadow DOM, iframes, off-screen containers, overflow:clip, and nesting</p>
+    </div>
+
+    <div class="results-summary">
+        <h3>Results</h3>
+        <div class="counts">
+            <span class="count passed">Pass: <span id="passed-count">0</span></span>
+            <span class="count failed">Fail: <span id="failed-count">0</span></span>
+            <span class="count pending">Pending: <span id="pending-count">5</span></span>
+        </div>
+    </div>
+
+    <!-- ===================== SPACER CONTENT ===================== -->
+    <!-- This pushes Test 1's container off-screen to reproduce the original bug -->
+    <div class="spacer-block">
+        <h3>Page Content Area</h3>
+        <p>This section simulates a real page with content above the scroll container.<br>
+        The table below is off-screen and requires page scroll + container scroll.</p>
+    </div>
+
+    <div class="spacer-block">
+        <h3>More Page Content</h3>
+        <p>Additional content to push the table further down the page.<br>
+        The LLM must first scroll the page to find the container, then scroll within it.</p>
+    </div>
+
+    <div class="spacer-block">
+        <h3>Even More Content</h3>
+        <p>The off-screen table is below this section. A naive agent would scroll the whole window<br>
+        repeatedly instead of targeting the scroll container once it's visible.</p>
+    </div>
+
+    <!-- ===================== TEST 1: Off-Screen Scroll Container ===================== -->
+    <div class="test-case" id="test-1" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 1: Off-Screen Scroll Container <span class="edge-case-label">ORIGINAL BUG</span></h2>
+            <span class="test-case-id">boundary-01</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click the "Edit" button for the user with email "deep.target@example.com" in the table below. The table container starts off-screen (requires page scroll first, then container scroll).
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="page-scrolled">Page was scrolled to reveal the table container</li>
+                <li data-check="container-scrolled">Table container was scrolled (not more page scroll)</li>
+                <li data-check="clicked-edit-1">Clicked Edit for deep.target@example.com</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> Data table inside <code>#off-screen-table-wrapper</code> that starts below the viewport. The agent should see <code>[IN SCROLL: #off-screen-table-wrapper]</code> on the target elements and use container scroll instead of blind page scrolls.</p>
+            <div id="off-screen-table-wrapper">
+                <table>
+                    <thead>
+                        <tr><th>ID</th><th>Name</th><th>Email</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody id="off-screen-table-body">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- ===================== TEST 2: Shadow DOM Scroll Container ===================== -->
+    <div class="test-case" id="test-2" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 2: Shadow DOM Scroll Container <span class="edge-case-label">SHADOW DOM</span></h2>
+            <span class="test-case-id">boundary-02</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click on the item labeled "Shadow Target Item" inside the custom element's scrollable shadow DOM list.
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="shadow-scrolled">Shadow DOM list was scrolled to reveal the target</li>
+                <li data-check="shadow-clicked">Target item was clicked and highlighted</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> A custom element (<code>&lt;scroll-list&gt;</code>) with a scrollable list inside its shadow DOM. The scroll container detection must cross the shadow boundary via <code>getRootNode().host</code>.</p>
+            <div id="shadow-host-container">
+                <!-- Custom element will be created by JS -->
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- ===================== TEST 3: overflow:clip Boundary ===================== -->
+    <div class="test-case" id="test-3" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 3: overflow:clip Boundary <span class="edge-case-label">CSS3 CLIP</span></h2>
+            <span class="test-case-id">boundary-03</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click on "Clip Target Item" inside the list that is wrapped in an <code>overflow: clip</code> container. The inner list scrolls, but the outer container uses CSS <code>overflow: clip</code> as the clipping boundary.
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="clip-scrolled">Inner list was scrolled within the clip boundary</li>
+                <li data-check="clip-clicked">Target item was clicked and highlighted</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> An outer <code>overflow: clip</code> container wraps a scrollable inner list. The <code>getVisibleRectAfterClipping()</code> function must recognize <code>overflow: clip</code> as a clipping boundary, and <code>getScrollContainerClipInfo()</code> must report clipping against it.</p>
+            <div class="clip-outer" id="clip-outer-3">
+                <div class="clip-inner-scroll" id="clip-scroll-3">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- ===================== TEST 4: Same-Origin Iframe Scroll Container ===================== -->
+    <div class="test-case" id="test-4" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 4: Same-Origin Iframe Scroll Container <span class="edge-case-label">IFRAME</span></h2>
+            <span class="test-case-id">boundary-04</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click on "Iframe Target Item" inside a scrollable list that lives within a same-origin iframe. The scroll container detection must cross the iframe boundary.
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="iframe-scrolled">List inside iframe was scrolled to reveal the target</li>
+                <li data-check="iframe-clicked">Target item was clicked and highlighted</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> A same-origin iframe contains a scrollable list. The <code>getScrollContainerInfo()</code> function must use <code>ownerDocument.defaultView.frameElement</code> to cross the iframe boundary and continue searching for scroll ancestors in the parent document.</p>
+            <div class="iframe-container">
+                <iframe id="scroll-iframe-4" srcdoc=""></iframe>
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-4">
+            <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+        </div>
+    </div>
+
+    <!-- ===================== TEST 5: Nested Scroll Containers ===================== -->
+    <div class="test-case" id="test-5" data-status="pending">
+        <div class="test-case-header">
+            <h2 class="test-case-title">Test 5: Deeply Nested Scroll Containers <span class="edge-case-label">NESTING</span></h2>
+            <span class="test-case-id">boundary-05</span>
+        </div>
+
+        <div class="goal-section">
+            <strong>Goal:</strong> Click on "Deep Nested Target" inside an inner scrollable list, which itself is inside an outer scrollable panel. Both the inner and outer containers require scrolling.
+        </div>
+
+        <div class="verify-section">
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="outer-scrolled">Outer panel was scrolled to reveal the inner list</li>
+                <li data-check="inner-scrolled">Inner list was scrolled to reveal the target</li>
+                <li data-check="nested-clicked">Target item was clicked and highlighted</li>
+            </ul>
+        </div>
+
+        <div class="interactive-area">
+            <p><strong>Scenario:</strong> Outer scrollable panel contains multiple sections. One section has an inner scrollable list. The target item is deep in the inner list. <code>getScrollContainerInfo()</code> should report the nearest scrollable ancestor (the inner list), enabling the agent to scroll it directly.</p>
+            <div class="outer-scroll" id="outer-scroll-5">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-5">
+            <button class="status-btn reset" type="button" data-status-reset="test-5">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // ================== TEST RUNNER API ==================
+
+        function hasCompletedChecks(testId) {
+            const checks = [...document.querySelectorAll(`#${testId} [data-check]`)];
+            return checks.length > 0 && checks.every(check => check.style.textDecoration.includes('line-through'));
+        }
+
+        function canMarkPass(testId) {
+            switch (testId) {
+                case 'test-1':
+                    return !!document.querySelector('tr[data-email="deep.target@example.com"].target-row')
+                        && hasCompletedChecks(testId);
+                case 'test-2': {
+                    const host = document.querySelector('scroll-list');
+                    return !!host?.shadowRoot?.querySelector('[data-idx="25"].highlighted')
+                        && hasCompletedChecks(testId);
+                }
+                case 'test-3':
+                    return !!document.querySelector('[data-clip-idx="22"].target-clip')
+                        && hasCompletedChecks(testId);
+                case 'test-4': {
+                    const iframe = document.getElementById('scroll-iframe-4');
+                    const target = iframe?.contentDocument?.querySelector('[data-iframe-idx="24"].highlighted');
+                    return !!target && hasCompletedChecks(testId);
+                }
+                case 'test-5':
+                    return !!document.querySelector('[data-nested-idx="20"].target-nested')
+                        && hasCompletedChecks(testId);
+                default:
+                    return false;
+            }
+        }
+
+        function setTestStatus(testId, status) {
+            const testEl = document.getElementById(testId);
+            if (testEl) {
+                if (status === 'pass' && !canMarkPass(testId)) {
+                    testEl.dataset.status = 'pending';
+                    testEl.dataset.passBlocked = 'true';
+                    updateResultsSummary();
+                    return false;
+                }
+                delete testEl.dataset.passBlocked;
+                testEl.dataset.status = status;
+                updateResultsSummary();
+                return true;
+            }
+            return false;
+        }
+
+        function updateResultsSummary() {
+            const tests = Array.from(document.querySelectorAll('.test-case'));
+            const results = {
+                passed: tests.filter(test => test.dataset.status === 'pass').length,
+                failed: tests.filter(test => test.dataset.status === 'fail').length,
+                pending: tests.filter(test => !test.dataset.status || test.dataset.status === 'pending' || test.dataset.status === 'running').length
+            };
+            document.getElementById('passed-count').textContent = results.passed;
+            document.getElementById('failed-count').textContent = results.failed;
+            document.getElementById('pending-count').textContent = results.pending;
+        }
+
+        // ================== TEST 1: OFF-SCREEN TABLE ==================
+        function populateOffScreenTable() {
+            const tbody = document.getElementById('off-screen-table-body');
+            const users = [];
+            for (let i = 1; i <= 25; i++) {
+                users.push({
+                    id: i,
+                    name: i === 20 ? 'Deep Target' : `User ${i}`,
+                    email: i === 20 ? 'deep.target@example.com' : `user${i}@example.com`,
+                    isTarget: i === 20
+                });
+            }
+
+            tbody.innerHTML = users.map(u => `
+                <tr class="${u.isTarget ? '' : ''}" data-email="${u.email}">
+                    <td>${u.id}</td>
+                    <td>${u.name}</td>
+                    <td>${u.email}</td>
+                    <td><button class="action-btn" onclick="handleTest1Edit('${u.email}', ${u.isTarget})">Edit</button></td>
+                </tr>
+            `).join('');
+        }
+
+        function handleTest1Edit(email, isTarget) {
+            if (isTarget) {
+                const row = document.querySelector(`tr[data-email="${email}"]`);
+                if (row) {
+                    row.classList.add('target-row');
+                    document.querySelectorAll('#test-1 [data-check]').forEach(check => {
+                        check.style.textDecoration = 'line-through';
+                        check.style.color = '#28a745';
+                    });
+                }
+            }
+        }
+
+        // ================== TEST 2: SHADOW DOM ==================
+        function createShadowDOMList() {
+            class ScrollList extends HTMLElement {
+                constructor() {
+                    super();
+                    const shadow = this.attachShadow({ mode: 'open' });
+                    shadow.innerHTML = `
+                        <style>
+                            :host {
+                                display: block;
+                                border: 3px solid #8e44ad;
+                                border-radius: 8px;
+                                overflow: hidden;
+                            }
+                            .header {
+                                background: #8e44ad;
+                                color: white;
+                                padding: 12px 15px;
+                                font-weight: bold;
+                            }
+                            .scroll-area {
+                                height: 250px;
+                                overflow-y: auto;
+                            }
+                            .list-item {
+                                padding: 10px 15px;
+                                border-bottom: 1px solid #eee;
+                                cursor: pointer;
+                            }
+                            .list-item:hover {
+                                background: #f3e5f5;
+                            }
+                            .list-item.highlighted {
+                                background: #d4edda;
+                                font-weight: bold;
+                            }
+                        </style>
+                        <div class="header">Shadow DOM Scrollable List</div>
+                        <div class="scroll-area" id="shadow-scroll">
+                        </div>
+                    `;
+
+                    const scrollArea = shadow.getElementById('shadow-scroll');
+                    const items = [];
+                    for (let i = 1; i <= 30; i++) {
+                        const isTarget = i === 25;
+                        items.push(`<div class="list-item" data-idx="${i}" onclick="this.getRootNode().host.handleItemClick(${i}, ${isTarget})">
+                            ${isTarget ? 'Shadow Target Item' : `Shadow Item ${i}`}
+                        </div>`);
+                    }
+                    scrollArea.innerHTML = items.join('');
+                }
+
+                handleItemClick(idx, isTarget) {
+                    if (isTarget) {
+                        const item = this.shadowRoot.querySelector(`[data-idx="${idx}"]`);
+                        if (item) item.classList.add('highlighted');
+                        document.querySelectorAll('#test-2 [data-check]').forEach(check => {
+                            check.style.textDecoration = 'line-through';
+                            check.style.color = '#28a745';
+                        });
+                    }
+                }
+            }
+
+            if (!customElements.get('scroll-list')) {
+                customElements.define('scroll-list', ScrollList);
+            }
+
+            const container = document.getElementById('shadow-host-container');
+            container.innerHTML = '<scroll-list></scroll-list>';
+        }
+
+        // ================== TEST 3: OVERFLOW:CLIP ==================
+        function populateClipList() {
+            const scrollArea = document.getElementById('clip-scroll-3');
+            const items = [];
+            for (let i = 1; i <= 30; i++) {
+                const isTarget = i === 22;
+                items.push(`<div class="clip-item" data-clip-idx="${i}" onclick="handleClipClick(${i}, ${isTarget})">
+                    ${isTarget ? 'Clip Target Item' : `Clipped Item ${i}`}
+                </div>`);
+            }
+            scrollArea.innerHTML = items.join('');
+        }
+
+        function handleClipClick(idx, isTarget) {
+            if (isTarget) {
+                const item = document.querySelector(`[data-clip-idx="${idx}"]`);
+                if (item) item.classList.add('target-clip');
+                document.querySelectorAll('#test-3 [data-check]').forEach(check => {
+                    check.style.textDecoration = 'line-through';
+                    check.style.color = '#28a745';
+                });
+            }
+        }
+
+        // ================== TEST 4: SAME-ORIGIN IFRAME ==================
+        function populateIframe() {
+            const iframe = document.getElementById('scroll-iframe-4');
+            const iframeContent = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <style>
+                        * { box-sizing: border-box; }
+                        body { font-family: -apple-system, sans-serif; margin: 0; padding: 15px; background: #fdf6e3; }
+                        h3 { margin: 0 0 10px 0; color: #e67e22; }
+                        .iframe-scroll-list {
+                            height: 250px;
+                            overflow-y: auto;
+                            border: 2px solid #e67e22;
+                            border-radius: 6px;
+                            background: white;
+                        }
+                        .iframe-item {
+                            padding: 10px 15px;
+                            border-bottom: 1px solid #eee;
+                            cursor: pointer;
+                        }
+                        .iframe-item:hover { background: #fef9e7; }
+                        .iframe-item.highlighted { background: #d4edda; font-weight: bold; }
+                    </style>
+                </head>
+                <body>
+                    <h3>Inside Same-Origin Iframe</h3>
+                    <p>This scrollable list is inside an iframe. Scroll container detection must cross the iframe boundary.</p>
+                    <div class="iframe-scroll-list" id="iframe-list">
+                    </div>
+                    <script>
+                        const list = document.getElementById('iframe-list');
+                        const items = [];
+                        for (let i = 1; i <= 30; i++) {
+                            const isTarget = i === 24;
+                            items.push('<div class="iframe-item" data-iframe-idx="' + i + '" onclick="handleIframeClick(' + i + ', ' + isTarget + ')">' +
+                                (isTarget ? 'Iframe Target Item' : 'Iframe Item ' + i) +
+                            '</div>');
+                        }
+                        list.innerHTML = items.join('');
+
+                        function handleIframeClick(idx, isTarget) {
+                            if (isTarget) {
+                                const item = document.querySelector('[data-iframe-idx="' + idx + '"]');
+                                if (item) item.classList.add('highlighted');
+                                // Notify parent
+                                try {
+                                    parent.document.querySelectorAll('#test-4 [data-check]').forEach(function(check) {
+                                        check.style.textDecoration = 'line-through';
+                                        check.style.color = '#28a745';
+                                    });
+                                } catch(e) {}
+                            }
+                        }
+                    <\/script>
+</body>
+                </html>
+            `;
+            iframe.srcdoc = iframeContent;
+        }
+
+        // ================== TEST 5: NESTED SCROLL CONTAINERS ==================
+        function populateNestedScroll() {
+            const outer = document.getElementById('outer-scroll-5');
+
+            // Section 1: plain content (fills outer scroll)
+            let html = '';
+            html += '<div class="scroll-section-header">Section A: Overview</div>';
+            for (let i = 1; i <= 8; i++) {
+                html += `<div class="nested-item">Overview paragraph ${i} - Lorem ipsum dolor sit amet, consectetur adipiscing elit.</div>`;
+            }
+
+            // Section 2: plain content
+            html += '<div class="scroll-section-header">Section B: Details</div>';
+            for (let i = 1; i <= 8; i++) {
+                html += `<div class="nested-item">Detail item ${i} - Sed do eiusmod tempor incididunt ut labore.</div>`;
+            }
+
+            // Section 3: inner scrollable list (target is here)
+            html += '<div class="scroll-section-header">Section C: Inner Scrollable List</div>';
+            html += '<div class="inner-scroll" id="inner-scroll-5">';
+            for (let i = 1; i <= 25; i++) {
+                const isTarget = i === 20;
+                html += `<div class="nested-item" data-nested-idx="${i}" onclick="handleNestedClick(${i}, ${isTarget})">
+                    ${isTarget ? 'Deep Nested Target' : `Inner Item ${i}`}
+                </div>`;
+            }
+            html += '</div>';
+
+            // Section 4: more content after inner list
+            html += '<div class="scroll-section-header">Section D: Summary</div>';
+            for (let i = 1; i <= 5; i++) {
+                html += `<div class="nested-item">Summary point ${i} - Ut enim ad minim veniam.</div>`;
+            }
+
+            outer.innerHTML = html;
+        }
+
+        function handleNestedClick(idx, isTarget) {
+            if (isTarget) {
+                const item = document.querySelector(`[data-nested-idx="${idx}"]`);
+                if (item) item.classList.add('target-nested');
+                document.querySelectorAll('#test-5 [data-check]').forEach(check => {
+                    check.style.textDecoration = 'line-through';
+                    check.style.color = '#28a745';
+                });
+            }
+        }
+
+        // ================== INITIALIZATION ==================
+        document.addEventListener('DOMContentLoaded', function() {
+            populateOffScreenTable();
+            createShadowDOMList();
+            populateClipList();
+            populateIframe();
+            populateNestedScroll();
+            updateResultsSummary();
+        });
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

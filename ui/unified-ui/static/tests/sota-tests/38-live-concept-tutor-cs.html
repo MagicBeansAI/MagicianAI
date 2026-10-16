@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test: Live Concept Tutor CS Recursion</title>
+  <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+  <style>
+    .test-header {
+      background: linear-gradient(135deg, #111827, #4f46e5);
+    }
+
+    .concept-stage {
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) minmax(360px, 1fr);
+      gap: 20px;
+      min-height: 470px;
+      border-radius: 20px;
+      padding: 24px;
+      background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+    }
+
+    .code-panel,
+    .memory-panel {
+      position: relative;
+      border-radius: 18px;
+      background: #0f172a;
+      color: #e5e7eb;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+      overflow: hidden;
+    }
+
+    .memory-panel {
+      background: #ffffff;
+      color: #172033;
+      border: 1px solid rgba(79, 70, 229, 0.18);
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      font-weight: 800;
+    }
+
+    .memory-panel .panel-title {
+      border-bottom-color: rgba(79, 70, 229, 0.16);
+    }
+
+    pre {
+      margin: 0;
+      padding: 18px;
+      font: 16px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+    }
+
+    .code-line-active {
+      display: block;
+      margin: 0 -8px;
+      padding: 0 8px;
+      border-radius: 8px;
+      background: rgba(99, 102, 241, 0.32);
+      color: #ffffff;
+    }
+
+    .memory-canvas {
+      position: relative;
+      height: 390px;
+    }
+
+    .stack-frame,
+    .heap-object {
+      position: absolute;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      border: 2px solid #4f46e5;
+      background: #eef2ff;
+      color: #312e81;
+      font-weight: 850;
+      box-shadow: 0 12px 28px rgba(79, 70, 229, 0.12);
+    }
+
+    .stack-frame {
+      left: 38px;
+      width: 180px;
+      height: 64px;
+    }
+
+    .frame-1 {
+      top: 42px;
+    }
+
+    .frame-2 {
+      top: 126px;
+    }
+
+    .frame-3 {
+      top: 210px;
+    }
+
+    .heap-object {
+      right: 42px;
+      top: 126px;
+      width: 172px;
+      height: 92px;
+      border-color: #059669;
+      background: #ecfdf5;
+      color: #065f46;
+    }
+
+    .base-case {
+      position: absolute;
+      left: 52px;
+      bottom: 30px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #fff7ed;
+      color: #9a3412;
+      font-weight: 800;
+    }
+
+    .pointer-svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .pointer-line {
+      fill: none;
+      stroke: #0f766e;
+      stroke-width: 4;
+      stroke-linecap: round;
+      marker-end: url(#pointer-head);
+    }
+
+    .caption-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(99, 102, 241, 0.14);
+      color: #c7d2fe;
+      font-size: 12px;
+    }
+
+    .memory-panel .caption-chip {
+      color: #4338ca;
+    }
+
+    @media (max-width: 860px) {
+      .concept-stage {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <script type="application/json" id="test-metadata">
+  {
+    "testId": "38-live-concept-tutor-cs",
+    "phase": "Live Concept Tutor",
+    "title": "Live Concept Tutor CS Recursion",
+    "description": "Static code, stack, heap, and pointer fixture for CS tutoring overlays.",
+    "totalTests": 1
+  }
+  </script>
+  <script type="application/json" id="tutor-ground-truth">
+  {
+    "fixture_id": "38-live-concept-tutor-cs",
+    "subject": "computer_science",
+    "expected_entities": [
+      {"id": "code-recursive-call", "kind": "code_region", "text": "return n * fact(n - 1)"},
+      {"id": "stack-fact-3", "kind": "diagram_node", "bounds": [38, 42, 218, 106]},
+      {"id": "stack-fact-2", "kind": "diagram_node", "bounds": [38, 126, 218, 190]},
+      {"id": "stack-fact-1", "kind": "diagram_node", "bounds": [38, 210, 218, 274]},
+      {"id": "heap-memo", "kind": "diagram_node", "bounds": [386, 126, 558, 218]},
+      {"id": "pointer-main", "kind": "diagram_edge", "bounds": [218, 158, 386, 170]}
+    ],
+    "expected_overlay_primitives": ["code_highlight", "stack_frame", "heap_object", "pointer_arrow", "flow_edge"],
+    "acceptance": [
+      "Overlay starts from the recursive call in the code.",
+      "Overlay reveals stack frames in call order.",
+      "Overlay connects the stack to the heap/memo object through a pointer.",
+      "Explanation distinguishes call stack state from heap object state."
+    ]
+  }
+  </script>
+
+  <div class="page-shell">
+    <div class="test-header">
+      <h1>Live Concept Tutor: Recursion Stack And Heap Reference</h1>
+      <p>Ask the tutor to explain how the recursive calls create stack frames and how a shared heap object can be referenced from those frames.</p>
+      <div class="results-summary">
+        <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+        <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+        <div class="summary-pill">Pending<strong id="pending-count">1</strong></div>
+      </div>
+    </div>
+
+    <div class="fixture-grid">
+      <section class="test-case" id="test-1" data-test-id="38-cs-recursion" data-status="pending">
+        <div class="test-case-header">
+          <h2 class="test-case-title">Explain recursive calls, stack frames, and heap reference</h2>
+          <span class="test-case-id">38-cs-recursion</span>
+        </div>
+        <div class="goal-section" data-goal>
+          <strong>Goal:</strong> Use <code>@tutor</code> to explain the recursion stack and heap reference with a stepwise overlay.
+        </div>
+        <div class="workspace-card">
+          <div class="workspace-toolbar">
+            <div>
+              <h3>Runtime Snapshot</h3>
+              <p class="caption">The active recursive call creates stack frames; each frame can refer to the same heap object.</p>
+            </div>
+          </div>
+          <div class="workspace-surface concept-stage" aria-label="Code panel and runtime memory diagram">
+            <div class="code-panel" aria-label="Recursive factorial code">
+              <div class="panel-title">
+                <span>factorial.js</span>
+                <span class="caption-chip">code</span>
+              </div>
+              <pre><code>function fact(n, memo) {
+  if (n === 1) {
+    return 1;
+  }
+  memo.last = n;
+<span class="code-line-active">  return n * fact(n - 1, memo);</span>
+}
+
+fact(3, sharedMemo);</code></pre>
+            </div>
+            <div class="memory-panel" aria-label="Stack frames and heap object">
+              <div class="panel-title">
+                <span>Runtime Memory</span>
+                <span class="caption-chip">stack + heap</span>
+              </div>
+              <div class="memory-canvas">
+                <div class="stack-frame frame-1">fact(3)<br>n = 3</div>
+                <div class="stack-frame frame-2">fact(2)<br>n = 2</div>
+                <div class="stack-frame frame-3">fact(1)<br>base case</div>
+                <div class="heap-object">sharedMemo<br>{ last: 2 }</div>
+                <div class="base-case">return path unwinds after fact(1)</div>
+                <svg class="pointer-svg" viewBox="0 0 620 390" aria-hidden="true">
+                  <defs>
+                    <marker id="pointer-head" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+                      <path d="M 0 0 L 12 6 L 0 12 Z" fill="#0f766e"></path>
+                    </marker>
+                  </defs>
+                  <path class="pointer-line" d="M 218 74 C 284 74 304 166 386 166"></path>
+                  <path class="pointer-line" d="M 218 158 C 282 158 314 178 386 178"></path>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="verify-section">
+          <strong>Expected tutor evidence:</strong>
+          <ul>
+            <li data-check="code" data-check-state="pending">Recursive call in the code is grounded.</li>
+            <li data-check="stack" data-check-state="pending">Stack frames are revealed in order.</li>
+            <li data-check="heap" data-check-state="pending">Heap object and pointer relationship are explained.</li>
+          </ul>
+        </div>
+        <div class="fixture-result" aria-live="polite"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="./sota-test-harness.js"></script>
+</body>
+</html>

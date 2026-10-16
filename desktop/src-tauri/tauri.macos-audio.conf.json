@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "vosk-model": "vosk-model",
+      "../../magician-macos-audio-engine.bin": "magician-macos-audio-engine.bin"
+    }
+  }
+}

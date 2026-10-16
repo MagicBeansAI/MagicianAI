@@ -1,0 +1,12 @@
+# Stable rustfmt only. These are the options stable rustfmt honoured from the
+# previous (nightly-flavoured) config, so the tree's existing style is kept.
+# `make fmt` formats; CI runs `cargo fmt --all -- --check`.
+edition = "2021"
+max_width = 100
+tab_spaces = 4
+hard_tabs = false
+newline_style = "Unix"
+reorder_imports = true
+fn_params_layout = "Tall"
+match_block_trailing_comma = true
+use_small_heuristics = "Default"

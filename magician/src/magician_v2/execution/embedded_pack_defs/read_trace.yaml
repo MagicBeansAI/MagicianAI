@@ -1,0 +1,56 @@
+name: read_trace
+description: Load a full execution trace for one episode, including recorded provenance and output blobs.
+version: "1.1.0"
+guide: |
+  Tool name: `read_trace`
+  Inner-loop action: `read`
+
+  Use this after `list_episodes` when you need root-cause detail instead of summaries.
+  The returned trace is scoped to subordinate agents only.
+
+  This includes:
+  - episode metadata
+  - task / execution state snapshots
+  - execution events
+  - execution output blobs
+parameters:
+  - name: episode_id
+    required: true
+    param_type: string
+    description: Episode id to inspect.
+  - name: agent_id
+    param_type: string
+    description: Optional agent id to narrow the lookup inside the active harness scope.
+  - name: output_max_chars
+    param_type: integer
+    description: Maximum characters to include from each output blob. Defaults to 20000.
+    default: "20000"
+native_action_schemas:
+  read:
+    description: "Load one full execution trace for an episode through the harness trace reader."
+    parameters: [episode_id, agent_id, output_max_chars]
+    required: [episode_id]
+    parameter_overrides:
+      episode_id:
+        type: string
+        description: "Episode id to inspect."
+      agent_id:
+        type: string
+        description: "Optional agent id to narrow lookup inside the active harness scope."
+      output_max_chars:
+        type: integer
+        default: 20000
+        description: "Maximum characters to include from each output blob."
+implementation:
+  type: primitive
+  provider_name: read_trace
+  timeout_secs: 15
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+    - diagnostics
+    - trace
+  composition_category: observation
+  sandbox: none

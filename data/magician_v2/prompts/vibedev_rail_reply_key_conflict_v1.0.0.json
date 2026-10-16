@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_key_conflict",
+  "version": "1.0.0",
+  "content": [
+    "I didn't start a second build. This turn already started a VibeDev run ({existing_task_id}), and what arrived this time is a different request.",
+    "",
+    "That run is untouched and still going — nothing about it was changed to match the new request. Send the new request as a new message and it will get its own run."
+  ],
+  "variables": ["existing_task_id"],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply when a `@vibedev` turn's server-derived idempotency key is reused with a different request. The rail refuses rather than mutating the existing run, so this reply must promise exactly that: the earlier run is unchanged and still running.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` idempotency-conflict refusal.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply", "refusal", "idempotency"],
+    "estimated_tokens": 65
+  }
+}

@@ -1,0 +1,1304 @@
+{
+ "repoRoot": "/Users/owneras/Development/MagicBeans100x/magician",
+ "caveats": [
+  "All roots, excludes and evidence paths are relative to repoRoot. Evidence uses the form file:line.",
+  "skillshub contains no vendored whisper.cpp or other C/C++ headers. `git ls-files skillshub` lists no .h/.c/.cpp files. The vendored native code is elsewhere: desktop/src-tauri/vendor/vosk (libvosk.dylib, vosk_api.h), magios/Vendor/vosk, and magesp/components (a Waveshare BSP plus a patched FT5x06 touch driver, magesp/main/idf_component.yml:3-14).",
+  "The docs disagree on the remote-Linux shape. docs/components/scripts/container-runtime.md:165-171 says a container on a separate Linux host 'needs a paired, authenticated outbound desktop session ... explicit host file access ... Not implemented'. docs/ARCHITECTURE_V2.md:240-266 and desktop/src-tauri/src/edge_client.rs say the Magician Edge outbound session exists for CUA, browser.cdp and iMessage. The likely reading is that Edge capabilities are done but explicit host file grants are still pending.",
+  "Kindle has no network code yet. Its transport design is marked DESIGN ONLY (docs/plans/2026-08-28-kindle-client-auth-and-transport-design.md:3-4).",
+  "The Dockerfile copies only magician, magicutor and magic-supervisor into the image (Dockerfile:50-56). decision-engine (supervisor-managed when installed, magic-supervisor/src/main.rs:102) and the macOS Swift helpers are therefore native-only."
+ ],
+ "clients": [
+  {
+   "id": "desktop",
+   "name": "Magican Desktop (Tauri tray app)",
+   "role": "The menu-bar app on your computer. It installs or connects to the backend, shows the Orb, HUD and voice, and lends the server this computer's screen, browser, automation and Messages.",
+   "languages": [
+    "Rust",
+    "Svelte",
+    "TypeScript",
+    "JavaScript",
+    "Python",
+    "CSS"
+   ],
+   "roots": [
+    "desktop/src",
+    "desktop/src-tauri/src",
+    "desktop/src-tauri/build.rs"
+   ],
+   "exclude": [
+    "desktop/node_modules",
+    "desktop/dist",
+    "desktop/src-tauri/target",
+    "desktop/src-tauri/gen",
+    "desktop/src-tauri/vendor",
+    "desktop/src-tauri/vosk-model",
+    "desktop/src-tauri/icons",
+    "desktop/src-tauri/native-backend",
+    "desktop/public",
+    "desktop/src-tauri/src/presentation_identity_generated.rs",
+    "desktop/src/lib/presentationIdentity.generated.ts"
+   ],
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "HTTP(S) REST",
+     "route": "engine origin (default http://127.0.0.1:3002; remote origins must be https) /api/magician/v2/...",
+     "evidence": "desktop/src-tauri/src/config.rs:726-734, desktop/src-tauri/src/config.rs:806-812"
+    },
+    {
+     "to": "magician",
+     "protocol": "WebSocket (headless realtime subscription)",
+     "route": "/api/magician/v2/realtime/ws",
+     "evidence": "desktop/src-tauri/src/commands.rs:681, docs/ARCHITECTURE_V2.md:300-302, magician-bin/src/main.rs:13422"
+    },
+    {
+     "to": "magician",
+     "protocol": "WebSocket (voice control)",
+     "route": "/api/magician/v2/media/voice/{session_id}/control",
+     "evidence": "desktop/src-tauri/src/voice_note.rs:3793, magician-bin/src/main.rs:13664-13669"
+    },
+    {
+     "to": "magician (remote engine)",
+     "protocol": "outbound WSS, Magician Edge protocol (runtime-core::edge)",
+     "route": "/api/magician/v2/edge/bridge (enrolled via /api/magician/v2/devices/enrollment/exchange)",
+     "evidence": "desktop/src-tauri/src/edge_client.rs:1-6, desktop/src-tauri/src/edge_client.rs:321, desktop/src-tauri/src/edge_client.rs:420, magician-bin/src/main.rs:13683-13690, runtime-core/src/edge.rs"
+    },
+    {
+     "to": "magician -> desktop (inbound)",
+     "protocol": "HTTP host gateway, loopback only",
+     "route": "127.0.0.1:3017 /host/* (screen/capture, applescript, ax/*, speech/*, imessage/*, reminders, runtime/endpoints)",
+     "evidence": "desktop/src-tauri/src/host_gateway.rs:547-558, desktop/src-tauri/src/host_gateway.rs:626-860, magician/src/magician_v2/media_seam/host_automation.rs:6-28, Makefile:81"
+    },
+    {
+     "to": "managed container -> desktop",
+     "protocol": "private exec-pipe relay (no host listener)",
+     "route": "allowlisted /host/* and /health over runtime exec",
+     "evidence": "desktop/src-tauri/src/container_host_relay.rs:1-3, desktop/src-tauri/src/container_host_relay.rs:24-31, docs/components/scripts/container-runtime.md:173-180"
+    },
+    {
+     "to": "backend lifecycle",
+     "protocol": "launchd LaunchAgent / systemd user unit / Apple Container / Docker CLI",
+     "route": "service ai.magicbeans.magican.backend; container ports 13002->3002, 13003->3003",
+     "evidence": "desktop/src-tauri/src/native_runtime.rs:20, desktop/src-tauri/src/native_runtime.rs:630-686, desktop/src-tauri/src/container/apple.rs:886, desktop/src-tauri/src/connect_route.rs:124"
+    },
+    {
+     "to": "Cloudflare tunnel",
+     "protocol": "Cloudflare API",
+     "route": "connect.<zone> /health and /api/* rules (selects native, container or remote backend)",
+     "evidence": "desktop/src-tauri/src/connect_route.rs:1-18"
+    }
+   ],
+   "entries": [
+    {
+     "file": "desktop/src-tauri/src/main.rs",
+     "why": "process entry (fn main at :318); startup decides native service, managed container or remote engine (:870-895)"
+    },
+    {
+     "file": "desktop/src-tauri/src/setup.rs",
+     "why": "the four placement choices: NativeInstall, ManagedContainer, ExistingLocal, Remote (:67-120)"
+    },
+    {
+     "file": "desktop/src-tauri/src/host_gateway.rs",
+     "why": "loopback :3017 gateway the server calls for macOS capabilities"
+    },
+    {
+     "file": "desktop/src-tauri/src/edge_client.rs",
+     "why": "outbound Magician Edge connector to a remote engine"
+    }
+   ]
+  },
+  {
+   "id": "web-ui",
+   "name": "Unified UI (web app)",
+   "role": "The main browser app: chat, tasks, Today, settings and more. It also renders the desktop HUD.",
+   "languages": [
+    "Svelte",
+    "TypeScript",
+    "JavaScript",
+    "CSS"
+   ],
+   "roots": [
+    "ui/unified-ui/src"
+   ],
+   "exclude": [
+    "ui/unified-ui/build",
+    "ui/unified-ui/.svelte-kit",
+    "ui/unified-ui/node_modules",
+    "ui/unified-ui/static",
+    "ui/unified-ui/legacy",
+    "ui/unified-ui/$P",
+    "ui/unified-ui/.local",
+    "ui/unified-ui/src/lib/presentationIdentity.generated.ts",
+    "ui/unified-ui/src/lib/app-platform/AppContractFixtures.generated.ts",
+    "ui/unified-ui/src/lib/app-platform/AppContractFixtures.generated.test.ts",
+    "**/*.test.ts"
+   ],
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "HTTP REST (same origin)",
+     "route": "/api/magician/v2/... and /api/magician/v3/...",
+     "evidence": "magician-bin/src/main.rs:12073, magician-bin/src/main.rs:14575, ui/unified-ui/src/lib/monitors/api.ts:37"
+    },
+    {
+     "to": "magician",
+     "protocol": "WebSocket (single shared event hub)",
+     "route": "/api/magician/v2/realtime/ws",
+     "evidence": "ui/unified-ui/src/lib/realtime/eventHub.ts:9, ui/unified-ui/src/lib/realtime/eventHub.ts:37"
+    },
+    {
+     "to": "magician",
+     "protocol": "WebSocket (voice control)",
+     "route": "/api/magician/v2/media/voice/{voice_session_id}/control",
+     "evidence": "ui/unified-ui/src/lib/media/voice/realtimeVoiceClient.ts:5"
+    },
+    {
+     "to": "served by magician",
+     "protocol": "static files",
+     "route": ":3002 / (FrontendDelivery::Static; container serves /app/ui)",
+     "evidence": "magician-bin/src/main.rs:6856-6864, magician-bin/src/main.rs:14914-14920, Dockerfile:44, Dockerfile:246, Dockerfile:275"
+    },
+    {
+     "to": "Vite dev server -> magician",
+     "protocol": "HTTP proxy",
+     "route": "localhost:5173 proxies /api to :3002",
+     "evidence": "ui/unified-ui/vite.config.ts:12, ui/unified-ui/vite.config.ts:321-324, Makefile:1154-1163"
+    },
+    {
+     "to": "phone browser",
+     "protocol": "HTTPS via Cloudflare Tunnel plus Access",
+     "route": "https://ui.<zone>/ -> :5173",
+     "evidence": "Makefile:1194-1206, docs/quickstart.md:220-222"
+    }
+   ],
+   "entries": [
+    {
+     "file": "ui/unified-ui/src/routes/+layout.svelte",
+     "why": "root layout"
+    },
+    {
+     "file": "ui/unified-ui/src/routes/(app)/chat/+page.svelte",
+     "why": "chat surface"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/realtime/eventHub.ts",
+     "why": "owner of the realtime socket"
+    },
+    {
+     "file": "ui/unified-ui/src/routes/hud/+page.svelte",
+     "why": "HUD route loaded by the desktop overlay (desktop/src-tauri/src/overlay.rs:22-32)"
+    }
+   ]
+  },
+  {
+   "id": "ios",
+   "name": "Magios (Magican for iPhone)",
+   "role": "The iPhone app with chat, Today, Attention and voice, plus Siri, widgets, a keyboard, Share and Action extensions, and screen broadcast.",
+   "languages": [
+    "Swift"
+   ],
+   "roots": [
+    "magios/Magios",
+    "magios/Shared",
+    "magios/MagiosAction",
+    "magios/MagiosBroadcast",
+    "magios/MagiosIntents",
+    "magios/MagiosKeyboard",
+    "magios/MagiosNotificationService",
+    "magios/MagiosShare",
+    "magios/MagiosWidgets"
+   ],
+   "exclude": [
+    "magios/Vendor",
+    "magios/Magios.xcodeproj",
+    "magios/Magios/Resources/vosk-model",
+    "magios/Magios/Fonts",
+    "magios/Magios/Assets.xcassets",
+    "magios/Shared/ProductIdentity.generated.swift",
+    "magios/Shared/AppContractFixtures.generated.swift",
+    "magios/MagiosTests",
+    "magios/MagiosUITests",
+    "magios/AppContractFixtureTests",
+    "magios/ThinkingMapCanonicalTests",
+    "**/DerivedData"
+   ],
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "HTTPS REST with CF-Access service headers plus a per-device token",
+     "route": "connect.<zone> (Remote) or the server-advertised LAN address (Same Wi-Fi) /api/magician/v2/...",
+     "evidence": "magios/Shared/MagicianAccess.swift:303-309, magios/Shared/MagicianAccess.swift:579-580, docs/setup/mobile.md:141-153"
+    },
+    {
+     "to": "magician",
+     "protocol": "HTTPS enrollment (QR)",
+     "route": "/api/magician/v2/devices/enrollment/exchange",
+     "evidence": "magios/Magios/SettingsView.swift:1028, magician-bin/src/main.rs:13712-13724"
+    },
+    {
+     "to": "magician",
+     "protocol": "WebSocket",
+     "route": "/api/magician/v2/realtime/ws",
+     "evidence": "magios/Magios/RealtimeHub.swift:426"
+    },
+    {
+     "to": "magician",
+     "protocol": "REST plus WebSocket (realtime voice)",
+     "route": "POST /api/magician/v2/media/sessions; wss /api/magician/v2/media/voice/{id}/control",
+     "evidence": "magios/Magios/RealtimeVoiceClient.swift:10-13, magios/Magios/RealtimeVoiceClient.swift:429, magios/Magios/RealtimeVoiceClient.swift:495"
+    }
+   ],
+   "entries": [
+    {
+     "file": "magios/Magios/App.swift",
+     "why": "@main MagiosApp (:6-7)"
+    },
+    {
+     "file": "magios/Shared/MagicianAccess.swift",
+     "why": "connection profiles, origin and credentials"
+    },
+    {
+     "file": "magios/Magios/RealtimeHub.swift",
+     "why": "shared realtime socket"
+    },
+    {
+     "file": "magios/Magios/RealtimeVoiceClient.swift",
+     "why": "voice call client"
+    }
+   ]
+  },
+  {
+   "id": "android",
+   "name": "Magdroid (Magican for Android)",
+   "role": "The Android app with chat, tasks, notes and voice. App Pilot lets the agent observe and operate apps on the phone.",
+   "languages": [
+    "Kotlin",
+    "C++",
+    "Protobuf"
+   ],
+   "roots": [
+    "magdroid/android/app/src/main",
+    "magdroid/android/bridge/src/main",
+    "magdroid/android/proto"
+   ],
+   "exclude": [
+    "magdroid/android/app/build",
+    "magdroid/android/bridge/build",
+    "magdroid/android/bridge/.cxx",
+    "magdroid/android/.gradle",
+    "magdroid/android/.kotlin",
+    "magdroid/android/gradle",
+    "magdroid/android/local.properties",
+    "magdroid/android/app/google-services.json",
+    "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/identity/ProductIdentity.generated.kt",
+    "magdroid/android/*/src/test",
+    "magdroid/android/*/src/androidTest"
+   ],
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "WebSocket",
+     "route": "/api/magician/v2/realtime/ws",
+     "evidence": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/realtime/HubProtocol.kt:137"
+    },
+    {
+     "to": "magician",
+     "protocol": "WebSocket (voice control)",
+     "route": "/api/magician/v2/media/voice/{id}/control",
+     "evidence": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/voice/RealtimeVoiceSession.kt:777"
+    },
+    {
+     "to": "magician",
+     "protocol": "outbound WSS carrying MCP JSON-RPC (phone is the tools-only MCP server), attested",
+     "route": "/api/magician/v2/devices/bridge",
+     "evidence": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/access/MagicianAccess.kt:470-479, magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/bridge/MagicianBridgeClient.kt:128-151, docs/components/magician/device-bridge.md:1-21, magician-bin/src/main.rs:13675-13681"
+    },
+    {
+     "to": "magician",
+     "protocol": "HTTPS enrollment and REST",
+     "route": "/api/magician/v2/devices/enrollment/exchange; /media/voice/requests...",
+     "evidence": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/access/DeviceEnrollment.kt:414, magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/voice/ConcurrentVoice.kt:141-199"
+    }
+   ],
+   "entries": [
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/MainActivity.kt",
+     "why": "app entry activity"
+    },
+    {
+     "file": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/access/MagicianAccess.kt",
+     "why": "origin and credential handling"
+    },
+    {
+     "file": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/bridge/MagicianBridgeClient.kt",
+     "why": "App Pilot device bridge socket"
+    },
+    {
+     "file": "magdroid/android/proto/neuralbridge.proto",
+     "why": "UI-automation command envelope"
+    }
+   ]
+  },
+  {
+   "id": "esp32",
+   "name": "magesp (ESP32-C6 voice terminal)",
+   "role": "A small physical gadget with a touchscreen. Hold a button, talk, and hear Magican answer.",
+   "languages": [
+    "C",
+    "CMake"
+   ],
+   "roots": [
+    "magesp/main",
+    "magesp/tests",
+    "magesp/tools"
+   ],
+   "exclude": [
+    "magesp/components",
+    "magesp/build",
+    "magesp/managed_components",
+    "magesp/sdkconfig",
+    "magesp/sdkconfig.old"
+   ],
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "HTTPS REST (CF-Access plus X-Magician-Device-Id/token headers)",
+     "route": "POST /api/magician/v2/media/voice-notes, /media/voice-notes/events, /media/tts/synthesize",
+     "evidence": "magesp/main/voice.c:23-27, magesp/main/voice.c:190, magesp/main/voice.c:384, magesp/main/voice.c:603, magesp/main/net.c:845-851"
+    },
+    {
+     "to": "magician",
+     "protocol": "REST plus WSS (realtime voice)",
+     "route": "/api/magician/v2/media/sessions; wss /api/magician/v2/media/voice/%s/control",
+     "evidence": "magesp/main/realtime.c:22-23, magesp/main/realtime.c:392-413"
+    },
+    {
+     "to": "magician",
+     "protocol": "HTTPS pairing",
+     "route": "POST /api/magician/v2/devices/pair; GET /devices/me",
+     "evidence": "magesp/main/net.c:402-404, magician-bin/src/main.rs:13707, magician-bin/src/main.rs:13741"
+    }
+   ],
+   "entries": [
+    {
+     "file": "magesp/main/maze.c",
+     "why": "app_main (:1732) and UI pages"
+    },
+    {
+     "file": "magesp/main/voice.c",
+     "why": "push-to-talk voice-note loop"
+    },
+    {
+     "file": "magesp/main/realtime.c",
+     "why": "realtime voice websocket"
+    },
+    {
+     "file": "magesp/main/net.c",
+     "why": "Wi-Fi, captive portal, auth headers"
+    }
+   ]
+  },
+  {
+   "id": "kindle",
+   "name": "magkindle (Kindle Paperwhite thin client)",
+   "role": "An experimental E Ink screen client for a jailbroken Kindle. It currently draws and reads touch only and is not yet connected to the server.",
+   "languages": [
+    "Rust",
+    "Shell"
+   ],
+   "roots": [
+    "kindle/src",
+    "kindle/device",
+    "kindle/deploy.sh",
+    "kindle/keepalive.sh"
+   ],
+   "exclude": [
+    "kindle/target"
+   ],
+   "connects": [
+    {
+     "to": "magician (planned)",
+     "protocol": "HTTPS with paired-device headers (design only)",
+     "route": "POST /api/magician/v2/devices/pair; X-Magician-Device-Id / X-Magician-Device-Token",
+     "evidence": "docs/plans/2026-08-28-kindle-client-auth-and-transport-design.md:3-4, docs/plans/2026-08-28-kindle-client-auth-and-transport-design.md:17-30, kindle/README.md:1-15"
+    }
+   ],
+   "entries": [
+    {
+     "file": "kindle/src/main.rs",
+     "why": "modes pattern/touch/paint/text (:38-54)"
+    },
+    {
+     "file": "kindle/src/fb.rs",
+     "why": "E Ink framebuffer"
+    },
+    {
+     "file": "kindle/deploy.sh",
+     "why": "build and deploy over SSH"
+    }
+   ]
+  },
+  {
+   "id": "macos-audio-engine",
+   "name": "macOS Audio Engine (FluidAudio sidecar)",
+   "role": "A Mac helper that runs on-device speech AI (voice detection, transcription, speaker separation, text-to-speech) for the server.",
+   "languages": [
+    "Swift"
+   ],
+   "roots": [
+    "native/macos-audio-engine/Sources",
+    "native/macos-audio-engine/Tests"
+   ],
+   "exclude": [
+    "native/macos-audio-engine/.build",
+    "native/macos-audio-engine/Package.resolved",
+    "magician-macos-audio-engine.bin"
+   ],
+   "connects": [
+    {
+     "to": "magician (spawned by it)",
+     "protocol": "loopback HTTP plus WebSocket with an ephemeral token",
+     "route": "default http://127.0.0.1:3029; /v1/audio/stream, /v1/audio/transcriptions, /v1/audio/speech",
+     "evidence": "magician-media/src/media_rails/fluid_audio/engine_manager.rs:32, magician-media/src/media_rails/fluid_audio/engine_manager.rs:663-666, native/macos-audio-engine/Sources/MagicianMacAudioEngine/EngineConfiguration.swift:105-118, native/macos-audio-engine/README.md:10-29"
+    }
+   ],
+   "entries": [
+    {
+     "file": "native/macos-audio-engine/Sources/MagicianMacAudioEngine/AppMain.swift",
+     "why": "process entry"
+    },
+    {
+     "file": "native/macos-audio-engine/Sources/MagicianMacAudioEngine/Server.swift",
+     "why": "Hummingbird HTTP/WS server"
+    },
+    {
+     "file": "native/macos-audio-engine/Sources/MagicianMacAudioEngine/EngineRuntime.swift",
+     "why": "model residency and inference"
+    }
+   ]
+  },
+  {
+   "id": "macos-speech-helper",
+   "name": "macOS Speech Helper",
+   "role": "A small Mac helper that uses Apple's built-in speech recognition and voices.",
+   "languages": [
+    "Swift"
+   ],
+   "roots": [
+    "native/macos-speech-helper/Sources/MagicianMacSpeechHelper"
+   ],
+   "exclude": [
+    "native/macos-speech-helper/.build",
+    "magician-macos-speech-helper.bin"
+   ],
+   "connects": [
+    {
+     "to": "desktop host gateway (subprocess)",
+     "protocol": "CLI subprocess (status/authorize/transcribe/synthesize)",
+     "route": "backs POST /host/speech/transcribe and /host/speech/synthesize",
+     "evidence": "native/macos-speech-helper/README.md:9-13, desktop/src-tauri/src/host_gateway.rs:668-680, desktop/src-tauri/src/host_gateway.rs:4269"
+    },
+    {
+     "to": "magician media rails (subprocess)",
+     "protocol": "CLI subprocess",
+     "route": "macos_tts provider",
+     "evidence": "magician-media/src/media_rails/providers/macos_tts.rs:4"
+    }
+   ],
+   "entries": [
+    {
+     "file": "native/macos-speech-helper/Sources/MagicianMacSpeechHelper/main.swift",
+     "why": "helper entry"
+    },
+    {
+     "file": "native/macos-speech-helper/Package.swift",
+     "why": "two executables with embedded Info.plists"
+    }
+   ]
+  },
+  {
+   "id": "macos-meet-audio",
+   "name": "macOS Meet Audio tap",
+   "role": "A Mac helper that listens to a meeting app's audio so the agent can follow the call.",
+   "languages": [
+    "Swift"
+   ],
+   "roots": [
+    "native/macos-speech-helper/Sources/MagicianMacMeetAudio"
+   ],
+   "exclude": [
+    "native/macos-speech-helper/.build",
+    "magician-macos-meet-audio.bin"
+   ],
+   "connects": [
+    {
+     "to": "magician meeting bridge (subprocess)",
+     "protocol": "subprocess streaming PCM16 or transcripts over stdio (ScreenCaptureKit tap)",
+     "route": "spawned as ./magician-macos-meet-audio.bin",
+     "evidence": "magician/src/magician_v2/media_seam/meeting_bridge_macos.rs:5, magician/src/magician_v2/media_seam/meeting_bridge_macos.rs:32, native/macos-speech-helper/README.md:14-16"
+    }
+   ],
+   "entries": [
+    {
+     "file": "native/macos-speech-helper/Sources/MagicianMacMeetAudio/main.swift",
+     "why": "helper entry"
+    }
+   ]
+  },
+  {
+   "id": "chrome-extension",
+   "name": "Magican Chrome extension (Magicutor bridge)",
+   "role": "A browser extension that lets the agent drive your real, signed-in Chrome and offers in-page assist.",
+   "languages": [
+    "JavaScript",
+    "HTML",
+    "CSS"
+   ],
+   "roots": [
+    "magicutor/extension"
+   ],
+   "exclude": [
+    "magicutor/extension/icons",
+    "magicutor/extension/*.test.cjs"
+   ],
+   "connects": [
+    {
+     "to": "magicutor",
+     "protocol": "WebSocket (native bridge)",
+     "route": "ws://127.0.0.1:3003/bridge/native",
+     "evidence": "magicutor/extension/config.js:7-8, magicutor/src/server/routes.rs:62, magicutor/src/lib.rs:102-123"
+    },
+    {
+     "to": "magician",
+     "protocol": "HTTP REST",
+     "route": "http://127.0.0.1:3002/api/magician/v2 and /health",
+     "evidence": "magicutor/extension/config.js:5-6"
+    },
+    {
+     "to": "desktop host gateway",
+     "protocol": "HTTP discovery",
+     "route": "GET 127.0.0.1:3017/host/runtime/endpoints",
+     "evidence": "desktop/src-tauri/src/host_gateway.rs:660, docs/components/desktop/README.md:262-264, docs/components/desktop/README.md:479"
+    }
+   ],
+   "entries": [
+    {
+     "file": "magicutor/extension/manifest.json",
+     "why": "MV3 manifest named Magican"
+    },
+    {
+     "file": "magicutor/extension/background.js",
+     "why": "service worker"
+    },
+    {
+     "file": "magicutor/extension/bridge.js",
+     "why": "bridge socket to Magicutor"
+    },
+    {
+     "file": "magicutor/extension/config.js",
+     "why": "default endpoints"
+    }
+   ]
+  },
+  {
+   "id": "channel-bots",
+   "name": "Channel bots (Telegram, Telegram-self, WhatsApp, Gmail, Kapso, AgentMail) and bot SDK",
+   "role": "Background helpers that connect messaging apps and email to the agent, one process per platform.",
+   "languages": [
+    "TypeScript"
+   ],
+   "roots": [
+    "skillshub/bots/sdk/src",
+    "skillshub/bots/telegram/src",
+    "skillshub/bots/telegram-self/src",
+    "skillshub/bots/whatsapp/src",
+    "skillshub/bots/gmail/src",
+    "skillshub/bots/kapso/src",
+    "skillshub/bots/agentmail/src",
+    "skillshub/bots/build_bundle.mjs"
+   ],
+   "exclude": [
+    "skillshub/bots/*/dist",
+    "skillshub/bots/*/test",
+    "skillshub/node_modules",
+    "skillshub/bots/node_modules"
+   ],
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "HTTP REST plus WebSocket",
+     "route": "MAGICIAN_URL (default http://127.0.0.1:3002) /api/magician/v2/chat/enroll, /chat/sessions..., /auth/session, /api/magician/v2/realtime/ws",
+     "evidence": "skillshub/bots/telegram/src/index.ts:77, skillshub/bots/kapso/src/index.ts:56, skillshub/bots/sdk/src/magician-client.ts:91, skillshub/bots/sdk/src/magician-client.ts:263-274"
+    },
+    {
+     "to": "magician (control plane)",
+     "protocol": "process management via the bots API",
+     "route": "/api/magician/v2/bots/{name}/start|stop|restart|logs|qr",
+     "evidence": "magician-api/src/bot_api.rs:1-20, magician/src/config.rs:4751-4774, Makefile:2856-2857"
+    },
+    {
+     "to": "external webhooks -> bot",
+     "protocol": "HTTP webhook receiver",
+     "route": "kapso :3010, agentmail :3011 (public webhook.<zone>)",
+     "evidence": "skillshub/bots/kapso/src/index.ts:51, skillshub/bots/agentmail/src/index.ts:49, scripts/ensure-magician-tunnel.sh:11-14, scripts/ensure-machine-tunnel.sh:14"
+    }
+   ],
+   "entries": [
+    {
+     "file": "skillshub/bots/sdk/src/channel-runtime.ts",
+     "why": "shared ChannelRuntime"
+    },
+    {
+     "file": "skillshub/bots/sdk/src/magician-client.ts",
+     "why": "Magician HTTP/WS client"
+    },
+    {
+     "file": "skillshub/bots/telegram/src/index.ts",
+     "why": "representative bot entry"
+    },
+    {
+     "file": "skillshub/bots/README.md",
+     "why": "process topology, one daemon per bot (:20-26)"
+    }
+   ]
+  },
+  {
+   "id": "apps-sdk",
+   "name": "@magician/apps TypeScript SDK",
+   "role": "A developer library for building apps on top of Magican's app platform.",
+   "languages": [
+    "TypeScript"
+   ],
+   "roots": [
+    "sdk/typescript/src",
+    "sdk/typescript/bin"
+   ],
+   "exclude": [
+    "sdk/typescript/dist",
+    "sdk/typescript/node_modules",
+    "sdk/typescript/src/generated",
+    "sdk/typescript/test"
+   ],
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "HTTP REST (supported-public Apps contract)",
+     "route": "/api/magician/v2/apps/...",
+     "evidence": "sdk/typescript/src/generated/public-contract.ts:8, sdk/typescript/src/client.ts:1157"
+    }
+   ],
+   "entries": [
+    {
+     "file": "sdk/typescript/src/client.ts",
+     "why": "typed client"
+    },
+    {
+     "file": "sdk/typescript/src/index.ts",
+     "why": "package exports"
+    }
+   ]
+  },
+  {
+   "id": "setup-wizard",
+   "name": "magician-setup (guided TUI installer)",
+   "role": "A terminal setup wizard. It asks what you want Magican to do and installs the pieces that requires.",
+   "languages": [
+    "Rust"
+   ],
+   "roots": [
+    "magician-setup/src"
+   ],
+   "exclude": [
+    "target"
+   ],
+   "connects": [
+    {
+     "to": "local machine only",
+     "protocol": "local probes and install steps (no server API)",
+     "route": "n/a",
+     "evidence": "magician-setup/src/main.rs:1-9, Makefile:1382-1384, docs/quickstart.md:33-52"
+    }
+   ],
+   "entries": [
+    {
+     "file": "magician-setup/src/main.rs",
+     "why": "wizard entry"
+    }
+   ]
+  },
+  {
+   "id": "supervisor-ctl",
+   "name": "supervisor-ctl",
+   "role": "A command-line remote control to start, stop and check the backend services.",
+   "languages": [
+    "Bash"
+   ],
+   "roots": [
+    "supervisor-ctl"
+   ],
+   "exclude": [],
+   "connects": [
+    {
+     "to": "magic-supervisor",
+     "protocol": "raw TCP JSON command (nc)",
+     "route": "127.0.0.1:8081",
+     "evidence": "supervisor-ctl:4-5, supervisor-ctl:49, magic-supervisor/src/main.rs:1149"
+    }
+   ],
+   "entries": [
+    {
+     "file": "supervisor-ctl",
+     "why": "script"
+    },
+    {
+     "file": "magic-supervisor/src/main.rs",
+     "why": "control listener"
+    }
+   ]
+  },
+  {
+   "id": "external-harness",
+   "name": "External MCP harness (e.g. a coding agent) via Plane",
+   "role": "Any outside AI agent tool that can use Magican's governed capabilities through an MCP connection.",
+   "languages": [],
+   "roots": [],
+   "exclude": [],
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "MCP over HTTP (POST, SSE GET, DELETE) with bearer terminal grant",
+     "route": "/api/magician/v2/plane/mcp",
+     "evidence": "magician-bin/src/main.rs:13135-13137, README.md:234-242"
+    }
+   ],
+   "entries": [
+    {
+     "file": "README.md",
+     "why": "Plane usage (:234-246)"
+    }
+   ]
+  },
+  {
+   "id": "skills-hub",
+   "name": "Skills hub",
+   "role": "The skill packages Magician installs and runs as tools: Python, TypeScript, JavaScript and shell scripts, one folder per skill.",
+   "languages": [
+    "Python",
+    "TypeScript",
+    "JavaScript",
+    "Shell"
+   ],
+   "roots": [
+    "skillshub"
+   ],
+   "exclude": [
+    "skillshub/bots",
+    "skillshub/node_modules",
+    "skillshub/.node",
+    "**/dist",
+    "**/__pycache__"
+   ],
+   "tracked": true,
+   "connects": [
+    {
+     "to": "magician",
+     "protocol": "installed into each scope's skills folder; run as governed tool processes",
+     "route": "tool runtime (SKILL.md runtime contracts)",
+     "evidence": "README.md:331; docs/ARCHITECTURE_V2.md:632-637; skillshub/music-generation-via-minimax/SKILL.md"
+    }
+   ],
+   "entries": []
+  },
+  {
+   "id": "codegraph",
+   "name": "Codegraph",
+   "role": "The code-graph index and MCP server that answers questions about this codebase for people and coding agents.",
+   "languages": [
+    "Python"
+   ],
+   "roots": [
+    "docs/codegraph",
+    "scripts/codegraph_ext",
+    "scripts/generate_code_graph.py",
+    "scripts/query_code_graph.py",
+    "scripts/audit_code_graph.py",
+    "scripts/graph_index_stamp.py",
+    "scripts/codegraph_ext_cli.py"
+   ],
+   "exclude": [
+    "**/__pycache__",
+    "docs/codegraph/*.json",
+    "docs/codegraph/*.html"
+   ],
+   "tracked": true,
+   "connects": [
+    {
+     "to": "repository",
+     "protocol": "reads the source tree; serves MCP over stdio and a graph explorer on :8077",
+     "route": "python3 docs/codegraph/mcp_server.py; make graph-index / graph-serve",
+     "evidence": ".mcp.json; Makefile graph-index / graph-serve targets"
+    }
+   ],
+   "entries": []
+  }
+ ],
+ "setups": [
+  {
+   "id": "mac-desktop-native-services",
+   "name": "Magican installs native services on the Mac",
+   "summary": "This is the product path for a single Mac, and what make install, the setup wizard and the desktop app's Install native services here all set up. From a source checkout, one shared installer builds Magician, installs a checked package under ~/.magician, seeds the data root without overwriting anything, registers the supervisor as the per-user LaunchAgent ai.magicbeans.magican.backend, and waits until Magician, Magicutor, Pi, the memory model and the desktop gateway are ready. Desktop can also install a prebuilt checksummed package, and on later launches it makes sure the service is started. Desktop-managed native Magician listens on the LAN by default so phones can use the Same Wi-Fi route. This option is enabled only on macOS; the code also has a systemd user unit and a Windows logon task, but the option is shown as disabled on Linux and Windows.",
+   "placement": {
+    "magic-supervisor / magician / magicutor": "Mac, per-user LaunchAgent ai.magicbeans.magican.backend",
+    "installed software": "Mac, ~/.magician (MAGICIAN_PREFIX), kept apart from the data",
+    "desktop app + host gateway": "Mac, 127.0.0.1:3017",
+    "ollama": "Mac, native (the memory embedder stays resident)",
+    "runtime data": "Mac, ~/MagicianNotes (or the chosen root)"
+   },
+   "paths": [
+    {
+     "from": "desktop",
+     "to": "magician",
+     "via": "http://127.0.0.1:3002",
+     "evidence": "desktop/src-tauri/src/config.rs:733"
+    },
+    {
+     "from": "phone (Same Wi-Fi)",
+     "to": "magician",
+     "via": "server-advertised private LAN address",
+     "evidence": "docs/ARCHITECTURE_V2.md:213-218, docs/setup/mobile.md:143-146"
+    }
+   ],
+   "desktopRole": "Installer and lifecycle owner of the native backend (launchctl), plus the host gateway, which also reports permission grants to terminal setup, and all native surfaces.",
+   "setupCommands": [
+    "make install",
+    "make install-source",
+    "make setup-wizard",
+    "Desktop: Install native services here (MAGICIAN_SOURCE_DIR selects the checkout)",
+    "make package-release",
+    "MAGICIAN_PACKAGE=<dir|tarball> (prebuilt package for Desktop)",
+    "MAGICIAN_INSTALL_MODE=user MAGICIAN_RELEASE_URL=<dmg> bash scripts/install.sh"
+   ],
+   "evidence": [
+    "scripts/install-source-checkout.sh",
+    "scripts/native-runtime-service.py",
+    "magician-components/src/source_install.rs",
+    "desktop/src-tauri/src/setup.rs (execute_native_setup)",
+    "desktop/src-tauri/src/native_runtime.rs (prepare_source_install, prepare_runtime_and_start)",
+    "docs/quickstart.md (macOS source installation)",
+    "docs/components/scripts/README.md (make install-source)",
+    "desktop/src-tauri/src/setup.rs:67-96",
+    "desktop/src-tauri/src/native_runtime.rs:1-20",
+    "desktop/src-tauri/src/native_runtime.rs:630-686",
+    "desktop/src-tauri/src/native_runtime.rs:946-958",
+    "desktop/src-tauri/src/main.rs:870-883",
+    "docs/components/desktop/README.md:36-43",
+    "Makefile:5111-5137"
+   ]
+  },
+  {
+   "id": "mac-native-dev",
+   "name": "Everything native on one Mac (developer stack)",
+   "summary": "The foreground developer flow: `make run-all` runs every piece natively from your terminal. magic-supervisor runs natively on the Mac and supervises magician (:3002) and magicutor (:3003). Vite serves the unified UI on :5173, proxied to :3002. The debug desktop tray binds the host gateway on 127.0.0.1:3017 before the supervisor starts, so provider discovery can reach it. Ollama runs natively on :11434 and :11435. `make run-all` also starts the persistent Cloudflare tunnel and the code-graph server. On macOS, `make install` now installs the native login service instead (the next setup), so stop that service before running this flow.",
+   "placement": {
+    "magic-supervisor": "Mac, native (control port 127.0.0.1:8081)",
+    "magician": "Mac, native :3002",
+    "magicutor": "Mac, native :3003",
+    "decision-engine": "Mac, native, supervisor-managed when the binary is installed",
+    "unified-ui": "Mac, Vite dev server :5173",
+    "desktop tray + host gateway": "Mac, native, 127.0.0.1:3017",
+    "macos helpers (audio engine, speech, meet audio)": "Mac, spawned on demand",
+    "ollama": "Mac, native :11434 (generation) / :11435 (embeddings)",
+    "channel bots": "Mac, daemons spawned by the runtime",
+    "chrome extension": "Mac Chrome",
+    "cloudflared": "Mac, brew service (optional)"
+   },
+   "paths": [
+    {
+     "from": "browser",
+     "to": "magician",
+     "via": "http://localhost:5173 -> Vite proxy -> :3002",
+     "evidence": "ui/unified-ui/vite.config.ts:12, ui/unified-ui/vite.config.ts:321-324"
+    },
+    {
+     "from": "magician",
+     "to": "desktop host gateway",
+     "via": "MAGICIAN_HOST_GATEWAY_URL=http://127.0.0.1:3017",
+     "evidence": "Makefile:81, Makefile:2718-2727"
+    },
+    {
+     "from": "chrome extension",
+     "to": "magicutor",
+     "via": "ws://127.0.0.1:3003/bridge/native",
+     "evidence": "magicutor/extension/config.js:8"
+    },
+    {
+     "from": "desktop",
+     "to": "magician",
+     "via": "http://127.0.0.1:3002 REST plus /api/magician/v2/realtime/ws",
+     "evidence": "desktop/src-tauri/src/config.rs:726-734, desktop/src-tauri/src/commands.rs:681"
+    }
+   ],
+   "desktopRole": "Host-side companion. It provides the 3017 gateway (screen capture, AppleScript, AX/CUA relay, speech, reminders, iMessage), plus the tray, Orb, HUD, voice wake and Settings. It does not own the backend lifecycle in this flow.",
+   "setupCommands": [
+    "launchctl bootout gui/$(id -u)/ai.magicbeans.magican.backend (stop the installed service first)",
+    "make setup-all",
+    "make build-all-debug",
+    "make setup-identity",
+    "make setup-identity",
+    "make run-all",
+    "make run-supervisor",
+    "make run-ui-dev",
+    "make run-desktop-tray",
+    "make setup-bots",
+    "make setup-cua-driver ARGS=--start",
+    "make stop-all"
+   ],
+   "evidence": [
+    "docs/quickstart.md:11-31",
+    "docs/quickstart.md:63-69",
+    "docs/quickstart.md:275-288",
+    "docs/quickstart.md:489-512",
+    "Makefile:2735-2797",
+    "docs/ARCHITECTURE_V2.md:206-212",
+    "docs/ARCHITECTURE_V2.md:1295-1298",
+    "README.md:125-139",
+    "scripts/install.sh:408-426"
+   ]
+  },
+  {
+   "id": "mac-container",
+   "name": "Backend in a Linux container on the Mac",
+   "summary": "magician, magicutor and magic-supervisor run in the debian-slim OCI image. On macOS 26+ Apple Silicon this uses Apple's container runtime; otherwise it uses Docker or Colima. Host services stay native: Ollama, the desktop tray and gateway, and Chrome. The host data root is bind-mounted as /data, and the image serves the built UI from /app/ui on :3002. There are two owners. (a) The composed installer (FLOW=container) publishes 3002 and 3003 and sets MAGICIAN_HOST_GATEWAY_URL to host.docker.internal:3017 or host.container.internal:3017. It also stops host-native magicutor so the extension dials the container's :3003. (b) The Desktop option 'Install and manage a local container' publishes 13002->3002 and 13003->3003, and reaches the native gateway through a private exec-pipe relay rather than host-alias forwarding. A third variant, 'Connect to a local container', has Desktop attach to an existing loopback container without owning its lifecycle.",
+   "placement": {
+    "magic-supervisor / magician / magicutor / channel bots / skill tools": "Linux container on the Mac (Apple Container VM or Docker/Colima VM)",
+    "runtime data": "Mac directory bind-mounted at /data",
+    "desktop app + host gateway": "Mac, native 127.0.0.1:3017",
+    "ollama": "Mac, native :11434 / :11435",
+    "chrome extension": "Mac Chrome, dialing the container's published :3003",
+    "decision-engine / macOS Swift helpers": "not in the image (Dockerfile copies only three binaries)"
+   },
+   "paths": [
+    {
+     "from": "container magician",
+     "to": "desktop host gateway",
+     "via": "host.docker.internal:3017 or host.container.internal:3017 (installer); exec relay (Desktop-managed)",
+     "evidence": "scripts/install.sh:485-498, scripts/install.sh:506-514, desktop/src-tauri/src/container_host_relay.rs:1-3, docs/components/scripts/container-runtime.md:173-180"
+    },
+    {
+     "from": "desktop / browser",
+     "to": "container magician",
+     "via": "127.0.0.1:3002 (installer) or 127.0.0.1:13002 (Desktop-managed)",
+     "evidence": "scripts/install.sh:496, desktop/src-tauri/src/container/apple.rs:886, docs/components/desktop/README.md:487-489"
+    },
+    {
+     "from": "chrome extension",
+     "to": "container magicutor",
+     "via": "ws://127.0.0.1:3003/bridge/native",
+     "evidence": "docs/quickstart.md:78-82, scripts/install.sh:455-457"
+    },
+    {
+     "from": "container",
+     "to": "host ollama",
+     "via": "host alias :11434/:11435",
+     "evidence": "scripts/install.sh:385-387, Makefile:4833-4840"
+    }
+   ],
+   "desktopRole": "Optionally owns the container lifecycle (runtime detection, image pull, credential custody, /data seeding, health checks every 5 s). It always remains the native capability host on :3017.",
+   "setupCommands": [
+    "MAGICIAN_INSTALL_FLOW=container make install",
+    "MAGICIAN_CONTAINER_RUNTIME=apple-container|docker",
+    "bash scripts/setup-container-runtime.sh",
+    "make build-container",
+    "make run-container",
+    "make stop-container",
+    "make dev-container-rebuild",
+    "make qualify-container-e2e",
+    "make qualify-container-e2e-live CONTAINER_E2E_LIVE_CONFIRM=1",
+    "make test-desktop-managed-container"
+   ],
+   "evidence": [
+    "docs/quickstart.md:63-69",
+    "docs/components/desktop/README.md:44-58",
+    "docs/components/desktop/README.md:436-453",
+    "docs/components/scripts/container-runtime.md:124-171",
+    "desktop/src-tauri/src/setup.rs:97-112",
+    "Dockerfile:44-56",
+    "Dockerfile:246-258",
+    "Makefile:4816-4914",
+    "scripts/install.sh:389-400"
+   ]
+  },
+  {
+   "id": "linux-server-container",
+   "name": "Server in a container on a Linux box",
+   "summary": "Linux runs the stack through the container flow; a native Linux install is still manual. Docker runs the image with --network host, so the container shares host loopback and Ollama is at 127.0.0.1. The install is headless. The macOS tray phase is skipped, and Mac-only skills are hidden by the host_gateway availability gate. Durable pairing keys live in a gnome-keyring Secret Service inside the image. The Linux desktop AppImage can optionally manage the local Docker backend and act as this computer's CUA/browser edge.",
+   "placement": {
+    "magic-supervisor / magician / magicutor / bots": "Linux host, Docker container (--network host)",
+    "ollama": "Linux host, native",
+    "desktop app": "optional Linux AppImage on the same host (manages local Docker), otherwise none",
+    "runtime data": "Linux host dir bind-mounted at /data"
+   },
+   "paths": [
+    {
+     "from": "clients on host",
+     "to": "magician",
+     "via": "127.0.0.1:3002 (host network)",
+     "evidence": "scripts/install.sh:471-483, Makefile:4904-4908"
+    },
+    {
+     "from": "phones / remote desktops",
+     "to": "magician",
+     "via": "HTTPS origin (e.g. Cloudflare tunnel)",
+     "evidence": "docs/ARCHITECTURE_V2.md:252-254"
+    }
+   ],
+   "desktopRole": "None required. A Linux Desktop can manage local Docker and act as the edge. Mac-only capabilities are unavailable.",
+   "setupCommands": [
+    "MAGICIAN_INSTALL_FLOW=container make install",
+    "MAGICIAN_INSTALL_MODE=user MAGICIAN_INSTALL_FLOW=container bash scripts/install.sh",
+    "make build-container",
+    "make build-container-multiarch",
+    "make push-container",
+    "make release-container",
+    "make qualify-container-release CONTAINER_RUNTIME=docker"
+   ],
+   "evidence": [
+    "README.md:75-78",
+    "docs/quickstart.md:67-69",
+    "docs/quickstart.md:275-281",
+    "scripts/install.sh:528-551",
+    "docs/components/scripts/container-runtime.md:3-9",
+    "docs/components/desktop/README.md:17-21",
+    "docs/components/desktop/README.md:188"
+   ]
+  },
+  {
+   "id": "remote-engine-desktop-edge",
+   "name": "Remote Linux engine with the Mac Desktop as Magician Edge",
+   "summary": "Canonical chat, task, memory and workspace data stay on a remote Linux engine (container) reached over HTTPS. The Mac Desktop chooses 'Connect to a remote container'. It enrolls through the server's authenticated Settings page using a one-time magican://connect Desktop Edge link, and stores a desktop-only credential in the OS keychain. It then dials outward over WSS to /api/magician/v2/edge/bridge. Over that session it advertises host.cua (installed driver tools), browser.cdp (while a loopback Magicutor reports a connected extension) and read-only host.imessage/query (macOS only). The server invokes these through POST /api/magician/v2/edge/devices/{id}/invoke under generation-fenced, short-lived grants. The public server never routes inbound traffic to the loopback :3017 gateway. Phones, ESP32 and the UI address the remote engine directly. Desktop skips local container supervision for a remote origin.",
+   "placement": {
+    "magic-supervisor / magician / magicutor / bots": "remote Linux server (container)",
+    "runtime data": "remote server",
+    "desktop app + edge connector": "user's Mac (or Linux/Windows desktop)",
+    "cua-driver / loopback magicutor + chrome extension / Messages DB": "user's Mac",
+    "phones / ESP32": "anywhere, via the remote origin"
+   },
+   "paths": [
+    {
+     "from": "desktop",
+     "to": "remote magician",
+     "via": "outbound wss://<engine>/api/magician/v2/edge/bridge (+ CF-Access headers when Access-gated)",
+     "evidence": "desktop/src-tauri/src/edge_client.rs:29-37, desktop/src-tauri/src/edge_client.rs:321, magician-bin/src/main.rs:13683-13704",
+     "say": "The desktop app dials out to the remote server over a secure websocket, with Cloudflare Access headers when the server sits behind Access. Nothing listens on the Mac."
+    },
+    {
+     "from": "remote magician",
+     "to": "desktop local capabilities",
+     "via": "Edge invoke frames on the same socket",
+     "evidence": "docs/ARCHITECTURE_V2.md:240-266, desktop/src-tauri/src/edge_dispatch.rs:229-251",
+     "say": "Over that same socket, the server borrows the Mac's screen control, browser and read-only iMessage, and only what the desktop offered."
+    },
+    {
+     "from": "desktop UI windows",
+     "to": "remote magician",
+     "via": "HTTPS REST plus wss realtime (TLS required for non-loopback)",
+     "evidence": "desktop/src-tauri/src/config.rs:765-812",
+     "say": "The desktop's own windows talk to the remote server over HTTPS and a secure websocket; anything off this machine must use TLS."
+    },
+    {
+     "from": "phones",
+     "to": "remote magician",
+     "via": "connect.<zone> /api routed to the remote URL, or the remote origin directly",
+     "evidence": "Makefile:2821-2822, docs/components/desktop/README.md:487-491",
+     "say": "Phones keep using connect dot your domain, now routed to the remote server, or they talk to the server directly."
+    }
+   ],
+   "desktopRole": "Edge proxy for machine-local capabilities: CUA, browser/CDP via local Magicutor and extension, and iMessage. It does not supervise any backend and rejects engine-owned local file access.",
+   "setupCommands": [
+    "(server) MAGICIAN_INSTALL_FLOW=container make install",
+    "make connect-access",
+    "make connect-remote CONNECT_REMOTE_URL=https://<engine>",
+    "Desktop: Change setup -> Connect to a remote container -> open Desktop Edge link",
+    "make test-edge-transport",
+    "make check-edge-connector"
+   ],
+   "evidence": [
+    "docs/ARCHITECTURE_V2.md:240-266",
+    "docs/components/desktop/README.md:59-69",
+    "docs/components/desktop/README.md:254-265",
+    "desktop/src-tauri/src/setup.rs:113-120",
+    "desktop/src-tauri/src/main.rs:884-895",
+    "desktop/src-tauri/src/config.rs:775-780",
+    "docs/components/scripts/container-runtime.md:165-171 (states separate-host file access is not implemented)",
+    "Makefile:1386-1422"
+   ]
+  },
+  {
+   "id": "mobile-connect-tunnel",
+   "name": "Phone and device access through connect.<zone> (Cloudflare Tunnel plus Access) or Same Wi-Fi",
+   "summary": "iOS, Android and ESP32 learn one stable protected origin at enrollment: connect.<zone> (MAGICIAN_CONNECT_HOST). A named Cloudflare tunnel path-splits that host. /host/* goes to this desktop's gateway on :3017. /health and /api/* (REST and WebSockets) go to the explicitly selected backend: native :3002, container :13002, or a verified remote HTTPS URL. Switching backends never changes the hostname and needs no re-enrollment. Cloudflare Access requires a shared service token plus a revocable per-device Magician token. Only the one-time enrollment exchange path bypasses Access, guarded by a five-minute single-use capability. The alternative, Same Wi-Fi, uses the server-advertised private LAN address.",
+   "placement": {
+    "cloudflared": "the desktop machine, brew service or token connector",
+    "phones / ESP32": "anywhere",
+    "selected backend": "native Mac, local container, or remote server",
+    "desktop gateway": "desktop machine :3017"
+   },
+   "paths": [
+    {
+     "from": "phone / ESP32",
+     "to": "magician",
+     "via": "https://connect.<zone>/api/* -> selected backend (3002 | 13002 | remote)",
+     "evidence": "scripts/ensure-magician-tunnel.sh:15-17, scripts/ensure-magician-tunnel.sh:408-420, desktop/src-tauri/src/connect_route.rs:1-18",
+     "say": "Phones and the ESP32 call connect dot your domain. Behind Cloudflare Access, its API paths go to whichever backend you chose, and each request also carries the device's own key."
+    },
+    {
+     "from": "phone",
+     "to": "desktop host gateway",
+     "via": "https://connect.<zone>/host/* -> localhost:3017",
+     "evidence": "scripts/ensure-magician-tunnel.sh:77, scripts/ensure-magician-tunnel.sh:410",
+     "say": "Host paths on the same address go to this Mac's desktop app, so phone requests for the Mac's own tools run here."
+    },
+    {
+     "from": "phone (LAN)",
+     "to": "magician",
+     "via": "private LAN address advertised by the server",
+     "evidence": "docs/setup/mobile.md:143-146, docs/ARCHITECTURE_V2.md:213-218",
+     "say": "On the same Wi-Fi, a phone can skip the tunnel and use the private address the server advertises."
+    }
+   ],
+   "desktopRole": "Owns route selection (Settings -> Network) and keeps /host/* on the desktop. It issues the enrollment QR codes. Android App Pilot uses a separate Desktop-issued QR.",
+   "setupCommands": [
+    "make setup-identity",
+    "make connect-access",
+    "make connect-setup",
+    "make connect-local",
+    "make connect-container",
+    "make connect-remote CONNECT_REMOTE_URL=...",
+    "make connect-status",
+    "make ensure-tunnel",
+    "make ios-full-setup-debug",
+    "make ios-debug-run",
+    "make setup-magdroid-build",
+    "make build-magdroid",
+    "make install-magdroid",
+    "make build-magesp",
+    "make test-magesp-connection",
+    "make qualify-mobile-connectivity"
+   ],
+   "evidence": [
+    "docs/setup/mobile.md:141-166",
+    "docs/quickstart.md:244-266",
+    "scripts/ensure-connect-access.sh:1-20",
+    "Makefile:2803-2822",
+    "Makefile:5614-5634",
+    "docs/components/desktop/README.md:487-491"
+   ]
+  },
+  {
+   "id": "public-webhook-and-ui-tunnel",
+   "name": "Public webhook and dev-UI ingress (single named tunnel)",
+   "summary": "An opt-in persistent named Cloudflare tunnel (MAGICIAN_ENABLE_FUNNEL=1) runs as a brew service in browser-login mode or as a token connector. It maps webhook.<zone> to the Kapso receiver on :3010, which forwards to magician :3002. This host must never be behind Access, because providers cannot log in. ui.<zone> maps to :5173 and should be behind Access; HTTPS is needed for mic and voice on phones. A notes.<zone> route is also managed. The tunnel stays up across stop-all.",
+   "placement": {
+    "cloudflared": "the machine running the stack",
+    "kapso / agentmail webhook receivers": "bot processes on :3010 / :3011 (native or container-mapped)",
+    "unified-ui": "Vite :5173"
+   },
+   "paths": [
+    {
+     "from": "Kapso",
+     "to": "kapso bot -> magician",
+     "via": "https://webhook.<zone>/webhook -> localhost:3010 -> :3002",
+     "evidence": "scripts/ensure-magician-tunnel.sh:11-14, docs/quickstart.md:157-164",
+     "say": "WhatsApp messages arrive from Kapso at the public webhook address, which stays outside Access, and the bot checks each one's signature before passing it to Magician."
+    },
+    {
+     "from": "phone browser",
+     "to": "unified-ui",
+     "via": "https://ui.<zone>/ -> localhost:5173 (Access-gated)",
+     "evidence": "Makefile:1194-1206, docs/quickstart.md:213-222",
+     "say": "The developer UI gets its own address behind an email login, so a phone browser gets HTTPS for its microphone."
+    }
+   ],
+   "desktopRole": "Not involved.",
+   "setupCommands": [
+    "MAGICIAN_ENABLE_FUNNEL=1 make install",
+    "make ensure-tunnel",
+    "make serve-ui-tunnel",
+    "bash scripts/ensure-ui-access.sh",
+    "make stop-tunnel",
+    "MAGICIAN_TUNNEL_MODE=token CLOUDFLARED_TOKEN=... CLOUDFLARE_API_TOKEN=..."
+   ],
+   "evidence": [
+    "docs/quickstart.md:157-222",
+    "Makefile:2790-2801",
+    "Makefile:2834-2848",
+    "scripts/ensure-magician-tunnel.sh:1-30"
+   ]
+  },
+  {
+   "id": "multi-machine-tunnels",
+   "name": "Several Magician machines, one tunnel each",
+   "summary": "When an owner runs Magician on several Macs (e.g. a MacBook Pro and a Mac Studio), each machine gets its own tunnel magician-<machine> and its own hostnames. This avoids Cloudflare load-balancing requests to the wrong machine. <machine>.<zone> carries /api and /health to :3002 and /host to :3017 behind Access. ui-<machine>.<zone> goes to :5173, and webhook-<machine>.<zone> goes to :3010 and :3011. iOS keeps one connection profile per paired machine.",
+   "placement": {
+    "each Mac": "full native stack plus its own cloudflared connector",
+    "phones": "multi-profile, one active"
+   },
+   "paths": [
+    {
+     "from": "phone",
+     "to": "magician on that machine",
+     "via": "https://<machine>.<zone>/api -> that machine :3002",
+     "evidence": "scripts/ensure-machine-tunnel.sh:1-16, magios/Shared/MagicianAccess.swift:303-306",
+     "say": "With several Macs, each one has its own tunnel and address, so a phone always reaches the machine it paired with."
+    }
+   ],
+   "desktopRole": "Same as the single-Mac setup on each machine.",
+   "setupCommands": [
+    "make machine-tunnel MACHINE=<name>",
+    "make machine-tunnel MACHINE=<name> INSTALL=1",
+    "make machine-tunnel PARK=<host>"
+   ],
+   "evidence": [
+    "Makefile:2824-2832",
+    "scripts/ensure-machine-tunnel.sh:1-30"
+   ]
+  },
+  {
+   "id": "windows-linux-desktop",
+   "name": "Windows or Linux Desktop with a container or remote engine",
+   "summary": "The standard non-macOS deployment runs Magician, Magicutor and the supervisor from the Linux OCI image, either locally or remotely. The native Linux AppImage or Windows NSIS Desktop stays on the user's computer as its CUA, browser and platform-tool edge. Linux can manage a local Docker backend or select a remote engine. Windows can manage the image through Docker Desktop, connect to an existing local container, or select a remote engine. Native Windows backend executables and Task Scheduler support are a future path, and Linux and Windows never advertise iMessage.",
+   "placement": {
+    "backend": "local Docker (Engine on Linux, Docker Desktop on Windows) or remote server",
+    "desktop app": "user's Linux or Windows computer",
+    "native services option": "shown disabled (macOS-only today)"
+   },
+   "paths": [
+    {
+     "from": "desktop",
+     "to": "local container",
+     "via": "loopback published ports",
+     "evidence": "docs/components/desktop/README.md:447-453"
+    },
+    {
+     "from": "desktop",
+     "to": "remote engine",
+     "via": "Magician Edge wss /api/magician/v2/edge/bridge",
+     "evidence": "docs/components/desktop/README.md:254-265"
+    }
+   ],
+   "desktopRole": "Container manager and/or Edge for local CUA and browser. No macOS host features.",
+   "setupCommands": [
+    "make release-desktop-target",
+    "make release-desktop",
+    "Desktop setup: Install and manage a local container | Connect to a local container | Connect to a remote container"
+   ],
+   "evidence": [
+    "docs/components/desktop/README.md:13-23",
+    "docs/components/desktop/README.md:36-58",
+    "desktop/src-tauri/src/setup.rs:84-96",
+    "desktop/src-tauri/tauri.linux.conf.json",
+    "desktop/src-tauri/tauri.windows.conf.json"
+   ]
+  }
+ ]
+}

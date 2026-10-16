@@ -1,0 +1,105 @@
+{
+  "name": "memory_extract_environment_knowledge",
+  "version": "1.1.0",
+  "content": [
+    "Extract environment knowledge from the following episodic memory data.",
+    "Analyze the actions taken and observations to identify websites, APIs, CLI tools,",
+    "and other environments the agent interacted with.",
+    "",
+    "## Source Episodes ({episode_count} episodes)",
+    "{source_json}",
+    "",
+    "## Source Text Representation",
+    "{source_text}",
+    "",
+    "## Target Tier Schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Scan each episode's `memory_candidates`, `memory_updates`, actions_taken, observations, outcome_summary, final output excerpts, and artifact_output references for reusable tool/site interactions.",
+    "2. Infer the `kind` from the action type:",
+    "   - Browser actions (navigate, click, type, scroll) -> kind: \"browser\"",
+    "   - HTTP requests (GET, POST, PUT, DELETE) -> kind: \"http\"",
+    "   - Shell/bash commands -> kind: \"bash\"",
+    "   - File operations -> kind: \"file\"",
+    "   - Other tool calls -> kind: \"tool\"",
+    "3. Group interactions by environment:",
+    "   - Browser: group by domain + path pattern (use `*` for variable segments)",
+    "   - HTTP: group by domain + endpoint pattern",
+    "   - Bash: group by command name",
+    "4. For each distinct environment, emit one entry with:",
+    "   - `name`: MUST equal `environment_key` (required for deduplication)",
+    "   - `environment_key`: \"{kind}:{identifier}\"",
+    "   - `kind`: the inferred kind",
+    "   - `page_type`: classify the page/endpoint/tool type",
+    "   - `layout_notes`: structural observations (DOM layout, response shapes, flag patterns)",
+    "   - `known_blockers`: obstacles encountered (cookie banners, CAPTCHAs, rate limits, auth walls)",
+    "   - `successful_patterns`: what interaction sequences worked",
+    "   - `failure_modes`: what failed and why",
+    "   - `auth_required`: \"yes\", \"no\", or \"unknown\"",
+    "   - `last_used`: most recent timestamp from the episodes for this environment",
+    "   - `use_count`: \"1\" for new entries, or increment existing value if updating a known environment",
+    "5. Skip environments where nothing notable happened. Do not store one-off local test URLs, task IDs, execution IDs, or temporary artifacts unless they reveal a reusable interaction pattern, blocker, or tool behavior.",
+    "6. Conform entries to the target tier schema provided above. Prefer the `environments` root collection when returning an object.",
+    "7. Keep entries operational: capture what to try next time and what to avoid. Avoid vague summaries.",
+    "8. Respect each episode's `memory_quality.extraction_priority`: low-priority/progress-only episodes should be ignored unless they contain an explicit reusable blocker, failure mode, or successful pattern in `memory_candidates`, `memory_updates`, actions, or final output excerpts.",
+    "",
+    "Return either a JSON object with an `environments` array matching the target schema, or a bare JSON array of environment entry objects if the model cannot safely wrap it. The runtime will normalize either shape.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized array of episodic memory entries containing actions_taken and observations",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"id\": \"ep_001\", \"actions_taken\": [{\"tool\": \"browser_navigate\", \"url\": \"https://github.com/login\"}], \"observations\": [\"Login page loaded with username/password fields\"]}]"
+      ]
+    },
+    {
+      "name": "source_text",
+      "description": "Text representation of the episode data for additional context",
+      "required": true,
+      "default_value": "",
+      "examples": [
+        "Episode 1: Navigated to github.com/login, entered credentials, encountered 2FA prompt"
+      ]
+    },
+    {
+      "name": "tier_schema",
+      "description": "JSON schema describing the target environment_knowledge tier structure",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "{\"environments\": {\"environment_key\": \"string\", \"kind\": \"string\", \"page_type\": \"string\", \"layout_notes\": \"string\", \"known_blockers\": \"object\", \"successful_patterns\": \"string\", \"failure_modes\": \"string\", \"auth_required\": \"string\", \"last_used\": \"datetime\", \"use_count\": \"string\"}}"
+      ]
+    },
+    {
+      "name": "identity_section",
+      "description": "Agent identity context for the consolidation pipeline",
+      "required": true,
+      "default_value": "",
+      "examples": [
+        "## AGENT IDENTITY CONTEXT\\n- Source agent id: agent:personal"
+      ]
+    },
+    {
+      "name": "episode_count",
+      "description": "Number of episodes in the source data",
+      "required": true,
+      "default_value": "0",
+      "examples": ["3", "10", "25"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to extract environment knowledge from episodic memory data. Analyzes actions_taken and observations to identify and characterize websites, APIs, CLI tools, and other environments.",
+    "author": "magician",
+    "created_at": "2026-03-10T00:00:00Z",
+    "changelog": "v1.1.0: Prioritizes memory_candidates, final outputs, explicit blockers/failures, and memory_quality; emits environments root when possible and skips one-off task/test artifacts unless reusable behavior is present. v1.0.0: Initial environment knowledge extraction user prompt for memory consolidation pipeline.",
+    "tags": ["memory", "consolidation", "environment-knowledge"],
+    "estimated_tokens": 350
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "run_handle": {
+    "protocol_version": "1",
+    "run_ref": "run:app-action:fixture",
+    "installation_id": "install_other",
+    "action_id": "build_plan"
+  },
+  "result": {
+    "protocol_version": "1",
+    "action_id": "build_plan",
+    "run_ref": "run:app-action:fixture",
+    "status": "completed",
+    "output": {
+      "protocol_version": "1",
+      "source": "app_action",
+      "scope_binding_ref": "scope:other",
+      "installation_id": "install_other",
+      "package_revision_ref": "package-revision:other",
+      "schema_revision": 1,
+      "grant_revision": 1,
+      "value_schema_ref": "value-schema:other",
+      "value": { "plan_id": "plan_1", "status": "draft" },
+      "handling_labels": {
+        "classification": "personal",
+        "model_processing": "local_only",
+        "policy_digest": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+        "provenance_digest": "blake3:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "content_digest": "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+      "produced_at": "2026-08-23T09:00:00Z"
+    }
+  }
+}

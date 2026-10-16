@@ -1,0 +1,12 @@
+// Exposes the vendored Vosk C API to Swift as `import CVosk`, via
+// SWIFT_INCLUDE_PATHS on the Magios app target ONLY.
+//
+// A module map rather than a bridging header because the scoping is the point:
+// a bridging header is a target-wide setting that every Swift file in the app
+// inherits, whereas this makes the dependency visible exactly where it is
+// imported — one file, `VoskWakeSpotter.swift`. `magios/Shared/` compiles into
+// six targets including the widget extension, and nothing there can reach this.
+module CVosk {
+    header "vosk_api.h"
+    export *
+}

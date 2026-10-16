@@ -1,0 +1,72 @@
+name: http
+description: HTTP request operations for API interaction
+guide: |-
+  Tool names: `http_get`, `http_post`, `http_put`, `http_patch`, `http_delete`, `http_head`, `http_options`, `http_request`
+  Required parameter: `url`
+  Common parameters: headers (JSON object string), body (POST/PUT/PATCH/DELETE), content_type, timeout_secs (default 30), follow_redirects (default true)
+  Method-specific tools: http_get (GET, no body), http_post (POST with body), http_put (PUT with body), http_patch (PATCH with body), http_delete (DELETE), http_head (headers only), http_options (CORS preflight), http_request (generic with method parameter, default GET)
+  Examples:
+  - {"url":"https://api.example.com/users","timeout_secs":10}
+  - {"url":"https://api.example.com/users","body":"{\"name\":\"Alice\"}","content_type":"application/json"}
+  - {"url":"https://api.example.com/status","headers":"{\"Authorization\":\"Bearer token123\"}"}
+parameters:
+- name: url
+  required: true
+  param_type: string
+  description: Target URL for the request
+- name: method
+  param_type: string
+  description: HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)
+  default: GET
+  enum_values:
+  - GET
+  - POST
+  - PUT
+  - PATCH
+  - DELETE
+  - HEAD
+  - OPTIONS
+- name: headers
+  param_type: string
+  description: JSON object of request headers
+- name: body
+  param_type: string
+  description: Request body content
+- name: content_type
+  param_type: string
+  description: Content-Type header value
+- name: timeout_secs
+  param_type: integer
+  description: Request timeout in seconds
+  default: '30'
+- name: follow_redirects
+  param_type: boolean
+  description: Follow HTTP redirects
+  default: 'true'
+- name: credential_id
+  param_type: string
+  description: |
+    Optional credential reference for authenticated HTTP. The runtime
+    resolves this ID against the secret broker at dispatch time and
+    injects the actual token into the request (typically as an
+    `Authorization` header) — the LLM never sees the real secret.
+    Use when calling an authenticated API where the credential is
+    pre-registered in the secret store under a stable id.
+- name: credential_token
+  param_type: string
+  description: |
+    Optional credential token reference paired with `credential_id`.
+    Same secret-broker resolution as `credential_id`; both are stripped
+    from the request params and applied at the candidate layer rather
+    than sent as visible body/header fields.
+implementation:
+  type: compiled
+  provider_name: http
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - http
+  - api
+  composition_category: http_operations
+  sandbox: none

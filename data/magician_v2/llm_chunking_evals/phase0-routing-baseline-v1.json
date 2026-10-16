@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-14T16:28:07Z",
+  "captured_at_local": "2026-07-14T21:58:07+05:30",
+  "source_commit": "d59b2e9118d427859b81c84880471e8003a4ed69",
+  "status": "frozen_before_local_first_chunking",
+  "implementation_target": {
+    "provider": "ollama",
+    "model": "gemma4:12b",
+    "api_base_url": "http://localhost:11434/api/generate",
+    "reference_profile": "op-ambient-distill-local",
+    "physical_context_tokens": 32768,
+    "target_payload_tokens": 24576,
+    "logical_context_tokens": 262144,
+    "thinking": false,
+    "tool_choice": "none",
+    "structured_output": "json_where_required",
+    "activation_state": "planned_dormant",
+    "policy": "All map, repair, and reduction calls are Ollama-first. Online profiles below are comparison baselines and optional policy-permitted canary fallback only."
+  },
+  "configuration_snapshot": {
+    "repo_config_sha256": "f368cad8f5d12e6d3725b5af962ced23fa11dc8c7b22d107ded90b1754a3aa80",
+    "live_config_sha256": "f368cad8f5d12e6d3725b5af962ced23fa11dc8c7b22d107ded90b1754a3aa80",
+    "template_config_sha256": "6fdf4e3f35d89760a606f730fd08cd1d5058f1d4eaffa9a306886392b42db310",
+    "repo_and_live_byte_identical": true,
+    "routing_subset_matches_source_commit": true,
+    "note": "The working config contains unrelated FluidAudio edits; the LLM profile and operation-mapping subset below is unchanged from source_commit."
+  },
+  "operations": [
+    {
+      "operation": "memory_temperature_utility_review",
+      "planned_adapter": "memory_utility_review_v1",
+      "planned_local_profile": "op-memory-utility-review-local-chunked",
+      "current_cloud_baseline_profile": "op-memory-episode-quality-standard",
+      "current_cloud_retry_profile": "op-memory-episode-quality-retry",
+      "prompt_source": {
+        "kind": "inline",
+        "path": "magician/src/magician_v2/agents/memory_utility_reviewer.rs",
+        "anchors": ["review_memory_temperature_utility", "review_memory_temperature_utility_batch"]
+      }
+    },
+    {
+      "operation": "memory_episode_quality_classification",
+      "planned_adapter": "memory_episode_quality_v1",
+      "planned_local_profile": "op-memory-episode-quality-local-chunked",
+      "current_cloud_baseline_profile": "op-memory-episode-quality-standard",
+      "current_cloud_retry_profile": "op-memory-episode-quality-retry",
+      "prompt_source": {
+        "kind": "inline",
+        "path": "magician/src/magician_v2/agents/memory_consolidator.rs",
+        "anchors": ["classify_episode_memory_quality", "episode_memory_quality_classifier_value"]
+      }
+    },
+    {
+      "operation": "memory_entity_extraction",
+      "planned_adapter": "memory_entities_v1",
+      "planned_local_profile": "op-memory-entity-extraction-local-chunked",
+      "current_cloud_baseline_profile": "op-memory-entity-extraction-fast",
+      "current_cloud_retry_profile": "op-memory-extraction-retry",
+      "prompt_source": {
+        "kind": "prompt_store",
+        "prompts": [
+          {
+            "name": "memory_extract_entities",
+            "version": "1.1.0",
+            "sha256": "fa59295ab22d0530349c8abdfc192248a425f8307e64a65f94ed0bbb1759ecf2"
+          },
+          {
+            "name": "memory_extract_entities_system",
+            "version": "1.1.0",
+            "sha256": "407c426cd5995c666a87f0cdc06537879c50375fa5a53c4a67dc9cc8456e5639"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "distill_evidence",
+      "planned_adapter": "evidence_distill_v1",
+      "planned_local_profile": "op-memory-evidence-distillation-local-chunked",
+      "current_cloud_baseline_profile": "op-memory-evidence-distillation-fast",
+      "current_cloud_retry_profile": "op-memory-evidence-distillation-retry",
+      "prompt_source": {
+        "kind": "prompt_store",
+        "prompts": [
+          {
+            "name": "evidence_distill_user",
+            "version": "1.0.0",
+            "sha256": "5e4b89b2de80ee9535f2191ee26a08d766f46cf53f5749fcc395c1d722f5d7dc"
+          },
+          {
+            "name": "evidence_distill_system",
+            "version": "1.0.0",
+            "sha256": "aa122252d1118b6e41170a799e6f999dc7235d0625c1f283cfc21025774a2d97"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "memory_environment_knowledge_extraction",
+      "planned_adapter": "memory_environment_v1",
+      "planned_local_profile": "op-memory-environment-extraction-local-chunked",
+      "current_cloud_baseline_profile": "op-memory-environment-extraction-fast",
+      "current_cloud_retry_profile": "op-memory-extraction-retry",
+      "prompt_source": {
+        "kind": "prompt_store",
+        "prompts": [
+          {
+            "name": "memory_extract_environment_knowledge",
+            "version": "1.1.0",
+            "sha256": "7ea094ff5cc82ae88be9a0df50337bba7ff43b5e56b82cc061e26932b6b27eec"
+          },
+          {
+            "name": "memory_extract_environment_knowledge_system",
+            "version": "1.1.0",
+            "sha256": "377ac71df5bcaee0a92ddc2915bad26b39aa9efd2969c75eb11b5e70b78eaea8"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "memory_archive_summary",
+      "planned_adapter": "memory_archive_v1",
+      "planned_local_profile": "op-memory-archive-summary-local-chunked",
+      "current_cloud_baseline_profile": "op-memory-archive-summary-fast",
+      "current_cloud_retry_profile": "op-memory-extraction-retry",
+      "prompt_source": {
+        "kind": "prompt_store",
+        "prompts": [
+          {
+            "name": "memory_summarize_activity",
+            "version": "1.0.0",
+            "sha256": "ec1acb08986744cfc2d1b5da8c5a89260cb7b9a6ac2b71544df70c36723cd95f"
+          },
+          {
+            "name": "memory_summarize_activity_system",
+            "version": "1.0.0",
+            "sha256": "5cfaecee4ae8b552afb1a3bf96b35f1c73bb0d9d5f6656beb880b6499a06de2b"
+          },
+          {
+            "name": "memory_archive_episodes",
+            "version": "1.0.0",
+            "sha256": "efe0cdfb5870bf0c3ba73c05ce7c08da684ea3d08e6390cfdbc97d14ed4eaa06"
+          },
+          {
+            "name": "memory_archive_episodes_system",
+            "version": "1.0.0",
+            "sha256": "996de674aea7a9c949f30c5b0d8e35bae21175f27cebb128ec4b54285eb3961e"
+          }
+        ]
+      }
+    }
+  ],
+  "current_cloud_baseline_profiles": {
+    "op-memory-entity-extraction-fast": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "api_mode": "chat",
+      "max_output_tokens": 32768,
+      "timeout_secs": 600,
+      "reasoning_effort": "low",
+      "tool_choice": "any"
+    },
+    "op-memory-environment-extraction-fast": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "api_mode": "chat",
+      "max_output_tokens": 32768,
+      "timeout_secs": 600,
+      "reasoning_effort": "low",
+      "tool_choice": "any"
+    },
+    "op-memory-archive-summary-fast": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "api_mode": "chat",
+      "max_output_tokens": 32768,
+      "timeout_secs": 600,
+      "reasoning_effort": "low",
+      "tool_choice": "any"
+    },
+    "op-memory-extraction-retry": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "api_mode": "responses",
+      "max_output_tokens": 32768,
+      "timeout_secs": 600,
+      "reasoning_effort": "medium",
+      "tool_choice": "any"
+    },
+    "op-memory-episode-quality-standard": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "api_mode": "responses",
+      "max_output_tokens": 8192,
+      "timeout_secs": 600,
+      "reasoning_effort": "medium",
+      "tool_choice": "none"
+    },
+    "op-memory-episode-quality-retry": {
+      "provider": "openai",
+      "model": "gpt-5.6-terra",
+      "api_mode": "responses",
+      "max_output_tokens": 16384,
+      "timeout_secs": 600,
+      "reasoning_effort": "medium",
+      "tool_choice": "none"
+    },
+    "op-memory-evidence-distillation-fast": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "api_mode": "responses",
+      "max_output_tokens": 32768,
+      "timeout_secs": 600,
+      "reasoning_effort": "medium",
+      "tool_choice": "none"
+    },
+    "op-memory-evidence-distillation-retry": {
+      "provider": "openai",
+      "model": "gpt-5.6-terra",
+      "api_mode": "responses",
+      "max_output_tokens": 32768,
+      "timeout_secs": 600,
+      "reasoning_effort": "medium",
+      "tool_choice": "none"
+    }
+  },
+  "production_behavior_changed": false,
+  "online_profiles_used_by_planned_local_path": false
+}

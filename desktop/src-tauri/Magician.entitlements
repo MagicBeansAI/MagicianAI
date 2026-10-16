@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Entitlements granting WKWebView access to host capabilities.
+		Tauri's macOS bundler reads this file when packaging the .app
+		via the `bundle.macOS.entitlements` config setting.
+		- audio-input: WKWebView can call `getUserMedia({audio:true})`.
+		- camera: WKWebView can call `getUserMedia({video:true})`.
+		- These are NOT sandbox keys (the app is unsandboxed); they
+		  are TCC capability grants surfaced to embedded WebKit.
+	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- Required to send Apple Events under the hardened runtime. Without it the
+	     Reminders automation fails with -1743 even when the user has granted
+	     Automation permission. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+	<key>com.apple.security.device.camera</key>
+	<true/>
+</dict>
+</plist>

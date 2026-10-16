@@ -1,0 +1,138 @@
+{
+  "name": "unchanged_page",
+  "description": "Unchanged page: an identical rescan after the baseline must read `unchanged`, mint NO update record, and notify nothing under the default policy (§3: unchanged runs stay quiet).",
+  "notification_policy": "material_changes",
+  "notify_initial_baseline": false,
+  "steps": [
+    {
+      "label": "baseline scan",
+      "execution_id": "exec_unch_1",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_unch_1",
+        "monitor_revision": 3,
+        "started_at": "2026-07-22T11:00:00Z",
+        "completed_at": "2026-07-22T11:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://city.example/permits",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 2
+          }
+        ],
+        "counts": { "scanned": 2, "new": 0, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:permit-1188",
+            "title": "Permit 1188 - pending review",
+            "canonical_url": "https://city.example/permits/1188",
+            "source": "https://city.example/permits",
+            "observed_at": "2026-07-22T11:00:30Z",
+            "published_at": null,
+            "summary": "Permit 1188 pending review.",
+            "why_it_matters": "Tracked permit status.",
+            "entities": ["permit 1188", "pending review"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_5001",
+            "classification": "unchanged"
+          },
+          {
+            "stable_key": "native:permit-1190",
+            "title": "Permit 1190 - approved",
+            "canonical_url": "https://city.example/permits/1190",
+            "source": "https://city.example/permits",
+            "observed_at": "2026-07-22T11:00:30Z",
+            "published_at": null,
+            "summary": "Permit 1190 approved.",
+            "why_it_matters": "Tracked permit status.",
+            "entities": ["permit 1190", "approved"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_5002",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_5001",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "baseline",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": true,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 2, "updated": 0, "unchanged": 0, "possibly_removed": 0 }
+      }
+    },
+    {
+      "label": "identical rescan — quiet",
+      "execution_id": "exec_unch_2",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_unch_2",
+        "monitor_revision": 3,
+        "started_at": "2026-07-23T11:00:00Z",
+        "completed_at": "2026-07-23T11:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://city.example/permits",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 2
+          }
+        ],
+        "counts": { "scanned": 2, "new": 0, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:permit-1188",
+            "title": "Permit 1188 - pending review",
+            "canonical_url": "https://city.example/permits/1188",
+            "source": "https://city.example/permits",
+            "observed_at": "2026-07-23T11:00:30Z",
+            "published_at": null,
+            "summary": "Permit 1188 pending review.",
+            "why_it_matters": "Tracked permit status.",
+            "entities": ["permit 1188", "pending review"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_5001",
+            "classification": "unchanged"
+          },
+          {
+            "stable_key": "native:permit-1190",
+            "title": "Permit 1190 - approved",
+            "canonical_url": "https://city.example/permits/1190",
+            "source": "https://city.example/permits",
+            "observed_at": "2026-07-23T11:00:30Z",
+            "published_at": null,
+            "summary": "Permit 1190 approved.",
+            "why_it_matters": "Tracked permit status.",
+            "entities": ["permit 1190", "approved"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_5002",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_5002",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "unchanged",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": false,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 0, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "classifications": {
+          "native:permit-1188": "unchanged",
+          "native:permit-1190": "unchanged"
+        }
+      }
+    }
+  ]
+}

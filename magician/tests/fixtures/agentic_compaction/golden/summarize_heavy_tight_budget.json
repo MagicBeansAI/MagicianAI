@@ -1,0 +1,110 @@
+{
+  "name": "summarize_heavy_tight_budget",
+  "description": "Everything old is summarized but the budget is still tight: summarized items are evicted oldest-first BEFORE the even-older kept failure note.",
+  "iteration": 18,
+  "char_budget": 400,
+  "keep_newest_pairs": 1,
+  "goal_line": "Backfill the missing telemetry rows for last week and validate row counts.",
+  "open_requirements": [
+    "Row counts must match the source-of-truth table."
+  ],
+  "open_requirement_ids": [],
+  "terminal_evidence_ids": [],
+  "replay": false,
+  "items": [
+    {
+      "id": "tp_001",
+      "kind": "turn_pair",
+      "ordinal": 0,
+      "age_iterations": 3,
+      "content": "[assistant] Iteration 1: scanned Monday's partition. [user tool_result call_1] {\"status\":\"ok\",\"missing\":120}.............................................................................................................................................."
+    },
+    {
+      "id": "tp_002",
+      "kind": "turn_pair",
+      "ordinal": 1,
+      "age_iterations": 2,
+      "content": "[assistant] Iteration 2: scanned Tuesday's partition. [user tool_result call_2] {\"status\":\"ok\",\"missing\":80}.............................................................................................................................................."
+    },
+    {
+      "id": "tp_003",
+      "kind": "turn_pair",
+      "ordinal": 2,
+      "age_iterations": 1,
+      "content": "[assistant] Iteration 3: scanned Wednesday's partition. [user tool_result call_3] {\"status\":\"ok\",\"missing\":0}............................................................................................................................................."
+    },
+    {
+      "id": "tp_004",
+      "kind": "turn_pair",
+      "ordinal": 3,
+      "age_iterations": 0,
+      "content": "[assistant] Iteration 4: started the backfill job. [user tool_result call_4] {\"status\":\"running\"}......................."
+    },
+    {
+      "id": "fn_parse_001",
+      "kind": "failure_note",
+      "ordinal": 0,
+      "age_iterations": 5,
+      "capability": "parse",
+      "content": "parse: Sunday's export had a malformed header row and was skipped..................................."
+    },
+    {
+      "id": "fn_parse_002",
+      "kind": "failure_note",
+      "ordinal": 1,
+      "age_iterations": 1,
+      "capability": "parse",
+      "content": "parse: one row failed schema validation....................."
+    }
+  ],
+  "patch": {
+    "patches": [
+      {
+        "id": "tp_001",
+        "action": "summarize",
+        "summary": "Monday's partition scan found 120 missing telemetry rows.................................."
+      },
+      {
+        "id": "tp_002",
+        "action": "summarize",
+        "summary": "Tuesday's partition scan found 80 missing telemetry rows.................................."
+      },
+      {
+        "id": "tp_003",
+        "action": "summarize",
+        "summary": "Wednesday's partition scan found no missing telemetry rows................................"
+      }
+    ],
+    "rationale": "The partition scans are complete; their outcomes compress to per-day counts."
+  },
+  "expect": {
+    "validation_rejected": null,
+    "protected_ids": [
+      "fn_parse_002",
+      "tp_004"
+    ],
+    "counts": {
+      "kept": 3,
+      "summarized": 3,
+      "discarded": 0,
+      "downgraded": 0
+    },
+    "downgraded_ids": [],
+    "surviving_ids": [
+      "tp_003",
+      "tp_004",
+      "fn_parse_001",
+      "fn_parse_002"
+    ],
+    "compacted_ids": [
+      "tp_003"
+    ],
+    "residue_evicted_ids": [
+      "tp_001",
+      "tp_002"
+    ],
+    "chars_after_patch": 550,
+    "chars_after": 370,
+    "patch_rejected": null
+  }
+}

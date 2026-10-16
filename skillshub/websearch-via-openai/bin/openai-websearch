@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Bounded OpenAI web-search adapter for the governed skill runtime."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Callable
+from types import SimpleNamespace
+
+
+OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses"
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+MAX_ANSWER_CHARS = 64_000
+MAX_SOURCES = 200
+MAX_SOURCE_TITLE_CHARS = 4_096
+MAX_SOURCE_URL_CHARS = 8_192
+MAX_QUERY_CHARS = 4_096
+MAX_DOMAINS_INPUT_CHARS = 4_096
+MAX_DOMAINS = 100
+MAX_MODEL_CHARS = 256
+MAX_INPUT_BYTES = 65_536
+MAX_FAILURE_DETAIL_CHARS = 512
+MAX_FAILURE_BODY_BYTES = 8 * 1024
+DOMAIN_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+UrlOpen = Callable[..., Any]
+
+# --- Governed timeout budget -------------------------------------------------
+# INVARIANT:
+#   GOVERNED_KILL_CEILING_SECS >= INNER_WORST_CASE_SECS + GOVERNED_KILL_MARGIN_SECS
+#
+# `perform_search` issues exactly one Responses API call, so the adapter's own
+# deadline budget is:
+#
+#   INNER_WORST_CASE_SECS = PROVIDER_TIMEOUT_SECS = 60
+#
+# GOVERNED_KILL_CEILING_SECS mirrors `runtime.limits.timeout_secs` in this
+# skill's SKILL.md, which is the runtime's wall-clock kill. That kill is a
+# backstop for a process that has stopped responding, not the primary provider
+# deadline. It previously equalled PROVIDER_TIMEOUT_SECS, and because the socket
+# deadline only starts after interpreter start and stdin read, the kill always
+# won that tie — the adapter's own timeout handling could never run. It must
+# stay above the budget above by at least GOVERNED_KILL_MARGIN_SECS, which
+# covers interpreter start, stdin read, and response normalization.
+#
+# The manifest is YAML this adapter must not read at execution time, so the
+# ceiling is mirrored here. Both sides are pinned together by
+# `tests/test_openai_websearch.py::test_governed_kill_outlasts_the_inner_provider_budget`
+# and by `tool-runtime-core/tests/phase7_migration.rs::
+# credentialed_adapter_governed_kill_outlasts_its_inner_provider_budget`.
+#
+# Adding a request or raising PROVIDER_TIMEOUT_SECS REQUIRES raising
+# `runtime.limits.timeout_secs` in SKILL.md by the same amount. Note the socket
+# deadline is per operation, not a total wall clock, so INNER_WORST_CASE_SECS is
+# a lower bound on true elapsed time; the governed kill remains the only total
+# bound, which is why it must be the outer one.
+PROVIDER_TIMEOUT_SECS = 60
+INNER_WORST_CASE_SECS = 60
+GOVERNED_KILL_MARGIN_SECS = 5
+GOVERNED_KILL_CEILING_SECS = 65
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the fixed provider credential on its declared origin."""
+
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def open_without_redirects(request: urllib.request.Request, timeout: int) -> Any:
+    return urllib.request.build_opener(NoRedirectHandler()).open(request, timeout=timeout)
+
+
+def parse_input(raw: bytes) -> SimpleNamespace:
+    if not raw or len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("invalid governed input envelope")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("invalid governed input envelope")
+    value.setdefault("allowed_domains", None)
+    return SimpleNamespace(**value)
+
+
+def normalize_domain(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        raise ValueError("empty allowed domain")
+    if "://" in candidate:
+        parsed = urllib.parse.urlsplit(candidate)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError("allowed domain URL must use HTTP or HTTPS")
+    else:
+        parsed = urllib.parse.urlsplit(f"//{candidate}")
+    if parsed.username or parsed.password:
+        raise ValueError("allowed domain must not contain credentials")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("allowed domain contains an invalid port") from error
+    if port is not None:
+        raise ValueError("allowed domain must not contain a port")
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("allowed domain must not contain a path, query, or fragment")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("allowed domain must contain a hostname")
+    try:
+        hostname = hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError as error:
+        raise ValueError("allowed domain is invalid") from error
+    if len(hostname) > 253:
+        raise ValueError("allowed domain is too long")
+    labels = hostname.split(".")
+    if any(not DOMAIN_LABEL.fullmatch(label) for label in labels):
+        raise ValueError("allowed domain is invalid")
+    return hostname
+
+
+def normalize_domains(value: str | None) -> list[str]:
+    if not value:
+        return []
+    parts = [part for part in value.split(",") if part.strip()]
+    if len(parts) > MAX_DOMAINS:
+        raise ValueError(f"at most {MAX_DOMAINS} allowed domains are supported")
+    output: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        domain = normalize_domain(part)
+        if domain not in seen:
+            seen.add(domain)
+            output.append(domain)
+    return output
+
+
+def request_body(args: SimpleNamespace) -> dict[str, Any]:
+    tool: dict[str, Any] = {"type": "web_search"}
+    allowed_domains = normalize_domains(args.allowed_domains)
+    if allowed_domains:
+        tool["search_context_size"] = "medium"
+        tool["filters"] = {"allowed_domains": allowed_domains}
+    return {
+        "model": args.model,
+        "tools": [tool],
+        # Offering the tool is not the same as using it. Left to choose, the
+        # model answered "What is the Rust programming language?" from its own
+        # weights: `status: completed`, a 1,500-character answer, no
+        # `web_search_call` in the output at all, and therefore no citations and
+        # no sources — a plausible answer with no provenance, returned by a
+        # skill whose whole contract is "answered question WITH sources".
+        #
+        # That is the failure mode this package must not have. A caller reaching
+        # for `websearch-via-openai` has already decided it wants the web; if it
+        # wanted the model's recollection it would ask the model. Naming the
+        # tool here makes the search unconditional, so `sources` is empty only
+        # when the web really returned nothing.
+        #
+        # The exact tool is named rather than `"required"` because the request
+        # may carry more than one tool later, and `"required"` would then let
+        # the model satisfy the constraint with a different one.
+        "tool_choice": {"type": "web_search"},
+        "include": ["web_search_call.action.sources"],
+        "input": args.query,
+    }
+
+
+def bounded_text(value: Any, limit: int) -> str:
+    return value[:limit] if isinstance(value, str) else ""
+
+
+def append_bounded_answer(chunks: list[str], value: Any, remaining: int) -> int:
+    if remaining <= 0 or not isinstance(value, str) or not value:
+        return remaining
+    chunk = value[:remaining]
+    chunks.append(chunk)
+    return remaining - len(chunk)
+
+
+def safe_source(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    raw_url = value.get("url")
+    if (
+        not isinstance(raw_url, str)
+        or not raw_url
+        or len(raw_url) > MAX_SOURCE_URL_CHARS
+    ):
+        return None
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in raw_url):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(raw_url)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in ("http", "https")
+        or not hostname
+        or parsed.username
+        or parsed.password
+    ):
+        return None
+    return {
+        "title": bounded_text(value.get("title"), MAX_SOURCE_TITLE_CHARS),
+        "url": raw_url,
+    }
+
+
+def append_sources(target: list[dict[str, str]], values: Any) -> None:
+    if not isinstance(values, list):
+        return
+    for value in values:
+        if len(target) >= MAX_SOURCES:
+            return
+        source = safe_source(value)
+        if source is not None:
+            target.append(source)
+
+
+def safe_usage(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, int] = {}
+    for field in ("input_tokens", "output_tokens", "total_tokens"):
+        count = value.get(field)
+        if (
+            isinstance(count, int)
+            and not isinstance(count, bool)
+            and 0 <= count <= 2**63 - 1
+        ):
+            output[field] = count
+    return output
+
+
+def normalize_response(response: dict[str, Any]) -> dict[str, Any]:
+    if "error" in response and response.get("error") is not None:
+        raise ValueError("OpenAI returned a provider error")
+    answer_parts: list[str] = []
+    remaining_answer = MAX_ANSWER_CHARS
+    sources: list[dict[str, str]] = []
+    output_items = response.get("output", [])
+    if not isinstance(output_items, list):
+        output_items = []
+    for item in output_items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "message":
+            content = item.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "output_text":
+                    continue
+                remaining_answer = append_bounded_answer(
+                    answer_parts, block.get("text"), remaining_answer
+                )
+                annotations = block.get("annotations", [])
+                if isinstance(annotations, list):
+                    for annotation in annotations:
+                        if len(sources) >= MAX_SOURCES:
+                            break
+                        if (
+                            isinstance(annotation, dict)
+                            and annotation.get("type") == "url_citation"
+                        ):
+                            source = safe_source(annotation)
+                            if source is not None:
+                                sources.append(source)
+        elif item.get("type") == "web_search_call":
+            action = item.get("action")
+            if isinstance(action, dict):
+                append_sources(sources, action.get("sources"))
+    # Retain compatibility with earlier provider response projections.
+    append_sources(sources, response.get("sources"))
+
+    unique_sources: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for source in sources:
+        if source["url"] in seen_urls:
+            continue
+        seen_urls.add(source["url"])
+        unique_sources.append(source)
+
+    return {
+        "answer": "\n".join(answer_parts)[:MAX_ANSWER_CHARS],
+        "sources": unique_sources,
+        "model": bounded_text(response.get("model"), MAX_MODEL_CHARS),
+        "usage": safe_usage(response.get("usage")),
+    }
+
+
+def perform_search(
+    api_key: str,
+    args: SimpleNamespace,
+    *,
+    opener: UrlOpen = open_without_redirects,
+) -> dict[str, Any]:
+    payload = json.dumps(request_body(args), separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        OPENAI_RESPONSES_ENDPOINT,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with opener(request, timeout=PROVIDER_TIMEOUT_SECS) as response:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("OpenAI response exceeded the configured size limit")
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("OpenAI returned a non-object response")
+    return normalize_response(decoded)
+
+
+def redacted(value: str, api_key: str) -> str:
+    return value.replace(api_key, "[redacted]") if api_key else value
+
+
+def provider_detail(error: urllib.error.HTTPError, api_key: str) -> str:
+    """The provider's own account of a refusal, bounded and credential-free.
+
+    OpenAI answers a refusal with `{"error": {"message": ..., "code": ...}}`,
+    and the message carries the only actionable distinction: a retired model
+    id, a rejected tool spec, an unfunded project, and a revoked key are all
+    HTTP 4xx and identical without it. The credential travels in a header
+    rather than the body, but redaction runs anyway — before the bound, so a
+    key cannot survive as a tail fragment — because a provider may quote a
+    request back.
+    """
+    try:
+        raw = error.read(MAX_FAILURE_BODY_BYTES)
+    except Exception:  # noqa: BLE001 - a stream that cannot be read has no detail
+        return ""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    try:
+        decoded = json.loads(text)
+    except (ValueError, TypeError):
+        decoded = None
+    message = ""
+    if isinstance(decoded, dict):
+        envelope = decoded.get("error")
+        if isinstance(envelope, dict):
+            message = envelope.get("message") or envelope.get("code") or ""
+        elif isinstance(envelope, str):
+            message = envelope
+        if not isinstance(message, str):
+            message = ""
+    if not message:
+        message = text
+    message = redacted(" ".join(message.split()), api_key)
+    return message[:MAX_FAILURE_DETAIL_CHARS]
+
+
+def failure_envelope(error: BaseException, api_key: str) -> dict[str, Any]:
+    """One shape for every failure, carrying whatever the failure actually knew.
+
+    The class name alone was the whole envelope, so a refusal that named its
+    own cause arrived as the single word `HTTPError`. The name is kept — it is
+    the stable field callers already read — and the status and the provider's
+    message are added beside it.
+    """
+    envelope: dict[str, Any] = {"error": type(error).__name__}
+    if isinstance(error, urllib.error.HTTPError):
+        envelope["status"] = error.code
+        detail = provider_detail(error, api_key)
+        if detail:
+            envelope["detail"] = detail
+    return envelope
+
+
+def main(input_bytes: bytes | None = None) -> int:
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        print(json.dumps({"error": "OPENAI_API_KEY not set"}), file=sys.stderr)
+        return 2
+    try:
+        args = parse_input(input_bytes if input_bytes is not None else sys.stdin.buffer.read(MAX_INPUT_BYTES + 1))
+        output = perform_search(api_key, args)
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ) as error:
+        print(json.dumps(failure_envelope(error, api_key)), file=sys.stderr)
+        return 1
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

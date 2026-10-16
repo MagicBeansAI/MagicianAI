@@ -1,0 +1,97 @@
+{
+  "contract_version": 1,
+  "journal_schema_version": 1,
+  "state_schema_version": 1,
+  "watermark_schema_version": 1,
+  "activation": "active_by_default_phase_2f",
+  "buffer_priority": [
+    "critical",
+    "lineage",
+    "restricted_payload"
+  ],
+  "current_record_class": {
+    "call_fact": "critical",
+    "provider_attempt": "critical",
+    "capture_gap": "critical"
+  },
+  "default_capacity": {
+    "critical": 8192,
+    "lineage": 4096,
+    "restricted_payload": 512
+  },
+  "configuration_invariants": {
+    "positive_limits": true,
+    "critical_not_smaller_than_restricted_payload": true,
+    "maximum_segment_bytes": 67108864,
+    "bounded_recovery_read": true
+  },
+  "append_order": [
+    "validate_scope_and_record",
+    "deduplicate_stable_revision",
+    "append_and_fsync_journal",
+    "materialize_uncommitted_prefix",
+    "atomically_advance_checksum_watermark"
+  ],
+  "storage_boundary": {
+    "scope_components": "validated_before_path_projection",
+    "tenant_path_components": "real_directories_only_no_symlink_redirection",
+    "segments_watermark_and_writer_lease": "regular_files_only_no_symlink_following"
+  },
+  "upstream_dispatch_admission": {
+    "ledger_intent": "persisted_before_worker_visibility",
+    "expired_submission": "rejected_before_idempotency_lookup_or_registration",
+    "expired_submission_telemetry": "submitted_then_tombstoned_with_zero_provider_attempts_for_sync_and_stream",
+    "pending_registry_and_lane_publication": "one_shutdown_serialized_admission_transaction",
+    "shutdown_wins_after_intent": "submitted_then_tombstoned_zero_attempt_lifecycle_without_ghost_pending_job"
+  },
+  "idempotency_key": [
+    "record_kind",
+    "stable_id",
+    "revision"
+  ],
+  "recovery": {
+    "startup_barrier": "wait_for_writer_index_validation_then_materialize_bounded_batches_in_background_without_detaching_a_live_writer",
+    "writer_ownership": "one_cross_process_advisory_lease_held_until_the_blocking_worker_really_exits",
+    "segment_filename": "validated_fixed_width_first_sequence_before_replay_or_reuse",
+    "oversized_segment": "reject_before_unbounded_read_or_json_decode",
+    "lifecycle_delivery_order": "independent_immutable_revisions_accept_missing_or_late_predecessors_and_revalidate_every_resolved_parent_edge_while_context_operation_effective_route_timing_and_attempt_count_drift_remain_fail_closed",
+    "partial_final_line": "truncate_to_last_complete_jsonl_record",
+    "malformed_complete_line": "fail_closed",
+    "sequence_gap": "fail_closed",
+    "duplicate_same_checksum": "deduplicate",
+    "duplicate_different_checksum": "fail_closed",
+    "materialization_failure": "retain_uncommitted_watermark_and_replay",
+    "canonical_index": {
+      "file": "recovery-index.sqlite3",
+      "schema_version": 1,
+      "authority": "rebuildable_from_immutable_journal",
+      "sqlite_cache_kib_per_open_scope": 1024,
+      "max_open_scopes": 8,
+      "replay_batch_rows": 256,
+      "replay_batch_bytes": 8388608,
+      "migration": "stream_history_once_and_checkpoint_each_batch",
+      "warm_restart": "verify_segment_metadata_and_boundary_then_recover_only_unindexed_suffix"
+    }
+  },
+  "critical_overload": {
+    "counter_dimensions": [
+      "principal",
+      "workspace",
+      "operation",
+      "reason"
+    ],
+    "counter_semantics": "exact_until_emitted",
+    "recovery_record": "capture_gap"
+  },
+  "shutdown": {
+    "bounded": true,
+    "timed_out_worker": "may_finish_in_background_but_retains_the_exclusive_writer_lease",
+    "drain_order": [
+      "critical",
+      "lineage",
+      "restricted_payload"
+    ],
+    "reports_remainder": true,
+    "owner_disconnect": "close_admission_then_defensively_drain_and_flush_the_stable_accepted_prefix"
+  }
+}

@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""Google Gemini image generation router for the current Nano Banana family."""
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import time
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
+
+
+NANO_BANANA_2_LITE_MODEL = "gemini-3.1-flash-lite-image"
+NANO_BANANA_2_MODEL = "gemini-3.1-flash-image"
+NANO_BANANA_PRO_MODEL = "gemini-3-pro-image"
+MAX_INPUT_BYTES = 128 * 1024
+
+QUALITY_TIER_MODEL_MAP = {
+    "fast": NANO_BANANA_2_LITE_MODEL,
+    "balanced": NANO_BANANA_2_MODEL,
+    "pro": NANO_BANANA_PRO_MODEL,
+}
+
+STANDARD_ASPECT_RATIOS = frozenset(
+    {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
+)
+MODEL_OUTPUT_CONSTRAINTS = {
+    NANO_BANANA_2_LITE_MODEL: {
+        "resolutions": frozenset({"1K"}),
+        "aspect_ratios": STANDARD_ASPECT_RATIOS,
+        "supports_search": False,
+    },
+    NANO_BANANA_2_MODEL: {
+        "resolutions": frozenset({"512", "1K", "2K", "4K"}),
+        "aspect_ratios": STANDARD_ASPECT_RATIOS | {"1:4", "4:1", "1:8", "8:1"},
+        "supports_search": True,
+    },
+    NANO_BANANA_PRO_MODEL: {
+        "resolutions": frozenset({"1K", "2K", "4K"}),
+        "aspect_ratios": STANDARD_ASPECT_RATIOS,
+        "supports_search": True,
+    },
+}
+
+# Validate output_path against path traversal - only allow temp dir or cwd subtree.
+def _resolve_allowed_output_dirs():
+    """Build the allowed-output-dir allowlist with macOS-friendly aliases.
+
+    On macOS, `/tmp` is a symlink to `/private/tmp` and `tempfile.gettempdir()`
+    returns the per-user temp dir under `/var/folders/.../T/` — neither of which
+    matches a caller-supplied `/tmp/...` path after `Path.resolve()`. So we
+    explicitly add `/tmp` and `/private/tmp` whenever they exist, alongside
+    the per-user temp and cwd. Path resolution still happens later in
+    `validate_output_path`; this list is the set of roots a resolved path
+    must fall under.
+    """
+    candidates = [
+        pathlib.Path(tempfile.gettempdir()),
+        pathlib.Path("/tmp"),
+        pathlib.Path("/private/tmp"),
+        pathlib.Path.cwd(),
+    ]
+    seen = set()
+    resolved = []
+    for c in candidates:
+        try:
+            r = c.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if r in seen:
+            continue
+        seen.add(r)
+        resolved.append(r)
+    return resolved
+
+
+ALLOWED_OUTPUT_DIRS = _resolve_allowed_output_dirs()
+
+
+def log_event(message):
+    print(f"[NANOBANANA2] {message}", file=sys.stderr, flush=True)
+
+
+def read_runtime_input():
+    raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("input exceeds adapter limit")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("input must be a JSON object")
+    return value
+
+
+def normalize_optional_text(value):
+    return (value or "").strip()
+
+
+def parse_input_image_paths(value):
+    if value in (None, "", "None"):
+        return []
+    return [path.strip() for path in value.split(",") if path.strip()]
+
+
+def normalize_quality_tier(value):
+    tier = normalize_optional_text(value).lower()
+    if tier in ("", "none"):
+        return "auto"
+    return tier
+
+
+def resolve_model(model_override, quality_tier, prompt, input_image_paths, thinking, use_search):
+    override = normalize_optional_text(model_override)
+    if override and override.lower() != "none":
+        return override, "manual"
+
+    normalized_tier = normalize_quality_tier(quality_tier)
+    if normalized_tier == "auto":
+        normalized_tier = "balanced"
+
+    resolved_model = QUALITY_TIER_MODEL_MAP.get(normalized_tier)
+    if not resolved_model:
+        allowed = ", ".join(["auto"] + list(QUALITY_TIER_MODEL_MAP.keys()))
+        raise ValueError(f"quality_tier must be one of: {allowed}")
+
+    return resolved_model, normalized_tier
+
+
+def validate_model_options(model, resolution, aspect_ratio, use_search):
+    """Reject option combinations unsupported by a known family model."""
+    constraints = MODEL_OUTPUT_CONSTRAINTS.get(model)
+    if constraints is None:
+        # Explicit model overrides remain forward-compatible. The provider is
+        # authoritative for models outside the built-in tier map.
+        return
+
+    normalized_resolution = normalize_optional_text(resolution).upper()
+    if normalized_resolution == "NONE":
+        normalized_resolution = ""
+    if normalized_resolution and normalized_resolution not in constraints["resolutions"]:
+        supported = ", ".join(sorted(constraints["resolutions"]))
+        raise ValueError(f"model {model} supports resolution: {supported}")
+
+    normalized_aspect_ratio = normalize_optional_text(aspect_ratio)
+    if normalized_aspect_ratio.lower() == "none":
+        normalized_aspect_ratio = ""
+    if normalized_aspect_ratio and normalized_aspect_ratio not in constraints["aspect_ratios"]:
+        supported = ", ".join(sorted(constraints["aspect_ratios"]))
+        raise ValueError(f"model {model} supports aspect_ratio: {supported}")
+
+    if use_search and not constraints["supports_search"]:
+        raise ValueError(
+            f"model {model} does not support Google Search grounding; "
+            "use quality_tier=balanced or quality_tier=pro"
+        )
+
+
+def validate_output_path(path_str):
+    """Validate that the output path is within an allowed directory."""
+    resolved = pathlib.Path(path_str).resolve()
+    for allowed in ALLOWED_OUTPUT_DIRS:
+        try:
+            resolved.relative_to(allowed)
+            return str(resolved)
+        except ValueError:
+            continue
+    print(
+        json.dumps(
+            {"error": f"output_path must be within {ALLOWED_OUTPUT_DIRS[0]} or current working directory"}
+        )
+    )
+    sys.exit(1)
+
+
+def main():
+    if genai is None or types is None:
+        print(json.dumps({"error": "google-genai package not installed. Run: pip install google-genai"}))
+        sys.exit(1)
+
+    api_key = os.environ.get("NANOBANANA2_API_KEY", "")
+    if not api_key:
+        print(
+            json.dumps(
+                {"error": "NANOBANANA2_API_KEY not set. Add it to <repo>/.env.copy.development at the repo root, then run `make -C skillshub setup-env`."}
+            )
+        )
+        sys.exit(1)
+
+    try:
+        params = read_runtime_input()
+    except (ValueError, json.JSONDecodeError):
+        print(json.dumps({"error": "invalid governed image input"}))
+        sys.exit(1)
+
+    prompt = params.get("prompt", "")
+    if not prompt:
+        print(json.dumps({"error": "prompt is required"}))
+        sys.exit(1)
+
+    model_override = params.get("model", "")
+    input_images = params.get("input_images", "")
+    output_path = params.get("output_path", "")
+    aspect_ratio = params.get("aspect_ratio", "")
+    resolution = params.get("resolution", "1K")
+    quality_tier = params.get("quality_tier", "auto")
+    thinking = params.get("thinking", "")
+    use_search = params.get("use_search", False)
+    api_timeout_secs = 1170
+
+    input_image_paths = parse_input_image_paths(input_images)
+    requested_quality_tier = normalize_quality_tier(quality_tier)
+    model, resolved_quality_tier = resolve_model(
+        model_override=model_override,
+        quality_tier=quality_tier,
+        prompt=prompt,
+        input_image_paths=input_image_paths,
+        thinking=thinking,
+        use_search=use_search,
+    )
+    validate_model_options(
+        model=model,
+        resolution=resolution,
+        aspect_ratio=aspect_ratio,
+        use_search=use_search,
+    )
+
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=api_timeout_secs * 1000),
+    )
+
+    contents = []
+    if input_image_paths:
+        from PIL import Image
+
+        for img_path in input_image_paths:
+            if os.path.isfile(img_path):
+                with Image.open(img_path) as img:
+                    contents.append(img.copy())
+            else:
+                print(json.dumps({"error": f"Input image not found: {img_path}"}))
+                sys.exit(1)
+
+    contents.append(prompt)
+
+    config_kwargs = {"response_modalities": ["TEXT", "IMAGE"]}
+
+    image_cfg = {}
+    if aspect_ratio and aspect_ratio not in ("None", ""):
+        image_cfg["aspect_ratio"] = aspect_ratio
+    if resolution and resolution not in ("None", ""):
+        image_cfg["image_size"] = resolution
+    if image_cfg:
+        config_kwargs["image_config"] = types.ImageConfig(**image_cfg)
+
+    if thinking and thinking not in ("None", ""):
+        config_kwargs["thinking_config"] = types.ThinkingConfig(
+            thinking_level=thinking, include_thoughts=False
+        )
+
+    if use_search:
+        config_kwargs["tools"] = [{"google_search": {}}]
+
+    try:
+        request_started_at = time.perf_counter()
+        log_event(
+            f"generate_content started model={model} requested_quality_tier={requested_quality_tier} "
+            f"resolved_quality_tier={resolved_quality_tier} resolution={resolution or 'default'} "
+            f"thinking={thinking or 'default'} use_search={use_search} "
+            f"input_images={len(input_image_paths)} api_timeout_secs={api_timeout_secs}"
+        )
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=types.GenerateContentConfig(**config_kwargs),
+        )
+        request_elapsed_ms = round((time.perf_counter() - request_started_at) * 1000)
+        log_event(f"generate_content completed elapsed_ms={request_elapsed_ms}")
+
+        result = {
+            "prompt": prompt,
+            "requested_quality_tier": requested_quality_tier,
+            "resolved_quality_tier": resolved_quality_tier,
+            "model": model,
+            "images": [],
+            "text": "",
+        }
+
+        # `response.parts` is `None` when the model declines (safety block,
+        # quota refusal, etc.) instead of returning content. Without this
+        # guard the `for ... in response.parts` below raises
+        # `TypeError: 'NoneType' object is not iterable`, masking the real
+        # decline reason as a crash. Surface a structured warning instead.
+        parts = response.parts or []
+        if not parts:
+            finish_reason = None
+            prompt_feedback = None
+            try:
+                candidate = (response.candidates or [None])[0]
+                finish_reason = (
+                    getattr(candidate, "finish_reason", None) if candidate else None
+                )
+            except Exception:
+                pass
+            try:
+                prompt_feedback = getattr(response, "prompt_feedback", None)
+            except Exception:
+                pass
+            result["warning"] = (
+                "Model returned no parts — likely declined (content safety, "
+                "quota, or empty response)."
+            )
+            if finish_reason is not None:
+                result["finish_reason"] = str(finish_reason)
+            if prompt_feedback is not None:
+                result["prompt_feedback"] = str(prompt_feedback)
+            log_event(
+                f"completed with no parts finish_reason={finish_reason} "
+                f"prompt_feedback={prompt_feedback}"
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return
+
+        for index, part in enumerate(parts):
+            if part.text:
+                result["text"] += part.text
+            elif part.inline_data:
+                image = part.as_image()
+
+                if output_path and output_path not in ("None", ""):
+                    out_file = validate_output_path(output_path)
+                else:
+                    tmp = tempfile.NamedTemporaryFile(
+                        suffix=".jpg", prefix="nanobanana2_", delete=False
+                    )
+                    out_file = tmp.name
+                    tmp.close()
+
+                if result["images"]:
+                    base, ext = os.path.splitext(out_file)
+                    out_file = f"{base}_{len(result['images'])}{ext}"
+
+                save_started_at = time.perf_counter()
+                log_event(f"saving image index={index} path={out_file}")
+                image.save(out_file)
+                save_elapsed_ms = round((time.perf_counter() - save_started_at) * 1000)
+                size_bytes = os.path.getsize(out_file)
+                log_event(
+                    f"saved image index={index} path={out_file} size_bytes={size_bytes} "
+                    f"elapsed_ms={save_elapsed_ms}"
+                )
+
+                result["images"].append({"path": out_file, "size_bytes": size_bytes})
+
+        if not result["images"]:
+            result["warning"] = "No images returned - model may have declined or returned text only"
+            log_event("completed without image output")
+
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    except ValueError as e:
+        print(json.dumps({"error": str(e)}))
+        sys.exit(1)
+    except (genai.errors.ClientError, genai.errors.ServerError):
+        print(json.dumps({"error": "Google image generation request failed"}))
+        sys.exit(1)
+    except Exception as e:
+        print(json.dumps({"error": f"Unexpected image adapter error: {type(e).__name__}"}))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,39 @@
+name: propose_backlog_item
+description: Append a prioritized directive to the shared company backlog for the CTO/CPO to groom.
+version: "1.0.0"
+guide: |
+  Tool name: `propose_backlog_item`
+
+  Add a directive to the company backlog — a lightweight, prioritized suggestion
+  for the CTO/CPO to groom and promote to work. Use for cross-functional asks
+  (features, fixes, experiments) that aren't yours to build directly.
+
+  Guidelines:
+  - keep `title` short and operational; it is the dedupe key (re-proposing the
+    same title refreshes the existing item in place, it does not append a copy)
+  - put the actionable context and rationale in `description`
+  - set `priority` (high | medium | low) to signal urgency; defaults to medium
+parameters:
+  - name: title
+    required: true
+    param_type: string
+    description: Short, operational backlog title. Doubles as the dedupe key.
+  - name: description
+    required: true
+    param_type: string
+    description: Actionable context and rationale for the directive.
+  - name: priority
+    param_type: string
+    description: Backlog priority signal; defaults to medium.
+    enum_values: [high, medium, low]
+    default: "medium"
+implementation:
+  type: compiled
+  provider_name: propose_backlog_item
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+  composition_category: action
+  sandbox: none

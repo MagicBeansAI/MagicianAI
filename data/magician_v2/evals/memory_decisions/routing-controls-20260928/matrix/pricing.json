@@ -1,0 +1,128 @@
+[
+  {
+    "cache_cost_usd": null,
+    "cost_source": "computed",
+    "cost_usd": 2.373e-05,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "computed",
+    "cost_usd": 2.3394000000000003e-05,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "local",
+    "cost_usd": 0.0,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "local",
+    "cost_usd": 0.0,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "local",
+    "cost_usd": 0.0,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "local",
+    "cost_usd": 0.0,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "computed",
+    "cost_usd": 2.3394000000000003e-05,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "computed",
+    "cost_usd": 2.373e-05,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "computed",
+    "cost_usd": 2.3394000000000003e-05,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "local",
+    "cost_usd": 0.0,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "local",
+    "cost_usd": 0.0,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "local",
+    "cost_usd": 0.0,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "local",
+    "cost_usd": 0.0,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+    "reasoning_cost_usd": null
+  },
+  {
+    "cache_cost_usd": null,
+    "cost_source": "computed",
+    "cost_usd": 2.3394000000000003e-05,
+    "input_cost_usd": null,
+    "output_cost_usd": null,
+    "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+    "reasoning_cost_usd": null
+  }
+]

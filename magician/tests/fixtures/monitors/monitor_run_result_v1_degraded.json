@@ -1,0 +1,39 @@
+{
+  "monitor_task_id": "task_monitor_fixture_002",
+  "execution_id": "exec_fixture_0011",
+  "monitor_revision": 1,
+  "started_at": "2026-07-22T07:00:00Z",
+  "completed_at": "2026-07-22T07:02:10Z",
+  "status": "degraded",
+  "complete_scan": false,
+  "source_outcomes": [
+    {
+      "source": "https://dashboard.example/analytics",
+      "status": "auth_failed",
+      "complete": false,
+      "items_scanned": 0,
+      "note": "Session expired; sign-in required before the analytics dashboard can be read."
+    },
+    {
+      "source": "https://status.example/history",
+      "status": "ok",
+      "complete": true,
+      "items_scanned": 8
+    }
+  ],
+  "counts": {
+    "scanned": 8,
+    "new": 0,
+    "updated": 0,
+    "unchanged": 8,
+    "possibly_removed": 0
+  },
+  "findings": [],
+  "run_fingerprint": "rf_ee04c7b8a1d92253",
+  "access_problem": {
+    "source": "https://dashboard.example/analytics",
+    "kind": "auth_failed",
+    "message": "Sign in to the analytics dashboard so the monitor can resume reading it.",
+    "since": "2026-07-22T07:00:00Z"
+  }
+}

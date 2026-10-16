@@ -1,0 +1,28 @@
+{
+  "type": "cone",
+  "version": 1,
+  "defaults": {
+    "ry_ratio": 0.3
+  },
+  "draw": [
+    {
+      "op": "arc",
+      "cx": "cx",
+      "cy": "cy+h/2",
+      "rx": "r",
+      "ry": "r*ry_ratio",
+      "from": 0,
+      "to": 360
+    },
+    {
+      "op": "line",
+      "from": ["cx-r", "cy+h/2"],
+      "to": ["cx", "cy-h/2"]
+    },
+    {
+      "op": "line",
+      "from": ["cx+r", "cy+h/2"],
+      "to": ["cx", "cy-h/2"]
+    }
+  ]
+}

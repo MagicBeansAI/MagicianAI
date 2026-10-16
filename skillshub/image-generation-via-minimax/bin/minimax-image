@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""MiniMax `image-01` (Hailuo) text-to-image — `mmx` artifact adapter.
+
+Subprocess-spawns the `mmx` CLI shipped by `mmx-cli` (npm) instead of
+calling the REST API directly. This matches the canonical magician
+pattern (claude / codex / agy / opencode / dugite all wrap their
+upstream CLI rather than reimplementing the auth + retry + JSON
+formatting on top of raw HTTP).
+
+Adapter responsibilities:
+  - Map the governed canonical JSON request into the right
+    `mmx image generate` flags.
+  - Read `MMX_CONFIG_DIR` from the environment and let `mmx` consume
+    credentials from `<MMX_CONFIG_DIR>/config.json`. This keeps the token
+    off process arguments and matches config-directory credential placement.
+  - Pin `--output json --quiet --non-interactive` so the CLI emits a
+    stable JSON shape and skips region-detection prompts.
+  - Parse the resulting `{"saved": [...]}` and translate it into the
+    same `{"images": [{"path": ..., "size_bytes": ...}]}` envelope the
+    rest of the magician pipeline expects (matches `nanobanana2.py`).
+
+Auth: reads `MMX_CONFIG_DIR` from env (injected by magician's secret
+binding when invoked via a chat session) and lets `mmx` load credentials
+from that directory's `config.json`.
+"""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+
+ALLOWED_ASPECT_RATIOS = {
+    "1:1",
+    "16:9",
+    "4:3",
+    "3:2",
+    "2:3",
+    "3:4",
+    "9:16",
+    "21:9",
+}
+
+
+def log_event(message: str) -> None:
+    print(f"[MINIMAX-IMAGE] {message}", file=sys.stderr, flush=True)
+
+
+def _resolve_allowed_output_dirs() -> list[pathlib.Path]:
+    """Allowlist of roots a resolved output_path must fall under.
+
+    Mirrors `nanobanana2.py`. On macOS `/tmp` is a symlink to
+    `/private/tmp` so we whitelist both. Per-user temp via
+    `tempfile.gettempdir()` and the magician process cwd cover the rest.
+    """
+    candidates = [
+        pathlib.Path(tempfile.gettempdir()),
+        pathlib.Path("/tmp"),
+        pathlib.Path("/private/tmp"),
+        pathlib.Path.cwd(),
+    ]
+    seen: set[str] = set()
+    resolved: list[pathlib.Path] = []
+    for c in candidates:
+        try:
+            r = c.resolve()
+        except Exception:
+            continue
+        key = str(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        if r.exists():
+            resolved.append(r)
+    return resolved
+
+
+ALLOWED_OUTPUT_DIRS = _resolve_allowed_output_dirs()
+
+
+def validate_output_path(path_str: str) -> str:
+    """Reject path traversal — only allow temp dir or cwd subtree."""
+    resolved = pathlib.Path(path_str).resolve()
+    for allowed in ALLOWED_OUTPUT_DIRS:
+        try:
+            resolved.relative_to(allowed)
+            return str(resolved)
+        except ValueError:
+            continue
+    print(
+        json.dumps(
+            {
+                "error": (
+                    f"output_path must be within {ALLOWED_OUTPUT_DIRS[0]} "
+                    f"or current working directory"
+                )
+            }
+        )
+    )
+    sys.exit(1)
+
+
+def normalize_optional_text(value: str) -> str:
+    return (value or "").strip()
+
+
+def parse_int(value: str, default: int, name: str) -> int:
+    raw = normalize_optional_text(value)
+    if not raw or raw.lower() == "none":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(json.dumps({"error": f"{name} must be an integer (got {raw!r})"}))
+        sys.exit(1)
+
+
+def parse_bool(value: str, default: bool) -> bool:
+    raw = normalize_optional_text(value).lower()
+    if not raw or raw == "none":
+        return default
+    if raw in ("true", "1", "yes", "y"):
+        return True
+    if raw in ("false", "0", "no", "n"):
+        return False
+    return default
+
+
+def resolve_mmx_binary() -> str:
+    """Find the `mmx` binary.
+
+    Looks first on PATH (which the magician inner-loop dispatcher
+    pre-prepends `skillshub/node_modules/.bin/` onto), then falls back
+    to walking up from this script to the npm root in case PATH
+    wasn't massaged.
+    """
+    found = shutil.which("mmx")
+    if found:
+        return found
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "node_modules" / ".bin" / "mmx"
+        if candidate.is_file():
+            return str(candidate)
+    print(
+        json.dumps(
+            {
+                "error": (
+                    "mmx CLI not found on PATH. Run `make -C skillshub install` "
+                    "(or `npm install` at the skillshub workspace root) to vendor "
+                    "mmx-cli into skillshub/node_modules/."
+                )
+            }
+        )
+    )
+    sys.exit(1)
+
+
+def main() -> None:
+    request = json.load(sys.stdin)
+    mmx_config_dir = os.environ.get("MMX_CONFIG_DIR", "").strip()
+    if not mmx_config_dir:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "MMX_CONFIG_DIR not set. Runtime must inject the temporary "
+                        "MiniMax config directory via config_directory credentials."
+                    )
+                }
+            )
+        )
+        sys.exit(1)
+
+    prompt = str(request.get("prompt", ""))
+    if not prompt:
+        print(json.dumps({"error": "prompt is required"}))
+        sys.exit(1)
+    if len(prompt) > 1500:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        f"prompt too long ({len(prompt)} chars); MiniMax "
+                        "rejects prompts over 1500 chars"
+                    )
+                }
+            )
+        )
+        sys.exit(1)
+
+    output_path = normalize_optional_text(str(request.get("output_path", "")))
+    aspect_ratio = (
+        normalize_optional_text(str(request.get("aspect_ratio", ""))) or "1:1"
+    )
+    if aspect_ratio not in ALLOWED_ASPECT_RATIOS:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        f"aspect_ratio {aspect_ratio!r} not supported. "
+                        f"Allowed: {sorted(ALLOWED_ASPECT_RATIOS)}"
+                    )
+                }
+            )
+        )
+        sys.exit(1)
+    n = int(request.get("n", 1))
+    if n < 1 or n > 9:
+        print(json.dumps({"error": "n must be between 1 and 9"}))
+        sys.exit(1)
+    prompt_optimizer = bool(request.get("prompt_optimizer", True))
+    subject_ref_image = normalize_optional_text(
+        str(request.get("subject_ref_image", ""))
+    )
+    api_timeout_secs = 270
+
+    # Resolve output path; mmx wants either --out <path> for a single
+    # image or --out-dir <dir> + --out-prefix <prefix> for batches.
+    if output_path and output_path.lower() != "none":
+        first_out = validate_output_path(output_path)
+    else:
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".jpg", prefix="minimax_image_", delete=False
+        )
+        first_out = tmp.name
+        tmp.close()
+
+    mmx = resolve_mmx_binary()
+
+    # Pin behavior:
+    #   --output json       → machine-parseable stdout
+    #   --quiet             → suppress spinner / progress lines
+    #   --non-interactive   → never prompt; bail on auth issues
+    #   MMX_CONFIG_DIR      → path to a directory containing config.json
+    #   --timeout <secs>    → cap on the upstream API call
+    argv: list[str] = [
+        mmx,
+        "--output",
+        "json",
+        "--quiet",
+        "--non-interactive",
+        "--timeout",
+        str(api_timeout_secs),
+        "image",
+        "generate",
+        "--prompt",
+        prompt,
+        "--aspect-ratio",
+        aspect_ratio,
+        "--n",
+        str(n),
+        "--response-format",
+        "url",
+    ]
+    if prompt_optimizer:
+        argv.append("--prompt-optimizer")
+    if subject_ref_image:
+        # mmx expects a structured value: `type=character,image=<path-or-url>`.
+        # We always send type=character — that's the character-consistency
+        # path the comic-strip fallback needs. Object-reference (type=object)
+        # isn't exposed via this skill; add a new param if/when needed.
+        argv.extend([
+            "--subject-ref",
+            f"type=character,image={subject_ref_image}",
+        ])
+    if n == 1:
+        argv.extend(["--out", first_out])
+    else:
+        # mmx requires --out-dir + --out-prefix when n > 1. Save into
+        # the same dir as `first_out` with a stable prefix derived from
+        # the basename so the caller can predict the filenames.
+        first_path = pathlib.Path(first_out)
+        argv.extend(
+            [
+                "--out-dir",
+                str(first_path.parent),
+                "--out-prefix",
+                first_path.stem,
+            ]
+        )
+
+    log_event(
+        f"image_generation started aspect_ratio={aspect_ratio} n={n} "
+        f"prompt_optimizer={prompt_optimizer} prompt_len={len(prompt)} "
+        f"api_timeout_secs={api_timeout_secs}"
+    )
+
+    started_at = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=api_timeout_secs + 30,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        f"mmx CLI hung past adapter timeout "
+                        f"({api_timeout_secs + 30}s)."
+                    )
+                }
+            )
+        )
+        sys.exit(1)
+    except Exception as e:
+        print(json.dumps({"error": f"Unexpected error spawning mmx: {type(e).__name__}: {e}"}))
+        sys.exit(1)
+
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+    log_event(
+        f"mmx returned exit={completed.returncode} elapsed_ms={elapsed_ms}"
+    )
+
+    stdout = (completed.stdout or "").strip()
+    stderr_tail = "\n".join((completed.stderr or "").strip().splitlines()[-10:])
+
+    if completed.returncode != 0:
+        # Try to surface the structured `{ "error": { ... } }` mmx emits
+        # on stderr when --output json is set; fall back to the raw tail.
+        upstream_error: dict | str = stderr_tail
+        try:
+            stderr_lines = [
+                ln for ln in (completed.stderr or "").splitlines() if ln.strip()
+            ]
+            for ln in reversed(stderr_lines):
+                if ln.startswith("{"):
+                    upstream_error = json.loads(ln)
+                    break
+        except Exception:
+            pass
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        f"mmx CLI exit {completed.returncode}. "
+                        "See `upstream` for the structured error."
+                    ),
+                    "upstream": upstream_error,
+                    "stdout": stdout[:2000],
+                }
+            )
+        )
+        sys.exit(1)
+
+    # Parse mmx's JSON output. Expected shape: {"saved": ["/path/...", ...]}
+    try:
+        parsed = json.loads(stdout) if stdout else {}
+    except json.JSONDecodeError:
+        print(
+            json.dumps(
+                {
+                    "error": "mmx returned non-JSON stdout (unexpected).",
+                    "stdout": stdout[:2000],
+                    "stderr_tail": stderr_tail,
+                }
+            )
+        )
+        sys.exit(1)
+
+    saved_paths: list[str] = parsed.get("saved") or []
+    if not saved_paths:
+        result = {
+            "prompt": prompt,
+            "model": "image-01",
+            "aspect_ratio": aspect_ratio,
+            "warning": (
+                "mmx returned no `saved` paths — likely declined or "
+                "upstream returned no image URLs."
+            ),
+            "upstream": parsed,
+            "stderr_tail": stderr_tail,
+        }
+        log_event("completed with no images")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    images: list[dict] = []
+    for path in saved_paths:
+        try:
+            size_bytes = os.path.getsize(path)
+        except OSError as e:
+            print(
+                json.dumps(
+                    {
+                        "error": (
+                            f"mmx reported saving {path} but the file "
+                            f"is unreadable: {e}"
+                        ),
+                        "saved_so_far": images,
+                    }
+                )
+            )
+            sys.exit(1)
+        log_event(f"saved image path={path} size_bytes={size_bytes}")
+        images.append({"path": path, "size_bytes": size_bytes})
+
+    result = {
+        "prompt": prompt,
+        "model": "image-01",
+        "aspect_ratio": aspect_ratio,
+        "prompt_optimizer": prompt_optimizer,
+        "images": images,
+        "elapsed_ms": elapsed_ms,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

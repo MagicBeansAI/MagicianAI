@@ -1,0 +1,25 @@
+name: list_memory_tiers
+description: List every memory tier the calling chat agent has — name, scope (user / agent / agent_goal), and description.
+version: "1.0.0"
+guide: |
+  Tool name: `list_memory_tiers`
+
+  Returns the calling agent's `memory_tiers` list with each tier's
+  name, scope (user-scope = shared user memory; agent-scope = per-agent
+  knowledge; agent_goal-scope = goal-lifetime scratch), and description.
+
+  Use this when the user asks "what do you remember?" or when you
+  want to decide which tier to `update_memory_tier` against. Pair with
+  `search_memory` to actually read items out of a tier.
+parameters: []
+implementation:
+  type: compiled
+  provider_name: list_memory_tiers
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - memory
+    - introspection
+  composition_category: action
+  sandbox: none

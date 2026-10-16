@@ -1,0 +1,52 @@
+{
+  "$defs": {
+    "AppDirectActionExpectedInstallationBinding": {
+      "additionalProperties": false,
+      "description": "Optional client-observed installation precondition for a direct app action.\nIt carries no authority: the server compares it with live registry state or\nan exact sealed replay and still owns every admitted revision and policy.",
+      "properties": {
+        "generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "package_revision_ref": {
+          "$ref": "#/$defs/AppReference"
+        }
+      },
+      "required": [
+        "generation",
+        "package_revision_ref"
+      ],
+      "type": "object"
+    },
+    "AppReference": {
+      "type": "string"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-direct-action-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Minimal owner-client request for a direct app action. Client-selected\nschema, grant, policy and provenance fields are intentionally absent; the\noptional installation binding is only a stale-render precondition. The\nserver resolves and rechecks all executable authority at admission.",
+  "properties": {
+    "expected_installation_binding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AppDirectActionExpectedInstallationBinding"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/AppReference"
+    },
+    "input": true
+  },
+  "required": [
+    "idempotency_key",
+    "input"
+  ],
+  "title": "AppDirectActionRequest",
+  "type": "object"
+}

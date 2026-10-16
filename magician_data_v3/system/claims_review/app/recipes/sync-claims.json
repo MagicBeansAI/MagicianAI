@@ -1,0 +1,1195 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "after_claim_id": {
+              "value_type": 1,
+              "required": false
+            },
+            "audience_id": {
+              "value_type": 2,
+              "required": false
+            },
+            "audience_kind": {
+              "value_type": 3,
+              "required": false
+            },
+            "claim_id": {
+              "value_type": 4,
+              "required": false
+            },
+            "limit": {
+              "value_type": 5,
+              "required": false
+            },
+            "status": {
+              "value_type": 6,
+              "required": false
+            },
+            "text": {
+              "value_type": 7,
+              "required": false
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:5e6031d8f58caed37a3f77bd8309bd45eb48f021fd43d35fe4559127fb49ab3a",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:5e6031d8f58caed37a3f77bd8309bd45eb48f021fd43d35fe4559127fb49ab3a",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {
+            "claims": {
+              "tool": "evidence_data",
+              "action": "list_pending_claims",
+              "primitive_ref": "primitive:platform:55f72632cfc42295c06643459e02fed4546fb7ca57e4256e81dbb0487d99a988",
+              "action_ref": "primitive-action:platform:676c5d8a31f71244b38236ac6608e9c8b31583f33762c4fc23e4d8ff475d03b4",
+              "parameters": {
+                "limit": 20
+              },
+              "input_parameters": {
+                "status": "status",
+                "audience_kind": "audience_kind",
+                "audience_id": "audience_id",
+                "text": "text",
+                "after_claim_id": "after_claim_id"
+              },
+              "when_input_present": null,
+              "rows": {
+                "kind": "document"
+              }
+            },
+            "detail": {
+              "tool": "evidence_data",
+              "action": "read_claim",
+              "primitive_ref": "primitive:platform:55f72632cfc42295c06643459e02fed4546fb7ca57e4256e81dbb0487d99a988",
+              "action_ref": "primitive-action:platform:0477a6d57f05264838d00dcc51efd287e2830a5268e02cb10d2bbb388dcc088c",
+              "parameters": {},
+              "input_parameters": {
+                "claim_id": "claim_id"
+              },
+              "when_input_present": "claim_id",
+              "rows": {
+                "kind": "document"
+              }
+            }
+          },
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/limit"
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "coalesce",
+                  "values": [
+                    3,
+                    4
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "clamp",
+                  "value": 5,
+                  "minimum": 6,
+                  "maximum": 7
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/claims/count"
+                },
+                {
+                  "kind": "present",
+                  "value": 9
+                },
+                {
+                  "kind": "if",
+                  "condition": 10,
+                  "then_value": 9,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/claims/scanned"
+                },
+                {
+                  "kind": "present",
+                  "value": 12
+                },
+                {
+                  "kind": "if",
+                  "condition": 13,
+                  "then_value": 12,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/claims/scan_truncated"
+                },
+                {
+                  "kind": "present",
+                  "value": 15
+                },
+                {
+                  "kind": "if",
+                  "condition": 16,
+                  "then_value": 15,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/claims/next_cursor"
+                },
+                {
+                  "kind": "present",
+                  "value": 18
+                },
+                {
+                  "kind": "if",
+                  "condition": 19,
+                  "then_value": 18,
+                  "else_value": 0
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "count": 11,
+                    "scanned": 14,
+                    "scan_truncated": 17,
+                    "next_cursor": 20
+                  }
+                },
+                {
+                  "kind": "object",
+                  "fields": {}
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/claims/claims"
+                },
+                {
+                  "kind": "slice",
+                  "value": 23,
+                  "limit": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/claim_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/status"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/stated_text"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/speaker"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/audience_ref/kind"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/audience_ref/id"
+                },
+                {
+                  "kind": "present",
+                  "value": 0
+                },
+                {
+                  "kind": "if",
+                  "condition": 31,
+                  "then_value": 0,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/revision"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/extracted_at"
+                },
+                {
+                  "kind": "present",
+                  "value": 29
+                },
+                {
+                  "kind": "present",
+                  "value": 30
+                },
+                {
+                  "kind": "present",
+                  "value": 25
+                },
+                {
+                  "kind": "project",
+                  "rows": 24,
+                  "pointer": "/claim_id",
+                  "skip_missing": false
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 38
+                },
+                {
+                  "kind": "less_than",
+                  "left": 39,
+                  "right": 40
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/claim_summary_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 42,
+                  "key_pointer": "/fields/claim_id",
+                  "key": 25,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 42,
+                  "key_pointer": "/fields/claim_id",
+                  "key": 25,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 43
+                },
+                {
+                  "kind": "not",
+                  "value": 45
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    46,
+                    37
+                  ]
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    45,
+                    37
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": "claim_summary"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    49,
+                    25
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/claim/claim_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/utterance_context/transcript_key"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/utterance_context/segment_key"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/utterance_context/speaker"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/utterance_context/speaker"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/utterance_context/stated_text"
+                },
+                {
+                  "kind": "present",
+                  "value": 0
+                },
+                {
+                  "kind": "if",
+                  "condition": 57,
+                  "then_value": 0,
+                  "else_value": 0
+                },
+                {
+                  "kind": "present",
+                  "value": 0
+                },
+                {
+                  "kind": "if",
+                  "condition": 59,
+                  "then_value": 0,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/claim/audience_ref/kind"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/claim/audience_ref/id"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/claim/extracted_by"
+                },
+                {
+                  "kind": "present",
+                  "value": 63
+                },
+                {
+                  "kind": "if",
+                  "condition": 64,
+                  "then_value": 63,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/claim/revision"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/claim/extracted_at"
+                },
+                {
+                  "kind": "present",
+                  "value": 51
+                },
+                {
+                  "kind": "present",
+                  "value": 61
+                },
+                {
+                  "kind": "present",
+                  "value": 62
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    68
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/claim_detail_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 72,
+                  "key_pointer": "/fields/claim_id",
+                  "key": 51,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 72,
+                  "key_pointer": "/fields/claim_id",
+                  "key": 51,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 73
+                },
+                {
+                  "kind": "not",
+                  "value": 75
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    76,
+                    71
+                  ]
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    75,
+                    71
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": "claim_detail"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    79,
+                    51
+                  ]
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "claims": 21,
+                    "detail": 22
+                  }
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "source_pages": 81
+                  }
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 82
+                },
+                {
+                  "kind": "present",
+                  "value": 29
+                },
+                {
+                  "kind": "if",
+                  "condition": 84,
+                  "then_value": 29,
+                  "else_value": 0
+                },
+                {
+                  "kind": "present",
+                  "value": 30
+                },
+                {
+                  "kind": "if",
+                  "condition": 86,
+                  "then_value": 30,
+                  "else_value": 0
+                },
+                {
+                  "kind": "present",
+                  "value": 61
+                },
+                {
+                  "kind": "if",
+                  "condition": 88,
+                  "then_value": 61,
+                  "else_value": 0
+                },
+                {
+                  "kind": "present",
+                  "value": 62
+                },
+                {
+                  "kind": "if",
+                  "condition": 90,
+                  "then_value": 62,
+                  "else_value": 0
+                },
+                {
+                  "kind": "equal",
+                  "left": 25,
+                  "right": 51
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    71,
+                    92
+                  ]
+                },
+                {
+                  "kind": "not",
+                  "value": 93
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    47,
+                    94
+                  ]
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    48,
+                    94
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/detail/claim/status"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/selected_summary_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 98,
+                  "key_pointer": "/fields/claim_id",
+                  "key": 51,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 98,
+                  "key_pointer": "/fields/claim_id",
+                  "key": 51,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 99
+                },
+                {
+                  "kind": "not",
+                  "value": 101
+                },
+                {
+                  "kind": "literal",
+                  "value": "claim_summary"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    103,
+                    51
+                  ]
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    71,
+                    102
+                  ]
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    71,
+                    101
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": "current"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/after_claim_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 108
+                },
+                {
+                  "kind": "if",
+                  "condition": 109,
+                  "then_value": 108,
+                  "else_value": 0
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 38
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/claim_sync_page_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 112,
+                  "key_pointer": "/fields/page_id",
+                  "key": 107,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 112,
+                  "key_pointer": "/fields/page_id",
+                  "key": 107,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 113
+                },
+                {
+                  "kind": "not",
+                  "value": 115
+                },
+                {
+                  "kind": "literal",
+                  "value": "claim_sync_page"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    117,
+                    107
+                  ]
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "claim_summary_existing",
+                "entity": "claim_summary",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "claim_id"
+                  ],
+                  "limit": 100,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "in",
+                        "field": "claim_id",
+                        "values": []
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/values": 38
+                }
+              },
+              {
+                "name": "claim_detail_existing",
+                "entity": "claim_detail",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "claim_id"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "claim_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 51
+                }
+              },
+              {
+                "name": "selected_summary_existing",
+                "entity": "claim_summary",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "claim_id"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "claim_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 51
+                }
+              },
+              {
+                "name": "claim_sync_page_existing",
+                "entity": "claim_sync_page",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "page_id"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "page_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 107
+                }
+              }
+            ],
+            "query_when": {
+              "claim_summary_existing": 41,
+              "claim_detail_existing": 71,
+              "selected_summary_existing": 71
+            },
+            "guards": [],
+            "mutations": [
+              {
+                "entity": "claim_summary",
+                "for_each": 24,
+                "when": 95,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 50,
+                  "fields": {
+                    "claim_id": 25,
+                    "status": 26,
+                    "claim_text": 27,
+                    "speaker_name": 28,
+                    "audience_kind": 85,
+                    "audience_id": 87,
+                    "context_excerpt": 32,
+                    "expected_revision": 33,
+                    "created_at": 34,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "claim_summary",
+                "for_each": 24,
+                "when": 96,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 43,
+                  "fields": {
+                    "claim_id": 25,
+                    "status": 26,
+                    "claim_text": 27,
+                    "speaker_name": 28,
+                    "audience_kind": 85,
+                    "audience_id": 87,
+                    "context_excerpt": 32,
+                    "expected_revision": 33,
+                    "created_at": 34,
+                    "synced_at": 1
+                  },
+                  "revision": 44
+                }
+              },
+              {
+                "entity": "claim_detail",
+                "for_each": null,
+                "when": 77,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 80,
+                  "fields": {
+                    "claim_id": 51,
+                    "transcript_id": 52,
+                    "utterance_id": 53,
+                    "speaker_id": 54,
+                    "speaker_name": 55,
+                    "claim_text": 56,
+                    "prior_context": 58,
+                    "following_context": 60,
+                    "audience_kind": 89,
+                    "audience_id": 91,
+                    "extractor_id": 65,
+                    "expected_revision": 66,
+                    "created_at": 67,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "claim_detail",
+                "for_each": null,
+                "when": 78,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 73,
+                  "fields": {
+                    "claim_id": 51,
+                    "transcript_id": 52,
+                    "utterance_id": 53,
+                    "speaker_id": 54,
+                    "speaker_name": 55,
+                    "claim_text": 56,
+                    "prior_context": 58,
+                    "following_context": 60,
+                    "audience_kind": 89,
+                    "audience_id": 91,
+                    "extractor_id": 65,
+                    "expected_revision": 66,
+                    "created_at": 67,
+                    "synced_at": 1
+                  },
+                  "revision": 74
+                }
+              },
+              {
+                "entity": "claim_summary",
+                "for_each": null,
+                "when": 105,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 104,
+                  "fields": {
+                    "claim_id": 51,
+                    "status": 97,
+                    "claim_text": 56,
+                    "speaker_name": 55,
+                    "audience_kind": 89,
+                    "audience_id": 91,
+                    "context_excerpt": 0,
+                    "expected_revision": 66,
+                    "created_at": 67,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "claim_summary",
+                "for_each": null,
+                "when": 106,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 99,
+                  "fields": {
+                    "claim_id": 51,
+                    "status": 97,
+                    "claim_text": 56,
+                    "speaker_name": 55,
+                    "audience_kind": 89,
+                    "audience_id": 91,
+                    "context_excerpt": 0,
+                    "expected_revision": 66,
+                    "created_at": 67,
+                    "synced_at": 1
+                  },
+                  "revision": 100
+                }
+              },
+              {
+                "entity": "claim_sync_page",
+                "for_each": null,
+                "when": 116,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 118,
+                  "fields": {
+                    "page_id": 107,
+                    "after_claim_id": 110,
+                    "next_cursor": 20,
+                    "claim_ids_json": 111,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "claim_sync_page",
+                "for_each": null,
+                "when": 115,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 113,
+                  "fields": {
+                    "page_id": 107,
+                    "after_claim_id": 110,
+                    "next_cursor": 20,
+                    "claim_ids_json": 111,
+                    "synced_at": 1
+                  },
+                  "revision": 114
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64,
+            "source_parameters": {
+              "claims": {
+                "limit": 8
+              }
+            },
+            "scan_queries": [
+              "claim_summary_existing"
+            ],
+            "summary": 83
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 2,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 2
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "@magician/skill-music-generation-via-minimax",
+  "private": true,
+  "description": "MiniMax CLI (mmx) wrapper — song/instrumental generation via music-2.6 family. Bundles `mmx-cli` so the `mmx` bin lands in skillshub/node_modules/.bin/.",
+  "dependencies": {
+    "mmx-cli": "^1.0.0"
+  }
+}

@@ -1,0 +1,399 @@
+name: duckdb
+description: Embedded SQL analytics engine — query CSV, JSON, Parquet files and in-memory tables with full SQL support
+guide: |-
+  Embedded SQL analytics — query CSV/JSON/Parquet files and persistent .duckdb
+  stores with full SQL. Runs in-process with zero setup. Tables and views
+  created in one call persist across subsequent calls within the same session
+  (in-memory mode only — see Session state notes).
+
+  # Inner actions
+
+  Prefer the structured actions when they fit. They validate inputs, escape
+  paths, and document the intent to your downstream. Fall back to `query` only
+  when no structured action fits (window functions, CTEs, multi-table joins
+  the others don't compose).
+
+  - `preview {source, limit?}` — peek at a file or table.
+    SELECT * FROM '<source>' LIMIT <n>. Non-positive limit clamps to 1.
+    Always run this first against an unfamiliar source.
+  - `describe {source, is_table?}` — schema inspection.
+    File mode (default): DESCRIBE SELECT * FROM '<source>'.
+    Table mode (is_table:true): DESCRIBE <identifier>. Identifier validated
+    as [A-Za-z0-9_]; use `query` for quoted identifiers.
+  - `list_tables {database?}` — SHOW TABLES for the current session, or for
+    `database` when set. Default output_format=table for human scan.
+  - `read_parquet {path, where_clause?, select?, limit?, hive_partitioning?}` —
+    SELECT <select> FROM read_parquet('<path>', hive_partitioning=<bool>) with
+    optional WHERE and LIMIT. select defaults to "*", hive_partitioning to true.
+    SHORTHAND: pass path="llm_calls@<principal>/<workspace>" to expand to the
+    LLM-call lakehouse glob for that scope.
+  - `export {sql, output_path, format?, header?}` — wraps a SELECT in
+    COPY (...) TO '<path>' (FORMAT '<fmt>', HEADER ...). Whitelisted formats:
+    csv (default, with HEADER true unless header:false), parquet, json
+    (parquet/json ignore the header flag). Anything else returns an error
+    instead of letting DuckDB parse-fail.
+  - `attach {attach_path, alias, read_only?}` — ATTACH '<path>' AS <alias>
+    [(READ_ONLY)]. Alias validated as [A-Za-z0-9_]. read_only defaults to
+    true — pass false only when you intend to write.
+  - `query {sql, database?, output_format?, timeout_secs?}` — escape hatch
+    for raw SQL when the structured actions don't fit. Use after `preview`
+    and `describe` have established the shape.
+
+  # Typical recipe (use the structured actions where possible)
+
+  Goal: top-10 spenders from the LLM-call lakehouse over the last 7 days.
+
+    1. preview {"source": "magician_data_v3/scopes/anonymous/default/analytics/llm_calls/dt=*/*.parquet", "limit": 3}
+       → see one batch of rows so you know the column shape.
+    2. describe {"source": "..."}
+       → confirm column types and nullable fields.
+    3. read_parquet {"path": "llm_calls@anonymous/default", "select": "agent_id, SUM(cost_usd) AS spend", "where_clause": "timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 7 DAYS)"}
+       → materialise the slice. GROUP BY + ORDER BY isn't expressible in
+         read_parquet alone, so:
+    4. query {"sql": "CREATE TABLE top_spenders AS SELECT agent_id, SUM(spend) AS total FROM (...) GROUP BY agent_id ORDER BY total DESC LIMIT 10"}
+       → finish with a GROUP BY/ORDER BY shape.
+    5. export {"sql": "SELECT * FROM top_spenders", "output_path": "/tmp/top_spenders.csv", "format": "csv"}
+       → materialise to disk if the analysis needs a durable artefact.
+
+  # Examples per action
+
+  preview a CSV:
+    {"source": "data/sales.csv", "limit": 10}
+
+  describe a Parquet path:
+    {"source": "data/events.parquet"}
+
+  describe a session table:
+    {"source": "cleaned", "is_table": true}
+
+  list tables in the current session:
+    {}
+
+  read_parquet against the LLM-call lakehouse with the shorthand:
+    {"path": "llm_calls@anonymous/default", "select": "model, COUNT(*) AS n", "where_clause": "timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 1 DAY)"}
+
+  export a session table to CSV:
+    {"sql": "SELECT * FROM cleaned", "output_path": "/tmp/cleaned.csv", "format": "csv"}
+
+  export to Parquet (header flag ignored):
+    {"sql": "SELECT * FROM cleaned", "output_path": "/tmp/cleaned.parquet", "format": "parquet"}
+
+  attach a persistent store read-only:
+    {"attach_path": "/tmp/finance.duckdb", "alias": "finance"}
+
+  raw query for a window function:
+    {"sql": "SELECT agent_id, ts, cost_usd, SUM(cost_usd) OVER (PARTITION BY agent_id ORDER BY ts) AS running FROM cleaned"}
+
+  # Direct file querying (any action)
+
+  Any action that takes a `source` or `path` can point at:
+    - CSV     'file.csv'
+    - JSON    'file.json'
+    - Parquet 'file.parquet'
+    - Globs   'data/*.csv' or 'logs/dt=*/*.parquet'
+
+  # Output formats
+
+  output_format parameter on actions that return rows:
+    - json (default): array of objects, best for follow-up computation
+    - csv:            header + rows, best for export
+    - table:          human-readable aligned columns, best for inspection
+
+  list_tables defaults to "table"; everything else defaults to "json".
+
+  # Session state notes
+
+  In-memory mode (no `database` param): tables/views created via CREATE TABLE
+  AS SELECT or CREATE VIEW AS SELECT survive across actions in the same
+  session. Use this when chaining preview → query → query → export.
+
+  Database-file mode (`database` set): each action opens a fresh connection
+  to that file. Temp tables/views do NOT persist between actions. Use this
+  only when querying an existing persistent .duckdb.
+
+  Single quotes in file paths are escaped per DuckDB convention (doubled).
+  Don't worry about it — the structured actions do this for you.
+parameters:
+- name: sql
+  required: true
+  param_type: string
+  description: SQL query to execute (full DuckDB SQL dialect)
+- name: database
+  param_type: string
+  description: Path to a persistent .duckdb file. When omitted, uses session-scoped in-memory database.
+- name: output_format
+  param_type: string
+  description: 'Output format: json (default), csv, or table'
+  default: json
+  enum_values:
+  - json
+  - csv
+  - table
+- name: timeout_secs
+  param_type: integer
+  description: Query timeout in seconds
+  default: '120'
+- name: source
+  param_type: string
+  description: File path (.csv/.json/.parquet) or table name. Used by preview/describe.
+- name: limit
+  param_type: integer
+  description: Row limit for preview. Default 10. Clamped to >= 1.
+  default: '10'
+- name: is_table
+  param_type: boolean
+  description: When true, treat `source` as a SQL table identifier (must be alphanumeric/underscore). When false (default), treat it as a file path.
+  default: 'false'
+- name: path
+  param_type: string
+  description: Parquet glob path, or `llm_calls@<principal>/<workspace>` shorthand for the LLM-call lakehouse.
+- name: where_clause
+  param_type: string
+  description: SQL WHERE clause body (without the `WHERE` keyword) for read_parquet.
+- name: select
+  param_type: string
+  description: SQL SELECT list for read_parquet. Defaults to `*`.
+  default: '*'
+- name: hive_partitioning
+  param_type: boolean
+  description: Enable hive_partitioning so dt=YYYY-MM-DD partition columns are surfaced. Defaults to true.
+  default: 'true'
+- name: output_path
+  param_type: string
+  description: Output file path for export. Single quotes are escaped per DuckDB convention.
+- name: format
+  param_type: string
+  description: 'Export format: csv (default), parquet, or json'
+  default: csv
+  enum_values:
+  - csv
+  - parquet
+  - json
+- name: header
+  param_type: boolean
+  description: Include header row in CSV export. Ignored for parquet/json. Defaults to true.
+  default: 'true'
+- name: attach_path
+  param_type: string
+  description: Path to a .duckdb file to ATTACH. (Named `attach_path` rather than `database` so it doesn't collide with the session-database param.)
+- name: alias
+  param_type: string
+  description: SQL identifier (alphanumeric/underscore only) to use as the ATTACH alias.
+- name: read_only
+  param_type: boolean
+  description: Attach read-only. Defaults to true (the safe default).
+  default: 'true'
+native_action_schemas:
+  query:
+    description: Execute one DuckDB SQL statement or script through the embedded Rust DuckDB provider. Use this for SELECT/CREATE VIEW/CREATE TABLE/COPY and schema inspection.
+    parameters:
+    - sql
+    - database
+    - output_format
+    - timeout_secs
+    required:
+    - sql
+    parameter_overrides:
+      sql:
+        type: string
+        description: SQL query to execute. DuckDB can query CSV/JSON/Parquet paths directly.
+      database:
+        type: string
+        description: Optional persistent .duckdb file. Omit to use the session-scoped in-memory database.
+      output_format:
+        type: string
+        enum:
+        - json
+        - csv
+        - table
+        default: json
+        description: Result format. Prefer json for follow-up computation; table for human inspection.
+      timeout_secs:
+        type: integer
+        default: 120
+        description: Query timeout in seconds.
+  preview:
+    description: Preview the first N rows of a CSV/JSON/Parquet file or table. Use before any heavier query so you see the columns and a sample. Clamps non-positive limit to 1.
+    parameters:
+    - source
+    - limit
+    - database
+    - output_format
+    required:
+    - source
+    parameter_overrides:
+      source:
+        type: string
+        description: File path (.csv/.json/.parquet) or table name to preview from.
+      limit:
+        type: integer
+        description: Number of rows to preview. Default 10. Clamped to >= 1.
+        default: 10
+      database:
+        type: string
+        description: Optional persistent .duckdb file. Omit to use the session-scoped in-memory database.
+      output_format:
+        type: string
+        enum:
+        - json
+        - csv
+        - table
+        default: json
+        description: Result format. Prefer json for follow-up computation; table for human inspection.
+  describe:
+    description: Inspect the schema (column names + types) of a file or table. Always run before joining or aggregating unfamiliar data. Set is_table=true to describe a session table by identifier.
+    parameters:
+    - source
+    - is_table
+    - database
+    - output_format
+    required:
+    - source
+    parameter_overrides:
+      source:
+        type: string
+        description: File path or table identifier to describe. When is_table=true, must be alphanumeric/underscore only.
+      is_table:
+        type: boolean
+        default: false
+        description: When true, treat `source` as a SQL table identifier; when false (default), treat as a file path.
+      database:
+        type: string
+        description: Optional persistent .duckdb file. Omit to use the session-scoped in-memory database.
+      output_format:
+        type: string
+        enum:
+        - json
+        - csv
+        - table
+        default: json
+        description: Result format. Prefer table for human inspection of schemas.
+  list_tables:
+    description: List tables and views in the current DuckDB session (or in the attached database when the `database` parameter is set). Takes no other parameters.
+    parameters:
+    - database
+    - output_format
+    required: []
+    parameter_overrides:
+      database:
+        type: string
+        description: Optional persistent .duckdb file. Omit to list tables in the session-scoped in-memory database.
+      output_format:
+        type: string
+        enum:
+        - json
+        - csv
+        - table
+        default: table
+        description: Result format. Table is the natural choice for a quick visual scan.
+  read_parquet:
+    description: |
+      Read Parquet files via DuckDB's read_parquet(). Supports glob paths and
+      hive partitioning. Shorthand: pass `llm_calls@<principal>/<workspace>`
+      as `path` to expand to the LLM-call lakehouse glob for that scope.
+    parameters:
+    - path
+    - where_clause
+    - select
+    - limit
+    - hive_partitioning
+    - database
+    - output_format
+    required:
+    - path
+    parameter_overrides:
+      path:
+        type: string
+        description: Parquet glob path, or `llm_calls@<principal>/<workspace>` shorthand for the LLM-call lakehouse.
+      where_clause:
+        type: string
+        description: SQL WHERE clause body (without the `WHERE` keyword). Optional.
+      select:
+        type: string
+        description: SQL SELECT list. Defaults to `*`.
+        default: "*"
+      limit:
+        type: integer
+        description: LIMIT count. Optional.
+      hive_partitioning:
+        type: boolean
+        description: Enable hive_partitioning so dt=YYYY-MM-DD columns are surfaced. Defaults to true.
+        default: true
+      database:
+        type: string
+        description: Optional persistent .duckdb file. Omit to use the session-scoped in-memory database.
+      output_format:
+        type: string
+        enum:
+        - json
+        - csv
+        - table
+        default: json
+        description: Result format. Prefer json for follow-up computation; table for human inspection.
+  export:
+    description: Export the result of a SELECT to a file via COPY ... TO. Whitelists csv / parquet / json formats. The `sql` parameter is the SELECT to export (no leading COPY — the action wraps it).
+    parameters:
+    - sql
+    - output_path
+    - format
+    - header
+    - database
+    required:
+    - sql
+    - output_path
+    parameter_overrides:
+      sql:
+        type: string
+        description: The SELECT statement to export. Do NOT include `COPY (...) TO ...` — this action wraps it.
+      output_path:
+        type: string
+        description: Output file path.
+      format:
+        type: string
+        enum:
+        - csv
+        - parquet
+        - json
+        default: csv
+        description: Export format. Case-insensitive.
+      header:
+        type: boolean
+        default: true
+        description: Include header row in CSV. Ignored for parquet/json.
+      database:
+        type: string
+        description: Optional persistent .duckdb file. Omit to use the session-scoped in-memory database.
+  attach:
+    description: ATTACH a .duckdb file as an alias so its tables can be referenced by `<alias>.<table>` in subsequent queries. Alias must be alphanumeric/underscore. Defaults to read-only.
+    parameters:
+    - attach_path
+    - alias
+    - read_only
+    required:
+    - attach_path
+    - alias
+    parameter_overrides:
+      attach_path:
+        type: string
+        description: Path to a .duckdb file to ATTACH.
+      alias:
+        type: string
+        description: SQL identifier ([A-Za-z0-9_]) to use as the ATTACH alias.
+      read_only:
+        type: boolean
+        default: true
+        description: Attach read-only. Defaults to true; pass false only when you intend to write.
+implementation:
+  type: primitive
+  provider_name: duckdb
+  timeout_secs: 120
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 120
+  categories:
+  - data
+  - analytics
+  - sql
+  - tabular
+  composition_category: data_operations
+  sandbox: none

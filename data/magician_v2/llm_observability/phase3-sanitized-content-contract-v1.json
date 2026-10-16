@@ -1,0 +1,82 @@
+{
+  "contract_version": 1,
+  "phase": 3,
+  "default_mode": "metadata",
+  "raw_encrypted_mode": "disabled_until_phase10_key_lifecycle_gate",
+  "ownership": {
+    "observer": "magicllm_borrowed_in_process_events_only",
+    "policy_sanitization_storage_access": "magician"
+  },
+  "capture_events": [
+    "logical_request",
+    "effective_request_per_provider_attempt",
+    "normalized_response_per_successful_provider_attempt"
+  ],
+  "policy": {
+    "precedence": [
+      "exact_scope_override",
+      "exact_operation_override",
+      "global_default"
+    ],
+    "sampling": "deterministic_by_call_id_and_operation",
+    "public_guest_default": "metadata_only",
+    "sanitizer_failure": "content_free_capture_gap_and_metadata_only"
+  },
+  "redaction": {
+    "before_persistence": true,
+    "at_restricted_read": true,
+    "known_secret_canaries": "scope_secret_store_snapshot",
+    "binary_and_media": "reference_only",
+    "dynamic_keys_and_tool_identifiers": "sanitized_as_untrusted_content",
+    "reasoning": "count_and_keyed_fingerprint_only",
+    "provider_raw_body": "never_captured",
+    "oversize": "explicit_content_omitted_metadata",
+    "fingerprints": "per_scope_hmac_sha256_owner_only_key"
+  },
+  "durability": {
+    "journal_namespace": "restricted_content",
+    "writer_lease": "independent_from_canonical_facts",
+    "ordering": "record_and_64mib_byte_bounded_raw_queue_then_sanitize_then_append_materialize_commit",
+    "committed_payload_journal": "pruned_after_materialization",
+    "durable_idempotency": "stable_revision_deterministic_object_checked_across_utc_partitions",
+    "datasets": [
+      "llm_call_io",
+      "llm_context_blocks",
+      "llm_content_tombstones",
+      "llm_content_access_audit"
+    ],
+    "ordinary_fact_registry_contains_restricted_datasets": false
+  },
+  "restricted_access": {
+    "grant_issuance": "setup_token_authenticated",
+    "grant_shape": "random_one_use_server_bound_scope_actor_call_reason_and_expiry",
+    "model_arguments_are_authority": false,
+    "cache_control": "no_store_private",
+    "read_requires_current_redaction": true,
+    "read_requires_durable_audit_before_return": "fsynced_marker_then_governed_parquet_copy",
+    "read_revision_budget": 256,
+    "error_surface": "fixed_machine_codes_no_store",
+    "provider_action": "absent_until_typed_trusted_action_grant_reaches_dispatch"
+  },
+  "deletion": {
+    "immediate_authority": "atomic_fsynced_revocation_marker",
+    "analytics_copy": "append_only_tombstone",
+    "restart_safe": true,
+    "retention": "independent_utc_partition_sweep_tombstones_never_shorter_than_sanitized_io"
+  },
+  "tests": [
+    "known_secret_redaction",
+    "sanitizer_failure_metadata_only",
+    "binary_media_reference_only",
+    "dynamic_key_and_tool_identifier_redaction",
+    "prompt_injection_inert",
+    "oversize_content_omitted",
+    "cross_scope_denial",
+    "missing_and_forged_grant_denial",
+    "read_time_redaction_and_audit",
+    "restart_safe_deletion",
+    "independent_retention",
+    "journal_namespace_isolation",
+    "exact_replay_and_cross_partition_conflict"
+  ]
+}

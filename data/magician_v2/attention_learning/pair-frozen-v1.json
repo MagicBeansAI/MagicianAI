@@ -1,0 +1,14 @@
+{
+  "fixture_id": "attention-pair-frozen-v1",
+  "audited_merge_threshold": 0.95,
+  "precision_gate": 0.98,
+  "false_merge_rate_gate": 0.01,
+  "pairs": [
+    {"pair_id":"p1","label":"same_underlying_item","same_underlying_item_probability":0.99,"same_obligation_probability":0.91,"slice":"exact_source"},
+    {"pair_id":"p2","label":"same_obligation","same_underlying_item_probability":0.74,"same_obligation_probability":0.98,"slice":"campaign"},
+    {"pair_id":"p3","label":"same_obligation","same_underlying_item_probability":0.51,"same_obligation_probability":0.82,"slice":"cross_source"},
+    {"pair_id":"n1","label":"not_duplicate","same_underlying_item_probability":0.09,"same_obligation_probability":0.21,"slice":"same_sender"},
+    {"pair_id":"n2","label":"not_duplicate","same_underlying_item_probability":0.32,"same_obligation_probability":0.88,"slice":"same_campaign_distinct_action"},
+    {"pair_id":"n3","label":"not_duplicate","same_underlying_item_probability":0.12,"same_obligation_probability":0.93,"slice":"near_threshold"}
+  ]
+}

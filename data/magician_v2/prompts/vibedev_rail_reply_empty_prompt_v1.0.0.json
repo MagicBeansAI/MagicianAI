@@ -1,0 +1,19 @@
+{
+  "name": "vibedev_rail_reply_empty_prompt",
+  "version": "1.0.0",
+  "content": [
+    "`@vibedev` needs something to build. Tell me what you want changed on the same line — for example `@vibedev fix the footer spacing`.",
+    "",
+    "Add `#discuss` right after the marker (`@vibedev #discuss should we split this module?`) to get a written plan instead of a code change."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Assistant reply when a `@vibedev` chat turn carries the marker but no request. No task is created. The marker parser reports a bare marker as a real rail turn with an empty prompt and leaves the decision here, because only the chat turn can say so in the user's own thread.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` empty-request refusal.",
+    "tags": ["vibedev", "vibedev-rail", "chat-reply", "refusal"],
+    "estimated_tokens": 65
+  }
+}

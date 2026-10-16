@@ -1,0 +1,52 @@
+name: app_action_invoke
+description: Launch one discovered user-triggered app action through the canonical governed workflow service. Returns a stable run handle, truthful launch state, and an eligible typed result when already available.
+version: "1.0.0"
+guide: |
+  Tool name: `app_action_invoke`
+
+  Use only after `app_discover` identifies an enabled installation, action,
+  and its current input shape. Supply one stable idempotency key and reuse the
+  same key with exactly the same input when recovering from a timeout or an
+  `effect_uncertain` response. Do not copy data returned by `app_data_query`,
+  `app_data_search`, or another app action into this tool; use
+  `app_data_compose` or `app_action_compose` so source policy and provenance
+  remain attached.
+
+  An already-sealed typed result is returned only when its current destination
+  policy and the physical caller permit it; otherwise the result is withheld
+  completely. The response never exposes task/execution IDs,
+  grant/schema/package revisions, receipts, raw workflow errors, labels, or
+  provenance. Use the returned `run_handle.run_ref` with `app_action_compose`
+  when the result needs to feed another app without copying its bytes through
+  the model.
+parameters:
+  - name: installation_id
+    required: true
+    param_type: string
+    description: Opaque enabled installation returned by app_discover.
+  - name: action_id
+    required: true
+    param_type: string
+    description: User-triggered action returned by app_discover.
+  - name: idempotency_key
+    required: true
+    param_type: string
+    description: Stable caller-chosen request identity. Reuse only for an exact retry.
+  - name: input
+    required: true
+    param_type: object
+    description: Typed input matching the discovered action contract.
+implementation:
+  type: compiled
+  provider_name: app_action_invoke
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - apps
+    - action
+  composition_category: action
+  sandbox: none
+reliability:
+  read_only: false
+  idempotent: true

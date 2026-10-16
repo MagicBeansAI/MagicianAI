@@ -1,0 +1,186 @@
+name: vector
+description: |
+  Semantic vector toolkit backed by lancedb + Ollama embeddings. Three
+  operations: `index` (embed and persist a corpus), `search` (query a
+  persisted corpus, optionally hybrid FTS + vector), and `rank` (reorder /
+  cluster / dedupe a flat list in-memory). Use for semantic rerank of
+  search results, cross-session retrieval, and semantic deduplication.
+guide: |-
+  Tool name: `vector`
+  Primary parameter: `action` — one of `index`, `search`, `rank`.
+
+  ## When to use which action
+
+  - `index` — populate a namespace with items you'll query later. Each call
+    transactionally upserts by `id`: matching rows are updated, new rows are
+    inserted, and unrelated rows remain. Runtime calls never drop or replace
+    the namespace. IDs must be unique within one request.
+  - `search` — find items in an indexed namespace by semantic similarity to
+    a query. Default `mode=hybrid` (FTS + vector RRF-fused); use `mode=fts`
+    for keyword-only or `mode=vector` for pure semantic.
+  - `rank` — reorder / cluster / dedupe a flat list of items WITHOUT
+    persisting them. Set `output=ranked` (requires `query`) for semantic
+    rerank; `output=clusters` to group near-duplicates; `output=deduped` to
+    flatten clusters to their representative. When `query` is also supplied
+    in cluster/dedupe mode, the representative within each cluster is
+    chosen by highest query-similarity.
+
+  ## Namespace
+
+  `namespace` is a string the caller chooses. Tables live at
+  `<scope>/vector_tables/<namespace>/`. For per-task ephemeral pools, prefix
+  with `task_` (e.g. `task_abc123`) so cleanup / readability is obvious. For
+  agent-wide caches reuse a stable name (e.g. `catchup_snapshots`).
+
+  Defaults to `default` when omitted.
+
+  ## Ollama dependency
+
+  `vector` requires a running Ollama daemon with the configured embedding
+  model pulled. The backend auto-starts Ollama on boot (controlled by
+  `MAGICIAN_OLLAMA_AUTOSTART`). When Ollama is unreachable the `vector` tool
+  is hidden from the agent catalog; if it disappears mid-session, in-flight
+  calls return `{status: "ollama_unavailable"}`.
+
+  ## Return shape
+
+  Every call returns a JSON object with `status` and `action` fields.
+  Per-action additions:
+
+  - `index` → `{status, action, namespace, count, table_uri}` —
+    `count` is items written; `table_uri` is the on-disk lancedb path.
+  - `search` → `{status, action, namespace, query, mode, count, hits}` —
+    `hits` is `[{id, score, text, metadata}]` ordered by descending score.
+    `score` is hybrid-RRF for `mode=hybrid`, BM25 for `fts`, cosine-derived
+    `1/(1+distance)` for `vector`.
+  - `rank` with `output=ranked` or `deduped` → `{status, action, output,
+    count, items}` where `items` is `[{id, score, text, metadata}]`.
+  - `rank` with `output=clusters` → `{status, action, output, count,
+    clusters}` where each cluster is `{representative, members}` and
+    each member is `{id, score, text, metadata}`.
+
+  On Ollama unavailability (rare — the tool is normally hidden from your
+  catalog in that state): returns `{status: "ollama_unavailable",
+  reason: "...", action: "<requested action>"}`. Fall back gracefully —
+  e.g. for catchup research, synthesize from the upstream merge envelope
+  directly without semantic rerank.
+
+  ## Examples
+
+  ```
+  vector(action="index", namespace="catchup_2026q2",
+         items=[{"id":"u1", "text":"OpenAI Sora 2 launches", "metadata":{"url":"..."}},
+                {"id":"u2", "text":"DeepMind Gemini 3 preview", "metadata":{"url":"..."}}])
+  # → {status:"ok", action:"index", namespace:"catchup_2026q2", count:2, table_uri:"..."}
+
+  vector(action="search", namespace="catchup_2026q2",
+         query="multimodal AI", mode="hybrid", limit=5)
+  # → {status:"ok", action:"search", count:N, hits:[{id, score, text, metadata}, ...]}
+
+  vector(action="rank", query="best for short-form video",
+         output="ranked", limit=10,
+         items=[{"id":"a", "text":"..."}, {"id":"b", "text":"..."}])
+  # → {status:"ok", action:"rank", output:"ranked", count:N, items:[...]}
+
+  vector(action="rank", output="deduped", threshold=0.92,
+         items=[{"id":"a", "text":"OpenAI Sora 2 launches"},
+                {"id":"b", "text":"Sora 2 hits public beta — what's new"}])
+  # → {status:"ok", action:"rank", output:"deduped", count:1, items:[<one Sora rep>]}
+  ```
+parameters:
+- name: action
+  required: true
+  param_type: string
+  description: One of `index`, `search`, `rank`.
+  enum_values: [index, search, rank]
+- name: items
+  param_type: array
+  description: |
+    For `index` and `rank`: JSON array of item objects. Each item is
+    `{"id": "<stable string>", "text": "<text to embed>", "metadata": <opaque JSON>}`.
+    `id` is a stable identifier returned with hits — useful for dedup
+    across rank calls and for tracing items back to their origin. `index`
+    transactionally upserts by id: matching rows are updated, new rows are
+    inserted, and unrelated rows remain. IDs must be unique within one call.
+    `text` is what gets
+    embedded (for vector scoring) and indexed for FTS (for keyword scoring).
+    `metadata` is opaque JSON returned verbatim alongside each hit
+    (e.g. URL, source, original score).
+    Example: `[{"id":"u1", "text":"OpenAI Sora launches", "metadata":{"url":"..."}}]`.
+  schema:
+    type: array
+    description: Array of items to embed.
+    items:
+      type: object
+      required: [id, text]
+      properties:
+        id:
+          type: string
+          description: Stable string used as dedupe / upsert key.
+        text:
+          type: string
+          description: Text to embed and index for FTS.
+        metadata:
+          description: Opaque JSON returned verbatim with hits.
+- name: query
+  param_type: string
+  description: |
+    For `search`: the query string. For `rank` with `output=ranked`: required
+    query to rerank against. For `rank` with `output=clusters|deduped`:
+    optional — when supplied, the representative of each cluster is the
+    member with highest similarity to the query.
+- name: namespace
+  param_type: string
+  description: |
+    Lancedb table namespace (directory under `<scope>/vector_tables/`).
+    Defaults to `default`. Per-task scoping is the caller's responsibility —
+    pass e.g. `task_<task_id>` to isolate.
+  default: default
+- name: mode
+  param_type: string
+  description: |
+    For `search`: scoring mode. `hybrid` (default) fuses FTS + vector via
+    reciprocal-rank fusion. `fts` is BM25 keyword-only. `vector` is pure
+    semantic cosine.
+  default: hybrid
+  enum_values: [hybrid, fts, vector]
+- name: output
+  param_type: string
+  description: |
+    For `rank`: output projection. `ranked` (default) returns top-`limit`
+    items reordered by query similarity. `clusters` returns
+    `[{representative, members}]` groupings. `deduped` returns flat
+    representatives only.
+  default: ranked
+  enum_values: [ranked, clusters, deduped]
+- name: limit
+  param_type: integer
+  description: |
+    Result cap. For `search`: top-K to return (default 10). For `rank` with
+    `output=ranked`: max items in the reordered list (omit to keep all).
+    For `rank` with `output=clusters|deduped`: max clusters / representatives
+    to return (omit to keep all).
+  default: '10'
+- name: threshold
+  param_type: number
+  description: |
+    For `rank` with `output=clusters` or `output=deduped`: cosine
+    similarity threshold for grouping (0.0 to 1.0). Higher = stricter
+    grouping (fewer, tighter clusters). Defaults when omitted: 0.85 for
+    clusters, 0.90 for deduped. Ignored for `output=ranked`.
+  default: '0.85'
+implementation:
+  type: compiled
+  provider_name: vector
+execution:
+  # Indexing large batches via Ollama can exceed 60s on cold-cache /
+  # large embedding model. 120s is generous for typical agent workloads
+  # (10-100 items per call) while still bounded.
+  requires_browser_session: false
+  default_timeout_secs: 120
+  categories:
+  - vector
+  - semantic
+  - retrieval
+  composition_category: retrieval
+  sandbox: none

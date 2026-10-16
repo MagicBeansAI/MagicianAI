@@ -1,0 +1,110 @@
+# Trust policy template (TRUE_AGENTS Phase 3)
+#
+# Seeded global template source:
+#   magician_data_v3/system/trust_policy_templates/trust_policies.template.yaml
+#
+# Hardened live scoped copy:
+#   magician_data_v3/scopes/<principal>/<workspace>/agent_runtime/system/trust_policies.yaml
+#
+# Schema:
+# trust_policies:
+#   - level: <string>                       # required, no surrounding whitespace
+#     allow:                                # optional list (default: [])
+#       - tool: <string>                    # required, no surrounding whitespace
+#         action: <string|[string,...]>     # required, no empty values
+#     deny:                                 # optional list (default: [])
+#       - tool: <string>
+#         action: <string|[string,...]>
+#
+# Match semantics:
+# - Runtime level lookup is trim + case-insensitive.
+# - API admission (create/update/manual-trigger) is strict: trust_level must
+#   exactly match a policy `level` after trimming.
+# - `tool` matching is case-insensitive (`browser` == `Browser`).
+# - `action` matching is exact and case-sensitive.
+# - `deny` rules always override `allow`.
+# - `tool: "*"` and `action: "*"` are wildcards.
+# - `action` supports single string or list-of-strings.
+#
+# Canonical tool/action names emitted by runtime trust routing:
+# - browser: execute
+#   Browser automation now enters as the `browser` skill/capability. The
+#   trust layer authorizes the whole browser skill invocation; command-level
+#   agent-browser argv is selected inside the browser loop and is not a
+#   separate trust-policy action.
+# - files: read, write
+# - http: get, post, put, patch, delete, head, options, trace, connect (method-dependent)
+# - shell: execute
+# - report: <channel> (for `target: report:<channel>`; e.g. in_app/email/slack)
+# - <capability_name>: execute  # pack capability dispatch
+#
+# IMPORTANT:
+# - Unknown trust levels deny all actions.
+# - Missing scoped trust_policies.yaml hard-fails trust-gated operations.
+
+trust_policies:
+  - level: builtin
+    allow:
+      - tool: "*"
+        action: "*"
+    deny: []
+
+  - level: local
+    allow:
+      - tool: "*"
+        action: "*"
+    deny: []
+
+  - level: reviewed
+    allow:
+      - tool: "*"
+        action: "*"
+    deny:
+      - tool: report
+        action:
+          - email
+          - slack
+      - tool: treasurer
+        action: execute
+
+  - level: untrusted
+    allow:
+      - tool: files
+        action: read
+      - tool: search
+        action: "*"
+    deny:
+      - tool: shell
+        action: "*"
+      - tool: files
+        action: write
+      - tool: browser
+        action: execute
+      - tool: report
+        action: "*"
+      - tool: treasurer
+        action: execute
+
+# Optional examples (uncomment to use):
+#
+# - level: audited_vendor
+#   allow:
+#     - tool: browser
+#       action: "*"
+#     - tool: report
+#       action: in_app
+#   deny:
+#     - tool: shell
+#       action: "*"
+#     - tool: files
+#       action: write
+#     - tool: report
+#       action: [email, slack]
+#
+# - level: custom_capability_only
+#   allow:
+#     - tool: expense_audit
+#       action: execute
+#   deny:
+#     - tool: "*"
+#       action: "*"

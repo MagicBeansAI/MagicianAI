@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Background track -->
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/progress_background" />
+            <corners android:radius="8dp" />
+        </shape>
+    </item>
+
+    <!-- Progress bar with wave pattern -->
+    <item android:id="@android:id/progress">
+        <clip>
+            <layer-list>
+                <!-- Gradient fill -->
+                <item>
+                    <shape android:shape="rectangle">
+                        <gradient
+                            android:angle="0"
+                            android:endColor="@color/accent"
+                            android:startColor="@color/primary"
+                            android:type="linear" />
+                        <corners android:radius="8dp" />
+                    </shape>
+                </item>
+
+                <!-- Wave animation overlay -->
+                <item android:top="4dp">
+                    <vector
+                        android:width="200dp"
+                        android:height="8dp"
+                        android:viewportWidth="200"
+                        android:viewportHeight="8">
+                        <path
+                            android:fillAlpha="0.3"
+                            android:fillColor="#00E5FF"
+                            android:pathData="M0,2 Q25,0 50,2 T100,2 T150,2 T200,2 L200,6 Q175,8 150,6 T100,6 T50,6 T0,6 Z" />
+                    </vector>
+                </item>
+            </layer-list>
+        </clip>
+    </item>
+</layer-list>

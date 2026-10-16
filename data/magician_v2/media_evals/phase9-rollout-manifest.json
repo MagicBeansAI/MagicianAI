@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "decision_date": "2026-07-15",
+  "host": {
+    "hardware": "Mac14,13 (Apple M2 Max)",
+    "memory_gb": 32,
+    "os": "macOS 26.5.1"
+  },
+  "evidence": [
+    {
+      "run_id": "recording-stt-20260714T175447Z-955b765e",
+      "scope": "direct synthetic recording STT provider comparison",
+      "result": "15/15 passed across Apple Speech, FluidAudio, OpenAI, OpenAI Mini, and Gemini"
+    },
+    {
+      "run_id": "recording-stt-20260715T032839Z-520db5a3",
+      "scope": "FluidAudio warm recording STT quality, latency, CPU, and RSS",
+      "result": "15/15 passed; p50 2381.96 ms; mean strict WER 0.108669; max peak RSS 104.14 MB"
+    },
+    {
+      "run_id": "recording-stt-20260715T033016Z-3a1dc631",
+      "scope": "FluidAudio idle model release",
+      "result": "model non-resident after 8 seconds with a 3-second benchmark idle policy"
+    },
+    {
+      "run_id": "swift-hardware-20260715T092113+0530",
+      "scope": "cached CoreML and offline runtime integration",
+      "result": "25/25 passed with actual Silero VAD, Qwen recording STT, Kokoro TTS, then downloads-disabled cached inference for all three"
+    }
+  ],
+  "surface_decisions": {
+    "dictation": {
+      "configured_profile": "dictation-default-v1",
+      "rollout": "general_compatibility",
+      "stage_orders": {
+        "recording_stt": ["macos_speech", "openai", "openai-mini", "gemini-flash-stt", "fluid-qwen3-asr-f32"],
+        "tts": ["macos_tts", "openai", "minimax", "gemini-tts-3-1-flash", "fluid-kokoro-en"]
+      },
+      "reason": "Persist the former compatibility order as an explicit profile. FluidAudio led strict WER on synthetic fixtures, but natural and code-switched human speech is still an adoption gate."
+    },
+    "meeting": {
+      "configured_profile": "meeting-vad-gated-v1",
+      "rollout": "general_compatibility",
+      "stage_orders": {
+        "vad": ["fluid-silero-v6"],
+        "streaming_stt": ["openai-diarize", "macos-speech", "openai-streaming"]
+      },
+      "reason": "Use local VAD as an optional fail-open gate while retaining the established transcription order until streaming and speaker fixtures pass."
+    },
+    "listening": {
+      "configured_profile": "listening-vad-gated-v1",
+      "rollout": "general_compatibility",
+      "stage_orders": {
+        "vad": ["fluid-silero-v6"],
+        "streaming_stt": ["macos-speech", "openai-streaming", "openai-diarize"]
+      },
+      "reason": "Use local VAD as an optional fail-open gate and preserve the existing local-first transcription behavior."
+    },
+    "hands_free": {
+      "configured_profile": "hands-free-local-fluid-v1",
+      "rollout": "preview_capability_gated",
+      "stage_orders": {
+        "vad": ["fluid-silero-v6"],
+        "streaming_stt": ["fluid-parakeet-eou-en", "macos-speech", "openai-streaming"],
+        "tts": ["fluid-kokoro-en", "macos_tts", "openai"]
+      },
+      "reason": "The local cascaded profile is the preview default, but availability gating and the physical echo/barge-in release gate prevent unsupported activation."
+    }
+  },
+  "open_release_gates": [
+    "Natural, Indian-accented, and code-switched consented recording-STT matrix",
+    "Noisy-room VAD boundary latency and clipping matrix",
+    "Overlapping-speaker streaming STT and diarization quality matrix",
+    "Physical speaker-to-microphone echo, barge-in, and stale-playback matrix",
+    "Signed release app bundle inspection and staged-cache first-run smoke"
+  ]
+}

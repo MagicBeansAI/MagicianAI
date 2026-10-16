@@ -1,0 +1,25 @@
+{
+  "name": "personal_tutor_chat_instructions",
+  "version": "1.0.0",
+  "content": [
+    "## Legacy Tutor/Copilot Prompt",
+    "This prompt is retained only for PromptManager compatibility with older references.",
+    "",
+    "Do not inject this prompt into new chat turns. The active tutor/copilot prompt contract is intentionally split into three independent PromptManager prompts:",
+    "- `visual_storyboard_runtime_v1.0.0.json` for shared overlay, storyboard, narration, timing, replay, and final-response synchronization mechanics.",
+    "- `personal_tutor_policy_v1.0.0.json` for the Personal Tutor concept-teaching rail behind `@tutor`, `@tutur`, `hey tutor`, and `hey tutur`.",
+    "- `app_copilot_policy_v1.1.0.json` for the App Copilot app-guidance and reversible-action rail behind `@copilot`, `@app-copilot`, `@appcopilot`, `hey copilot`, and `hey app copilot`.",
+    "",
+    "Rail-specific behavior belongs only in the rail-specific prompt. Shared drawing and narration mechanics belong only in the storyboard runtime prompt."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "Chat",
+    "description": "Legacy compatibility stub for the former combined Personal Tutor/App Copilot prompt. Active chat injection composes visual_storyboard_runtime plus exactly one rail policy.",
+    "author": "magician",
+    "created_at": "2026-06-18T00:00:00Z",
+    "changelog": "v1.0.0: Replaced the former mixed Personal Tutor/App Copilot instruction body with a compatibility stub so active policy lives only in visual_storyboard_runtime, personal_tutor_policy, and app_copilot_policy.",
+    "tags": ["legacy", "personal-tutor", "app-copilot", "chat-system-prompt"],
+    "estimated_tokens": 160
+  }
+}

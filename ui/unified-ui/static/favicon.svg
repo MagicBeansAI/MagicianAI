@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>.ink{fill:#1A1612}.dash{stroke:#1A1612}@media (prefers-color-scheme: dark){.ink{fill:#FFC93C}.dash{stroke:#FFC93C}}</style>
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFD966"/><stop offset="1" stop-color="#F5B21E"/></linearGradient></defs>
+  <path d="M 29.00 13.50 L 35.58 27.94 L 51.35 29.74 L 39.65 40.46 L 42.81 56.01 L 29.00 48.20 L 15.19 56.01 L 18.35 40.46 L 6.65 29.74 L 22.42 27.94 Z" fill="url(#g)" stroke="url(#g)" stroke-width="6" stroke-linejoin="round"/>
+  <g fill="none" stroke="#1A1612" stroke-width="2.3" stroke-linecap="round">
+    <circle cx="22.6" cy="35.6" r="5.3"/><circle cx="35.4" cy="35.6" r="5.3"/><path d="M27.9 35.2q1.1-1 2.2 0"/>
+    <path d="M26.3 43.4q2.7 2 5.4 0" stroke-width="1.8"/>
+  </g>
+  <circle class="ink" cx="50.5" cy="14.5" r="5"/>
+  <path class="dash" d="M55.4 6.6l1.6-2.6M59 10.6l2.4-1.2M59.6 16.2h2.4" fill="none" stroke-width="2" stroke-linecap="round"/>
+</svg>

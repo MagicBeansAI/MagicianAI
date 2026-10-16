@@ -1,0 +1,29 @@
+{
+  "active_project_id": "proj_shop",
+  "projects": [
+    {
+      "active_root_task_id": "task_api",
+      "archived": false,
+      "base_branch": "main",
+      "chat_session_id": "sess_shop",
+      "chat_session_status": "open",
+      "chat_thread_id": "vibedev",
+      "created_at_ms": 1760000000000,
+      "deploy_targets": [],
+      "deployments": [],
+      "name": "Shop",
+      "project_id": "proj_shop",
+      "repo_absolute_path": "/Users/owner/code/shop",
+      "repo_display_path": "~/code/shop",
+      "repo_path": "code/shop",
+      "run_task_ids": [
+        "task_search",
+        "task_api"
+      ],
+      "trust": "trusted",
+      "updated_at_ms": 1760346000000
+    }
+  ],
+  "workspace_absolute_path": "/Users/owner",
+  "workspace_display_path": "~"
+}

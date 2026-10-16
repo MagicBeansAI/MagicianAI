@@ -1,0 +1,13 @@
+{
+  "repos": [
+    {
+      "name": "shop",
+      "path": "/Users/owner/code/shop",
+      "project": "Shop"
+    },
+    {
+      "name": "billing",
+      "path": "/Users/owner/code/billing"
+    }
+  ]
+}

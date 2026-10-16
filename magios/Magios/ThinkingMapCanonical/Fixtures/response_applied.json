@@ -1,0 +1,112 @@
+{
+  "map": {
+    "applied_envelopes": [
+      {
+        "envelope_id": "envelope-1",
+        "idempotency_key": "idem-1",
+        "resulting_revision": 4
+      }
+    ],
+    "clarifications": {
+      "clar-1": {
+        "clarification_id": "clar-1",
+        "created_at": "2026-07-20T00:00:00Z",
+        "node_id": "node-2",
+        "question": "Which fields are most likely to drift?",
+        "state": "open"
+      }
+    },
+    "created_at": "2026-07-20T00:00:00Z",
+    "edges": {
+      "edge-1": {
+        "assertion_origin": "model_inferred",
+        "created_at": "2026-07-20T00:00:00Z",
+        "edge_id": "edge-1",
+        "from_node": "node-1",
+        "kind": "related_to",
+        "to_node": "node-2",
+        "tombstoned": false,
+        "updated_at": "2026-07-20T00:00:00Z"
+      }
+    },
+    "lifecycle": "active",
+    "map_id": "map-1",
+    "nodes": {
+      "node-1": {
+        "assertion_origin": "owner_spoken",
+        "confidence": 0.8999999761581421,
+        "created_at": "2026-07-20T00:00:00Z",
+        "detail_markdown": "**Decide** to ship v1 on iOS.",
+        "epistemic_state": "asserted",
+        "kind": "decision",
+        "label": "Ship the iOS thinking map",
+        "node_id": "node-1",
+        "position": {
+          "x": 120.0,
+          "y": 48.5
+        },
+        "position_locked": true,
+        "promoted_refs": [
+          {
+            "destination_kind": "task",
+            "linked_at": "2026-07-20T00:00:00Z",
+            "object_id": "task-1"
+          }
+        ],
+        "source_refs": [
+          {
+            "quote": "Let's ship the iOS thinking map.",
+            "thread_id": "thread-42",
+            "timestamp": "2026-07-20T00:00:00Z",
+            "utterance_id": "utterance-1"
+          }
+        ],
+        "speaker": {
+          "display_name": "Alex",
+          "speaker_id": "speaker-owner"
+        },
+        "tombstoned": false,
+        "updated_at": "2026-07-20T00:00:00Z"
+      },
+      "node-2": {
+        "assertion_origin": "model_inferred",
+        "confidence": 0.4000000059604645,
+        "created_at": "2026-07-20T00:00:00Z",
+        "epistemic_state": "provisional",
+        "kind": "risk",
+        "label": "Wire contract drift between Rust and Swift",
+        "node_id": "node-2",
+        "parent_id": "node-1",
+        "position_locked": false,
+        "promoted_refs": [],
+        "source_refs": [
+          {
+            "quote": "the field names could diverge",
+            "timestamp": "2026-07-20T00:00:00Z",
+            "utterance_id": "utterance-2"
+          }
+        ],
+        "tombstoned": false,
+        "updated_at": "2026-07-20T00:00:00Z"
+      }
+    },
+    "principal": "anonymous",
+    "proposals": {},
+    "revision": 4,
+    "schema_version": 1,
+    "source": {
+      "kind": "meeting",
+      "thread_id": "thread-42"
+    },
+    "title": "iOS thinking map migration",
+    "updated_at": "2026-07-20T01:00:00Z",
+    "view_state": {
+      "active_node": "node-1",
+      "lens": "outline"
+    },
+    "workspace": "default"
+  },
+  "outcome": "applied",
+  "resulting_revision": 5,
+  "semantic_hash": "sha256:deadbeefcafef00d"
+}

@@ -1,0 +1,110 @@
+{
+  "links": {
+    "task_api": {
+      "crew_id": "crew_7f3a",
+      "lane": "API"
+    }
+  },
+  "pagination": {
+    "has_more": false,
+    "next_cursor": null,
+    "offset": 0,
+    "runs": 2,
+    "total_runs": 2
+  },
+  "tasks": [
+    {
+      "agent_id": "cto",
+      "approved": true,
+      "completion_artifact_names": [],
+      "completion_outcome": null,
+      "completion_summary": null,
+      "created_at": "2026-10-13T09:30:00Z",
+      "created_by": "user",
+      "depends_on": [],
+      "description": "VibeDev coding request:\nVibeDev project: proj_shop\n",
+      "has_plan": false,
+      "id": "task_api",
+      "is_blocked": false,
+      "last_completed_root_execution_id": null,
+      "latest_root_execution_id": null,
+      "lifecycle": "persistent",
+      "output_mode": "accumulate",
+      "status": "running",
+      "sync_mode": "deferred",
+      "synthesis_pending": false,
+      "tags": [
+        {
+          "color": null,
+          "id": "vibedev",
+          "name": "vibedev"
+        }
+      ],
+      "title": "VibeDev · task_api",
+      "ui_thread_id": "general",
+      "updated_at": "2026-10-13T09:30:00Z"
+    },
+    {
+      "agent_id": "cto",
+      "approved": true,
+      "completion_artifact_names": [],
+      "completion_outcome": null,
+      "completion_summary": null,
+      "created_at": "2026-10-13T09:17:00Z",
+      "created_by": "user",
+      "depends_on": [],
+      "description": "VibeDev coding request:\nVibeDev project: proj_shop\n",
+      "has_plan": false,
+      "id": "task_search",
+      "is_blocked": false,
+      "last_completed_root_execution_id": null,
+      "latest_root_execution_id": null,
+      "lifecycle": "persistent",
+      "output_mode": "accumulate",
+      "status": "completed",
+      "sync_mode": "deferred",
+      "synthesis_pending": false,
+      "tags": [
+        {
+          "color": null,
+          "id": "vibedev",
+          "name": "vibedev"
+        }
+      ],
+      "title": "VibeDev · task_search",
+      "ui_thread_id": "general",
+      "updated_at": "2026-10-13T09:17:00Z"
+    },
+    {
+      "agent_id": "cto",
+      "approved": true,
+      "completion_artifact_names": [],
+      "completion_outcome": null,
+      "completion_summary": null,
+      "created_at": "2026-10-13T09:24:00Z",
+      "created_by": "user",
+      "depends_on": [],
+      "description": "VibeDev coding request:\nVibeDev project: proj_shop\nParent task: task_search\n",
+      "has_plan": false,
+      "id": "task_search_2",
+      "is_blocked": false,
+      "last_completed_root_execution_id": null,
+      "latest_root_execution_id": null,
+      "lifecycle": "persistent",
+      "output_mode": "accumulate",
+      "status": "running",
+      "sync_mode": "deferred",
+      "synthesis_pending": false,
+      "tags": [
+        {
+          "color": null,
+          "id": "vibedev-threaded",
+          "name": "vibedev-threaded"
+        }
+      ],
+      "title": "VibeDev · task_search_2",
+      "ui_thread_id": "general",
+      "updated_at": "2026-10-13T09:24:00Z"
+    }
+  ]
+}

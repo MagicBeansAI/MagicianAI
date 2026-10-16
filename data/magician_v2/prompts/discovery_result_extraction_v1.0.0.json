@@ -1,0 +1,38 @@
+{
+  "name": "discovery_result_extraction",
+  "version": "1.0.0",
+  "content": [
+    "Extract the value of parameter '{parameter_name}' from this command output.",
+    "",
+    "Parameter: {parameter_name}",
+    "Expected Type: {expected_type}",
+    "Command: {command}",
+    "Purpose: {reasoning}",
+    "",
+    "Command Output:",
+    "```",
+    "{output}",
+    "```",
+    "",
+    "Extract the specific value that answers what '{parameter_name}' is.",
+    "",
+    "Return JSON only:",
+    "{",
+    "  \"value\": \"extracted value (string, number, or null if cannot extract)\",",
+    "  \"confidence\": 0.0-1.0,",
+    "  \"explanation\": \"how the value was extracted\"",
+    "}"
+  ],
+  "variables": [
+    {"name": "parameter_name", "required": true},
+    {"name": "expected_type", "required": true, "default_value": "string"},
+    {"name": "command", "required": true},
+    {"name": "reasoning", "required": true},
+    {"name": "output", "required": true}
+  ],
+  "metadata": {
+    "category": "ParameterElicitation",
+    "description": "Extracts parameter values from discovery command output",
+    "tags": ["elicitation", "discovery", "extraction"]
+  }
+}

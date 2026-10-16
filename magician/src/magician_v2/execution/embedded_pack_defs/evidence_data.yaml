@@ -1,0 +1,211 @@
+name: evidence_data
+description: Read-only, bounded, executor-scoped access to pending transcript claims, work-evidence correction context, entity anchors, and commitments.
+version: "1.0.0"
+guide: |-
+  Tool name: `evidence_data`
+
+  This is the read-only host binder for the claims-review app. It reads the
+  first-party stores directly and cannot confirm, reject, record, correct,
+  suppress, merge, or otherwise mutate them.
+
+  Actions (exactly five):
+
+  - `list_pending_claims {status?, audience_kind?, audience_id?, text?, limit?, after_claim_id?}`
+    lists a bounded oldest-first page of transcript claims. Status defaults to
+    `pending`; use `all` for decided history. Text is a bounded case-insensitive
+    substring filter. Audience kind/id must be supplied together. Filtered
+    scans report `scan_truncated` and a `next_cursor` when the fixed scan window
+    was exhausted. Each row contains only `claim_id`, `status`, `stated_text`,
+    `speaker`, optional `audience_ref`, `extracted_at`, and `revision`; raw
+    register provenance and decision internals are not exported.
+  - `read_claim {claim_id}` returns one exact claim and the bounded utterance
+    context already carried by that claim. It never loads an unbounded full
+    transcript merely to repeat the reviewed utterance. The claim projection is
+    limited to its id, audience, extractor, extraction time, and revision.
+  - `list_evidence_records {agent_id, limit?, after_record_id?}` lists a bounded
+    oldest-first correction-context page. `agent_id` is mandatory and the read
+    goes through `AgentMemoryService::load_scoped_evidence`, preserving the
+    work-evidence graph's affirmatively-sensitive default suppression. Deleted
+    tombstones are excluded, duplicate ids fail closed, and each returned row
+    contains only id, lifecycle status, summary, and first-seen time; source
+    refs, actions, artifacts, facets, entity/person keys, scores, sensitivity,
+    producer metadata, and the extensible metadata bag do not cross this seam.
+  - `list_entities {agent_id, limit?, after_entity_key?}` lists a bounded
+    oldest-first page of privacy-safe entity projections for one explicit
+    agent/user lane union. Stored anchors merge metadata from every
+    contribution and carry no sensitivity field, so this action derives only
+    identity, display, and timestamp fields from the sensitive-suppressed
+    evidence view; merged aliases, facets, and provenance are never returned.
+  - `list_commitments {audience_kind, audience_id, status?, limit?, after_term_id?}`
+    lists commitments oldest-first for one exact relationship. Both audience
+    fields are required; a cross-audience request is refused because it would
+    enumerate and fold every hashed shard before a page bound could apply.
+    `restatable_outward` is reported separately because only confirmed
+    commitments may be repeated outward. Rows omit the host source reference
+    and supersession internals that the package never consumes.
+
+  Every list uses a stable `(record timestamp, id)` ordering. The public cursor
+  is the unique id of the prior page boundary and is resolved back to that
+  tuple in the current scoped view. Limits are capped at 50, ids and filters
+  are bounded, serialized results fail closed above 512 KiB, and every call has
+  a 30-second timeout.
+
+  Runtime scope is executor-owned: `__principal` and `__workspace` are injected
+  by the runtime. Public principal/workspace values are assertions only and can
+  never switch scope.
+parameters:
+  - name: action
+    param_type: string
+    description: Optional direct action name. Inner-loop calls set this automatically.
+    enum_values:
+      - list_pending_claims
+      - read_claim
+      - list_evidence_records
+      - list_entities
+      - list_commitments
+  - name: principal
+    param_type: string
+    description: Optional assertion that must match the runtime-injected principal.
+  - name: workspace
+    param_type: string
+    description: Optional assertion that must match the runtime-injected workspace.
+  - name: status
+    param_type: string
+    description: Optional closed status filter for claim or commitment list actions.
+  - name: audience_kind
+    param_type: string
+    description: Audience kind; pairwise optional for claims and required for commitments.
+    enum_values:
+      - engagement
+      - program
+      - account
+      - panel
+      - person
+  - name: audience_id
+    param_type: string
+    description: Audience id; pairwise optional for claims and required for commitments.
+  - name: text
+    param_type: string
+    description: Optional claim-text substring filter, capped at 512 bytes.
+  - name: limit
+    param_type: integer
+    description: Page size, default 20 and capped at 50.
+  - name: claim_id
+    param_type: string
+    description: Exact claim id for read_claim.
+  - name: after_claim_id
+    param_type: string
+    description: Resume list_pending_claims strictly after this prior tuple boundary.
+  - name: agent_id
+    param_type: string
+    description: Explicit agent lane required by evidence/entity reads.
+  - name: after_record_id
+    param_type: string
+    description: Resume list_evidence_records strictly after this prior tuple boundary.
+  - name: after_entity_key
+    param_type: string
+    description: Resume list_entities strictly after this prior tuple boundary.
+  - name: after_term_id
+    param_type: string
+    description: Resume list_commitments strictly after this prior tuple boundary.
+native_action_schemas:
+  list_pending_claims:
+    description: List one bounded, filtered page of transcript claims; pending by default.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - status
+      - audience_kind
+      - audience_id
+      - text
+      - limit
+      - after_claim_id
+    required: []
+    parameter_overrides:
+      status: {type: string, enum: [pending, confirmed, rejected, all], default: pending}
+      audience_kind: {type: string, enum: [engagement, program, account, panel, person]}
+      audience_id: {type: string, minLength: 1, maxLength: 255}
+      text: {type: string, minLength: 1, maxLength: 512}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+      after_claim_id: {type: string, minLength: 1, maxLength: 255}
+    timeout_secs: 30
+  read_claim:
+    description: Read one exact claim with its bounded utterance context.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - claim_id
+    required:
+      - claim_id
+    parameter_overrides:
+      claim_id: {type: string, minLength: 1, maxLength: 255}
+    timeout_secs: 30
+  list_evidence_records:
+    description: List sensitive-suppressed correction context for one explicit agent lane.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - agent_id
+      - limit
+      - after_record_id
+    required:
+      - agent_id
+    parameter_overrides:
+      agent_id: {type: string, minLength: 1, maxLength: 255, pattern: "^[A-Za-z0-9@._-]+$"}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+      after_record_id: {type: string, minLength: 1, maxLength: 255}
+    timeout_secs: 30
+  list_entities:
+    description: List privacy-safe entity projections for one explicit agent lane.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - agent_id
+      - limit
+      - after_entity_key
+    required:
+      - agent_id
+    parameter_overrides:
+      agent_id: {type: string, minLength: 1, maxLength: 255, pattern: "^[A-Za-z0-9@._-]+$"}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+      after_entity_key: {type: string, minLength: 1, maxLength: 255}
+    timeout_secs: 30
+  list_commitments:
+    description: List one bounded page from one exact audience's commitment register.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - status
+      - audience_kind
+      - audience_id
+      - limit
+      - after_term_id
+    required:
+      - audience_kind
+      - audience_id
+    parameter_overrides:
+      status: {type: string, enum: [unconfirmed, confirmed, superseded, withdrawn, all], default: all}
+      audience_kind: {type: string, enum: [engagement, program, account, panel, person]}
+      audience_id: {type: string, minLength: 1, maxLength: 255}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+      after_term_id: {type: string, minLength: 1, maxLength: 255}
+    timeout_secs: 30
+implementation:
+  type: primitive
+  provider_name: evidence_data
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - evidence
+    - claims
+    - commitments
+    - host_read
+  composition_category: observation
+  sandbox: none

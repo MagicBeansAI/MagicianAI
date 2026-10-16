@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Bounded Imgflip meme adapter for the governed skill runtime."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Callable
+from types import SimpleNamespace
+
+
+IMGFLIP_API_ORIGIN = "https://api.imgflip.com"
+GET_MEMES_ENDPOINT = f"{IMGFLIP_API_ORIGIN}/get_memes"
+CAPTION_IMAGE_ENDPOINT = f"{IMGFLIP_API_ORIGIN}/caption_image"
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+MAX_CREDENTIAL_CHARS = 4_096
+MAX_PARAMETER_CHARS = 4_096
+MAX_TEMPLATE_ID_CHARS = 128
+MAX_TEMPLATE_NAME_CHARS = 4_096
+MAX_TEMPLATE_URL_CHARS = 8_192
+MAX_SUMMARY_CHARS = 8_192
+MAX_TEMPLATES = 25
+MAX_SUGGESTIONS = 15
+MAX_INSPECTED_TEMPLATES = 200
+MAX_INPUT_BYTES = 65_536
+UrlOpen = Callable[..., Any]
+
+# --- Governed timeout budget -------------------------------------------------
+# INVARIANT:
+#   GOVERNED_KILL_CEILING_SECS >= INNER_WORST_CASE_SECS + GOVERNED_KILL_MARGIN_SECS
+#
+# A caption that resolves a template by name performs two sequential Imgflip
+# calls, so the adapter's own deadline budget is:
+#
+#   INNER_WORST_CASE_SECS = CATALOG_TIMEOUT_SECS + CAPTION_TIMEOUT_SECS
+#                         = 10 + 15 = 25
+#
+# GOVERNED_KILL_CEILING_SECS mirrors `runtime.limits.timeout_secs` in this
+# skill's SKILL.md, which is the runtime's wall-clock kill. That kill is a
+# backstop for a process that has stopped responding, not the primary provider
+# deadline: if it fires first, `templates_or_fallback`'s built-in fallback and
+# every described caption failure become unreachable code. It must therefore
+# stay above the budget above by at least GOVERNED_KILL_MARGIN_SECS, which
+# covers interpreter start, stdin read, and response normalization.
+#
+# The manifest is YAML this adapter must not read at execution time, so the
+# ceiling is mirrored here. Both sides are pinned together by
+# `tests/test_imgflip_meme.py::test_governed_kill_outlasts_the_inner_provider_budget`
+# and by `tool-runtime-core/tests/phase7_migration.rs::
+# credentialed_adapter_governed_kill_outlasts_its_inner_provider_budget`.
+#
+# Adding a request to a single action, or raising either deadline, REQUIRES
+# raising `runtime.limits.timeout_secs` in SKILL.md by the same amount. Note the
+# socket deadline is per operation, not a total wall clock, so
+# INNER_WORST_CASE_SECS is a lower bound on true elapsed time; the governed kill
+# remains the only total bound, which is why it must be the outer one.
+CATALOG_TIMEOUT_SECS = 10
+CAPTION_TIMEOUT_SECS = 15
+INNER_WORST_CASE_SECS = 25
+GOVERNED_KILL_MARGIN_SECS = 5
+GOVERNED_KILL_CEILING_SECS = 30
+
+KNOWN_TEMPLATE_FALLBACKS = (
+    {"id": "181913649", "name": "Drake Hotline Bling", "url": "", "box_count": 2},
+    {"id": "112126428", "name": "Distracted Boyfriend", "url": "", "box_count": 3},
+    {"id": "87743020", "name": "Two Buttons", "url": "", "box_count": 3},
+    {"id": "129242436", "name": "Change My Mind", "url": "", "box_count": 2},
+    {"id": "93895088", "name": "Expanding Brain", "url": "", "box_count": 4},
+    {"id": "55311130", "name": "This Is Fine", "url": "", "box_count": 2},
+    {"id": "97984", "name": "Disaster Girl", "url": "", "box_count": 2},
+    {"id": "61579", "name": "One Does Not Simply", "url": "", "box_count": 2},
+    {"id": "438680", "name": "Batman Slapping Robin", "url": "", "box_count": 2},
+    {"id": "124822590", "name": "Left Exit 12 Off Ramp", "url": "", "box_count": 3},
+)
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep form credentials on the declared Imgflip origin."""
+
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+class TemplateNotFoundError(Exception):
+    def __init__(self, suggestions: list[dict[str, str]]):
+        super().__init__("template not found")
+        self.suggestions = suggestions
+
+
+def open_without_redirects(request: urllib.request.Request, timeout: int) -> Any:
+    return urllib.request.build_opener(NoRedirectHandler()).open(request, timeout=timeout)
+
+
+def parse_input(raw: bytes) -> SimpleNamespace:
+    if not raw or len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("invalid governed input envelope")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("invalid governed input envelope")
+    for name in ("template_id", "template_name", "text0", "text1"):
+        value.setdefault(name, "")
+        value[name] = value[name].strip()
+    return SimpleNamespace(**value)
+
+
+def validate_credential(value: str) -> str:
+    candidate = value.strip()
+    if not candidate or len(candidate) > MAX_CREDENTIAL_CHARS:
+        raise ValueError("Imgflip credential is unavailable")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in candidate):
+        raise ValueError("Imgflip credential is invalid")
+    return candidate
+
+
+def bounded_text(value: Any, limit: int) -> str:
+    return value[:limit] if isinstance(value, str) else ""
+
+
+def safe_template_id(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return ""
+    candidate = str(value).strip()
+    if (
+        not candidate
+        or len(candidate) > MAX_TEMPLATE_ID_CHARS
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in candidate)
+    ):
+        return ""
+    return candidate
+
+
+def safe_url(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_TEMPLATE_URL_CHARS
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme not in ("http", "https")
+        or not hostname
+        or parsed.username
+        or parsed.password
+    ):
+        return ""
+    return value
+
+
+def normalize_templates(
+    values: Any, limit: int = MAX_INSPECTED_TEMPLATES
+) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for inspected, value in enumerate(values):
+        if inspected >= MAX_INSPECTED_TEMPLATES or len(output) >= limit:
+            break
+        if not isinstance(value, dict):
+            continue
+        template_id = safe_template_id(value.get("id"))
+        name = bounded_text(value.get("name"), MAX_TEMPLATE_NAME_CHARS).strip()
+        if not template_id or not name:
+            continue
+        box_count = value.get("box_count")
+        if (
+            not isinstance(box_count, int)
+            or isinstance(box_count, bool)
+            or not 1 <= box_count <= 20
+        ):
+            box_count = 2
+        output.append(
+            {
+                "id": template_id,
+                "name": name,
+                "url": safe_url(value.get("url")),
+                "box_count": box_count,
+            }
+        )
+    return output
+
+
+def fallback_templates() -> list[dict[str, Any]]:
+    return [dict(template) for template in KNOWN_TEMPLATE_FALLBACKS]
+
+
+def request_json(
+    request: urllib.request.Request,
+    timeout: int,
+    opener: UrlOpen,
+) -> dict[str, Any]:
+    with opener(request, timeout=timeout) as response:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("Imgflip response exceeded the configured size limit")
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("Imgflip returned a non-object response")
+    return decoded
+
+
+def get_popular_templates(opener: UrlOpen) -> list[dict[str, Any]]:
+    request = urllib.request.Request(
+        GET_MEMES_ENDPOINT,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "uuaa-skill-runtime/1.0",
+        },
+        method="GET",
+    )
+    decoded = request_json(request, CATALOG_TIMEOUT_SECS, opener)
+    if decoded.get("success") is not True:
+        raise ValueError("Imgflip template catalog returned a provider error")
+    data = decoded.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("Imgflip template catalog returned invalid data")
+    templates = normalize_templates(data.get("memes"))
+    if not templates:
+        raise ValueError("Imgflip template catalog returned no safe templates")
+    return templates
+
+
+def templates_or_fallback(opener: UrlOpen) -> list[dict[str, Any]]:
+    try:
+        return get_popular_templates(opener)
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        ValueError,
+        json.JSONDecodeError,
+        RecursionError,
+    ):
+        return fallback_templates()
+
+
+def find_template(
+    template_name: str, templates: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    candidate = template_name.lower().strip()
+    if not candidate:
+        return None
+    for template in templates:
+        if template["name"].lower() == candidate:
+            return template
+    for template in templates:
+        name = template["name"].lower()
+        if candidate in name or name in candidate:
+            return template
+    return None
+
+
+def caption_image(
+    template_id: str,
+    username: str,
+    password: str,
+    text0: str,
+    text1: str,
+    opener: UrlOpen,
+) -> dict[str, Any]:
+    body = urllib.parse.urlencode(
+        {
+            "template_id": template_id,
+            "username": validate_credential(username),
+            "password": validate_credential(password),
+            "text0": text0,
+            "text1": text1,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        CAPTION_IMAGE_ENDPOINT,
+        data=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "uuaa-skill-runtime/1.0",
+        },
+        method="POST",
+    )
+    decoded = request_json(request, CAPTION_TIMEOUT_SECS, opener)
+    if decoded.get("success") is not True:
+        raise ValueError("Imgflip caption request returned a provider error")
+    data = decoded.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("Imgflip caption request returned invalid data")
+    image_url = safe_url(data.get("url"))
+    page_url = safe_url(data.get("page_url"))
+    if not image_url or not page_url:
+        raise ValueError("Imgflip caption request returned unsafe URLs")
+    return {"url": image_url, "page_url": page_url}
+
+
+def perform_action(
+    username: str,
+    password: str,
+    args: SimpleNamespace,
+    *,
+    opener: UrlOpen = open_without_redirects,
+) -> dict[str, Any]:
+    # Preserve the legacy required-auth boundary for both actions.
+    username = validate_credential(username)
+    password = validate_credential(password)
+    if args.action == "list_templates":
+        templates = templates_or_fallback(opener)
+        return {
+            "action": "list_templates",
+            "count": len(templates[:MAX_TEMPLATES]),
+            "templates": templates[:MAX_TEMPLATES],
+        }
+
+    if not args.text0:
+        raise ValueError("caption text is required")
+    template_id = args.template_id
+    if not template_id:
+        if args.template_name:
+            templates = templates_or_fallback(opener)
+            match = find_template(args.template_name, templates)
+            if match is None:
+                match = find_template(args.template_name, fallback_templates())
+            if match is None:
+                suggestions = [
+                    {"id": template["id"], "name": template["name"]}
+                    for template in templates[:MAX_SUGGESTIONS]
+                ]
+                raise TemplateNotFoundError(suggestions)
+            template_id = match["id"]
+        else:
+            template_id = "181913649"
+
+    result = caption_image(
+        template_id,
+        username,
+        password,
+        args.text0,
+        args.text1,
+        opener,
+    )
+    summary = f"Meme generated: {args.text0}"
+    if args.text1:
+        summary += f" / {args.text1}"
+    return {
+        "action": "caption",
+        "summary": summary[:MAX_SUMMARY_CHARS],
+        "template_id": template_id,
+        "text0": args.text0,
+        "text1": args.text1,
+        "url": result["url"],
+        "page_url": result["page_url"],
+    }
+
+
+def main(input_bytes: bytes | None = None) -> int:
+    username = os.environ.get("IMGFLIP_USERNAME", "")
+    password = os.environ.get("IMGFLIP_PASSWORD", "")
+    if not username or not password:
+        print(
+            json.dumps({"error": "IMGFLIP_USERNAME and IMGFLIP_PASSWORD not set"}),
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        args = parse_input(input_bytes if input_bytes is not None else sys.stdin.buffer.read(MAX_INPUT_BYTES + 1))
+        output = perform_action(username, password, args)
+    except TemplateNotFoundError as error:
+        # stderr, like every other failure here: the governed runtime parses
+        # stderr when the exit code is non-zero and ignores stdout entirely, so
+        # printing this to stdout made the one error carrying actionable data
+        # the only one that produced no `parsed_json` — and left it
+        # unrecognisable to `parse_capability_failure`, which also reads only
+        # stderr. The suggestions survived merely as an opaque error string.
+        print(
+            json.dumps(
+                {"error": "No matching Imgflip template", "suggestions": error.suggestions},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ) as error:
+        print(json.dumps({"error": type(error).__name__}), file=sys.stderr)
+        return 1
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

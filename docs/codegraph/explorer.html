@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Code Graph Explorer</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+    <!-- cose-bilkent: a force-directed layout that handles compound /
+         sparse graphs much better than the built-in `cose`. UMD plugin
+         exposes itself as `window.cytoscapeCoseBilkent`; register it
+         with cytoscape so the layout name is recognised. -->
+    <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
+    <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
+    <script src="https://unpkg.com/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.js"></script>
+    <script>
+      // Register cose-bilkent. The layout dispatcher in app.js
+      // feature-detects via `window.cytoscapeCoseBilkent` and falls
+      // back to a tuned built-in `cose` if this script failed to
+      // load (e.g. offline).
+      if (typeof cytoscape !== "undefined"
+          && typeof window.cytoscapeCoseBilkent === "function"
+          && typeof cytoscape.use === "function") {
+        try { cytoscape.use(window.cytoscapeCoseBilkent); }
+        catch (e) { console.warn("cose-bilkent registration failed:", e); }
+      }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs/loader.min.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Code Graph Explorer</h1>
+      <div class="meta" id="graph-meta">Loading graph…</div>
+    </header>
+
+    <section class="controls">
+      <!-- Primary bar: only the controls used in nearly every session.
+           Less-frequent controls move into `<details>` dropdowns below
+           so the topbar stops eating three rows on a default load. -->
+      <div class="controls-bar">
+        <div class="search-wrap">
+          <!-- type="text" (not "search") + name with random suffix +
+               autocomplete=off etc. so browsers don't pop their own
+               history dropdown on top of our slash-command palette
+               and prefix-match results. Several browsers ignore
+               autocomplete=off on type=search inputs. -->
+          <input
+            id="search-input"
+            type="text"
+            name="codegraph-search-no-history"
+            placeholder="Search… or type / for commands"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+          <div id="slash-help" class="slash-help" hidden></div>
+        </div>
+        <select id="kind-filter">
+          <option value="all">All Kinds</option>
+        </select>
+        <button id="reset-view">Reset View</button>
+        <button id="toggle-full-graph">Load Full Graph</button>
+        <button id="stop-loading" type="button" disabled>Stop</button>
+
+        <details class="menu" data-menu="modes">
+          <summary>Modes ▾</summary>
+          <div class="menu-panel">
+            <button id="toggle-mermaid-split" type="button" disabled>Mermaid Split</button>
+            <button id="toggle-options-rows" type="button" aria-expanded="true">Hide Options Rows</button>
+            <button id="toggle-info-rows" type="button" aria-expanded="true">Hide Tips Rows</button>
+          </div>
+        </details>
+
+        <details class="menu" data-menu="view">
+          <summary>View ▾</summary>
+          <div class="menu-panel">
+            <button id="reset-nodes">Reset Nodes</button>
+            <button id="theme-toggle" type="button" aria-pressed="false">Theme: Light</button>
+            <button id="toggle-right-panel" type="button" aria-expanded="true">Hide Panel</button>
+            <a href="graph3d.html" class="topbar-link-3d" title="Open 3D spatial view">3D View</a>
+            <a href="c4.html" class="topbar-link-3d" title="Open the C4 architecture canvas">Architecture</a>
+          </div>
+        </details>
+
+        <a href="c4.html" class="topbar-link-c4 topbar-link-3d" title="Open the C4 architecture canvas (runtime → areas → code)">🏛 Architecture</a>
+            <a href="plane.html" class="topbar-link-3d" title="GPU-batched 2D plane view of the whole graph">✈ Plane</a>
+        <a href="graph3d.html" class="topbar-link-3d" title="Open 3D spatial view">3D View</a>
+
+        <button id="open-settings" type="button" aria-controls="settings-panel" aria-expanded="false">Settings</button>
+      </div>
+      <div id="controls-options-impact" class="impact-controls-row collapsible-options-row">
+        <label class="compact-field">
+          <span class="impact-label">Base</span>
+          <select id="impact-base-ref" title="Impact base reference">
+            <option value="">Loading refs…</option>
+          </select>
+        </label>
+        <label class="compact-field">
+          <span class="impact-label">Compare</span>
+          <select id="impact-compare-mode" title="Impact compare mode">
+            <option value="workspace">Workspace (incl. uncommitted)</option>
+            <option value="head">Branch HEAD</option>
+          </select>
+        </label>
+        <label class="compact-field compact-field-small">
+          <span class="impact-label">Hops</span>
+          <select id="impact-hop-count" title="Impact graph hop distance">
+            <option value="1">+1 hop</option>
+            <option value="2" selected>+2 hops</option>
+            <option value="3">+3 hops</option>
+          </select>
+        </label>
+        <div class="row-actions">
+          <button id="run-impact" type="button">Run Impact</button>
+          <button id="clear-impact" type="button" disabled>Clear Impact</button>
+        </div>
+      </div>
+      <div id="controls-options-blast" class="blast-controls-row collapsible-options-row">
+        <label class="compact-field compact-field-small">
+          <span class="impact-label">Blast</span>
+          <select id="blast-hop-count" title="Blast radius hop distance">
+            <option value="1">+1 hop</option>
+            <option value="2" selected>+2 hops</option>
+            <option value="3">+3 hops</option>
+            <option value="4">+4 hops</option>
+            <option value="5">+5 hops</option>
+            <option value="6">+6 hops</option>
+            <option value="8">+8 hops</option>
+          </select>
+        </label>
+        <label class="compact-field compact-field-small">
+          <span class="impact-label">Cap</span>
+          <select id="blast-node-cap" title="Blast radius node cap">
+            <option value="120">120</option>
+            <option value="220" selected>220</option>
+            <option value="360">360</option>
+            <option value="600">600</option>
+          </select>
+        </label>
+        <div class="row-actions">
+          <button id="toggle-blast-lens" type="button">Blast Lens: Off</button>
+          <button id="focus-blast-selection" type="button" disabled>Focus Selected</button>
+          <button id="clear-blast-lens" type="button" disabled>Clear Blast</button>
+        </div>
+        <div class="blast-options-group">
+          <label class="blast-inline-option" title="Container edges do not consume hop budget">
+            <input id="blast-ignore-structure-hops" type="checkbox" checked />
+            Smart Hops
+          </label>
+          <div class="blast-inline-group">
+            <span class="blast-inline-label">Show</span>
+            <label class="blast-inline-option">
+              <input id="blast-show-crate" type="checkbox" checked />
+              Crate
+            </label>
+            <label class="blast-inline-option">
+              <input id="blast-show-module" type="checkbox" checked />
+              Module
+            </label>
+            <label class="blast-inline-option">
+              <input id="blast-show-file" type="checkbox" checked />
+              File
+            </label>
+          </div>
+        </div>
+      </div>
+      <div id="controls-info-impact" class="controls-meta-row controls-meta-row-impact collapsible-info-row">
+        <span id="impact-status" class="impact-status">Impact mode off.</span>
+      </div>
+      <div id="controls-info-blast" class="controls-meta-row controls-meta-row-impact collapsible-info-row">
+        <span id="blast-status" class="blast-status">Blast lens off.</span>
+      </div>
+      <div id="controls-info-top" class="controls-meta-row controls-meta-row-top collapsible-info-row">
+        <span id="reveal-speed-inline" class="reveal-speed-inline">Reveal: 300ms</span>
+        <span class="controls-tip">Tip: click crate -> module -> file for progressive expansion.</span>
+      </div>
+      <div id="controls-info-status" class="controls-meta-row controls-meta-row-status collapsible-info-row">
+        <span id="expansion-status" class="expansion-status">No expansion yet.</span>
+      </div>
+    </section>
+
+    <main class="layout">
+      <section id="graph-stage" class="graph-stage">
+        <div id="cy"></div>
+        <!-- /flows overlay: a Mermaid SVG layered over the cytoscape
+             canvas. Shown when a /flows command renders, hidden
+             otherwise. The Close button restores the underlying graph. -->
+        <div id="flow-canvas" class="flow-canvas" hidden>
+          <div class="flow-canvas-header">
+            <span id="flow-canvas-title" class="flow-canvas-title">Flow</span>
+            <button id="flow-canvas-close" type="button" title="Close flow view (Esc)">×</button>
+          </div>
+          <div id="flow-canvas-body" class="flow-canvas-body flow-anim"></div>
+        </div>
+        <aside id="mermaid-split-panel" class="mermaid-split-panel" hidden>
+          <div class="mermaid-split-header">
+            <h2>Search Mermaid</h2>
+            <div class="mermaid-split-actions">
+              <button id="mermaid-zoom-out" type="button" title="Zoom out">-</button>
+              <span id="mermaid-zoom-label">100%</span>
+              <button id="mermaid-zoom-in" type="button" title="Zoom in">+</button>
+              <button id="mermaid-zoom-reset" type="button" title="Reset zoom">Reset</button>
+              <button id="open-mermaid-modal" type="button" title="Open Mermaid popout">Popout</button>
+              <button id="close-mermaid-split" type="button" title="Close Mermaid split">Close</button>
+            </div>
+          </div>
+          <div id="search-mermaid-diagram-large" class="search-mermaid-diagram-large">
+            <div class="search-insights-muted">Mermaid preview appears for active search results.</div>
+          </div>
+        </aside>
+      </section>
+      <aside id="details">
+        <div id="details-resize-handle" class="details-resize-handle" title="Drag to resize panel"></div>
+        <div class="details-toolbar">
+          <div class="details-tabs">
+            <button id="details-tab-btn-details" class="details-tab" type="button" data-details-tab="details" data-active="true">
+              Details
+            </button>
+            <button id="details-tab-btn-guide" class="details-tab" type="button" data-details-tab="guide">
+              Guide
+            </button>
+            <button id="details-tab-btn-mermaid" class="details-tab" type="button" data-details-tab="mermaid">
+              Mermaid
+            </button>
+            <button id="details-tab-btn-editor" class="details-tab" type="button" data-details-tab="editor">
+              Editor
+            </button>
+          </div>
+          <button id="toggle-right-panel-inline" type="button">Hide</button>
+        </div>
+        <div id="details-tab-details" class="details-tab-content">
+          <h2>Details</h2>
+          <div id="details-body">Select a node to inspect.</div>
+          <h2>Kind Legend</h2>
+          <div id="kind-legend" class="kind-legend">Loading legend…</div>
+        </div>
+        <!-- Flow tab removed — use the /flows slash command in the search bar instead. -->
+        <div id="details-tab-guide" class="details-tab-content" hidden>
+          <section id="guide-panel" class="guide-panel">
+            <h2>Guided Explain + Runbook</h2>
+            <div class="guide-controls">
+              <label class="guide-control-field guide-source-picker">
+                <span>Source</span>
+                <select id="guide-source-select" title="Choose source endpoint for guide/runbook">
+                  <option value="">Loading sources…</option>
+                </select>
+              </label>
+              <button id="guide-run-source" type="button">Run Source</button>
+              <button id="guide-build" type="button">Build Guide</button>
+              <button id="guide-play-trace" type="button" disabled>Play Trace</button>
+              <!-- Flow tab retired — `/flows <target>` in the search bar
+                   gives the same end-to-end view with animated edges. -->
+            </div>
+            <div class="guide-controls guide-controls-secondary">
+              <label class="guide-control-field">
+                <span>Trace Set</span>
+                <select id="guide-trace-direction" title="Choose which trace direction to explain">
+                  <option value="downstream" selected>Downstream</option>
+                  <option value="upstream">Upstream</option>
+                  <option value="both">Both</option>
+                </select>
+              </label>
+              <label class="guide-control-field guide-trace-picker">
+                <span>Trace</span>
+                <select id="guide-trace-select" title="Choose a trace to explain">
+                  <option value="">Run Flow first</option>
+                </select>
+              </label>
+            </div>
+            <div class="guide-actions">
+              <button id="guide-export-md" type="button" disabled>Export Runbook</button>
+              <button id="guide-copy-md" type="button" disabled>Copy Runbook</button>
+              <button id="guide-save-md" type="button" disabled>Save In Repo</button>
+              <label class="guide-inline-toggle" title="Auto rebuild guide/runbook when codegraph artifacts update">
+                <input id="guide-auto-rebuild" type="checkbox" checked />
+                Auto rebuild
+              </label>
+              <span id="guide-artifact-stale" class="guide-artifact-stale" hidden>Graph changed: guide stale</span>
+              <span class="guide-hint">Step cards center graph and replay from that step.</span>
+            </div>
+            <div id="guide-status" class="guide-status">Guide idle. Run flow simulation or click Build Guide.</div>
+            <div id="guide-summary" class="guide-summary">
+              <div class="guide-muted">No guide model yet.</div>
+            </div>
+            <section class="guide-section">
+              <h3>Interactive Tour</h3>
+              <div id="guide-steps" class="guide-steps">
+                <div class="guide-muted">Build guide to render step cards.</div>
+              </div>
+            </section>
+            <section class="guide-section">
+              <h3>Payload Evolution</h3>
+              <div id="guide-payload" class="guide-payload">
+                <div class="guide-muted">Payload evolution appears after guide build.</div>
+              </div>
+            </section>
+            <section class="guide-section">
+              <h3>Runbook Preview</h3>
+              <pre id="guide-runbook-output" class="guide-runbook-output">Runbook markdown appears here after guide build.</pre>
+            </section>
+          </section>
+        </div>
+        <div id="details-tab-mermaid" class="details-tab-content" hidden>
+          <section id="search-insights" class="search-insights" hidden>
+            <h2 id="search-insights-title">Insights</h2>
+            <div id="search-insights-summary" class="search-insights-summary"></div>
+            <div class="search-insights-actions">
+              <label class="search-insights-source" for="mermaid-source-mode">
+                Source
+                <select id="mermaid-source-mode" title="Choose Mermaid source mode">
+                  <option value="auto" selected>Auto</option>
+                  <option value="flow">Flow</option>
+                  <option value="search">Search</option>
+                </select>
+              </label>
+              <button id="open-mermaid-modal-inline" type="button" disabled>Mermaid Popout</button>
+              <button id="copy-search-mermaid" type="button" disabled>Copy Mermaid</button>
+            </div>
+            <pre id="search-mermaid-source" class="search-mermaid-source">Search to generate Mermaid.</pre>
+            <div id="search-mermaid-diagram" class="search-mermaid-diagram">
+              <div class="search-insights-muted">Mermaid preview appears for active search/impact/flow results.</div>
+            </div>
+          </section>
+        </div>
+        <div id="details-tab-editor" class="details-tab-content" hidden>
+          <section id="live-editor-panel" class="live-editor-panel">
+            <h2>Live Impact Editor</h2>
+            <div class="live-editor-controls">
+              <input id="editor-file-path" type="text" placeholder="repo-relative file path…" />
+              <button id="editor-load-file" type="button">Load</button>
+              <button id="editor-save-file" type="button" disabled>Save</button>
+              <button id="editor-refresh-file" type="button" disabled>Refresh</button>
+            </div>
+            <div class="live-editor-controls live-editor-controls-meta">
+              <label class="live-editor-checkbox">
+                <input id="editor-auto-refresh" type="checkbox" checked />
+                Auto refresh from disk
+              </label>
+            </div>
+            <div id="editor-status" class="editor-status">Select a file node, then click Load.</div>
+            <div id="editor-impact-summary" class="editor-impact-summary">
+              No live structural impact yet.
+            </div>
+            <div id="editor-container" class="editor-container">
+              <div class="search-insights-muted">Monaco editor loading…</div>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </main>
+    <div id="settings-overlay" class="settings-overlay" hidden></div>
+    <aside id="settings-panel" class="settings-panel" aria-hidden="true">
+      <div class="settings-header">
+        <h2>Settings</h2>
+        <button id="close-settings" type="button" aria-label="Close settings">Close</button>
+      </div>
+      <section class="settings-block">
+        <h3>Graph Controls</h3>
+        <label class="settings-slider-row" for="reveal-speed">
+          <span class="settings-slider-label">Reveal Speed</span>
+          <input id="reveal-speed" type="range" min="0" max="1000" step="20" value="300" title="Expansion reveal speed" />
+          <span id="reveal-speed-value" class="settings-slider-value">300ms</span>
+        </label>
+        <label class="settings-slider-row" for="fit-tightness">
+          <span class="settings-slider-label">Fit Tightness</span>
+          <input id="fit-tightness" type="range" min="0" max="100" step="1" value="50" />
+          <span id="fit-tightness-value" class="settings-slider-value">50%</span>
+        </label>
+      </section>
+      <section class="settings-section">
+        <h3>Make Runner</h3>
+        <div class="make-controls">
+          <select id="make-target" title="Run make target">
+            <option value="">Loading make targets…</option>
+          </select>
+          <button id="run-make">Run Make</button>
+          <button id="clear-make-output">Clear Output</button>
+        </div>
+        <div id="make-status" class="make-status">Loading make runner…</div>
+        <pre id="make-output">Run a make target to view output.</pre>
+      </section>
+    </aside>
+    <div id="node-tooltip" class="node-tooltip" aria-hidden="true"></div>
+    <div id="mermaid-modal-overlay" class="mermaid-modal-overlay" hidden>
+      <section id="mermaid-modal" class="mermaid-modal" role="dialog" aria-modal="true" aria-labelledby="mermaid-modal-title">
+        <div class="mermaid-modal-header">
+          <h2 id="mermaid-modal-title">Search Mermaid Popout</h2>
+          <div class="mermaid-modal-actions">
+            <button id="mermaid-modal-zoom-out" type="button" title="Zoom out">-</button>
+            <span id="mermaid-modal-zoom-label">100%</span>
+            <button id="mermaid-modal-zoom-in" type="button" title="Zoom in">+</button>
+            <button id="mermaid-modal-zoom-reset" type="button" title="Reset zoom">Reset</button>
+            <button id="close-mermaid-modal" type="button" title="Close Mermaid popout">Close</button>
+          </div>
+        </div>
+        <div id="search-mermaid-diagram-modal" class="search-mermaid-diagram-modal">
+          <div class="search-insights-muted">Mermaid preview appears for active search results.</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Cache-busting query stamp injected at page-load time so every
+         navigation pulls a fresh app.js without depending on the user
+         to hard-reload. The dev server's no-cache headers + this
+         per-load query together defeat aggressive intermediate caches. -->
+    <script>
+      (function () {
+        var s = document.createElement("script");
+        s.src = "app.js?cb=" + Date.now();
+        document.currentScript.parentNode.insertBefore(s, document.currentScript.nextSibling);
+      })();
+    </script>
+    <script>
+      // Auto-close `<details class="menu">` dropdowns when (a) clicking
+      // outside their bounds, or (b) clicking any control inside the
+      // panel — both feel natural for menus and don't require swapping
+      // out the native `<details>` element for a custom popover.
+      (function () {
+        const menus = document.querySelectorAll("details.menu");
+        menus.forEach((menu) => {
+          const panel = menu.querySelector(".menu-panel");
+          if (panel) {
+            panel.addEventListener("click", (ev) => {
+              const target = ev.target;
+              if (target instanceof HTMLElement && (
+                target.tagName === "BUTTON" || target.tagName === "A"
+              )) {
+                // Defer so the original handler runs first.
+                setTimeout(() => { menu.open = false; }, 0);
+              }
+            });
+          }
+        });
+        document.addEventListener("click", (ev) => {
+          menus.forEach((menu) => {
+            if (!menu.open) return;
+            if (ev.target instanceof Node && !menu.contains(ev.target)) {
+              menu.open = false;
+            }
+          });
+        });
+      })();
+
+      // Slash-command discovery popover: when the user types `/` in
+      // the 2D search box we first show the command list. After
+      // `/cmd ` is typed the dropdown switches to argument-
+      // autocomplete — live graph nodes filtered by the kind that
+      // command accepts. Click → fills `/cmd <name>`; Enter fires it.
+      (function () {
+        const input = document.getElementById("search-input");
+        const help = document.getElementById("slash-help");
+        if (!input || !help) return;
+
+        // `kinds` controls what node kinds are offered as arg
+        // suggestions. `null` = command takes no arg.
+        // Built-in commands — the core viewer ships with these.
+        // Extension-registered commands get appended once /api/extensions
+        // resolves (see ensureExtensions() below).
+        const BUILTIN_SLASH = [
+          { cmd: "/how",          arg: "<topic>",  desc: "Architecture blueprint for a concept (approval, memory_tier, …)",
+            kinds: ["function","struct","enum","trait","module","crate","endpoint","file"] },
+          { cmd: "/endpoints",    arg: "[crate]",  desc: "List API endpoints, optionally filtered by crate",
+            kinds: ["crate"] },
+          { cmd: "/detail",       arg: "<crate>",  desc: "Full blueprint of a crate (files, symbols, edges)",
+            kinds: ["crate"] },
+          { cmd: "/dead-code",    arg: "[crate]",  desc: "Functions with no production callers (Tier A/C)",
+            kinds: ["crate"] },
+          { cmd: "/coverage",     arg: "[crate]",  desc: "Structural test-coverage buckets",
+            kinds: ["crate"] },
+          { cmd: "/flows",        arg: "<target>", desc: "Animated incoming flows into a function / file / module / crate",
+            kinds: ["function","struct","enum","trait","module","crate","endpoint","file","api_call","type_alias","const","static"] },
+        ];
+        let SLASH = BUILTIN_SLASH.slice();
+        let _extLoaded = false;
+        async function ensureExtensions() {
+          if (_extLoaded) return SLASH;
+          _extLoaded = true;
+          try {
+            const resp = await fetch("/api/extensions");
+            if (!resp.ok) return SLASH;
+            const data = await resp.json();
+            (data.extensions || []).forEach((e) => {
+              (e.slash_commands || []).forEach((s) => {
+                // Don't shadow a built-in command of the same name.
+                if (BUILTIN_SLASH.find((b) => b.cmd === s.cmd)) return;
+                SLASH.push({
+                  cmd: s.cmd,
+                  arg: s.arg || "",
+                  desc: s.description || "",
+                  kinds: s.kinds === undefined ? null : s.kinds,
+                });
+              });
+            });
+          } catch (_) { /* offline / dev server down */ }
+          return SLASH;
+        }
+        // Prime asynchronously — by the time the user types `/`, the
+        // palette is usually populated. If not, builtins still work.
+        ensureExtensions();
+
+        // One-time fetch of graph.json (browser HTTP cache dedupes
+        // against the copy app.js already requested).
+        let nodesCache = null;
+        let nodesLoading = null;
+        function loadNodes() {
+          if (nodesCache) return Promise.resolve(nodesCache);
+          if (nodesLoading) return nodesLoading;
+          nodesLoading = fetch("/graph.json")
+            .then((r) => r.json())
+            .then((g) => { nodesCache = g.nodes || []; return nodesCache; })
+            .catch(() => { nodesCache = []; return nodesCache; });
+          return nodesLoading;
+        }
+
+        function clearHelp() {
+          while (help.firstChild) help.removeChild(help.firstChild);
+        }
+        function makeRow(leftText, rightText, onPick) {
+          const row = document.createElement("div");
+          row.className = "slash-help-row";
+          const left = document.createElement("span");
+          left.className = "slash-help-cmd";
+          left.textContent = leftText;
+          const right = document.createElement("span");
+          right.className = "slash-help-desc";
+          right.textContent = rightText;
+          row.appendChild(left);
+          row.appendChild(right);
+          row.addEventListener("mousedown", (ev) => {
+            ev.preventDefault();
+            onPick();
+            input.focus();
+          });
+          return row;
+        }
+
+        function renderCommandList(prefix) {
+          clearHelp();
+          const matches = SLASH.filter((s) => s.cmd.startsWith(prefix));
+          if (!matches.length) { help.hidden = true; return; }
+          matches.forEach((s) => {
+            help.appendChild(makeRow(
+              s.cmd + (s.arg ? " " + s.arg : ""),
+              s.desc,
+              () => {
+                input.value = s.cmd + (s.arg ? " " : "");
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+              },
+            ));
+          });
+          help.hidden = false;
+        }
+
+        function renderNodeSuggestions(matches, cmdName) {
+          clearHelp();
+          if (!matches.length) {
+            const empty = document.createElement("div");
+            empty.className = "slash-help-row";
+            const t = document.createElement("span");
+            t.className = "slash-help-desc";
+            t.textContent = "(no matches)";
+            empty.appendChild(t);
+            help.appendChild(empty);
+            help.hidden = false;
+            return;
+          }
+          matches.forEach((n) => {
+            const label = n.label || n.id;
+            const meta = (n.kind || "?") + (n.path ? "  ·  " + n.path : "");
+            // For endpoint nodes, fill the input with the route alone
+            // (no `METHOD ` prefix) so /flows treats it as an API path
+            // and walks bi-directionally.
+            const trigger =
+              n.kind === "endpoint" && n.route ? n.route : label;
+            help.appendChild(makeRow(label, meta, () => {
+              input.value = cmdName + " " + trigger;
+              help.hidden = true;
+            }));
+          });
+          help.hidden = false;
+        }
+
+        async function render(v) {
+          if (!v.startsWith("/")) { help.hidden = true; return; }
+          // Make sure extension-registered commands are populated
+          // before we read SLASH — this resolves instantly after
+          // the first call thanks to ensureExtensions' guard.
+          await ensureExtensions();
+          const q = v.trim().toLowerCase();
+          const spaceIdx = q.indexOf(" ");
+          if (spaceIdx < 0) { renderCommandList(q); return; }
+
+          const cmdName = q.slice(0, spaceIdx);
+          const partial = q.slice(spaceIdx + 1).trim();
+          const cmd = SLASH.find((s) => s.cmd === cmdName);
+          if (!cmd) { renderCommandList(q); return; }
+          if (!cmd.kinds) { help.hidden = true; return; }
+          if (!partial.length) { renderCommandList(cmdName); return; }
+
+          const nodes = await loadNodes();
+          // API-path partial (`/api/...`) → match endpoint `route`
+          // anywhere. Otherwise match labels by prefix-then-substring
+          // restricted to the kinds this command accepts.
+          const matches = [];
+          if (partial.startsWith("/")) {
+            for (const n of nodes) {
+              if (n.kind !== "endpoint") continue;
+              const route = String(n.route || "").toLowerCase();
+              if (route.includes(partial)) matches.push(n);
+              if (matches.length >= 25) break;
+            }
+            matches.sort((a, b) => {
+              const ar = String(a.route || "").toLowerCase();
+              const br = String(b.route || "").toLowerCase();
+              const ap = ar.startsWith(partial) ? 0 : 1;
+              const bp = br.startsWith(partial) ? 0 : 1;
+              if (ap !== bp) return ap - bp;
+              return ar.length - br.length;
+            });
+          } else {
+            // Collect every prefix + substring match across all
+            // accepted kinds (no early break — functions vastly
+            // outnumber files / endpoints, so capping the loop early
+            // starved minority kinds and made file names invisible).
+            // Per-kind buckets are then mixed in a kind-priority
+            // order so each kind contributes at least a few rows.
+            const kindSet = new Set(cmd.kinds);
+            const buckets = {};
+            cmd.kinds.forEach((k) => { buckets[k] = { pre: [], sub: [] }; });
+            for (const n of nodes) {
+              if (!kindSet.has(n.kind)) continue;
+              const lbl = String(n.label || "").toLowerCase();
+              if (!lbl) continue;
+              const bucket = buckets[n.kind];
+              if (lbl.startsWith(partial)) bucket.pre.push(n);
+              else if (lbl.includes(partial)) bucket.sub.push(n);
+            }
+            const shortest = (a, b) =>
+              String(a.label || "").length - String(b.label || "").length;
+            // Sort within each bucket; shorter labels (more specific
+            // matches) float to the top.
+            Object.values(buckets).forEach((b) => {
+              b.pre.sort(shortest);
+              b.sub.sort(shortest);
+            });
+            // Kind-priority for the merged result: containers first
+            // (easier to remember when typing /flows), then symbols.
+            const order = [
+              "endpoint", "file", "module", "crate",
+              "struct", "enum", "trait", "type_alias",
+              "function", "api_call", "const", "static",
+            ];
+            // Two passes — prefixes interleaved by priority, then
+            // substrings interleaved similarly.
+            for (const k of order) {
+              const b = buckets[k];
+              if (b) matches.push(...b.pre.slice(0, 6));
+            }
+            for (const k of order) {
+              const b = buckets[k];
+              if (b) matches.push(...b.sub.slice(0, 4));
+            }
+          }
+          renderNodeSuggestions(matches.slice(0, 20), cmdName);
+        }
+
+        input.addEventListener("input", () => { void render(input.value); });
+        input.addEventListener("focus", () => {
+          if (input.value.startsWith("/")) void render(input.value);
+        });
+        input.addEventListener("blur", () => {
+          setTimeout(() => { help.hidden = true; }, 120);
+        });
+        input.addEventListener("keydown", (ev) => {
+          if (ev.key === "Escape") help.hidden = true;
+        });
+      })();
+    </script>
+  </body>
+</html>

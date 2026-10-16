@@ -1,0 +1,71 @@
+name: delegation_files
+description: "Read/write files outside the scoped runtime workspace — user project files, downloads, documents"
+version: "0.1.0"
+guide: |
+  Use delegation_files instead of files when accessing paths outside the
+  service repository (e.g., ~/projects/*, ~/Downloads/*, ~/Documents/*).
+  Same operations as files (read, write, list, etc.) but with expanded
+  file sandbox. Paths must be under the user's home directory.
+
+  Use regular `files` tool for internal artifacts (magician_data_v3/).
+
+parameters:
+  - name: action
+    required: true
+    param_type: string
+    description: "File operation: read, write, append, delete, copy, move, exists, list, mkdir"
+    enum_values:
+      [
+        "read",
+        "write",
+        "append",
+        "delete",
+        "copy",
+        "move",
+        "exists",
+        "list",
+        "mkdir",
+      ]
+  - name: path
+    required: false
+    param_type: string
+    description: "Target file/directory path (required for most actions)"
+  - name: content
+    required: false
+    param_type: string
+    description: "Content to write/append"
+  - name: source
+    required: false
+    param_type: string
+    description: "Source path for copy/move"
+  - name: destination
+    required: false
+    param_type: string
+    description: "Destination path for copy/move"
+  - name: pattern
+    required: false
+    param_type: string
+    description: "Glob pattern for list action"
+  - name: recursive
+    required: false
+    param_type: boolean
+    description: "Recursive flag for delete"
+    default: "false"
+  - name: create_dirs
+    required: false
+    param_type: boolean
+    description: "Create parent directories on write"
+    default: "true"
+
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 120
+  categories:
+    - file_operations
+    - delegation
+  composition_category: delegation_file_operations
+  sandbox: none
+
+implementation:
+  type: compiled
+  provider_name: delegation_files

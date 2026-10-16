@@ -1,0 +1,16 @@
+{
+  "description": "Synthetic live-eval planning cases (2026-09-30) with the planner LLM's priority as reference. Reference labels are one LLM sample, not gold: case email-access-v2 got a different label from the same LLM in another run.",
+  "user_request": "Draft (do not send) an email to my landlord asking them to fix the leaking kitchen tap this week, and set a reminder for me to follow up with them in three days.",
+  "cases": [
+    {"id": "outline-email-access", "parameter": "tool_selection:email_access", "step_tool": "G1", "step_description": "Open and inspect the user's email draft interface.", "reference": "inferrable"},
+    {"id": "outline-landlord-email", "parameter": "slot:landlord_email", "step_tool": "G1.1", "step_description": "Compose, save, and verify the unsent repair-request draft.", "reference": "pre_execution"},
+    {"id": "outline-reminder-service", "parameter": "tool_selection:reminder_service", "step_tool": "G2", "step_description": "Open and inspect the user's reminder service and scheduling context.", "reference": "inferrable"},
+    {"id": "step-email-service-url", "parameter": "email_service_url", "step_tool": "browser", "step_description": "G1: Open and inspect the user's email draft interface.", "reference": "inferrable"},
+    {"id": "step-landlord-email", "parameter": "landlord_email", "step_tool": "browser", "step_description": "G1.1: Compose, save, and verify the unsent repair-request draft.", "reference": "pre_execution"},
+    {"id": "step-reminder-service-url", "parameter": "reminder_service_url", "step_tool": "browser", "step_description": "G2: Open and inspect the user's reminder service and scheduling context.", "reference": "inferrable"},
+    {"id": "step-user-timezone", "parameter": "user_timezone", "step_tool": "time_math", "step_description": "Resolve the current date and time in the user's timezone.", "reference": "inferrable"},
+    {"id": "email-access-v2", "parameter": "tool_selection:email_access", "step_tool": "G1", "step_description": "Prepare the selected user email account and resolve the landlord recipient.", "reference": "pre_execution"},
+    {"id": "landlord-email-v2", "parameter": "landlord_email", "step_tool": "G1", "step_description": "Prepare the selected user email account and resolve the landlord recipient.", "reference": "pre_execution"},
+    {"id": "reminder-service-v2", "parameter": "tool_selection:reminder_service", "step_tool": "G2", "step_description": "Prepare the selected reminder service and calculate the three-day due date.", "reference": "inferrable"}
+  ]
+}

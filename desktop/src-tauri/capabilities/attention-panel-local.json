@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "attention-panel-local",
+  "description": "The Attention windows (the notch side panel and the standalone Attention window) when their page is local (bundled assets, or the dev UI at exactly the debug devUrl): they close themselves (`close_attention_window`; the notch panel ignores a page's window close) and open a path in the main window. A remote UI origin gets the same permissions from the per-session capability in magician_auth.rs.",
+  "windows": [
+    "notch-attention",
+    "magician-attention"
+  ],
+  "permissions": [
+    "core:window:allow-close",
+    "magician-attention:allow-open-application-path",
+    "magician-attention:allow-close-attention-window"
+  ]
+}

@@ -1,0 +1,380 @@
+[
+  {
+    "auth": "verified_session",
+    "errors": [
+      "authenticated_app_session_required",
+      "stale_authenticated_request"
+    ],
+    "idempotency": "read_only",
+    "method": "GET",
+    "operation_id": "contract_capabilities",
+    "parameters": [],
+    "path": "/contract-capabilities",
+    "response_example": "contract_capabilities",
+    "response_schema": "AppContractCapabilities",
+    "success_statuses": [
+      200
+    ],
+    "summary": "Negotiate the supported Apps public contract."
+  },
+  {
+    "auth": "verified_owner_scope",
+    "errors": [
+      "authenticated_app_session_required",
+      "app_scope_mismatch",
+      "app_workspace_required",
+      "stale_authenticated_request",
+      "invalid_authentication_revision",
+      "loopback_peer_required",
+      "app_authority_rejected",
+      "invalid_app_contract",
+      "unsupported_app_data_media_type",
+      "app_data_body_too_large",
+      "app_data_body_read_failed",
+      "app_data_body_timeout",
+      "app_installation_mismatch",
+      "app_data_authority_rejected",
+      "app_installation_not_found",
+      "app_surface_stale",
+      "app_data_projection_denied",
+      "invalid_app_data_contract",
+      "app_data_encoding_failed",
+      "app_data_overloaded",
+      "app_data_not_found",
+      "app_data_cursor_unavailable",
+      "app_data_stale",
+      "invalid_app_data_cursor",
+      "app_data_query_failed",
+      "invalid_app_data_query",
+      "app_data_limit_exceeded",
+      "app_data_cursor_capacity",
+      "app_data_keyset_index_required"
+    ],
+    "idempotency": "read_only",
+    "method": "POST",
+    "operation_id": "query_data",
+    "parameters": [
+      {
+        "description": "Opaque installation identity in the authenticated owner scope.",
+        "location": "path",
+        "name": "installation_id",
+        "required": true,
+        "schema_type": "string"
+      }
+    ],
+    "path": "/installations/{installation_id}/data/query",
+    "request_example": "query_request",
+    "request_schema": "AppQueryRequest",
+    "response_example": "query_page",
+    "response_schema": "AppQueryPage",
+    "success_statuses": [
+      200
+    ],
+    "summary": "Query admitted records owned by one installation."
+  },
+  {
+    "auth": "verified_owner_scope",
+    "errors": [
+      "authenticated_app_session_required",
+      "app_scope_mismatch",
+      "app_workspace_required",
+      "stale_authenticated_request",
+      "invalid_authentication_revision",
+      "loopback_peer_required",
+      "app_authority_rejected",
+      "invalid_app_contract",
+      "unsupported_app_data_media_type",
+      "app_data_body_too_large",
+      "app_data_body_read_failed",
+      "app_data_body_timeout",
+      "app_data_authority_rejected",
+      "app_installation_not_found",
+      "app_surface_stale",
+      "app_data_projection_denied",
+      "invalid_app_data_contract",
+      "app_data_encoding_failed",
+      "app_data_overloaded",
+      "app_data_not_found",
+      "invalid_app_data_mutation",
+      "app_data_conflict",
+      "app_data_limit_exceeded",
+      "app_data_mutation_failed"
+    ],
+    "idempotency": "client_keyed",
+    "method": "POST",
+    "operation_id": "mutate_data",
+    "parameters": [
+      {
+        "description": "Opaque installation identity in the authenticated owner scope.",
+        "location": "path",
+        "name": "installation_id",
+        "required": true,
+        "schema_type": "string"
+      }
+    ],
+    "path": "/installations/{installation_id}/data/mutations",
+    "request_example": "mutation_command",
+    "request_schema": "AppMutationCommand",
+    "response_schema": "AppMutationReceipt",
+    "success_statuses": [
+      200
+    ],
+    "summary": "Commit an idempotent optimistic mutation batch."
+  },
+  {
+    "auth": "verified_owner_scope",
+    "errors": [
+      "authenticated_app_session_required",
+      "app_scope_mismatch",
+      "app_workspace_required",
+      "stale_authenticated_request",
+      "invalid_authentication_revision",
+      "loopback_peer_required",
+      "app_authority_rejected",
+      "unsupported_app_data_media_type",
+      "app_data_body_too_large",
+      "app_data_body_read_failed",
+      "app_data_body_timeout",
+      "invalid_app_contract",
+      "app_workflow_not_found",
+      "app_workflow_stale",
+      "app_workflow_not_authorized",
+      "app_workflow_invalid",
+      "app_workflow_failed",
+      "app_projection_too_large",
+      "app_projection_expired",
+      "app_projection_not_authorized",
+      "app_projection_store_unavailable"
+    ],
+    "idempotency": "client_keyed",
+    "method": "POST",
+    "operation_id": "launch_action",
+    "parameters": [
+      {
+        "description": "Opaque installation identity in the authenticated owner scope.",
+        "location": "path",
+        "name": "installation_id",
+        "required": true,
+        "schema_type": "string"
+      },
+      {
+        "description": "Manifest-declared action name.",
+        "location": "path",
+        "name": "action_id",
+        "required": true,
+        "schema_type": "string"
+      }
+    ],
+    "path": "/installations/{installation_id}/actions/{action_id}/runs",
+    "request_schema": "AppDirectActionRequest",
+    "response_example": "action_launch",
+    "response_schema": "AppActionLaunchResponse",
+    "success_statuses": [
+      202
+    ],
+    "summary": "Launch an admitted action from minimal owner-supplied input."
+  },
+  {
+    "auth": "verified_owner_scope",
+    "errors": [
+      "authenticated_app_session_required",
+      "app_scope_mismatch",
+      "app_workspace_required",
+      "stale_authenticated_request",
+      "invalid_authentication_revision",
+      "loopback_peer_required",
+      "app_authority_rejected",
+      "invalid_app_contract",
+      "app_workflow_not_found",
+      "app_workflow_stale",
+      "app_workflow_not_authorized",
+      "app_workflow_invalid",
+      "app_task_runtime_unavailable",
+      "app_run_state_invalid",
+      "app_run_identity_changed",
+      "app_terminal_result_missing",
+      "app_workflow_failed"
+    ],
+    "idempotency": "read_only",
+    "method": "GET",
+    "operation_id": "get_action_run",
+    "parameters": [
+      {
+        "description": "Opaque logical action-run reference in the canonical run:app-action: namespace; it carries no authority.",
+        "location": "path",
+        "name": "run_ref",
+        "required": true,
+        "schema_type": "string"
+      }
+    ],
+    "path": "/action-runs/{run_ref}",
+    "response_example": "action_run_completed",
+    "response_schema": "AppRunSnapshot",
+    "success_statuses": [
+      200,
+      202
+    ],
+    "summary": "Read the typed lifecycle and currently disclosable result for a logical run."
+  },
+  {
+    "auth": "verified_owner_scope",
+    "errors": [
+      "authenticated_app_session_required",
+      "app_scope_mismatch",
+      "app_workspace_required",
+      "stale_authenticated_request",
+      "invalid_authentication_revision",
+      "loopback_peer_required",
+      "app_authority_rejected",
+      "invalid_app_contract",
+      "unsupported_app_data_media_type",
+      "app_data_body_too_large",
+      "app_data_body_read_failed",
+      "app_data_body_timeout",
+      "invalid_app_action_composition",
+      "app_action_composition_not_authorized",
+      "app_action_composition_unavailable",
+      "app_action_composition_failed",
+      "app_workflow_not_found",
+      "app_workflow_stale",
+      "app_workflow_not_authorized",
+      "app_workflow_invalid",
+      "app_task_runtime_unavailable",
+      "app_workflow_failed"
+    ],
+    "idempotency": "client_keyed",
+    "method": "POST",
+    "operation_id": "compose_action_run",
+    "parameters": [
+      {
+        "description": "Opaque logical action-run reference in the canonical run:app-action: namespace; it carries no authority.",
+        "location": "path",
+        "name": "run_ref",
+        "required": true,
+        "schema_type": "string"
+      }
+    ],
+    "path": "/action-runs/{run_ref}/compositions",
+    "request_example": "action_composition_request",
+    "request_schema": "AppActionCompositionRequest",
+    "response_example": "action_composition_waiting",
+    "response_schema": "AppActionResultComposition",
+    "success_statuses": [
+      200,
+      202
+    ],
+    "summary": "Map one canonical action result through a bounded reviewed action chain and read cursor-bound progress."
+  },
+  {
+    "auth": "verified_owner_scope",
+    "errors": [
+      "authenticated_app_session_required",
+      "app_scope_mismatch",
+      "app_workspace_required",
+      "stale_authenticated_request",
+      "invalid_authentication_revision",
+      "loopback_peer_required",
+      "app_authority_rejected",
+      "invalid_app_contract",
+      "unsupported_app_action_cancellation_media_type",
+      "app_action_cancellation_body_too_large",
+      "app_action_cancellation_body_read_failed",
+      "app_action_cancellation_body_timeout",
+      "invalid_app_action_cancellation",
+      "app_workflow_not_found",
+      "app_workflow_stale",
+      "app_workflow_not_authorized",
+      "app_action_not_started",
+      "app_action_already_completed",
+      "app_action_cancellation_conflict",
+      "app_task_runtime_unavailable",
+      "app_action_cancellation_failed"
+    ],
+    "idempotency": "client_keyed",
+    "method": "POST",
+    "operation_id": "cancel_action_run",
+    "parameters": [
+      {
+        "description": "Opaque logical action-run reference in the canonical run:app-action: namespace; it carries no authority.",
+        "location": "path",
+        "name": "run_ref",
+        "required": true,
+        "schema_type": "string"
+      }
+    ],
+    "path": "/action-runs/{run_ref}/cancel",
+    "request_example": "action_cancellation_request",
+    "request_schema": "AppActionCancellationRequest",
+    "response_example": "action_cancellation_receipt",
+    "response_schema": "AppActionCancellationReceipt",
+    "success_statuses": [
+      200,
+      202
+    ],
+    "summary": "Request generation-bound cancellation of one logical action run."
+  },
+  {
+    "auth": "verified_owner_scope",
+    "errors": [
+      "authenticated_app_session_required",
+      "app_scope_mismatch",
+      "app_workspace_required",
+      "stale_authenticated_request",
+      "invalid_authentication_revision",
+      "loopback_peer_required",
+      "app_authority_rejected",
+      "invalid_app_contract",
+      "app_surface_not_found",
+      "app_surface_stale",
+      "app_change_cursor_ahead",
+      "invalid_app_change_limit",
+      "app_surface_overloaded",
+      "app_registry_failed",
+      "app_entity_changes_failed"
+    ],
+    "idempotency": "read_only",
+    "method": "GET",
+    "operation_id": "read_entity_changes",
+    "parameters": [
+      {
+        "description": "Opaque installation identity in the authenticated owner scope.",
+        "location": "path",
+        "name": "installation_id",
+        "required": true,
+        "schema_type": "string"
+      },
+      {
+        "description": "Last applied durable change sequence, or zero for the initial page.",
+        "location": "query",
+        "minimum": 0,
+        "name": "after_change_sequence",
+        "required": false,
+        "schema_type": "integer"
+      },
+      {
+        "description": "Positive surface revision whose projection is being refreshed.",
+        "location": "query",
+        "minimum": 1,
+        "name": "surface_revision",
+        "required": true,
+        "schema_type": "integer"
+      },
+      {
+        "default": 64,
+        "description": "Bounded page size; the server default is 64 and the maximum is 128.",
+        "location": "query",
+        "maximum": 128,
+        "minimum": 1,
+        "name": "limit",
+        "required": false,
+        "schema_type": "integer"
+      }
+    ],
+    "path": "/installations/{installation_id}/entity-changes",
+    "response_schema": "AppEntityChangeBatch",
+    "success_statuses": [
+      200
+    ],
+    "summary": "Read a bounded identifier-only durable change page."
+  }
+]

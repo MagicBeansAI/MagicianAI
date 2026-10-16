@@ -1,0 +1,232 @@
+{
+  "open_run": [
+    "POST",
+    "/work/runs",
+    [
+      "purpose",
+      "resource_ref",
+      "audience_kind",
+      "audience_id",
+      "fields",
+      "opened_by"
+    ]
+  ],
+  "list_runs": [
+    "GET",
+    "/work/runs",
+    []
+  ],
+  "read_run": [
+    "GET",
+    "/work/runs/{run_id}",
+    []
+  ],
+  "declare_field": [
+    "POST",
+    "/work/runs/{run_id}/fields",
+    [
+      "name",
+      "required"
+    ]
+  ],
+  "answer": [
+    "POST",
+    "/work/runs/{run_id}/answers",
+    [
+      "field",
+      "text",
+      "evidence_refs"
+    ]
+  ],
+  "raise_gap": [
+    "POST",
+    "/work/runs/{run_id}/gaps",
+    [
+      "field",
+      "question"
+    ]
+  ],
+  "resolve_gap": [
+    "POST",
+    "/work/runs/{run_id}/gaps/resolve",
+    [
+      "field",
+      "question",
+      "text",
+      "evidence_refs",
+      "resolved_by"
+    ]
+  ],
+  "expect": [
+    "POST",
+    "/work/runs/{run_id}/expectations",
+    [
+      "description",
+      "source_hint"
+    ]
+  ],
+  "fulfil_expectation": [
+    "POST",
+    "/work/runs/{run_id}/expectations/fulfil",
+    [
+      "event_ref",
+      "source_hint",
+      "at"
+    ]
+  ],
+  "offer_times": [
+    "POST",
+    "/work/negotiations",
+    [
+      "audience_kind",
+      "audience_id",
+      "counterparty",
+      "purpose",
+      "slots",
+      "offer_act_ref"
+    ]
+  ],
+  "list_negotiations": [
+    "GET",
+    "/work/negotiations",
+    [
+      "audience_kind",
+      "audience_id"
+    ]
+  ],
+  "read_negotiation": [
+    "GET",
+    "/work/negotiations/{negotiation_id}",
+    [
+      "audience_kind",
+      "audience_id"
+    ]
+  ],
+  "record_reply": [
+    "POST",
+    "/work/negotiations/{negotiation_id}/reply",
+    [
+      "audience_kind",
+      "audience_id",
+      "source_ref",
+      "at",
+      "reading",
+      "starting_at",
+      "reason",
+      "slots"
+    ]
+  ],
+  "re_offer": [
+    "POST",
+    "/work/negotiations/{negotiation_id}/re-offer",
+    [
+      "audience_kind",
+      "audience_id",
+      "slots",
+      "offer_act_ref"
+    ]
+  ],
+  "bind_offer": [
+    "POST",
+    "/work/negotiations/{negotiation_id}/bind-offer",
+    [
+      "audience_kind",
+      "audience_id",
+      "offer_act_ref",
+      "reply_agent_id",
+      "source_task_id"
+    ]
+  ],
+  "hold": [
+    "POST",
+    "/work/negotiations/{negotiation_id}/hold",
+    [
+      "audience_kind",
+      "audience_id",
+      "calendar_event_ref",
+      "calendar_act_ref"
+    ]
+  ],
+  "reschedule": [
+    "POST",
+    "/work/negotiations/{negotiation_id}/reschedule",
+    [
+      "audience_kind",
+      "audience_id",
+      "reason",
+      "release_act_ref"
+    ]
+  ],
+  "close": [
+    "POST",
+    "/work/negotiations/{negotiation_id}/close",
+    [
+      "audience_kind",
+      "audience_id",
+      "reason",
+      "release_act_ref"
+    ]
+  ],
+  "record_obligation": [
+    "POST",
+    "/work/obligations",
+    [
+      "audience_kind",
+      "audience_id",
+      "program_id",
+      "what",
+      "due_at",
+      "direction",
+      "created_by",
+      "source_act_ref"
+    ]
+  ],
+  "list_obligations": [
+    "GET",
+    "/work/obligations",
+    [
+      "audience_kind",
+      "audience_id",
+      "direction",
+      "lapsed_only",
+      "include_settled"
+    ]
+  ],
+  "settle_obligation": [
+    "POST",
+    "/work/obligations/{obligation_id}/settle",
+    [
+      "audience_kind",
+      "audience_id",
+      "settlement",
+      "note",
+      "reason"
+    ]
+  ],
+  "bind_claims": [
+    "POST",
+    "/work/claim-manifests",
+    [
+      "artifact_ref",
+      "revision_ref",
+      "claims",
+      "bound_by"
+    ]
+  ],
+  "read_manifest": [
+    "GET",
+    "/work/claim-manifests",
+    [
+      "artifact_ref",
+      "revision_ref"
+    ]
+  ],
+  "carrying_claim": [
+    "GET",
+    "/work/claim-manifests/carrying",
+    [
+      "claim_ref",
+      "latest_only"
+    ]
+  ]
+}

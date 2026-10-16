@@ -1,0 +1,218 @@
+{
+  "$defs": {
+    "AppActionCompositionHop": {
+      "additionalProperties": false,
+      "properties": {
+        "destination_action_id": {
+          "$ref": "#/$defs/AppName"
+        },
+        "destination_installation_id": {
+          "$ref": "#/$defs/AppInstallationId"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/AppReference"
+        },
+        "mapping": {
+          "items": {
+            "$ref": "#/$defs/AppValueMappingOperation"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "destination_installation_id",
+        "destination_action_id",
+        "mapping",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "AppActionCompositionSubscriptionRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "default": 8,
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "AppFieldPath": {
+      "type": "string"
+    },
+    "AppInstallationId": {
+      "type": "string"
+    },
+    "AppName": {
+      "type": "string"
+    },
+    "AppReference": {
+      "type": "string"
+    },
+    "AppRegisteredScalarConversion": {
+      "enum": [
+        "integer_to_decimal",
+        "text_to_markdown",
+        "text_to_timestamp"
+      ],
+      "type": "string"
+    },
+    "AppValueMappingOperation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "select",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/AppFieldPath"
+            },
+            "target": {
+              "$ref": "#/$defs/AppFieldPath"
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "constant",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/AppFieldPath"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "target",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conversion": {
+              "$ref": "#/$defs/AppRegisteredScalarConversion"
+            },
+            "kind": {
+              "const": "convert",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/AppFieldPath"
+            },
+            "target": {
+              "$ref": "#/$defs/AppFieldPath"
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "target",
+            "conversion"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "map_enum",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/AppFieldPath"
+            },
+            "target": {
+              "$ref": "#/$defs/AppFieldPath"
+            },
+            "values": {
+              "additionalProperties": {
+                "$ref": "#/$defs/AppName"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "target",
+            "values"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-action-composition-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Supported-public request for composing one canonical terminal action result\ninto a second reviewed app action. The source run is carried by the route so\nit cannot disagree with this body. Mapping operations are declarative data;\nthe server recompiles them against both current schemas before launch.",
+  "properties": {
+    "chain": {
+      "description": "Additional destinations in the same server-owned authority chain. The\nfirst hop remains in the four stable V1 fields above so existing\ncallers keep the exact same wire shape. Each continuation is admitted\nonly after the preceding canonical result has become composable.",
+      "items": {
+        "$ref": "#/$defs/AppActionCompositionHop"
+      },
+      "type": "array"
+    },
+    "destination_action_id": {
+      "$ref": "#/$defs/AppName"
+    },
+    "destination_installation_id": {
+      "$ref": "#/$defs/AppInstallationId"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/AppReference"
+    },
+    "mapping": {
+      "items": {
+        "$ref": "#/$defs/AppValueMappingOperation"
+      },
+      "type": "array"
+    },
+    "subscription": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AppActionCompositionSubscriptionRequest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional payload-free cursor read over the canonical composition/run\nowners. This is part of the existing compose operation, not a ninth\nroute and not an app-to-app subscription channel."
+    }
+  },
+  "required": [
+    "destination_installation_id",
+    "destination_action_id",
+    "mapping",
+    "idempotency_key"
+  ],
+  "title": "AppActionCompositionRequest",
+  "type": "object"
+}

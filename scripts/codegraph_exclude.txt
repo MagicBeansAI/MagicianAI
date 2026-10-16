@@ -1,0 +1,51 @@
+# Entries to skip when walking the repo for code graph generation
+# (generate_code_graph.py) and contract extraction (extract_contracts.py).
+#
+# Format:
+#   - section headers in square brackets: [dirs], [files]
+#   - one entry per line under a section
+#   - matched by basename, not path
+#   - lines starting with '#' are comments
+#   - blank lines ignored
+#   - leading/trailing whitespace stripped
+#
+# Sections:
+#   [dirs]   directory basenames pruned during walk (won't descend into them).
+#   [files]  file basenames skipped at emission (graph won't index them).
+
+[dirs]
+
+# Build outputs / caches / vendored deps
+.cache
+.build
+build
+coverage
+dist
+out
+target
+node_modules
+_vendor
+gen
+
+# Virtual environments
+.venv
+venv
+
+# VCS / interpreter metadata
+.git
+__pycache__
+
+# Runtime / state trees that hold user data, memory, etc. — extend per repo
+magician_data_v3
+
+
+[files]
+
+# Artifacts produced by the codegraph scripts themselves — must not be
+# re-indexed on subsequent runs (they live in docs/codegraph/).
+graph.json
+stats.json
+payload_profiles.json
+contracts.json
+dead_code_candidates.md
+test_coverage.md

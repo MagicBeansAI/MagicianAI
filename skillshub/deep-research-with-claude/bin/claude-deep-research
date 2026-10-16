@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Bounded Anthropic deep-research protocol adapter."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+MAX_INPUT_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 20 * 1024 * 1024
+MAX_ANSWER_BYTES = 8 * 1024 * 1024
+MAX_SOURCES = 2_000
+MAX_OUTPUT_TOKENS = 64_000
+DEFAULT_MODEL = "claude-sonnet-5-5"
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# These models reject `thinking.type=enabled` + `budget_tokens` (Sonnet 5.5,
+# Opus 5.x and Fable 400 on it); they take adaptive thinking plus an effort.
+ADAPTIVE_THINKING_MARKERS = (
+    "claude-fable", "claude-mythos", "claude-opus-5", "claude-opus-4-8",
+    "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6",
+)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect denied", headers, fp)
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def fail(message: str) -> int:
+    print(json.dumps({"error": message}, separators=(",", ":")))
+    return 1
+
+
+def bounded_text(value, limit: int) -> str:
+    return value[:limit] if isinstance(value, str) else ""
+
+
+def read_input() -> dict:
+    raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("input exceeds adapter limit")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("input must be a JSON object")
+    return value
+
+
+def call_anthropic(api_key: str, body: dict) -> dict:
+    request = urllib.request.Request(
+        MESSAGES_URL,
+        data=json.dumps(body, separators=(",", ":")).encode(),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "User-Agent": "uuaa/claude-deep-research",
+        },
+    )
+    with OPENER.open(request, timeout=115) as response:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("provider response exceeds adapter limit")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("provider response is not an object")
+    return value
+
+
+def normalized_domains(value: str) -> list[str]:
+    domains: list[str] = []
+    for raw in value.split(","):
+        domain = raw.strip().lower().rstrip(".")
+        if not domain:
+            continue
+        if len(domain) > 253 or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789.-" for ch in domain):
+            raise ValueError("invalid allowed domain")
+        if domain not in domains:
+            domains.append(domain)
+        if len(domains) > 100:
+            raise ValueError("too many allowed domains")
+    return domains
+
+
+def output_token_budget(thinking_budget: int) -> int:
+    """Keep extended thinking strictly inside the provider output budget."""
+    return min(MAX_OUTPUT_TOKENS, max(16_384, thinking_budget + 4_096))
+
+
+def uses_adaptive_thinking(model: str) -> bool:
+    model = model.lower()
+    return any(marker in model for marker in ADAPTIVE_THINKING_MARKERS)
+
+
+def thinking_config(model: str, params: dict) -> dict:
+    """Request fields that select the model's thinking mode and output cap."""
+    if uses_adaptive_thinking(model):
+        effort = params.get("effort", "medium")
+        if effort not in EFFORTS:
+            raise ValueError("invalid effort")
+        return {
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            # The default display is "omitted", which would leave
+            # thinking_preview empty.
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": effort},
+        }
+    thinking_budget = params.get("thinking_budget", 5_000)
+    return {
+        "max_tokens": output_token_budget(thinking_budget),
+        "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
+    }
+
+
+def normalize(response: dict) -> dict:
+    answer_parts: list[str] = []
+    sources: list[dict] = []
+    thinking_preview = ""
+    answer_bytes = 0
+    for block in response.get("content", []):
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "thinking" and not thinking_preview:
+            thinking_preview = bounded_text(block.get("thinking"), 500)
+        elif kind == "text":
+            text = bounded_text(block.get("text"), MAX_ANSWER_BYTES - answer_bytes)
+            if text:
+                answer_parts.append(text)
+                answer_bytes += len(text)
+            for citation in block.get("citations", []):
+                if isinstance(citation, dict):
+                    add_source(sources, citation.get("title"), citation.get("url"))
+        elif kind == "web_search_tool_result":
+            for item in block.get("content", []):
+                if isinstance(item, dict) and item.get("type") == "web_search_result":
+                    add_source(sources, item.get("title"), item.get("url"))
+    unique: list[dict] = []
+    seen: set[str] = set()
+    for source in sources:
+        if source["url"] not in seen:
+            seen.add(source["url"])
+            unique.append(source)
+    usage = response.get("usage")
+    output = {
+        "answer": "\n".join(answer_parts)[:MAX_ANSWER_BYTES],
+        "sources": unique,
+        "model": bounded_text(response.get("model"), 256),
+        "usage": usage if isinstance(usage, dict) else {},
+    }
+    if thinking_preview:
+        output["thinking_preview"] = thinking_preview
+    return output
+
+
+def add_source(sources: list[dict], title, url) -> None:
+    url = bounded_text(url, 8_192)
+    if url.startswith(("https://", "http://")) and len(sources) < MAX_SOURCES:
+        sources.append({"title": bounded_text(title, 2_048), "url": url})
+
+
+def main() -> int:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return fail("Anthropic credential is unavailable")
+    try:
+        params = read_input()
+        query = params["query"]
+        if not isinstance(query, str) or not query:
+            raise ValueError("query is required")
+        search_tool = {
+            "type": "web_search_20260209",
+            "name": "web_search",
+            "max_uses": params.get("max_searches", 5),
+        }
+        fetch_tool = {
+            "type": "web_fetch_20260209",
+            "name": "web_fetch",
+            "max_uses": params.get("max_fetches", 3),
+        }
+        allowed = normalized_domains(params.get("allowed_domains", ""))
+        if allowed:
+            search_tool["allowed_domains"] = allowed
+            fetch_tool["allowed_domains"] = allowed
+        model = params.get("model", DEFAULT_MODEL)
+        if not isinstance(model, str) or not model:
+            raise ValueError("model is required")
+        body = {
+            "model": model,
+            **thinking_config(model, params),
+            "tools": [search_tool, fetch_tool],
+            "messages": [{
+                "role": "user",
+                "content": "Research the following topic thoroughly. Search the web, read relevant pages, cross-reference claims across sources, and provide a comprehensive answer with citations.\n\nTopic: " + query,
+            }],
+        }
+        response = call_anthropic(api_key, body)
+        if response.get("error"):
+            return fail("Anthropic rejected the research request")
+        print(json.dumps(normalize(response), ensure_ascii=False))
+        return 0
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return fail("invalid research input or provider response")
+    except urllib.error.HTTPError as error:
+        return fail(f"Anthropic request failed with HTTP {error.code}")
+    except (urllib.error.URLError, TimeoutError):
+        return fail("Anthropic request was unavailable")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

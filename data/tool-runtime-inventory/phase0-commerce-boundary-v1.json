@@ -1,0 +1,594 @@
+{
+  "schema_version": "tool-runtime.commerce-boundary.v1",
+  "source_inventory_schema_version": "tool-runtime.source-inventory.v1",
+  "source_classification_schema_version": "tool-runtime.source-classification.v1",
+  "summary": {
+    "integrations": 2,
+    "source_files": 8,
+    "actions": 10,
+    "protocol_symbols": 43,
+    "policy_symbols": 34,
+    "mixed_symbols": 2,
+    "removable_symbols": 18
+  },
+  "integrations": [
+    {
+      "boundary": {
+        "id": "swiggy-mcp",
+        "source_digests": [
+          {
+            "path": "SKILL.md",
+            "sha256": "5a262d40e8abc98532d141e4117b80c7c235f62a4a2b6612d36dfca1864d248c"
+          },
+          {
+            "path": "scripts/run.sh",
+            "sha256": "5b85c8e9b8468aa884b9d2351c813218e56833a8fbd35b85bb2eb2ab10b0ad11"
+          },
+          {
+            "path": "scripts/swiggy_mcp.mjs",
+            "sha256": "3e2d3018be013d8015e5c21f31949901280caff0a5a8cc688f6a596ac46f1d41"
+          },
+          {
+            "path": "tool_schema.yaml",
+            "sha256": "848cdbac73de0e5b034cff9b42e7fd7f94f13e376497af5beba2b4eda31bcc28"
+          }
+        ],
+        "actions": [
+          "auth_start",
+          "call_tool",
+          "clear_auth",
+          "list_tools",
+          "status"
+        ],
+        "protocol": {
+          "current_transport_owner": "legacy_wrapper",
+          "target_transport_owner": "official_rust_sdk",
+          "current_auth_owner": "legacy_wrapper",
+          "target_auth_owner": "auth_broker",
+          "current_executor": "mcp_remote",
+          "current_cache": "scoped_skill_cache",
+          "target_cache": "scoped_auth_broker_store",
+          "current_negotiation": "fixed_version",
+          "target_negotiation": "automatic_with_legacy_fallback",
+          "fixed_protocol_version": "2025-11-25",
+          "endpoint_mode": "service_map",
+          "endpoint_override_supported": true,
+          "browser_oauth": true,
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+            "tools/list"
+          ],
+          "transport_strategies": [
+            "http-first",
+            "http-only",
+            "sse-first",
+            "sse-only"
+          ]
+        },
+        "policy": {
+          "current_owner": "legacy_wrapper",
+          "target_owner": "governed_commerce_policy",
+          "runtime_approval": "commerce_checkout",
+          "risk_evidence": "tool_name",
+          "wrapper_confirmation": "optional_default_off",
+          "amount_unit": "operator_declared",
+          "cart_verification": "live_cart_cross_check",
+          "amount_mismatch": "fail_closed",
+          "no_cart": "configurable_fail_open",
+          "unreadable_cart": "separately_configurable_fail_open",
+          "budget_unavailable": "configurable_fail_open",
+          "budget_control": "per_order_ceiling_and_daily_reservation",
+          "remote_success": "commit",
+          "remote_rejection": "rollback",
+          "remote_ambiguous": "commit",
+          "refund_coverage": "absent"
+        },
+        "source_ownership": {
+          "file": "scripts/swiggy_mcp.mjs",
+          "protocol_symbols": [
+            {
+              "kind": "function",
+              "name": "actionAuthStart"
+            },
+            {
+              "kind": "function",
+              "name": "actionClearAuth"
+            },
+            {
+              "kind": "function",
+              "name": "actionListTools"
+            },
+            {
+              "kind": "function",
+              "name": "actionStatus"
+            },
+            {
+              "kind": "function",
+              "name": "authTimeoutMs"
+            },
+            {
+              "kind": "function",
+              "name": "callbackHost"
+            },
+            {
+              "kind": "function",
+              "name": "callbackPort"
+            },
+            {
+              "kind": "function",
+              "name": "candidateMcpRemoteBins"
+            },
+            {
+              "kind": "function",
+              "name": "endpoint"
+            },
+            {
+              "kind": "function",
+              "name": "mcpRemoteArgs"
+            },
+            {
+              "kind": "function",
+              "name": "mcpRemoteBin"
+            },
+            {
+              "kind": "function",
+              "name": "mcpRemoteConfigRoot"
+            },
+            {
+              "kind": "function",
+              "name": "normalizeService"
+            },
+            {
+              "kind": "function",
+              "name": "requestTimeoutMs"
+            },
+            {
+              "kind": "function",
+              "name": "scriptDir"
+            },
+            {
+              "kind": "function",
+              "name": "serviceConfig"
+            },
+            {
+              "kind": "function",
+              "name": "serviceName"
+            },
+            {
+              "kind": "function",
+              "name": "skillDir"
+            },
+            {
+              "kind": "function",
+              "name": "timeoutMs"
+            },
+            {
+              "kind": "function",
+              "name": "transportStrategy"
+            },
+            {
+              "kind": "function",
+              "name": "walkFiles"
+            },
+            {
+              "kind": "function",
+              "name": "withRemote"
+            },
+            {
+              "kind": "class",
+              "name": "StdioMcpRemote"
+            }
+          ],
+          "policy_symbols": [
+            {
+              "kind": "function",
+              "name": "cartUnitIsPaise"
+            },
+            {
+              "kind": "function",
+              "name": "crossCheckCartTotal"
+            },
+            {
+              "kind": "function",
+              "name": "enforceRisk"
+            },
+            {
+              "kind": "function",
+              "name": "extractRupeeTotal"
+            },
+            {
+              "kind": "function",
+              "name": "gateAllowUnverifiedCart"
+            },
+            {
+              "kind": "function",
+              "name": "gateDisabled"
+            },
+            {
+              "kind": "function",
+              "name": "gateFailOpen"
+            },
+            {
+              "kind": "function",
+              "name": "gateRejectEnvelope"
+            },
+            {
+              "kind": "function",
+              "name": "inferredRisk"
+            },
+            {
+              "kind": "function",
+              "name": "isFinalActionTool"
+            },
+            {
+              "kind": "function",
+              "name": "orderAmountInr"
+            },
+            {
+              "kind": "function",
+              "name": "positiveFloatEnv"
+            },
+            {
+              "kind": "function",
+              "name": "raBaseUrl"
+            },
+            {
+              "kind": "function",
+              "name": "raCommit"
+            },
+            {
+              "kind": "function",
+              "name": "raHeaders"
+            },
+            {
+              "kind": "function",
+              "name": "raReserve"
+            },
+            {
+              "kind": "function",
+              "name": "raRollback"
+            }
+          ],
+          "mixed_symbols": [
+            {
+              "kind": "function",
+              "name": "actionCallTool"
+            }
+          ],
+          "removable_symbols": [
+            {
+              "kind": "function",
+              "name": "boolEnv"
+            },
+            {
+              "kind": "function",
+              "name": "emit"
+            },
+            {
+              "kind": "function",
+              "name": "env"
+            },
+            {
+              "kind": "function",
+              "name": "errorEnvelope"
+            },
+            {
+              "kind": "function",
+              "name": "main"
+            },
+            {
+              "kind": "function",
+              "name": "parseArgumentsJson"
+            },
+            {
+              "kind": "function",
+              "name": "positiveIntEnv"
+            },
+            {
+              "kind": "function",
+              "name": "serializeError"
+            },
+            {
+              "kind": "function",
+              "name": "tailLines"
+            }
+          ]
+        }
+      },
+      "classification": {
+        "runtime_owner": "legacy_mcp_wrapper",
+        "approval_class": "commerce_checkout",
+        "auth_strategies": [
+          "oauth_session"
+        ],
+        "session_owner": "legacy_protocol_wrapper",
+        "session_store": "scoped_skill_cache"
+      }
+    },
+    {
+      "boundary": {
+        "id": "zepto-mcp",
+        "source_digests": [
+          {
+            "path": "SKILL.md",
+            "sha256": "ac4a7139d70564ac9e3635cf0aebc8900965e79d7721cf8b3a9b260dc8c62e7f"
+          },
+          {
+            "path": "scripts/run.sh",
+            "sha256": "7598576fd0bdfc131594d13ae178e86d257cec88bf81ffc3dc91aa3e5dba59db"
+          },
+          {
+            "path": "scripts/zepto_mcp.mjs",
+            "sha256": "86e7a37af98fdca3dc81e16983d16bb41cb899bf6457a0ed012e57e8b1f512d7"
+          },
+          {
+            "path": "tool_schema.yaml",
+            "sha256": "2d90b5de47e72f7ee1c6e3d53e5b0822dc44fd19ddbaaf0efed400a988455f2d"
+          }
+        ],
+        "actions": [
+          "auth_start",
+          "call_tool",
+          "clear_auth",
+          "list_tools",
+          "status"
+        ],
+        "protocol": {
+          "current_transport_owner": "legacy_wrapper",
+          "target_transport_owner": "official_rust_sdk",
+          "current_auth_owner": "legacy_wrapper",
+          "target_auth_owner": "auth_broker",
+          "current_executor": "mcp_remote",
+          "current_cache": "scoped_skill_cache",
+          "target_cache": "scoped_auth_broker_store",
+          "current_negotiation": "fixed_version",
+          "target_negotiation": "automatic_with_legacy_fallback",
+          "fixed_protocol_version": "2025-11-25",
+          "endpoint_mode": "fixed",
+          "endpoint_override_supported": true,
+          "browser_oauth": true,
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+            "tools/list"
+          ],
+          "transport_strategies": [
+            "http-first",
+            "http-only",
+            "sse-first",
+            "sse-only"
+          ]
+        },
+        "policy": {
+          "current_owner": "legacy_wrapper",
+          "target_owner": "governed_commerce_policy",
+          "runtime_approval": "commerce_checkout",
+          "risk_evidence": "tool_name_and_arguments",
+          "wrapper_confirmation": "optional_default_off",
+          "amount_unit": "operator_declared",
+          "cart_verification": "live_cart_cross_check",
+          "amount_mismatch": "fail_closed",
+          "no_cart": "configurable_fail_open",
+          "unreadable_cart": "separately_configurable_fail_open",
+          "budget_unavailable": "configurable_fail_open",
+          "budget_control": "per_order_ceiling_and_daily_reservation",
+          "remote_success": "commit",
+          "remote_rejection": "rollback",
+          "remote_ambiguous": "commit",
+          "refund_coverage": "absent"
+        },
+        "source_ownership": {
+          "file": "scripts/zepto_mcp.mjs",
+          "protocol_symbols": [
+            {
+              "kind": "function",
+              "name": "actionAuthStart"
+            },
+            {
+              "kind": "function",
+              "name": "actionClearAuth"
+            },
+            {
+              "kind": "function",
+              "name": "actionListTools"
+            },
+            {
+              "kind": "function",
+              "name": "actionStatus"
+            },
+            {
+              "kind": "function",
+              "name": "authTimeoutMs"
+            },
+            {
+              "kind": "function",
+              "name": "callbackHost"
+            },
+            {
+              "kind": "function",
+              "name": "callbackPort"
+            },
+            {
+              "kind": "function",
+              "name": "candidateMcpRemoteBins"
+            },
+            {
+              "kind": "function",
+              "name": "endpoint"
+            },
+            {
+              "kind": "function",
+              "name": "mcpRemoteArgs"
+            },
+            {
+              "kind": "function",
+              "name": "mcpRemoteBin"
+            },
+            {
+              "kind": "function",
+              "name": "mcpRemoteConfigRoot"
+            },
+            {
+              "kind": "function",
+              "name": "requestTimeoutMs"
+            },
+            {
+              "kind": "function",
+              "name": "scriptDir"
+            },
+            {
+              "kind": "function",
+              "name": "skillDir"
+            },
+            {
+              "kind": "function",
+              "name": "timeoutMs"
+            },
+            {
+              "kind": "function",
+              "name": "transportStrategy"
+            },
+            {
+              "kind": "function",
+              "name": "walkFiles"
+            },
+            {
+              "kind": "function",
+              "name": "withRemote"
+            },
+            {
+              "kind": "class",
+              "name": "StdioMcpRemote"
+            }
+          ],
+          "policy_symbols": [
+            {
+              "kind": "function",
+              "name": "cartUnitIsPaise"
+            },
+            {
+              "kind": "function",
+              "name": "crossCheckCartTotal"
+            },
+            {
+              "kind": "function",
+              "name": "enforceRisk"
+            },
+            {
+              "kind": "function",
+              "name": "extractRupeeTotal"
+            },
+            {
+              "kind": "function",
+              "name": "gateAllowUnverifiedCart"
+            },
+            {
+              "kind": "function",
+              "name": "gateDisabled"
+            },
+            {
+              "kind": "function",
+              "name": "gateFailOpen"
+            },
+            {
+              "kind": "function",
+              "name": "gateRejectEnvelope"
+            },
+            {
+              "kind": "function",
+              "name": "inferredRisk"
+            },
+            {
+              "kind": "function",
+              "name": "isOrderTool"
+            },
+            {
+              "kind": "function",
+              "name": "orderAmountInr"
+            },
+            {
+              "kind": "function",
+              "name": "positiveFloatEnv"
+            },
+            {
+              "kind": "function",
+              "name": "raBaseUrl"
+            },
+            {
+              "kind": "function",
+              "name": "raCommit"
+            },
+            {
+              "kind": "function",
+              "name": "raHeaders"
+            },
+            {
+              "kind": "function",
+              "name": "raReserve"
+            },
+            {
+              "kind": "function",
+              "name": "raRollback"
+            }
+          ],
+          "mixed_symbols": [
+            {
+              "kind": "function",
+              "name": "actionCallTool"
+            }
+          ],
+          "removable_symbols": [
+            {
+              "kind": "function",
+              "name": "boolEnv"
+            },
+            {
+              "kind": "function",
+              "name": "emit"
+            },
+            {
+              "kind": "function",
+              "name": "env"
+            },
+            {
+              "kind": "function",
+              "name": "errorEnvelope"
+            },
+            {
+              "kind": "function",
+              "name": "main"
+            },
+            {
+              "kind": "function",
+              "name": "parseArgumentsJson"
+            },
+            {
+              "kind": "function",
+              "name": "positiveIntEnv"
+            },
+            {
+              "kind": "function",
+              "name": "serializeError"
+            },
+            {
+              "kind": "function",
+              "name": "tailLines"
+            }
+          ]
+        }
+      },
+      "classification": {
+        "runtime_owner": "legacy_mcp_wrapper",
+        "approval_class": "commerce_checkout",
+        "auth_strategies": [
+          "oauth_session"
+        ],
+        "session_owner": "legacy_protocol_wrapper",
+        "session_store": "scoped_skill_cache"
+      }
+    }
+  ]
+}

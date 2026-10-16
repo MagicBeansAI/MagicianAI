@@ -1,0 +1,76 @@
+name: app_action_compose
+description: Reopen one terminal app action result, map its reviewed output into another app's current action schema, and launch the destination without exposing source bytes to the calling model.
+version: "2.0.0"
+result_projection:
+  contract_id: app_action_composition_v2
+  priority_fields:
+    - status
+    - source_run
+    - source_status
+    - error_code
+    - retry_class
+    - retryable
+    - effect_uncertain
+    - launch
+    - result_withheld_by_policy
+guide: |
+  Tool name: `app_action_compose`
+
+  Use this when a canonical app action run should feed another app action.
+  Supply the `run_ref` returned by the source launch, a deterministic typed
+  mapping, and a stable idempotency key. If the source is still running, the
+  tool returns `status: waiting` and no result bytes; retry with the same
+  arguments. A failed, cancelled, archived, or uncertain source returns
+  `status: source_terminal` and its typed lifecycle instead of waiting forever.
+  When ready, the server reopens the sealed task/result sidecars, revalidates
+  both live app grants, maps the reviewed declared output schema, persists the
+  complete transfer receipt only inside the destination task, and launches the
+  action. The tool result never exposes receipt digests, field sets, or authority
+  revisions. A launch exposes only its stable `run_handle` and an optional
+  guarded result; internal task and execution identifiers are deliberately not
+  model-visible. Protected post-source failures return one guarded
+  `status: unavailable` outcome with a bounded `retry_class`, `retryable`, and
+  `effect_uncertain`. Retry with the same idempotency key only when
+  `retryable: true`; permanent request/authority conflicts and pre-launch
+  cancellation are non-retryable, while an error after entering the canonical
+  invocation boundary is explicitly effect-uncertain.
+
+  Mapping is total over the declared schema. An optional source cannot fill a
+  required destination, a nullable source cannot fill a non-null destination,
+  and enum narrowing requires an explicit complete `map_enum` operation.
+
+  This first result-composition slice accepts non-brokered source tasks only.
+  Results produced by an earlier brokered transfer fail closed until the
+  platform can snapshot the complete multi-hop authority chain atomically.
+parameters:
+  - name: source_run_ref
+    required: true
+    param_type: string
+    description: Canonical app-action run_ref returned by the source launch.
+  - name: destination_installation_id
+    required: true
+    param_type: string
+    description: Destination installation that will receive the mapped result.
+  - name: destination_action_id
+    required: true
+    param_type: string
+    description: Declared destination action id.
+  - name: mapping
+    required: true
+    param_type: array
+    description: Bounded typed operations from reviewed source-result fields to destination fields.
+  - name: idempotency_key
+    required: true
+    param_type: string
+    description: Stable caller key; retries replay the same destination workflow launch.
+implementation:
+  type: compiled
+  provider_name: app_action_compose
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - apps
+    - composition
+  composition_category: action
+  sandbox: none

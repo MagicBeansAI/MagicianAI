@@ -1,0 +1,87 @@
+name: deep-research-with-openai
+version: 0.1.0
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: Research query (natural language, complex questions work best)
+- name: model
+  param_type: string
+  description: o4-mini-deep-research (~$1/query, default) or o3-deep-research (~$10/query, highest quality)
+  default: o4-mini-deep-research
+- name: poll_interval_secs
+  param_type: integer
+  description: Seconds between polling attempts
+  default: '10'
+- name: max_poll_attempts
+  param_type: integer
+  description: Maximum number of poll attempts before giving up
+  default: '60'
+- name: max_tool_calls
+  param_type: integer
+  description: Optional cap on total tool calls the deep research model may make before returning
+- name: timeout_secs
+  param_type: integer
+  description: Total timeout in seconds (deep research can take 1-5 minutes)
+  default: '600'
+native_action_schemas:
+  run:
+    description: Run the openai_deep_research capability with the arguments selected from this capability guide. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after the requested result is present.
+    parameters:
+    - query
+    - model
+    - poll_interval_secs
+    - max_poll_attempts
+    - max_tool_calls
+    - timeout_secs
+    required:
+    - query
+    parameter_overrides:
+      query:
+        type: string
+        description: Research query (natural language, complex questions work best)
+      model:
+        type: string
+        description: o4-mini-deep-research (~$1/query, default) or o3-deep-research (~$10/query, highest quality)
+        default: o4-mini-deep-research
+      poll_interval_secs:
+        type: integer
+        description: Seconds between polling attempts
+        default: '10'
+      max_poll_attempts:
+        type: integer
+        description: Maximum number of poll attempts before giving up
+        default: '60'
+      max_tool_calls:
+        type: integer
+        description: Optional cap on total tool calls the deep research model may make before returning
+      timeout_secs:
+        type: integer
+        description: Total timeout in seconds (deep research can take 1-5 minutes)
+        default: '600'
+    skip_tool_name: true
+    timeout_secs: 600
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_QUERY: '{query}'
+    _TOOL_MODEL: '{model}'
+    _TOOL_POLL_INTERVAL_SECS: '{poll_interval_secs}'
+    _TOOL_MAX_POLL_ATTEMPTS: '{max_poll_attempts}'
+    _TOOL_MAX_TOOL_CALLS: '{max_tool_calls}'
+    _TOOL_TIMEOUT_SECS: '{timeout_secs}'
+  timeout_secs: 600
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 600
+  categories:
+  - web
+  - search
+  - research
+  - llm
+  - deep_research
+  composition_category: web_operations
+  sandbox: shell

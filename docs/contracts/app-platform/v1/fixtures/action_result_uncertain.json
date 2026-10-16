@@ -1,0 +1,17 @@
+{
+  "action_id": "publish_clip",
+  "error": {
+    "code": "external_outcome_uncertain",
+    "details": {
+      "destination": "https://publisher.example.test"
+    },
+    "disposition": "outcome_uncertain",
+    "message": "The destination accepted the request but did not confirm its final state."
+  },
+  "external_effect_receipt_refs": [
+    "external_receipt:publish_02"
+  ],
+  "protocol_version": "1",
+  "run_ref": "run:publish_clip:02",
+  "status": "uncertain"
+}

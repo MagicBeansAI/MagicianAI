@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "one_coverage_record",
+      "entity": "video_coverage",
+      "value": {
+        "topic": "rust actor frameworks",
+        "best_video": "Actors with Tokio — a practical introduction (https://www.youtube.com/watch?v=example)",
+        "captured_at": "2026-08-26T09:07:00Z"
+      }
+    }
+  ],
+  "workflows": [],
+  "views": [
+    { "name": "coverage_with_one_record", "view": "coverage", "minimum_records": 1 }
+  ]
+}

@@ -1,0 +1,2126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Downloads and Uploads (Round-Trip Workflows)</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #f3f5f9;
+            --card: #ffffff;
+            --border: #d8dee9;
+            --text: #18212f;
+            --muted: #607089;
+            --blue: #2f6fed;
+            --blue-soft: #e8f0ff;
+            --green: #1f8a4c;
+            --green-soft: #ebf8f0;
+            --red: #c23b3b;
+            --red-soft: #fff1f1;
+            --amber: #a16a00;
+            --amber-soft: #fff6dc;
+            --shadow: 0 16px 36px rgba(20, 34, 66, 0.08);
+        }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background:
+                radial-gradient(circle at top right, rgba(47, 111, 237, 0.12), transparent 20%),
+                linear-gradient(180deg, #f7f9fd 0%, var(--bg) 100%);
+            color: var(--text);
+        }
+
+        .page-shell {
+            max-width: 1320px;
+            margin: 0 auto;
+            padding: 24px 24px 56px;
+            min-height: calc(100vh + 28rem);
+        }
+
+        .test-header {
+            background: linear-gradient(135deg, #183a7a, #2f6fed 62%, #57a9ff);
+            color: white;
+            border-radius: 18px;
+            padding: 28px;
+            box-shadow: var(--shadow);
+            margin-bottom: 20px;
+        }
+
+        .test-header h1 {
+            margin: 0 0 10px;
+            font-size: 32px;
+            line-height: 1.15;
+        }
+
+        .test-header p {
+            margin: 0;
+            max-width: 920px;
+            line-height: 1.6;
+            opacity: 0.95;
+        }
+
+        .header-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 18px;
+        }
+
+        .header-chip {
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.16);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            font-size: 13px;
+            letter-spacing: 0.01em;
+        }
+
+        .results-summary {
+            position: sticky;
+            top: 16px;
+            z-index: 10;
+            margin: 0 0 20px auto;
+            width: fit-content;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(216, 222, 233, 0.95);
+            border-radius: 16px;
+            box-shadow: 0 10px 26px rgba(20, 34, 66, 0.08);
+            padding: 14px 18px;
+        }
+
+        .results-summary h2 {
+            margin: 0 0 10px;
+            font-size: 15px;
+        }
+
+        .results-summary .counts {
+            display: flex;
+            gap: 14px;
+            font-size: 14px;
+        }
+
+        .summary-count strong {
+            font-size: 16px;
+        }
+
+        .summary-count.passed strong {
+            color: var(--green);
+        }
+
+        .summary-count.failed strong {
+            color: var(--red);
+        }
+
+        .summary-count.pending strong {
+            color: var(--muted);
+        }
+
+        .overview-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.7fr) minmax(300px, 0.9fr);
+            gap: 20px;
+            margin-bottom: 22px;
+        }
+
+        .overview-card,
+        .activity-card,
+        .test-case {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+        }
+
+        .overview-card {
+            padding: 22px;
+        }
+
+        .overview-card h2,
+        .activity-card h2 {
+            margin: 0 0 10px;
+            font-size: 18px;
+        }
+
+        .overview-card p,
+        .activity-card p {
+            margin: 0 0 12px;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .fixture-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            margin-top: 14px;
+        }
+
+        .fixture-card {
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: #fbfcfe;
+            padding: 14px;
+        }
+
+        .fixture-card strong {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+
+        .fixture-card span {
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .activity-card {
+            padding: 22px;
+        }
+
+        .activity-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 280px;
+            overflow-y: auto;
+        }
+
+        .activity-item,
+        .activity-empty {
+            border-radius: 12px;
+            padding: 11px 12px;
+            font-size: 13px;
+            line-height: 1.5;
+            border: 1px solid var(--border);
+            background: #fbfcfe;
+        }
+
+        .activity-empty {
+            color: var(--muted);
+            font-style: italic;
+        }
+
+        .activity-item.download {
+            border-color: #cfe0ff;
+            background: #f3f7ff;
+        }
+
+        .activity-item.upload {
+            border-color: #d4efde;
+            background: #f3fbf6;
+        }
+
+        .activity-item.helper {
+            border-color: #f2e1ad;
+            background: #fff9e8;
+        }
+
+        .activity-item.error {
+            border-color: #f1c2c2;
+            background: #fff5f5;
+        }
+
+        .test-grid {
+            display: grid;
+            gap: 18px;
+        }
+
+        .audit-section {
+            display: grid;
+            grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+            gap: 18px;
+            margin-top: 22px;
+        }
+
+        .audit-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+            padding: 22px;
+        }
+
+        .audit-card h2 {
+            margin: 0 0 10px;
+            font-size: 18px;
+        }
+
+        .audit-card p {
+            margin: 0 0 12px;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .audit-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .audit-list li {
+            border: 1px solid var(--border);
+            background: #fafcff;
+            border-radius: 12px;
+            padding: 12px 14px;
+            font-size: 13px;
+            line-height: 1.55;
+        }
+
+        .audit-label {
+            display: inline-block;
+            margin-bottom: 4px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #355b9a;
+        }
+
+        .test-case {
+            padding: 22px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .test-case[data-status="pass"] {
+            border-color: #b9e3c9;
+            background: linear-gradient(180deg, #ffffff 0%, #f6fdf9 100%);
+        }
+
+        .test-case[data-status="fail"] {
+            border-color: #f1c7c7;
+            background: linear-gradient(180deg, #ffffff 0%, #fff7f7 100%);
+        }
+
+        .test-case[data-status="running"] {
+            border-color: #cfe0ff;
+            background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%);
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 14px;
+        }
+
+        .test-case-title {
+            margin: 0 0 6px;
+            font-size: 22px;
+            line-height: 1.25;
+        }
+
+        .test-case-subtitle {
+            margin: 0;
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .test-case-id {
+            flex-shrink: 0;
+            border-radius: 999px;
+            background: #eef2f9;
+            padding: 7px 12px;
+            font-size: 12px;
+            color: #40526f;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+
+        .goal-section,
+        .verify-section {
+            border-radius: 14px;
+            padding: 14px 16px;
+            margin: 14px 0;
+        }
+
+        .goal-section {
+            background: var(--blue-soft);
+            border: 1px solid #cfe0ff;
+        }
+
+        .verify-section {
+            background: #f5faf7;
+            border: 1px solid #d7ecdf;
+        }
+
+        .goal-section strong,
+        .verify-section strong {
+            display: inline-block;
+            margin-bottom: 6px;
+        }
+
+        .verify-section ul {
+            margin: 6px 0 0;
+            padding-left: 18px;
+        }
+
+        [data-check] {
+            color: var(--text);
+            transition: color 0.2s, text-decoration-color 0.2s;
+        }
+
+        [data-check][data-check-state="pass"] {
+            color: var(--green);
+            text-decoration: line-through;
+            text-decoration-color: var(--green);
+        }
+
+        [data-check][data-check-state="fail"] {
+            color: var(--red);
+        }
+
+        .interactive-area {
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: #fbfcfe;
+            padding: 18px;
+        }
+
+        .download-panel,
+        .upload-panel,
+        .cycle-panel {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            align-items: start;
+        }
+
+        .download-card,
+        .upload-card,
+        .cycle-card {
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+            background: white;
+            min-height: 100%;
+        }
+
+        .download-card h3,
+        .upload-card h3,
+        .cycle-card h3 {
+            margin: 0 0 8px;
+            font-size: 16px;
+        }
+
+        .download-meta,
+        .helper-text {
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .endpoint-code {
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px dashed #c7d3e3;
+            background: #f7faff;
+            color: #345174;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            word-break: break-all;
+        }
+
+        .meta-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 12px 0 16px;
+        }
+
+        .meta-pill {
+            border-radius: 999px;
+            background: #eef3ff;
+            color: #2b4f96;
+            padding: 6px 10px;
+            font-size: 12px;
+        }
+
+        .upload-actions,
+        .cycle-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .btn {
+            border: none;
+            border-radius: 12px;
+            padding: 11px 16px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #2f6fed, #2357bf);
+            color: white;
+            box-shadow: 0 10px 22px rgba(47, 111, 237, 0.18);
+        }
+
+        .btn-secondary {
+            background: #eef2f9;
+            color: #30425c;
+        }
+
+        .file-input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: white;
+            color: var(--text);
+            margin-top: 12px;
+        }
+
+        .dropzone {
+            border: 2px dashed #c6d3eb;
+            border-radius: 16px;
+            background: #f8fbff;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.16s ease, background 0.16s ease;
+        }
+
+        .dropzone.drag-over {
+            border-color: var(--blue);
+            background: #eef5ff;
+        }
+
+        .dropzone strong {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+
+        .dropzone span {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .hidden-input {
+            display: none;
+        }
+
+        .file-list {
+            list-style: none;
+            padding: 0;
+            margin: 14px 0 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .file-list li {
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: #fafcff;
+            padding: 10px 12px;
+            font-size: 13px;
+        }
+
+        .result-display {
+            margin-top: 14px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid #e4e8ef;
+            background: #f8fafc;
+            font-size: 13px;
+            line-height: 1.55;
+            color: #334155;
+        }
+
+        .result-display.success {
+            background: var(--green-soft);
+            border-color: #cce9d7;
+            color: #165c33;
+        }
+
+        .result-display.error {
+            background: var(--red-soft);
+            border-color: #efc8c8;
+            color: #8e2b2b;
+        }
+
+        .result-display.info {
+            background: var(--amber-soft);
+            border-color: #efd68a;
+            color: #805400;
+        }
+
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 40;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(17, 24, 39, 0.56);
+            backdrop-filter: blur(6px);
+        }
+
+        .modal-overlay[hidden] {
+            display: none;
+        }
+
+        .modal-dialog {
+            width: min(760px, 100%);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            background: rgba(248, 250, 252, 0.98);
+            box-shadow: 0 30px 80px rgba(15, 23, 42, 0.28);
+            padding: 22px;
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 10px;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 24px;
+        }
+
+        .modal-kicker {
+            margin-bottom: 6px;
+            color: #355b9a;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .modal-close-btn {
+            border: none;
+            border-radius: 999px;
+            padding: 9px 14px;
+            background: #e8edf7;
+            color: #30425c;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .modal-iframe {
+            width: 100%;
+            min-height: 360px;
+            margin-top: 14px;
+            border: 1px solid #cbd5e1;
+            border-radius: 16px;
+            background: white;
+        }
+
+        body.modal-open {
+            overflow: hidden;
+        }
+
+        .status-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .status-btn {
+            border: none;
+            border-radius: 10px;
+            padding: 9px 14px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .status-btn.reset {
+            background: #66758d;
+            color: white;
+        }
+
+        @media (max-width: 980px) {
+            .overview-grid,
+            .download-panel,
+            .upload-panel,
+            .cycle-panel,
+            .audit-section {
+                grid-template-columns: 1fr;
+            }
+
+            .results-summary {
+                width: 100%;
+                margin-left: 0;
+            }
+
+            .modal-overlay {
+                padding: 16px;
+            }
+
+            .modal-dialog {
+                padding: 18px;
+            }
+
+            .test-case-header {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="page-shell">
+        <div class="results-summary">
+            <h2>Results Summary</h2>
+            <div class="counts">
+                <div class="summary-count passed">Passed <strong id="passed-count">0</strong></div>
+                <div class="summary-count failed">Failed <strong id="failed-count">0</strong></div>
+                <div class="summary-count pending">Pending <strong id="pending-count">7</strong></div>
+            </div>
+        </div>
+
+        <div class="test-header">
+            <h1>Downloads and Uploads</h1>
+            <p>
+                This fixture covers browser file transfer behavior across seven realistic workflows:
+                two standalone downloads, three standalone uploads, and two download-then-upload
+                round trips. Each case exposes visible status, checklist, and result state API used by the other SOTA pages.
+            </p>
+            <div class="header-chips">
+                <div class="header-chip">2 download tests</div>
+                <div class="header-chip">3 upload tests</div>
+                <div class="header-chip">2 round-trip cycles</div>
+                <div class="header-chip">HTTP href/download + Content-Disposition attachment + cross-origin modal iframe picker</div>
+            </div>
+        </div>
+
+        <div class="overview-grid">
+            <div class="overview-card">
+                <h2>What This Page Exercises</h2>
+                <p>
+                    The workflows below combine common browser automation edge cases: exact
+                    download filenames, structured JSON intake, multi-file upload queues, and
+                    upload verification against files produced earlier in the same session.
+                </p>
+                <div class="fixture-grid">
+                    <div class="fixture-card">
+                        <strong>Download-only</strong>
+                        <span>Exact HTTP/S anchor download coverage: JS `.click()` on `<a download>` plus navigation-triggered attachment responses.</span>
+                    </div>
+                    <div class="fixture-card">
+                        <strong>Upload-only</strong>
+                        <span>Single-file JSON validation, a multi-file batch intake zone, and a Google Forms-style cross-origin modal iframe picker.</span>
+                    </div>
+                    <div class="fixture-card">
+                        <strong>Round-trip A</strong>
+                        <span>Download a text template and upload the exact same content back.</span>
+                    </div>
+                    <div class="fixture-card">
+                        <strong>Round-trip B</strong>
+                        <span>Download a JSON handoff packet and return it through a dropzone.</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="activity-card">
+                <h2>Transfer Activity</h2>
+                <p>Recent downloads, uploads, and helper actions appear here for visible verification.</p>
+                <ul class="activity-list" id="activity-log">
+                    <li class="activity-empty" id="activity-empty">No transfer events yet.</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="test-grid">
+            <div class="test-case" id="test-1" data-test-id="23-download-handbook">
+                <div class="test-case-header">
+                    <div>
+                        <h2 class="test-case-title">1. JS-Initiated HTTP Download Attribute</h2>
+                        <p class="test-case-subtitle">Exact Case A: a script calls <code>.click()</code> on an HTTP anchor with a <code>download</code> attribute.</p>
+                    </div>
+                    <span class="test-case-id">http-download-via-js-click</span>
+                </div>
+
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Using JavaScript, trigger <code>document.getElementById('case-a-http-anchor').click()</code> so the browser downloads <code>case-a-http-export.csv</code> from an HTTP URL with a <code>download</code> attribute.
+                </div>
+
+                <div class="interactive-area">
+                    <div class="download-panel">
+                        <div class="download-card">
+                            <h3>Case A HTTP anchor</h3>
+                            <div class="download-meta">
+                                This anchor resolves to an absolute runtime HTTP URL and carries a
+                                <code>download</code> attribute. Direct user clicks are blocked so the
+                                exact benchmark path stays JS-initiated.
+                            </div>
+                            <div class="meta-pills">
+                                <span class="meta-pill">Case A</span>
+                                <span class="meta-pill">Trigger: JS <code>.click()</code></span>
+                                <span class="meta-pill">download="case-a-http-export.csv"</span>
+                            </div>
+                            <div class="endpoint-code" id="case-a-http-url">Resolving runtime HTTP download URL...</div>
+                            <div class="upload-actions">
+                                <a
+                                    class="btn btn-secondary"
+                                    id="case-a-http-anchor"
+                                    data-testid="case-a-http-anchor"
+                                    href="/tests/sota-download-assets/case-a-http-export.csv"
+                                    download="case-a-http-export.csv"
+                                >
+                                    Case A HTTP anchor
+                                </a>
+                                <button
+                                    class="btn btn-primary"
+                                    id="case-a-js-helper-btn"
+                                    data-testid="case-a-js-helper-btn"
+                                    onclick="triggerCaseAHttpDownload()"
+                                >
+                                    Run JS anchor.click()
+                                </button>
+                            </div>
+                            <div class="helper-text">
+                                Exact test snippet: <code>document.getElementById('case-a-http-anchor').click()</code>
+                            </div>
+                        </div>
+
+                        <div class="download-card">
+                            <h3>Expected verification signal</h3>
+                            <div class="helper-text">
+                                A synthetic JS click should trigger the HTTP download. A direct trusted
+                                click on the anchor is intentionally blocked because it is not the case
+                                being tested here.
+                            </div>
+                            <div class="result-display" id="test-1-result">
+                                Waiting for a JS-initiated HTTP anchor click.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="case-a-js-initiated">The anchor click must be JS-initiated rather than a direct trusted user click.</li>
+                        <li data-check="case-a-http-url">The anchor should resolve to an absolute HTTP/S URL and trigger <code>case-a-http-export.csv</code>.</li>
+                    </ul>
+                </div>
+
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+                </div>
+            </div>
+
+            <div class="test-case" id="test-2" data-test-id="23-download-finance-export">
+                <div class="test-case-header">
+                    <div>
+                        <h2 class="test-case-title">2. Navigation-Triggered Attachment Download</h2>
+                        <p class="test-case-subtitle">Exact Case B: click a normal link whose response returns <code>Content-Disposition: attachment</code>.</p>
+                    </div>
+                    <span class="test-case-id">attachment-response-link</span>
+                </div>
+
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Click the attachment link to download <code>case-b-attachment-report.csv</code>. The link must not use a <code>download</code> attribute; the response itself should carry <code>Content-Disposition: attachment</code>.
+                </div>
+
+                <div class="interactive-area">
+                    <div class="download-panel">
+                        <div class="download-card">
+                            <h3>Case B attachment endpoint</h3>
+                            <div class="download-meta">
+                                This link is a normal navigation target without a <code>download</code>
+                                attribute. The local Vite dev/preview server responds with
+                                <code>Content-Disposition: attachment</code>.
+                            </div>
+                            <div class="meta-pills">
+                                <span class="meta-pill">Case B</span>
+                                <span class="meta-pill">No <code>download</code> attribute</span>
+                                <span class="meta-pill">Header: attachment</span>
+                            </div>
+                            <div class="endpoint-code" id="case-b-attachment-url">Resolving attachment endpoint URL...</div>
+                            <div class="upload-actions">
+                                <a
+                                    class="btn btn-primary"
+                                    id="case-b-attachment-link"
+                                    data-testid="case-b-attachment-link"
+                                    href="/tests/sota-download-assets/case-b-attachment-report.csv"
+                                >
+                                    Download attachment response
+                                </a>
+                            </div>
+                        </div>
+
+                        <div class="download-card">
+                            <h3>Expected verification signal</h3>
+                            <div class="helper-text">
+                                Clicking the link should start a download while leaving the page in
+                                place. The result panel records that the attachment endpoint was used.
+                            </div>
+                            <div class="result-display" id="test-2-result">
+                                Waiting for the attachment link click.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="case-b-no-download-attr">The clicked link should not use a <code>download</code> attribute.</li>
+                        <li data-check="case-b-attachment-endpoint">The activity log and result panel should confirm the <code>Content-Disposition: attachment</code> endpoint for <code>case-b-attachment-report.csv</code>.</li>
+                    </ul>
+                </div>
+
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+                </div>
+            </div>
+
+            <div class="test-case" id="test-3" data-test-id="23-upload-manifest">
+                <div class="test-case-header">
+                    <div>
+                        <h2 class="test-case-title">3. Structured JSON Upload</h2>
+                        <p class="test-case-subtitle">Single-file upload with schema validation.</p>
+                    </div>
+                    <span class="test-case-id">upload-json-manifest</span>
+                </div>
+
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Upload a JSON manifest that contains the keys <code>workflow</code>, <code>owner</code>, and <code>artifacts</code>.
+                </div>
+
+                <div class="interactive-area">
+                    <div class="upload-panel">
+                        <div class="upload-card">
+                            <h3>Manifest intake</h3>
+                            <div class="helper-text">
+                                Choose any valid JSON file with the required keys. If you need a local
+                                sample, use the helper button first and then upload that file here.
+                            </div>
+                            <input
+                                class="file-input"
+                                type="file"
+                                id="manifest-input"
+                                data-testid="manifest-input"
+                                accept=".json,application/json"
+                            >
+                            <div class="upload-actions">
+                                <button
+                                    class="btn btn-secondary"
+                                    id="download-manifest-sample-btn"
+                                    data-testid="download-manifest-sample-btn"
+                                    onclick="downloadFixture('manifestSample', { resultId: 'test-3-result', successMessage: 'Downloaded sample manifest-upload-sample.json.', activityType: 'helper' })"
+                                >
+                                    Download sample manifest
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="upload-card">
+                            <h3>Validation status</h3>
+                            <div class="helper-text">
+                                Uploaded filename and detected top-level keys appear below after selection.
+                            </div>
+                            <div class="result-display" id="test-3-result">
+                                No manifest uploaded yet.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="manifest-file">The uploaded filename should be visible in the result panel.</li>
+                        <li data-check="manifest-schema">The page should detect all required keys: <code>workflow</code>, <code>owner</code>, <code>artifacts</code>.</li>
+                    </ul>
+                </div>
+
+                <div class="status-controls" data-status-controls="test-3">
+                    <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+                </div>
+            </div>
+
+            <div class="test-case" id="test-4" data-test-id="23-upload-batch">
+                <div class="test-case-header">
+                    <div>
+                        <h2 class="test-case-title">4. Multi-File Batch Upload</h2>
+                        <p class="test-case-subtitle">Upload any two files into a visible intake queue.</p>
+                    </div>
+                    <span class="test-case-id">upload-two-files</span>
+                </div>
+
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Upload exactly two files into the batch intake zone and confirm both filenames appear in the queue.
+                </div>
+
+                <div class="interactive-area">
+                    <div class="upload-panel">
+                        <div class="upload-card">
+                            <h3>Batch intake zone</h3>
+                            <div
+                                class="dropzone"
+                                id="batch-dropzone"
+                                data-testid="batch-dropzone"
+                                role="button"
+                                tabindex="0"
+                            >
+                                <strong>Drop two files here</strong>
+                                <span>or click the zone to browse for exactly two files</span>
+                            </div>
+                            <input
+                                class="hidden-input"
+                                type="file"
+                                id="batch-input"
+                                data-testid="batch-input"
+                                multiple
+                            >
+                        </div>
+
+                        <div class="upload-card">
+                            <h3>Queued files</h3>
+                            <ul class="file-list" id="batch-file-list">
+                                <li>No batch files selected yet.</li>
+                            </ul>
+                            <div class="result-display" id="test-4-result">
+                                Waiting for a two-file upload.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="batch-count">Exactly two files should be queued.</li>
+                        <li data-check="batch-names">Both uploaded filenames should appear in the file queue.</li>
+                    </ul>
+                </div>
+
+                <div class="status-controls" data-status-controls="test-4">
+                    <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+                </div>
+            </div>
+
+            <div class="test-case" id="test-5" data-test-id="23-roundtrip-template">
+                <div class="test-case-header">
+                    <div>
+                        <h2 class="test-case-title">5. Download and Upload Cycle: Text Template</h2>
+                        <p class="test-case-subtitle">Round-trip verification against an exact text payload.</p>
+                    </div>
+                    <span class="test-case-id">roundtrip-text-template</span>
+                </div>
+
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Download <code>incident-template-v7.txt</code> and then upload the same file back into the response well.
+                </div>
+
+                <div class="interactive-area">
+                    <div class="cycle-panel">
+                        <div class="cycle-card">
+                            <h3>Template source</h3>
+                            <div class="helper-text">
+                                This file includes a round-trip token that the page validates when the
+                                same content comes back.
+                            </div>
+                            <div class="meta-pills">
+                                <span class="meta-pill">Filename: incident-template-v7.txt</span>
+                                <span class="meta-pill">Contains token: INCIDENT-TEMPLATE-V7</span>
+                            </div>
+                            <div class="cycle-actions">
+                                <button
+                                    class="btn btn-primary"
+                                    id="download-template-btn"
+                                    data-testid="download-template-btn"
+                                    onclick="downloadFixture('incidentTemplate', { testId: 'test-5', resultId: 'test-5-result', successMessage: 'Downloaded incident-template-v7.txt. Upload the same file to finish the cycle.', checkNames: ['template-downloaded'], preserveTone: true })"
+                                >
+                                    Download template
+                                </button>
+                            </div>
+                            <input
+                                class="file-input"
+                                type="file"
+                                id="roundtrip-text-input"
+                                data-testid="roundtrip-text-input"
+                                accept=".txt,text/plain"
+                            >
+                        </div>
+
+                        <div class="cycle-card">
+                            <h3>Cycle status</h3>
+                            <div class="helper-text">
+                                A successful round trip requires both actions: the download trigger and
+                                an upload with matching file content.
+                            </div>
+                            <div class="result-display info" id="test-5-result">
+                                Start by downloading incident-template-v7.txt.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="template-downloaded">The template download should be logged before upload verification.</li>
+                        <li data-check="template-upload-match">The uploaded file content should match the downloaded template token and body.</li>
+                    </ul>
+                </div>
+
+                <div class="status-controls" data-status-controls="test-5">
+                    <button class="status-btn reset" type="button" data-status-reset="test-5">Reset</button>
+                </div>
+            </div>
+
+            <div class="test-case" id="test-6" data-test-id="23-roundtrip-packet">
+                <div class="test-case-header">
+                    <div>
+                        <h2 class="test-case-title">6. Download and Upload Cycle: JSON Packet</h2>
+                        <p class="test-case-subtitle">Round-trip through a dropzone using a structured JSON payload.</p>
+                    </div>
+                    <span class="test-case-id">roundtrip-json-packet</span>
+                </div>
+
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Download <code>handoff-packet-2026.json</code> and upload the same file into the return lane dropzone.
+                </div>
+
+                <div class="interactive-area">
+                    <div class="cycle-panel">
+                        <div class="cycle-card">
+                            <h3>Handoff packet source</h3>
+                            <div class="helper-text">
+                                The return lane expects a JSON packet with the exact packet ID and
+                                transfer token from this download.
+                            </div>
+                            <div class="meta-pills">
+                                <span class="meta-pill">Filename: handoff-packet-2026.json</span>
+                                <span class="meta-pill">packetId: HX-2048</span>
+                                <span class="meta-pill">transferToken: return-lane-23</span>
+                            </div>
+                            <div class="cycle-actions">
+                                <button
+                                    class="btn btn-primary"
+                                    id="download-packet-btn"
+                                    data-testid="download-packet-btn"
+                                    onclick="downloadFixture('handoffPacket', { testId: 'test-6', resultId: 'test-6-result', successMessage: 'Downloaded handoff-packet-2026.json. Return it through the dropzone.', checkNames: ['packet-downloaded'], preserveTone: true })"
+                                >
+                                    Download packet
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="cycle-card">
+                            <h3>Return lane</h3>
+                            <div
+                                class="dropzone"
+                                id="packet-dropzone"
+                                data-testid="packet-dropzone"
+                                role="button"
+                                tabindex="0"
+                            >
+                                <strong>Drop the downloaded JSON packet here</strong>
+                                <span>or click to choose the file from disk</span>
+                            </div>
+                            <input
+                                class="hidden-input"
+                                type="file"
+                                id="packet-input"
+                                data-testid="packet-input"
+                                accept=".json,application/json"
+                            >
+                            <div class="result-display info" id="test-6-result">
+                                Start by downloading handoff-packet-2026.json.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="packet-downloaded">The packet download should be logged before upload verification.</li>
+                        <li data-check="packet-upload-match">The uploaded packet should match the expected packet ID and transfer token.</li>
+                    </ul>
+                </div>
+
+                <div class="status-controls" data-status-controls="test-6">
+                    <button class="status-btn reset" type="button" data-status-reset="test-6">Reset</button>
+                </div>
+            </div>
+
+            <div class="test-case" id="test-7" data-test-id="23-upload-modal-iframe">
+                <div class="test-case-header">
+                    <div>
+                        <h2 class="test-case-title">7. Cross-Origin Modal Iframe File Upload</h2>
+                        <p class="test-case-subtitle">Google Forms-style flow: open a modal, then use a browse button inside a cross-origin iframe to launch the native file picker.</p>
+                    </div>
+                    <span class="test-case-id">modal-iframe-picker</span>
+                </div>
+
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Click <code>Open upload modal</code>, then inside the cross-origin modal iframe click <code>Browse files</code> and choose any local file. The selected filename should appear in both the modal and the host page result panel.
+                </div>
+
+                <div class="interactive-area">
+                    <div class="upload-panel">
+                        <div class="upload-card">
+                            <h3>Launch secure upload modal</h3>
+                            <div class="helper-text">
+                                The outer page only exposes a launcher button. The actual browse
+                                control is rendered inside a cross-origin modal iframe to mimic
+                                Google Forms-style upload dialogs.
+                            </div>
+                            <div class="meta-pills">
+                                <span class="meta-pill">Modal overlay</span>
+                                <span class="meta-pill">Cross-origin iframe browse button</span>
+                                <span class="meta-pill">Native file picker</span>
+                            </div>
+                            <div class="upload-actions">
+                                <button
+                                    class="btn btn-primary"
+                                    id="open-modal-upload-btn"
+                                    data-testid="open-modal-upload-btn"
+                                    type="button"
+                                    onclick="openModalUploadDialog()"
+                                >
+                                    Open upload modal
+                                </button>
+                            </div>
+                            <div class="helper-text">
+                                Use the browse button inside the iframe after the dialog opens. Do not
+                                target a hidden file input on the host page, because there is none.
+                            </div>
+                        </div>
+
+                        <div class="upload-card">
+                            <h3>Host-page verification</h3>
+                            <ul class="file-list" id="modal-upload-file-list">
+                                <li>No modal upload files selected yet.</li>
+                            </ul>
+                            <div class="result-display info" id="test-7-result">
+                                Open the modal to start the cross-origin iframe-based file upload.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="modal-open">The upload modal should visibly open from the host page button.</li>
+                        <li data-check="modal-browse">The cross-origin iframe browse button should be used to request the native file picker.</li>
+                        <li data-check="modal-filename">After selection, the chosen filename should appear in the modal flow and in the host-page file list.</li>
+                    </ul>
+                </div>
+
+                <div class="status-controls" data-status-controls="test-7">
+                    <button class="status-btn reset" type="button" data-status-reset="test-7">Reset</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal-overlay" id="modal-upload-overlay" hidden>
+            <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-upload-title">
+                <div class="modal-header">
+                    <div>
+                        <div class="modal-kicker">Secure upload request</div>
+                        <h2 id="modal-upload-title">Attach a file</h2>
+                    </div>
+                    <button
+                        class="modal-close-btn"
+                        id="modal-upload-close-btn"
+                        type="button"
+                        aria-label="Close upload modal"
+                    >
+                        Close
+                    </button>
+                </div>
+                <p class="helper-text">
+                    This dialog intentionally puts the browse control inside a cross-origin iframe so
+                    native file selection happens from embedded modal content, similar to Google Forms.
+                </p>
+                <iframe
+                    class="modal-iframe"
+                    id="modal-upload-iframe"
+                    title="Modal upload iframe"
+                    data-testid="modal-upload-iframe"
+                    sandbox="allow-scripts allow-forms"
+                ></iframe>
+            </div>
+        </div>
+
+        <div class="audit-section">
+            <div class="audit-card">
+                <h2>Transfer Audit Trail</h2>
+                <p>
+                    This lower section is intentionally part of the fixture so the page has a full
+                    document scroll path even on large desktop screens. It also gives agents a
+                    stable place to verify post-transfer expectations.
+                </p>
+                <ul class="audit-list">
+                    <li>
+                        <span class="audit-label">Stage 1</span>
+                        Validate browser-managed downloads preserve the expected filename, extension,
+                        and user-visible transfer cue.
+                    </li>
+                    <li>
+                        <span class="audit-label">Stage 2</span>
+                        Confirm file inputs and dropzones accept local files, reflect filenames, and
+                        produce visible success or failure output.
+                    </li>
+                    <li>
+                        <span class="audit-label">Stage 3</span>
+                        Verify round-trip workflows compare uploaded content against the exact payload
+                        produced by an earlier download step.
+                    </li>
+                    <li>
+                        <span class="audit-label">Stage 4</span>
+                        Review the activity log and result panels before marking manual pass/fail for
+                        each of the seven test cards.
+                    </li>
+                </ul>
+            </div>
+
+            <div class="audit-card">
+                <h2>Operator Notes</h2>
+                <p>
+                    If you are testing automation here, scroll to the bottom of the page and back up
+                    while validating downloads and uploads. The fixture now guarantees page-level
+                    overflow in addition to the transfer-specific interactions.
+                </p>
+                <ul class="audit-list">
+                    <li><span class="audit-label">Downloads</span>Use the exact filename shown in each card.</li>
+                    <li><span class="audit-label">Uploads</span>Visible result panels should change after selection or drop, including the cross-origin modal iframe uploader.</li>
+                    <li><span class="audit-label">Cycles</span>The upload should happen after its paired download trigger.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        const CASE_A_HTTP_PATH = '/tests/sota-download-assets/case-a-http-export.csv';
+        const CASE_B_ATTACHMENT_PATH = '/tests/sota-download-assets/case-b-attachment-report.csv';
+
+        const fixtures = {
+            manifestSample: {
+                filename: 'manifest-upload-sample.json',
+                mime: 'application/json',
+                body: JSON.stringify(
+                    {
+                        workflow: 'release-train',
+                        owner: 'ops-platform',
+                        artifacts: ['case-a-http-export.csv', 'case-b-attachment-report.csv'],
+                        notes: 'Sample upload manifest for the Downloads and Uploads fixture.'
+                    },
+                    null,
+                    2
+                )
+            },
+            incidentTemplate: {
+                filename: 'incident-template-v7.txt',
+                mime: 'text/plain',
+                body: [
+                    'INCIDENT-TEMPLATE-V7',
+                    'severity=medium',
+                    'owner=service-ops',
+                    'impact=regional delay',
+                    'next_action=attach timeline and return this exact template'
+                ].join('\n')
+            },
+            handoffPacket: {
+                filename: 'handoff-packet-2026.json',
+                mime: 'application/json',
+                body: JSON.stringify(
+                    {
+                        packetId: 'HX-2048',
+                        transferToken: 'return-lane-23',
+                        shipmentCount: 2,
+                        destination: 'veil-return-lane',
+                        acknowledgements: ['customs-cleared', 'dock-confirmed']
+                    },
+                    null,
+                    2
+                )
+            }
+        };
+
+        const startedDownloads = new Set();
+        const MODAL_UPLOAD_MESSAGE_SOURCE = 'sota-23-modal-upload';
+        // Captured at first iframe seed; used by handleModalUploadMessage to
+        // detect iframe-src tampering. The agent has full host-context JS
+        // access and can overwrite `iframe.src` with their own data: URL
+        // whose script calls `parent.postMessage(...)`. Such messages have
+        // `isTrusted: true` and a valid `event.source` (the new contentWindow),
+        // so they slip past the regular guards. The only deterministic
+        // signature is that `iframe.src` differs from what we seeded it with.
+        let modalUploadFrameSeededSrc = null;
+        // Set true the moment we detect tampering; once tripped, all future
+        // postMessages from the iframe are rejected (the iframe is no longer
+        // trusted for this page session — the test must be reloaded).
+        let modalUploadFrameTampered = false;
+
+        function normalizeLineEndings(value) {
+            return value.replace(/\r\n/g, '\n').trim();
+        }
+
+        function toAbsoluteRuntimeUrl(path) {
+            return `${window.location.origin}${path}`;
+        }
+
+        function addActivity(type, message) {
+            const activityLog = document.getElementById('activity-log');
+            const empty = document.getElementById('activity-empty');
+            if (empty) {
+                empty.remove();
+            }
+
+            const item = document.createElement('li');
+            item.className = `activity-item ${type}`;
+            item.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+            activityLog.prepend(item);
+        }
+
+        function renderModalUploadFiles(files) {
+            const list = document.getElementById('modal-upload-file-list');
+            if (!list) return;
+
+            list.innerHTML = '';
+
+            if (!files || files.length === 0) {
+                const item = document.createElement('li');
+                item.textContent = 'No modal upload files selected yet.';
+                list.appendChild(item);
+                return;
+            }
+
+            files.forEach((file) => {
+                const item = document.createElement('li');
+                const fileType = file.type && file.type !== 'unknown' ? ` • ${file.type}` : '';
+                item.textContent = `${file.name} (${file.size} bytes${fileType})`;
+                list.appendChild(item);
+            });
+        }
+
+        function setResult(resultId, message, tone) {
+            const resultEl = document.getElementById(resultId);
+            if (!resultEl) return;
+            resultEl.className = `result-display${tone ? ` ${tone}` : ''}`;
+            resultEl.textContent = message;
+        }
+
+        function setCheckState(testId, checkName, state) {
+            const checkEl = document.querySelector(`#${testId} [data-check="${checkName}"]`);
+            if (!checkEl) return;
+            if (state) {
+                checkEl.dataset.checkState = state;
+            } else {
+                delete checkEl.dataset.checkState;
+            }
+        }
+
+        function hydrateExactDownloadLinks() {
+            const caseAAnchor = document.getElementById('case-a-http-anchor');
+            const caseBLink = document.getElementById('case-b-attachment-link');
+            const caseAUrl = toAbsoluteRuntimeUrl(CASE_A_HTTP_PATH);
+            const caseBUrl = toAbsoluteRuntimeUrl(CASE_B_ATTACHMENT_PATH);
+
+            if (caseAAnchor) {
+                caseAAnchor.href = caseAUrl;
+            }
+            if (caseBLink) {
+                caseBLink.href = caseBUrl;
+            }
+
+            const caseAUrlBox = document.getElementById('case-a-http-url');
+            const caseBUrlBox = document.getElementById('case-b-attachment-url');
+            if (caseAUrlBox) {
+                caseAUrlBox.textContent = caseAUrl;
+            }
+            if (caseBUrlBox) {
+                caseBUrlBox.textContent = caseBUrl;
+            }
+        }
+
+        function triggerCaseAHttpDownload() {
+            const anchor = document.getElementById('case-a-http-anchor');
+            if (anchor) {
+                anchor.click();
+            }
+        }
+
+        function buildModalUploadFrameMarkup() {
+            return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        :root {
+            color-scheme: light;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            --border: #d5ddea;
+            --text: #18212f;
+            --muted: #607089;
+            --blue: #2f6fed;
+            --blue-soft: #edf3ff;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(180deg, #f8fbff 0%, #f3f6fb 100%);
+            color: var(--text);
+        }
+
+        .frame-shell {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: white;
+            padding: 22px;
+            box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+        }
+
+        .frame-chip {
+            display: inline-flex;
+            padding: 7px 11px;
+            border-radius: 999px;
+            background: var(--blue-soft);
+            color: #2c4f93;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+
+        h2 {
+            margin: 14px 0 8px;
+            font-size: 24px;
+            line-height: 1.2;
+        }
+
+        p {
+            margin: 0 0 16px;
+            color: var(--muted);
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .picker-card {
+            border: 1px dashed #bfd0ef;
+            border-radius: 16px;
+            background: #f8fbff;
+            padding: 20px;
+        }
+
+        .browse-btn {
+            border: none;
+            border-radius: 14px;
+            padding: 13px 18px;
+            background: linear-gradient(135deg, #2f6fed, #2357bf);
+            color: white;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 14px 28px rgba(47, 111, 237, 0.22);
+        }
+
+        .browse-btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .hidden-input {
+            display: none;
+        }
+
+        .selection-status {
+            margin-top: 16px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: white;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .selection-list {
+            list-style: none;
+            padding: 0;
+            margin: 14px 0 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .selection-list li {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: white;
+            padding: 10px 12px;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="frame-shell">
+        <div class="frame-chip">Google Forms-style cross-origin iframe</div>
+        <h2>Attach your file</h2>
+        <p>Use the button below to open the native file picker from inside this isolated iframe dialog.</p>
+        <div class="picker-card">
+            <button
+                class="browse-btn"
+                id="iframe-browse-btn"
+                data-testid="iframe-browse-btn"
+                type="button"
+            >
+                Browse files
+            </button>
+            <input
+                class="hidden-input"
+                id="iframe-modal-input"
+                data-testid="iframe-modal-input"
+                type="file"
+            >
+            <div class="selection-status" id="iframe-selection-status">No file selected yet.</div>
+            <ul class="selection-list" id="iframe-selection-list">
+                <li>No files selected yet.</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        const input = document.getElementById('iframe-modal-input');
+        const browseButton = document.getElementById('iframe-browse-btn');
+        const selectionStatus = document.getElementById('iframe-selection-status');
+        const selectionList = document.getElementById('iframe-selection-list');
+
+        function notify(type, payload = {}) {
+            window.parent.postMessage({ source: '${MODAL_UPLOAD_MESSAGE_SOURCE}', type, ...payload }, '*');
+        }
+
+        function renderFiles(files) {
+            selectionList.innerHTML = '';
+            files.forEach((file) => {
+                const item = document.createElement('li');
+                const fileType = file.type && file.type !== 'unknown' ? ' • ' + file.type : '';
+                item.textContent = file.name + ' (' + file.size + ' bytes' + fileType + ')';
+                selectionList.appendChild(item);
+            });
+        }
+
+        browseButton.addEventListener('click', () => {
+            notify('browse-clicked');
+            input.click();
+        });
+
+        input.addEventListener('change', () => {
+            const files = Array.from(input.files || []);
+            if (files.length === 0) {
+                selectionStatus.textContent = 'No file selected yet.';
+                selectionList.innerHTML = '<li>No files selected yet.</li>';
+                notify('selection-cleared');
+                return;
+            }
+
+            renderFiles(files);
+            selectionStatus.textContent = 'Selected ' + files.length + ' file' + (files.length === 1 ? '' : 's') + '.';
+            notify('files-selected', {
+                files: files.map((file) => ({
+                    name: file.name,
+                    size: file.size,
+                    type: file.type || 'unknown'
+                }))
+            });
+        });
+
+        notify('frame-ready');
+    <\/script>
+</body>
+</html>`;
+        }
+
+        function encodeFrameMarkupAsDataUrl(markup) {
+            return `data:text/html;charset=utf-8,${encodeURIComponent(markup)}`;
+        }
+
+        function ensureModalUploadFrame() {
+            const iframe = document.getElementById('modal-upload-iframe');
+            if (!iframe) return;
+
+            if (!iframe.dataset.seeded) {
+                const src = encodeFrameMarkupAsDataUrl(buildModalUploadFrameMarkup());
+                iframe.src = src;
+                iframe.dataset.seeded = 'true';
+                // Snapshot the src we just installed so handleModalUploadMessage
+                // can detect tampering by comparing iframe.src to this value at
+                // message-arrival time.
+                modalUploadFrameSeededSrc = src;
+            }
+        }
+
+        function openModalUploadDialog() {
+            const overlay = document.getElementById('modal-upload-overlay');
+            if (!overlay) return;
+
+            ensureModalUploadFrame();
+            overlay.hidden = false;
+            document.body.classList.add('modal-open');
+            setCheckState('test-7', 'modal-open', 'pass');
+            setResult(
+                'test-7-result',
+                'Modal opened. Use the Browse files button inside the cross-origin iframe dialog.',
+                'info'
+            );
+            addActivity('helper', 'Opened cross-origin modal iframe uploader');
+        }
+
+        function closeModalUploadDialog() {
+            const overlay = document.getElementById('modal-upload-overlay');
+            if (!overlay) return;
+
+            overlay.hidden = true;
+            document.body.classList.remove('modal-open');
+        }
+
+        function handleModalUploadMessage(event) {
+            // Reject synthetic events constructed via `new MessageEvent(...)`
+            // and dispatched via `window.dispatchEvent`. `event.isTrusted` is
+            // set by the browser; JS cannot fake it.
+            if (!event.isTrusted) return;
+            if (!event.data || event.data.source !== MODAL_UPLOAD_MESSAGE_SOURCE) {
+                return;
+            }
+            // Require the message to originate from the modal iframe's
+            // contentWindow. (Forgeable via MessageEvent init dict, but the
+            // isTrusted gate already filtered those out.)
+            const expectedSource = document.getElementById('modal-upload-iframe');
+            if (!expectedSource || event.source !== expectedSource.contentWindow) {
+                return;
+            }
+            // Detect iframe-src tampering: the agent can rewrite
+            // `iframe.src = '<new data: URL with their own JS>'`, then the
+            // hijacked iframe's script calls `parent.postMessage(...)` —
+            // those messages ARE real and DO have `isTrusted: true` and the
+            // new `contentWindow` as source, so the only signature is that
+            // `iframe.src` no longer matches what we seeded. Once tampering
+            // is detected, lock out all further postMessages from the iframe
+            // for this page session (a real test would require reload).
+            if (modalUploadFrameTampered) return;
+            if (modalUploadFrameSeededSrc != null && expectedSource.src !== modalUploadFrameSeededSrc) {
+                modalUploadFrameTampered = true;
+                setCheckState('test-7', 'modal-browse', 'fail');
+                setCheckState('test-7', 'modal-files-selected', 'fail');
+                setResult(
+                    'test-7-result',
+                    'Iframe src was overwritten by host-page JS — rejecting all further messages from this iframe. Reload the test page to retry.',
+                    'error'
+                );
+                addActivity('error', 'Modal upload iframe tampering detected; src changed');
+                return;
+            }
+
+            if (event.data.type === 'frame-ready') {
+                setResult(
+                    'test-7-result',
+                    'Cross-origin modal iframe is ready. Click Browse files inside the dialog to request the native picker.',
+                    'info'
+                );
+                return;
+            }
+
+            if (event.data.type === 'browse-clicked') {
+                setCheckState('test-7', 'modal-browse', 'pass');
+                setResult(
+                    'test-7-result',
+                    'Cross-origin iframe browse button clicked. Native file picker should open from the modal dialog.',
+                    'info'
+                );
+                addActivity('helper', 'Requested native file picker from cross-origin iframe browse button');
+                return;
+            }
+
+            if (event.data.type === 'files-selected') {
+                const files = Array.isArray(event.data.files) ? event.data.files : [];
+                renderModalUploadFiles(files);
+                setCheckState('test-7', 'modal-filename', files.length > 0 ? 'pass' : 'fail');
+
+                if (files.length > 0) {
+                    setResult(
+                        'test-7-result',
+                        `Selected ${files.map((file) => file.name).join(', ')} from the cross-origin modal iframe uploader.`,
+                        'success'
+                    );
+                    addActivity('upload', `Cross-origin modal iframe upload selected ${files.map((file) => file.name).join(', ')}`);
+                } else {
+                    setResult('test-7-result', 'Cross-origin modal uploader did not receive any files.', 'error');
+                    addActivity('error', 'Cross-origin modal iframe upload returned no files');
+                }
+            }
+        }
+
+        function handleCaseAHttpAnchorClick(event) {
+            const anchor = event.currentTarget;
+            const isJsInitiated = event.isTrusted === false;
+            const isAbsoluteHttpUrl = /^https?:\/\//i.test(anchor.href);
+            const expectedFilename = anchor.getAttribute('download') || 'case-a-http-export.csv';
+
+            setCheckState('test-1', 'case-a-http-url', isAbsoluteHttpUrl ? 'pass' : 'fail');
+
+            if (!isJsInitiated) {
+                event.preventDefault();
+                setCheckState('test-1', 'case-a-js-initiated', 'fail');
+                setResult(
+                    'test-1-result',
+                    'Direct trusted clicks are blocked. Case A requires JavaScript calling case-a-http-anchor.click().',
+                    'error'
+                );
+                addActivity('error', 'Blocked direct click on Case A HTTP anchor');
+                return;
+            }
+
+            setCheckState('test-1', 'case-a-js-initiated', 'pass');
+            setResult(
+                'test-1-result',
+                `JS triggered ${expectedFilename} from ${anchor.href}.`,
+                isAbsoluteHttpUrl ? 'success' : 'error'
+            );
+            addActivity('download', `Case A JS .click() download for ${expectedFilename}`);
+        }
+
+        function handleCaseBAttachmentLinkClick(event) {
+            const anchor = event.currentTarget;
+            const hasDownloadAttr = anchor.hasAttribute('download');
+            const filename = anchor.href.split('/').pop() || 'case-b-attachment-report.csv';
+
+            setCheckState('test-2', 'case-b-no-download-attr', hasDownloadAttr ? 'fail' : 'pass');
+            setCheckState('test-2', 'case-b-attachment-endpoint', 'pass');
+            setResult(
+                'test-2-result',
+                `Clicked ${anchor.href}. Browser should download ${filename} via Content-Disposition: attachment.`,
+                hasDownloadAttr ? 'error' : 'success'
+            );
+            addActivity(hasDownloadAttr ? 'error' : 'download', `Case B attachment endpoint clicked for ${filename}`);
+        }
+
+        function downloadFixture(key, options = {}) {
+            const fixture = fixtures[key];
+            if (!fixture) return;
+
+            const blob = new Blob([fixture.body], { type: fixture.mime });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fixture.filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+            startedDownloads.add(key);
+
+            if (options.testId && Array.isArray(options.checkNames)) {
+                options.checkNames.forEach((checkName) => setCheckState(options.testId, checkName, 'pass'));
+            }
+
+            if (options.resultId) {
+                setResult(
+                    options.resultId,
+                    options.successMessage || `Prepared download ${fixture.filename}.`,
+                    options.preserveTone ? 'info' : 'success'
+                );
+            }
+
+            addActivity(options.activityType || 'download', `Prepared download ${fixture.filename}`);
+        }
+
+        async function handleManifestUpload(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+
+            setCheckState('test-3', 'manifest-file', 'pass');
+
+            try {
+                const content = await file.text();
+                const parsed = JSON.parse(content);
+                const requiredKeys = ['workflow', 'owner', 'artifacts'];
+                const missingKeys = requiredKeys.filter((key) => !(key in parsed));
+
+                if (missingKeys.length === 0) {
+                    setCheckState('test-3', 'manifest-schema', 'pass');
+                    setResult(
+                        'test-3-result',
+                        `Uploaded ${file.name}. Required keys detected: ${requiredKeys.join(', ')}.`,
+                        'success'
+                    );
+                    addActivity('upload', `Uploaded manifest ${file.name}`);
+                } else {
+                    setCheckState('test-3', 'manifest-schema', 'fail');
+                    setResult(
+                        'test-3-result',
+                        `Uploaded ${file.name}, but missing required keys: ${missingKeys.join(', ')}.`,
+                        'error'
+                    );
+                    addActivity('error', `Manifest upload failed validation for ${file.name}`);
+                }
+            } catch (error) {
+                setCheckState('test-3', 'manifest-schema', 'fail');
+                setResult('test-3-result', `Could not parse ${file.name} as valid JSON.`, 'error');
+                addActivity('error', `Manifest upload parse error for ${file.name}`);
+            }
+        }
+
+        function renderBatchFiles(files) {
+            const list = document.getElementById('batch-file-list');
+            if (!list) return;
+
+            list.innerHTML = '';
+            files.forEach((file) => {
+                const item = document.createElement('li');
+                item.textContent = `${file.name} (${file.size} bytes)`;
+                list.appendChild(item);
+            });
+        }
+
+        function handleBatchFiles(fileList) {
+            const files = Array.from(fileList || []);
+            if (files.length === 0) return;
+
+            renderBatchFiles(files);
+            setCheckState('test-4', 'batch-names', 'pass');
+
+            if (files.length === 2) {
+                setCheckState('test-4', 'batch-count', 'pass');
+                setResult(
+                    'test-4-result',
+                    `Queued 2 files: ${files.map((file) => file.name).join(', ')}.`,
+                    'success'
+                );
+                addActivity('upload', `Queued batch upload with 2 files`);
+            } else {
+                setCheckState('test-4', 'batch-count', 'fail');
+                setResult(
+                    'test-4-result',
+                    `Received ${files.length} files. This test requires exactly 2 files.`,
+                    'error'
+                );
+                addActivity('error', `Batch upload used ${files.length} files instead of 2`);
+            }
+        }
+
+        async function handleTemplateRoundTrip(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+
+            try {
+                const content = await file.text();
+                const matches = normalizeLineEndings(content) === normalizeLineEndings(fixtures.incidentTemplate.body);
+                const downloadedFirst = startedDownloads.has('incidentTemplate');
+
+                setCheckState('test-5', 'template-downloaded', downloadedFirst ? 'pass' : 'fail');
+                setCheckState('test-5', 'template-upload-match', matches ? 'pass' : 'fail');
+
+                if (downloadedFirst && matches) {
+                    setResult(
+                        'test-5-result',
+                        `Round trip complete: ${file.name} matches the downloaded template payload.`,
+                        'success'
+                    );
+                    addActivity('upload', `Completed template round trip with ${file.name}`);
+                } else if (!downloadedFirst && matches) {
+                    setResult(
+                        'test-5-result',
+                        `Uploaded ${file.name} with matching content, but the template download was not triggered first.`,
+                        'error'
+                    );
+                    addActivity('error', `Template uploaded before download trigger`);
+                } else {
+                    setResult(
+                        'test-5-result',
+                        `Uploaded ${file.name}, but the content does not match incident-template-v7.txt.`,
+                        'error'
+                    );
+                    addActivity('error', `Template round trip mismatch for ${file.name}`);
+                }
+            } catch (error) {
+                setCheckState('test-5', 'template-upload-match', 'fail');
+                setResult('test-5-result', `Could not read ${file.name}.`, 'error');
+                addActivity('error', `Template round trip read error for ${file.name}`);
+            }
+        }
+
+        async function handlePacketRoundTrip(fileList) {
+            const file = fileList && fileList[0];
+            if (!file) return;
+
+            try {
+                const content = await file.text();
+                const parsed = JSON.parse(content);
+                const expected = JSON.parse(fixtures.handoffPacket.body);
+                const matchesPacket =
+                    parsed.packetId === expected.packetId &&
+                    parsed.transferToken === expected.transferToken &&
+                    parsed.shipmentCount === expected.shipmentCount;
+                const downloadedFirst = startedDownloads.has('handoffPacket');
+
+                setCheckState('test-6', 'packet-downloaded', downloadedFirst ? 'pass' : 'fail');
+                setCheckState('test-6', 'packet-upload-match', matchesPacket ? 'pass' : 'fail');
+
+                if (downloadedFirst && matchesPacket) {
+                    setResult(
+                        'test-6-result',
+                        `Round trip complete: ${file.name} returned packetId ${parsed.packetId} with the expected token.`,
+                        'success'
+                    );
+                    addActivity('upload', `Completed packet round trip with ${file.name}`);
+                } else if (!downloadedFirst && matchesPacket) {
+                    setResult(
+                        'test-6-result',
+                        `Uploaded ${file.name} with matching packet content, but the packet download was not triggered first.`,
+                        'error'
+                    );
+                    addActivity('error', `Packet uploaded before download trigger`);
+                } else {
+                    setResult(
+                        'test-6-result',
+                        `Uploaded ${file.name}, but the packet payload does not match HX-2048 / return-lane-23.`,
+                        'error'
+                    );
+                    addActivity('error', `Packet round trip mismatch for ${file.name}`);
+                }
+            } catch (error) {
+                setCheckState('test-6', 'packet-upload-match', 'fail');
+                setResult('test-6-result', `Could not parse ${file.name} as the expected JSON packet.`, 'error');
+                addActivity('error', `Packet round trip parse error for ${file.name}`);
+            }
+        }
+
+        function initDropzone(dropzoneId, inputId, onFiles) {
+            const dropzone = document.getElementById(dropzoneId);
+            const input = document.getElementById(inputId);
+            if (!dropzone || !input) return;
+
+            const openPicker = () => input.click();
+
+            dropzone.addEventListener('click', openPicker);
+            dropzone.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openPicker();
+                }
+            });
+
+            dropzone.addEventListener('dragover', (event) => {
+                event.preventDefault();
+                dropzone.classList.add('drag-over');
+            });
+
+            dropzone.addEventListener('dragleave', () => {
+                dropzone.classList.remove('drag-over');
+            });
+
+            dropzone.addEventListener('drop', (event) => {
+                event.preventDefault();
+                dropzone.classList.remove('drag-over');
+                onFiles(event.dataTransfer.files);
+            });
+
+            input.addEventListener('change', () => onFiles(input.files));
+        }
+
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (!testCase) return;
+
+            if (status) {
+                testCase.dataset.status = status;
+            } else {
+                delete testCase.dataset.status;
+            }
+
+            updateResultsSummary();
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0;
+            let failed = 0;
+            let pending = 0;
+
+            testCases.forEach((testCase) => {
+                switch (testCase.dataset.status) {
+                    case 'pass':
+                        passed += 1;
+                        break;
+                    case 'fail':
+                        failed += 1;
+                        break;
+                    default:
+                        pending += 1;
+                        break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = String(passed);
+            document.getElementById('failed-count').textContent = String(failed);
+            document.getElementById('pending-count').textContent = String(pending);
+        }
+
+
+        document.addEventListener('DOMContentLoaded', () => {
+            hydrateExactDownloadLinks();
+            ensureModalUploadFrame();
+            document.getElementById('case-a-http-anchor').addEventListener('click', handleCaseAHttpAnchorClick);
+            document.getElementById('case-b-attachment-link').addEventListener('click', handleCaseBAttachmentLinkClick);
+            document.getElementById('manifest-input').addEventListener('change', handleManifestUpload);
+            document.getElementById('roundtrip-text-input').addEventListener('change', handleTemplateRoundTrip);
+            document.getElementById('modal-upload-close-btn').addEventListener('click', closeModalUploadDialog);
+            document.getElementById('modal-upload-overlay').addEventListener('click', (event) => {
+                if (event.target.id === 'modal-upload-overlay') {
+                    closeModalUploadDialog();
+                }
+            });
+            window.addEventListener('message', handleModalUploadMessage);
+            window.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    closeModalUploadDialog();
+                }
+            });
+
+            initDropzone('batch-dropzone', 'batch-input', handleBatchFiles);
+            initDropzone('packet-dropzone', 'packet-input', handlePacketRoundTrip);
+            renderModalUploadFiles([]);
+
+            updateResultsSummary();
+        });
+    </script>
+</body>
+</html>

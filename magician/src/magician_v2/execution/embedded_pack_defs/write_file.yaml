@@ -1,0 +1,38 @@
+name: write_file
+description: Stage content for a local file as an approval-gated create or full rewrite. Existing files are compared and staged as modifications; missing files are staged as creates. Prefer `edit_file` for narrow modifications and `apply_patch` for multi-file diffs.
+version: "1.0.0"
+guide: |
+  Tool name: `write_file`
+
+  Stages a file create or full rewrite as a `diff_approval` HITL
+  request. The actual disk write happens only after the operator
+  chooses Apply in the diff approval modal.
+
+  Default behaviour allows parent directories to be created at apply
+  time. Set `create_dirs: false` to fail during staging if the parent
+  doesn't exist (useful as a guard against typos in the path).
+parameters:
+  - name: file_path
+    required: true
+    param_type: string
+    description: The absolute path to the file to write (created if it does not exist).
+  - name: content
+    required: true
+    param_type: string
+    description: The content to write to the file.
+  - name: create_dirs
+    required: false
+    param_type: boolean
+    description: Create parent directories if missing. Default true.
+    default: true
+implementation:
+  type: compiled
+  provider_name: write_file
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - filesystem
+    - write
+  composition_category: action
+  sandbox: none

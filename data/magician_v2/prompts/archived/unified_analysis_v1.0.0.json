@@ -1,0 +1,94 @@
+{
+  "name": "unified_analysis",
+  "version": "1.0.0",
+  "content": [
+    "Perform a comprehensive analysis of this user query covering complexity, categories, and dependencies.",
+    "",
+    "Query: \"{query}\"",
+    "",
+    "{categories_context}",
+    "",
+    "Provide a detailed analysis covering:",
+    "",
+    "1. COMPLEXITY ANALYSIS:",
+    "   - Assign a complexity score from 0.0 to 1.0 where:",
+    "     * 0.0-0.3: Simple (single operation, minimal resources)",
+    "     * 0.3-0.6: Medium (multiple steps, moderate resources)",
+    "     * 0.6-1.0: Complex (many operations, high coordination, intensive resources)",
+    "   - Identify complexity factors",
+    "   - Provide reasoning",
+    "",
+    "2. CATEGORY ANALYSIS:",
+    "   - Determine what categories of tools would be needed",
+    "   - Generate 1-3 most relevant categories",
+    "   - If existing categories fit, use them; otherwise suggest new logical categories",
+    "   - Provide reasoning",
+    "",
+    "3. DEPENDENCY ANALYSIS:",
+    "   - Determine if this requires multiple sequential or dependent operations",
+    "   - Single atomic operation = not multi-step",
+    "   - Multiple operations or dependencies = multi-step",
+    "   - Identify specific dependencies between operations",
+    "   - If multi-step, break down into ordered workflow steps",
+    "   - Provide reasoning",
+    "",
+    "Respond with JSON format:",
+    "{{",
+    "  \"complexity\": {{",
+    "    \"score\": 0.X,",
+    "    \"factors\": [\"factor1\", \"factor2\"],",
+    "    \"reasoning\": \"Complexity explanation\"",
+    "  }},",
+    "  \"categories\": {{",
+    "    \"categories\": [\"category1\", \"category2\"],",
+    "    \"reasoning\": \"Category selection explanation\"",
+    "  }},",
+    "  \"dependencies\": {{",
+    "    \"is_multi_step\": true/false,",
+    "    \"dependencies\": [\"dependency1\", \"dependency2\"],",
+    "    \"workflow_steps\": [\"step1\", \"step2\", \"step3\"],",
+    "    \"reasoning\": \"Dependency analysis explanation\"",
+    "  }}",
+    "}}",
+    "",
+    "Analysis:"
+  ],
+  "variables": [
+    {
+      "name": "query",
+      "description": "The user query to analyze",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Deploy my web app to AWS",
+        "Find all TODO comments in my Python code",
+        "Backup my database and send it to S3"
+      ]
+    },
+    {
+      "name": "categories_context",
+      "description": "Available categories context",
+      "required": false,
+      "default_value": "No predefined categories available. Generate appropriate categories based on the query intent.",
+      "examples": [
+        "Available categories in the system: filesystem, network, database, deployment",
+        "No predefined categories available. Generate appropriate categories based on the query intent."
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "QueryAnalysis",
+    "description": "Comprehensive query analysis for complexity, categories, and dependencies",
+    "author": "MagicianV2",
+    "created_at": "2025-01-25T15:00:00Z",
+    "changelog": "Initial version of unified analysis prompt",
+    "tags": [
+      "query_analysis",
+      "complexity",
+      "categories",
+      "dependencies",
+      "unified"
+    ],
+    "estimated_tokens": 400
+  }
+}

@@ -1,0 +1,688 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "limit": {
+              "value_type": 1,
+              "required": false
+            },
+            "thread_id": {
+              "value_type": 2,
+              "required": false
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:bb7e72157e2054f16b27f5e4933e3bf382d05221d3a730ab64f9d4f426186692",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:bb7e72157e2054f16b27f5e4933e3bf382d05221d3a730ab64f9d4f426186692",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {
+            "takeaways": {
+              "tool": "meetings_data",
+              "action": "read_takeaways",
+              "primitive_ref": "primitive:platform:1e210ace99d5d06dbba1aa938b7b1cbec97d333b740a78beb1f72210a024b806",
+              "action_ref": "primitive-action:platform:b748b5137ad1e2f7018525db962e5422eea1d3ca5b729f9a2944c88607c08a34",
+              "parameters": {
+                "limit": 20
+              },
+              "input_parameters": {
+                "thread_id": "thread_id"
+              },
+              "when_input_present": null,
+              "rows": {
+                "kind": "document"
+              }
+            }
+          },
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/limit"
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "coalesce",
+                  "values": [
+                    3,
+                    4
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "clamp",
+                  "value": 5,
+                  "minimum": 6,
+                  "maximum": 7
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/takeaways/count"
+                },
+                {
+                  "kind": "present",
+                  "value": 9
+                },
+                {
+                  "kind": "if",
+                  "condition": 10,
+                  "then_value": 9,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/takeaways/truncated"
+                },
+                {
+                  "kind": "present",
+                  "value": 12
+                },
+                {
+                  "kind": "if",
+                  "condition": 13,
+                  "then_value": 12,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/takeaways/matched"
+                },
+                {
+                  "kind": "present",
+                  "value": 15
+                },
+                {
+                  "kind": "if",
+                  "condition": 16,
+                  "then_value": 15,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/takeaways/retention_max_entries"
+                },
+                {
+                  "kind": "present",
+                  "value": 18
+                },
+                {
+                  "kind": "if",
+                  "condition": 19,
+                  "then_value": 18,
+                  "else_value": 0
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "count": 11,
+                    "truncated": 14,
+                    "matched": 17,
+                    "retention_max_entries": 20
+                  }
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/takeaways/takeaways"
+                },
+                {
+                  "kind": "slice",
+                  "value": 22,
+                  "limit": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/decisions"
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 24
+                },
+                {
+                  "kind": "less_than",
+                  "left": 25,
+                  "right": 26
+                },
+                {
+                  "kind": "literal",
+                  "value": "- "
+                },
+                {
+                  "kind": "join",
+                  "value": 24,
+                  "separator": "\n- "
+                },
+                {
+                  "kind": "array",
+                  "values": [
+                    28,
+                    29
+                  ]
+                },
+                {
+                  "kind": "join",
+                  "value": 30,
+                  "separator": ""
+                },
+                {
+                  "kind": "if",
+                  "condition": 27,
+                  "then_value": 31,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/action_items"
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 33
+                },
+                {
+                  "kind": "less_than",
+                  "left": 34,
+                  "right": 35
+                },
+                {
+                  "kind": "literal",
+                  "value": "- "
+                },
+                {
+                  "kind": "join",
+                  "value": 33,
+                  "separator": "\n- "
+                },
+                {
+                  "kind": "array",
+                  "values": [
+                    37,
+                    38
+                  ]
+                },
+                {
+                  "kind": "join",
+                  "value": 39,
+                  "separator": ""
+                },
+                {
+                  "kind": "if",
+                  "condition": 36,
+                  "then_value": 40,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/key"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/thread_id"
+                },
+                {
+                  "kind": "present",
+                  "value": 43
+                },
+                {
+                  "kind": "if",
+                  "condition": 44,
+                  "then_value": 43,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/title"
+                },
+                {
+                  "kind": "present",
+                  "value": 46
+                },
+                {
+                  "kind": "if",
+                  "condition": 47,
+                  "then_value": 46,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/date"
+                },
+                {
+                  "kind": "present",
+                  "value": 49
+                },
+                {
+                  "kind": "if",
+                  "condition": 50,
+                  "then_value": 49,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/summary"
+                },
+                {
+                  "kind": "present",
+                  "value": 52
+                },
+                {
+                  "kind": "if",
+                  "condition": 53,
+                  "then_value": 52,
+                  "else_value": 0
+                },
+                {
+                  "kind": "present",
+                  "value": 32
+                },
+                {
+                  "kind": "if",
+                  "condition": 55,
+                  "then_value": 32,
+                  "else_value": 0
+                },
+                {
+                  "kind": "present",
+                  "value": 41
+                },
+                {
+                  "kind": "if",
+                  "condition": 57,
+                  "then_value": 41,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/updated_at"
+                },
+                {
+                  "kind": "present",
+                  "value": 59
+                },
+                {
+                  "kind": "if",
+                  "condition": 60,
+                  "then_value": 59,
+                  "else_value": 0
+                },
+                {
+                  "kind": "project",
+                  "rows": 23,
+                  "pointer": "/key",
+                  "skip_missing": false
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 62
+                },
+                {
+                  "kind": "less_than",
+                  "left": 63,
+                  "right": 64
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/meeting_takeaway_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 66,
+                  "key_pointer": "/fields/takeaway_key",
+                  "key": 42,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 66,
+                  "key_pointer": "/fields/takeaway_key",
+                  "key": 42,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 67
+                },
+                {
+                  "kind": "not",
+                  "value": 69
+                },
+                {
+                  "kind": "literal",
+                  "value": "meeting_takeaway"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    71,
+                    42
+                  ]
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "takeaways": 21
+                  }
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "source_pages": 73
+                  }
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 74
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "meeting_takeaway_existing",
+                "entity": "meeting_takeaway",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "takeaway_key"
+                  ],
+                  "limit": 100,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "in",
+                        "field": "takeaway_key",
+                        "values": []
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/values": 62
+                }
+              }
+            ],
+            "query_when": {
+              "meeting_takeaway_existing": 65
+            },
+            "guards": [],
+            "mutations": [
+              {
+                "entity": "meeting_takeaway",
+                "for_each": 23,
+                "when": 70,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 72,
+                  "fields": {
+                    "takeaway_key": 42,
+                    "thread_id": 45,
+                    "title": 48,
+                    "meeting_date": 51,
+                    "summary": 54,
+                    "decisions": 56,
+                    "action_items": 58,
+                    "updated_at": 61,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "meeting_takeaway",
+                "for_each": 23,
+                "when": 69,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 67,
+                  "fields": {
+                    "takeaway_key": 42,
+                    "thread_id": 45,
+                    "title": 48,
+                    "meeting_date": 51,
+                    "summary": 54,
+                    "decisions": 56,
+                    "action_items": 58,
+                    "updated_at": 61,
+                    "synced_at": 1
+                  },
+                  "revision": 68
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64,
+            "source_parameters": {
+              "takeaways": {
+                "limit": 8
+              }
+            },
+            "scan_queries": [
+              "meeting_takeaway_existing"
+            ],
+            "summary": 75
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 1,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 1
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

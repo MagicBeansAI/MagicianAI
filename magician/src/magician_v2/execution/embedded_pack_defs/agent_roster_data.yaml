@@ -1,0 +1,106 @@
+name: agent_roster_data
+description: Read-only, bounded, executor-scoped access to the scope's agent roster projected to its social-participation face.
+version: "1.0.0"
+guide: |-
+  Tool name: `agent_roster_data`
+
+  This is the read-only host binder that lets a package keep a membership
+  corpus reconciled with the live agent definitions. It cannot create, edit,
+  enable, disable or retire an agent: definition changes belong to the agent
+  owner, and this binder has no write path at all.
+
+  It projects a deliberately narrow face. An agent definition carries the
+  prompt, tool grants, model routing, delegation graph and app-tool contract;
+  none of that crosses this seam. What is returned is identity, display name,
+  enabled state, and the three `social_persona` fields a participation policy
+  needs — strictly less than `get_agent_details` exposes, which is why this is
+  its own binder rather than a widening of an existing one.
+
+  Actions (exactly two):
+
+  - `list_members {limit?, after_agent_id?}` lists the scope's agent roster in
+    a stable agent-id order, one bounded page at a time. `next_cursor` is the
+    page's last agent id and is compared positionally, so a member removed
+    between two pages still defines a valid boundary. `scan_truncated` reports that
+    more than the scan window remains BEYOND this page; paging continues past
+    it, so it is a size signal and never a reason to stop reconciling.
+  - `read_member {agent_id}` returns one exact roster row. An agent that does
+    not exist is `member: null` with `present: false` — an answer, not an
+    error, because a package reconciling its membership must be able to learn
+    that a row it holds has been retired, and an error would make "retired"
+    indistinguishable from "the read failed".
+
+  `declares_social_persona` distinguishes a definition that declares no
+  `social_persona` block at all from one that declares it with default values.
+  A participation policy must be able to tell those apart before opting an
+  agent into a public surface, so the three persona fields are null rather
+  than defaulted when the block is absent.
+
+  Limits are capped at 200, ids are bounded and pass the agent identifier
+  check, serialized results fail closed above 256 KiB, and every call has a
+  30-second timeout.
+
+  Runtime scope is executor-owned: `__principal` and `__workspace` are injected
+  by the runtime. Public principal/workspace values are assertions only and can
+  never switch scope.
+parameters:
+  - name: action
+    param_type: string
+    description: Optional direct action name. Inner-loop calls set this automatically.
+    enum_values:
+      - list_members
+      - read_member
+  - name: principal
+    param_type: string
+    description: Optional assertion that must match the runtime-injected principal.
+  - name: workspace
+    param_type: string
+    description: Optional assertion that must match the runtime-injected workspace.
+  - name: limit
+    param_type: integer
+    description: Page size, default 50 and capped at 200.
+  - name: after_agent_id
+    param_type: string
+    description: Resume list_members strictly after this prior page boundary.
+  - name: agent_id
+    param_type: string
+    description: Exact agent id for read_member.
+native_action_schemas:
+  list_members:
+    description: List one bounded page of the scope's agent roster.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - limit
+      - after_agent_id
+    required: []
+    parameter_overrides:
+      limit: {type: integer, minimum: 1, maximum: 200, default: 50}
+      after_agent_id: {type: string, minLength: 1, maxLength: 255, pattern: '^[^/\\\x00-\x1f\x7f]+$'}
+    timeout_secs: 30
+  read_member:
+    description: Read one exact roster row, or learn that it is absent.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - agent_id
+    required:
+      - agent_id
+    parameter_overrides:
+      agent_id: {type: string, minLength: 1, maxLength: 255, pattern: '^[^/\\\x00-\x1f\x7f]+$'}
+    timeout_secs: 30
+implementation:
+  type: primitive
+  provider_name: agent_roster_data
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - agents
+    - roster
+    - host_read
+  composition_category: observation
+  sandbox: none

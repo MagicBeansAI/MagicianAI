@@ -1,0 +1,432 @@
+{
+  "schema_version": 1,
+  "suite_version": "consolidation-sources-v1",
+  "fixture_format": "synthetic_expansion_v1",
+  "license": "CC0-1.0",
+  "privacy": {
+    "contains_live_data": false,
+    "contains_real_credentials": false,
+    "contains_personal_data": false,
+    "note": "Every person, project, account, path, URL, and credential-like value is invented."
+  },
+  "estimator": {
+    "id": "chars_div_4_ceiling_v1",
+    "description": "ceil(serialized UTF-8 character count / 4); replaced by the Phase 1 model-aware estimator"
+  },
+  "padding": {
+    "sentence": "Synthetic evaluation detail {sequence}: Project Atlas verification retained source identity {source_id}; this sentence contains no additional fact.",
+    "allowed_fields": ["observations", "artifact_output.synthetic_detail"]
+  },
+  "episode_templates": [
+    {
+      "template_id": "durable_project_fact",
+      "record": {
+        "schema_version": "3.0.0",
+        "record_type": "episode",
+        "principal": "fixture-principal",
+        "workspace": "fixture-workspace",
+        "agent_id": "fixture-analyst",
+        "episode_id": "ep-template-project",
+        "goal_key": "goal:atlas-verification",
+        "consolidation_key": "fixture-analyst:goal:atlas-verification",
+        "trigger_type": "execution_completed",
+        "trigger_seq": 1,
+        "trigger_timestamp": "2026-07-01T09:00:00Z",
+        "trigger_payload": null,
+        "started_at": "2026-07-01T08:55:00Z",
+        "completed_at": "2026-07-01T09:00:00Z",
+        "outcome_kind": "completed",
+        "outcome_summary": "Priya Nair approved the Project Atlas readiness review and the atlas-readiness.md report was produced.",
+        "outcome_remaining": null,
+        "pending_actions": [],
+        "failure_count": 0,
+        "last_error": null,
+        "task_id": "task-fixture-atlas",
+        "execution_id": "exec-fixture-atlas",
+        "root_execution_id": "exec-fixture-atlas",
+        "parent_execution_id": null,
+        "relationship_type": "root",
+        "ui_thread_id": "thread-fixture-atlas",
+        "task_title": "Review Project Atlas readiness",
+        "task_description": "Review a synthetic project and create an invented readiness report.",
+        "execution_status": "completed",
+        "outcome_type": "success",
+        "execution_output_id": "out-fixture-atlas",
+        "task_agent_output_id": "out-fixture-atlas",
+        "task_user_output_id": null,
+        "source_output_ids": ["out-fixture-atlas"],
+        "actions_taken": [
+          {
+            "action_type": "file",
+            "description": "Created the readiness report",
+            "tool": "files",
+            "succeeded": true,
+            "duration_ms": 420,
+            "metadata": {"path": "fixture://reports/atlas-readiness.md"}
+          }
+        ],
+        "observations": [
+          "Project Atlas uses the Northstar review workflow.",
+          "Priya Nair is the explicitly stated review owner.",
+          "The report artifact is fixture://reports/atlas-readiness.md."
+        ],
+        "memory_updates": [
+          {
+            "tier_name": "entities",
+            "field_path": "projects.Project Atlas",
+            "operation": {"added": {"key": "project:atlas"}},
+            "timestamp": "2026-07-01T09:00:00Z"
+          }
+        ],
+        "memory_candidates": [
+          {
+            "candidate_type": "durable_fact",
+            "target_hint": "entities",
+            "key": "project:atlas",
+            "value": {"name": "Project Atlas", "review_owner": "Priya Nair"},
+            "confidence": 0.98,
+            "source": "terminal_outcome",
+            "evidence": ["out-fixture-atlas"],
+            "rationale": "The completed result explicitly names the project and owner."
+          },
+          {
+            "candidate_type": "final_output_excerpt",
+            "target_hint": "archive",
+            "key": "output:atlas-readiness",
+            "value": "Readiness review completed; report created and approved.",
+            "confidence": 0.97,
+            "source": "task_agent_output",
+            "evidence": ["out-fixture-atlas"],
+            "rationale": "Captures the durable completed artifact."
+          }
+        ],
+        "strategy_summary": "Review evidence, write the report, then obtain owner approval.",
+        "context_at_start": "Synthetic project-readiness task.",
+        "artifact_output": {
+          "path": "fixture://reports/atlas-readiness.md",
+          "content_type": "text/markdown",
+          "summary": "Synthetic Project Atlas readiness report"
+        },
+        "provenance": null
+      }
+    },
+    {
+      "template_id": "reusable_local_workflow",
+      "record": {
+        "schema_version": "3.0.0",
+        "record_type": "episode",
+        "principal": "fixture-principal",
+        "workspace": "fixture-workspace",
+        "agent_id": "fixture-operator",
+        "episode_id": "ep-template-workflow",
+        "goal_key": "goal:local-service-check",
+        "consolidation_key": "fixture-operator:goal:local-service-check",
+        "trigger_type": "execution_completed",
+        "trigger_seq": 2,
+        "trigger_timestamp": "2026-07-01T10:00:00Z",
+        "trigger_payload": null,
+        "started_at": "2026-07-01T09:52:00Z",
+        "completed_at": "2026-07-01T10:00:00Z",
+        "outcome_kind": "completed",
+        "outcome_summary": "Recovered the synthetic local service by using make run-fixture-service after direct launch omitted the required environment.",
+        "outcome_remaining": null,
+        "pending_actions": [],
+        "failure_count": 1,
+        "last_error": "Direct launch lacked FIXTURE_SERVICE_ROOT; no production path was used.",
+        "task_id": "task-fixture-service",
+        "execution_id": "exec-fixture-service",
+        "root_execution_id": "exec-fixture-service",
+        "parent_execution_id": null,
+        "relationship_type": "root",
+        "ui_thread_id": null,
+        "task_title": "Recover synthetic local service",
+        "task_description": "Exercise an invented local recovery workflow.",
+        "execution_status": "completed",
+        "outcome_type": "success_after_retry",
+        "execution_output_id": "out-fixture-service",
+        "task_agent_output_id": "out-fixture-service",
+        "task_user_output_id": null,
+        "source_output_ids": ["out-fixture-service"],
+        "actions_taken": [
+          {
+            "action_type": "shell",
+            "description": "Attempted unsupported direct launch",
+            "tool": "shell",
+            "succeeded": false,
+            "duration_ms": 75,
+            "metadata": {"command_label": "fixture-direct-launch"}
+          },
+          {
+            "action_type": "shell",
+            "description": "Used the repository-owned make target",
+            "tool": "shell",
+            "succeeded": true,
+            "duration_ms": 640,
+            "metadata": {"command_label": "make run-fixture-service"}
+          }
+        ],
+        "observations": [
+          "The supported startup command is make run-fixture-service.",
+          "The health endpoint is fixture://local-service/health.",
+          "A direct binary launch does not load the fixture environment."
+        ],
+        "memory_updates": [],
+        "memory_candidates": [
+          {
+            "candidate_type": "reusable_failure",
+            "target_hint": "environment_knowledge",
+            "key": "workflow:fixture-service-start",
+            "value": {
+              "working_method": "make run-fixture-service",
+              "failed_method": "direct binary launch",
+              "health_endpoint": "fixture://local-service/health"
+            },
+            "confidence": 0.96,
+            "source": "execution_trace",
+            "evidence": ["out-fixture-service"],
+            "rationale": "The retry established a reusable local workflow."
+          }
+        ],
+        "strategy_summary": "Prefer the repository-owned make target because it loads the required environment.",
+        "context_at_start": "Synthetic local service was not healthy.",
+        "artifact_output": null,
+        "provenance": null
+      }
+    },
+    {
+      "template_id": "runtime_noise",
+      "record": {
+        "schema_version": "3.0.0",
+        "record_type": "episode",
+        "principal": "fixture-principal",
+        "workspace": "fixture-workspace",
+        "agent_id": "fixture-operator",
+        "episode_id": "ep-template-noise",
+        "goal_key": "goal:status-poll",
+        "consolidation_key": "fixture-operator:goal:status-poll",
+        "trigger_type": "step_completed",
+        "trigger_seq": 3,
+        "trigger_timestamp": "2026-07-01T10:05:00Z",
+        "trigger_payload": null,
+        "started_at": "2026-07-01T10:04:58Z",
+        "completed_at": "2026-07-01T10:05:00Z",
+        "outcome_kind": "completed",
+        "outcome_summary": "Status poll completed with no new result.",
+        "outcome_remaining": null,
+        "pending_actions": [],
+        "failure_count": 0,
+        "last_error": null,
+        "task_id": "task-fixture-poll",
+        "execution_id": "exec-fixture-poll",
+        "root_execution_id": "exec-fixture-poll",
+        "parent_execution_id": null,
+        "relationship_type": "root",
+        "ui_thread_id": null,
+        "task_title": "Poll synthetic status",
+        "task_description": "No-op fixture episode.",
+        "execution_status": "completed",
+        "outcome_type": "no_change",
+        "execution_output_id": null,
+        "task_agent_output_id": null,
+        "task_user_output_id": null,
+        "source_output_ids": [],
+        "actions_taken": [],
+        "observations": ["Heartbeat received.", "No state change.", "Worker remains idle."],
+        "memory_updates": [],
+        "memory_candidates": [],
+        "strategy_summary": null,
+        "context_at_start": null,
+        "artifact_output": null,
+        "provenance": null
+      }
+    },
+    {
+      "template_id": "synthetic_redaction_trap",
+      "record": {
+        "schema_version": "3.0.0",
+        "record_type": "episode",
+        "principal": "fixture-principal",
+        "workspace": "fixture-workspace",
+        "agent_id": "fixture-security-reviewer",
+        "episode_id": "ep-template-redaction",
+        "goal_key": "goal:redaction-verification",
+        "consolidation_key": "fixture-security-reviewer:goal:redaction-verification",
+        "trigger_type": "execution_completed",
+        "trigger_seq": 4,
+        "trigger_timestamp": "2026-07-01T11:00:00Z",
+        "trigger_payload": null,
+        "started_at": "2026-07-01T10:58:00Z",
+        "completed_at": "2026-07-01T11:00:00Z",
+        "outcome_kind": "completed",
+        "outcome_summary": "Verified that credential-like source text is excluded from durable memory.",
+        "outcome_remaining": null,
+        "pending_actions": [],
+        "failure_count": 0,
+        "last_error": null,
+        "task_id": "task-fixture-redaction",
+        "execution_id": "exec-fixture-redaction",
+        "root_execution_id": "exec-fixture-redaction",
+        "parent_execution_id": null,
+        "relationship_type": "root",
+        "ui_thread_id": null,
+        "task_title": "Verify synthetic redaction",
+        "task_description": "Ensure an invented credential marker cannot be promoted.",
+        "execution_status": "completed",
+        "outcome_type": "success",
+        "execution_output_id": "out-fixture-redaction",
+        "task_agent_output_id": "out-fixture-redaction",
+        "task_user_output_id": null,
+        "source_output_ids": ["out-fixture-redaction"],
+        "actions_taken": [
+          {
+            "action_type": "validation",
+            "description": "Applied the synthetic secret filter",
+            "tool": "fixture-validator",
+            "succeeded": true,
+            "duration_ms": 12,
+            "metadata": {}
+          }
+        ],
+        "observations": [
+          "Transient callback URL: fixture://callback/session-1234.",
+          "SYNTHETIC_SECRET_DO_NOT_EMIT=sk-fixture-not-a-real-key-000000.",
+          "The durable fact is only that secret filtering was verified."
+        ],
+        "memory_updates": [],
+        "memory_candidates": [
+          {
+            "candidate_type": "durable_fact",
+            "target_hint": "environment_knowledge",
+            "key": "security:secret-filter",
+            "value": "Credential-like values must be filtered before durable writes.",
+            "confidence": 0.99,
+            "source": "validation_result",
+            "evidence": ["out-fixture-redaction"],
+            "rationale": "The policy is durable; the credential-like marker and callback are not."
+          }
+        ],
+        "strategy_summary": "Retain the filtering rule, never the credential-like value.",
+        "context_at_start": "Synthetic security fixture.",
+        "artifact_output": null,
+        "provenance": null
+      }
+    }
+  ],
+  "utility_review_templates": [
+    {
+      "template_id": "utility_review_mixed",
+      "input": {
+        "run_id": "run-fixture-utility-001",
+        "agent_id": "fixture-operator",
+        "task_id": "task-fixture-utility",
+        "execution_id": "exec-fixture-utility",
+        "chat_session_id": null,
+        "goal": "Recover the synthetic local service and report the verified health state.",
+        "outcome": "The service recovered through make run-fixture-service and the health endpoint responded.",
+        "final_answer": "The synthetic service is healthy after using the repository make target.",
+        "action_trace": [
+          {
+            "source": "agentic_action",
+            "action_type": "shell",
+            "tool_name": "shell",
+            "succeeded": true,
+            "duration_ms": 640,
+            "summary": "Ran make run-fixture-service",
+            "output_preview": "fixture service ready",
+            "error": null
+          }
+        ],
+        "selected_candidates": [
+          {
+            "memory_candidate_key": "mem:workflow:fixture-service-start",
+            "semantic_memory_type": "procedure",
+            "temperature_tier": "t1",
+            "tier_name": "environment_knowledge",
+            "source_key": "workflow:fixture-service-start",
+            "source_ids": ["ep-template-workflow"],
+            "source_text_hash": "fixture-hash-workflow",
+            "source_text": "Use make run-fixture-service to load the required environment.",
+            "text": "Use make run-fixture-service to load the required environment.",
+            "projection_used": false
+          },
+          {
+            "memory_candidate_key": "mem:stale:fixture-direct-launch",
+            "semantic_memory_type": "procedure",
+            "temperature_tier": "t2",
+            "tier_name": "environment_knowledge",
+            "source_key": "workflow:fixture-direct-launch",
+            "source_ids": ["ep-old-fixture-workflow"],
+            "source_text_hash": "fixture-hash-stale",
+            "source_text": "Start the fixture service by launching the binary directly.",
+            "text": "Start the fixture service by launching the binary directly.",
+            "projection_used": false
+          },
+          {
+            "memory_candidate_key": "mem:irrelevant:fixture-color",
+            "semantic_memory_type": "user_preference",
+            "temperature_tier": "t2",
+            "tier_name": "preferences",
+            "source_key": "preference:fixture-color",
+            "source_ids": ["fixture-user-preference"],
+            "source_text_hash": "fixture-hash-color",
+            "source_text": "Prefer teal in synthetic diagrams.",
+            "text": "Prefer teal in synthetic diagrams.",
+            "projection_used": false
+          }
+        ]
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "scenario_id": "bounded_mixed_signal",
+      "class": "fits_single_physical_call",
+      "template_cycle": ["durable_project_fact", "reusable_local_workflow", "runtime_noise", "synthetic_redaction_trap"],
+      "repeat_count": 1,
+      "source_id_format": "ep-bounded-{template_id}",
+      "target_estimated_tokens": 12000,
+      "padding_field": "observations",
+      "expected_source_count": 4
+    },
+    {
+      "scenario_id": "multi_chunk_mixed_signal_96k",
+      "class": "requires_multiple_physical_calls",
+      "template_cycle": ["durable_project_fact", "reusable_local_workflow", "runtime_noise", "synthetic_redaction_trap"],
+      "repeat_count": 12,
+      "source_id_format": "ep-multi-{index:03}-{template_id}",
+      "target_estimated_tokens": 96000,
+      "padding_field": "observations",
+      "expected_source_count": 48
+    },
+    {
+      "scenario_id": "oversized_single_episode_48k",
+      "class": "requires_recursive_item_split",
+      "template_cycle": ["reusable_local_workflow"],
+      "repeat_count": 1,
+      "source_id_format": "ep-oversized-single",
+      "target_estimated_tokens": 48000,
+      "padding_field": "observations",
+      "expected_source_count": 1
+    },
+    {
+      "scenario_id": "near_logical_limit_250k",
+      "class": "accepted_near_logical_limit",
+      "template_cycle": ["durable_project_fact", "reusable_local_workflow", "runtime_noise", "synthetic_redaction_trap"],
+      "repeat_count": 32,
+      "source_id_format": "ep-near-limit-{index:03}-{template_id}",
+      "target_estimated_tokens": 250000,
+      "padding_field": "observations",
+      "expected_source_count": 128
+    },
+    {
+      "scenario_id": "over_logical_limit_270k",
+      "class": "rejected_before_provider_call",
+      "template_cycle": ["durable_project_fact", "reusable_local_workflow", "runtime_noise", "synthetic_redaction_trap"],
+      "repeat_count": 35,
+      "source_id_format": "ep-over-limit-{index:03}-{template_id}",
+      "target_estimated_tokens": 270000,
+      "padding_field": "observations",
+      "expected_source_count": 140
+    }
+  ]
+}

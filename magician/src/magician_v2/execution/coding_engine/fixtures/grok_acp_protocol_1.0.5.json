@@ -1,0 +1,30 @@
+{
+  "grok_cli_version": "1.0.5",
+  "protocol_version": 1,
+  "generated_from": "Grok Build CLI 1.0.5 ACP stdio (agent mode user guide + initialize inventory)",
+  "client_methods": [
+    "initialize",
+    "session/new",
+    "session/prompt",
+    "session/cancel",
+    "session/load"
+  ],
+  "prohibited_prefixes": [
+    "x.ai/"
+  ],
+  "client_capabilities": {},
+  "client_info": {
+    "name": "magician",
+    "title": "Magician"
+  },
+  "server_notifications": [
+    "session/update"
+  ],
+  "session_update_kinds": [
+    "agent_message_chunk",
+    "agent_thought_chunk",
+    "tool_call",
+    "tool_call_update",
+    "plan"
+  ]
+}

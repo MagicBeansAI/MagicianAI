@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meetings</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f5f7;
+      --panel: #ffffff;
+      --ink: #202228;
+      --muted: #676d78;
+      --line: #d9dce2;
+      --accent: #315fce;
+      --accent-soft: #e8efff;
+      --danger: #a33931;
+      --warning: #916a19;
+      --success: #26714a;
+      --live: #c0392b;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 58px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .topbar h1 { margin: 0; font-size: 17px; }
+    .topbar p { margin: 0; color: var(--muted); font-size: 12px; }
+    .topbar .spacer { flex: 1; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .chip[data-live="true"] { border-color: var(--live); color: var(--live); font-weight: 650; }
+    .button {
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--ink);
+    }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .button.danger { border-color: #d4a5a1; color: var(--danger); }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      padding: 8px 16px 0;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .tab {
+      padding: 8px 11px;
+      border: 0;
+      border-bottom: 3px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); font-weight: 650; }
+    main { padding: 16px; }
+    .panel[hidden] { display: none; }
+    .panel-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, .9fr); gap: 14px; }
+    .card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+    }
+    .card > header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .card > header h2 { margin: 0; font-size: 14px; }
+    .card > header .count { margin-left: auto; color: var(--muted); font-size: 12px; }
+    .card-body { padding: 14px; }
+    .empty { margin: 0; padding: 18px; color: var(--muted); text-align: center; }
+    .rows { display: grid; gap: 7px; padding: 8px; max-height: 62vh; overflow: auto; }
+    .row {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+      text-align: left;
+    }
+    .row:hover { border-color: #aeb8d2; }
+    .row[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
+    .row strong, .row small { display: block; }
+    .row small { margin-top: 3px; color: var(--muted); }
+    .row .badge { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 999px; background: #edf0f4; font-size: 11px; }
+    .row .badge.live { background: #fbe6e3; color: var(--live); }
+    .line { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+    .line:last-child { border-bottom: 0; }
+    .line .who { color: var(--accent); font-weight: 650; }
+    .line .when { float: right; color: var(--muted); font-size: 11px; }
+    .line p { margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    dl { display: grid; grid-template-columns: minmax(90px, .35fr) 1fr; gap: 6px 10px; margin: 0; }
+    dt { color: var(--muted); font-size: 12px; }
+    dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .action-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .notice { padding: 10px; border: 1px solid #d9c48e; border-radius: 8px; background: #fff7df; color: #684d14; }
+    .notice strong { display: block; }
+    .table-wrap { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    td { overflow-wrap: anywhere; }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    input, select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--ink);
+      font-weight: 400;
+    }
+    .checkline { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .checkline input { width: auto; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    #status { min-height: 30px; padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); color: var(--muted); }
+    #status[data-state="error"] { color: var(--danger); }
+    #status[data-state="ok"] { color: var(--success); }
+    .boot-notice { max-width: 680px; margin: 40px auto; padding: 18px; }
+    @media (max-width: 760px) {
+      .panel-grid, .form-grid { grid-template-columns: 1fr; }
+      .topbar p { display: none; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15171b;
+        --panel: #202329;
+        --ink: #f1f3f7;
+        --muted: #aab0bc;
+        --line: #373b44;
+        --accent: #7fa1ff;
+        --accent-soft: #273759;
+        --live: #ff8b7a;
+      }
+      .notice { border-color: #6c5d31; background: #352e1b; color: #ead79e; }
+      .row .badge { background: #343944; }
+      .row .badge.live { background: #46231f; color: var(--live); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card boot-notice" id="boot-notice">
+    <div class="card-body">
+      <strong>Opening the reviewed meetings console…</strong>
+      <p>This notice remains if the host refuses the verified script or bridge session.</p>
+    </div>
+  </div>
+  <div id="app" hidden>
+    <header class="topbar">
+      <div>
+        <h1>Meetings</h1>
+        <p>Capture state, transcripts, takeaways and controls over host-owned meeting rails</p>
+      </div>
+      <span class="spacer"></span>
+      <span class="chip" id="capture-chip" data-live="false">No capture</span>
+      <span class="chip" id="budget-chip" title="Bridge messages this session may still spend">live updates —</span>
+      <button type="button" class="button" id="refresh">Refresh</button>
+    </header>
+    <nav class="tabs" aria-label="Meeting sections">
+      <button class="tab" type="button" role="tab" aria-selected="true" data-panel="live">Live</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="transcript">Transcript</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="takeaways">Takeaways</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="upcoming">Upcoming</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="search">Search</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="activity">Activity</button>
+    </nav>
+    <main>
+      <section class="panel" id="panel-live" role="tabpanel">
+        <div class="panel-grid">
+          <article class="card">
+            <header><h2>Capture sessions</h2><span class="count" id="sessions-count">0</span></header>
+            <div class="rows" id="sessions-list"></div>
+          </article>
+          <article class="card">
+            <header><h2>Controls</h2></header>
+            <div class="card-body">
+              <p class="notice"><strong>Stopping never depends on this frame.</strong>The first-party meetings page and API stay authoritative. These controls prepare a governed request; a trusted desktop signature and the host apply it through the same entries the API uses.</p>
+              <form id="start-form">
+                <label>Meeting link<input id="start-url" type="url" maxlength="2048" autocomplete="off" placeholder="https://meet.google.com/…"></label>
+                <div class="form-grid">
+                  <label>Title<input id="start-title" maxlength="256" autocomplete="off"></label>
+                  <label>Date<input id="start-date" maxlength="10" autocomplete="off" placeholder="YYYY-MM-DD"></label>
+                </div>
+                <span class="checkline"><input id="start-mic" type="checkbox"><span>Capture my microphone (listener only — the OS input device is not silenced by an app mute)</span></span>
+                <div class="action-bar">
+                  <button type="button" class="button primary" id="do-listen">Listen</button>
+                  <button type="button" class="button" id="do-join">Join as attendee</button>
+                </div>
+              </form>
+              <div class="action-bar">
+                <button type="button" class="button" id="do-pause" disabled>Pause selected</button>
+                <button type="button" class="button" id="do-resume" disabled>Resume selected</button>
+                <button type="button" class="button danger" id="do-stop" disabled>Stop selected</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+      <section class="panel" id="panel-transcript" role="tabpanel" hidden>
+        <div class="panel-grid">
+          <article class="card">
+            <header><h2>Transcript</h2><span class="count" id="transcript-count">0</span></header>
+            <div class="rows" id="transcript-lines"></div>
+            <div class="card-body">
+              <button type="button" class="button" id="load-older" disabled>Load older</button>
+            </div>
+          </article>
+          <article class="card">
+            <header><h2>Meeting threads</h2><span class="count" id="threads-count">0</span></header>
+            <div class="rows" id="threads-list"></div>
+          </article>
+        </div>
+      </section>
+      <section class="panel" id="panel-takeaways" role="tabpanel" hidden>
+        <article class="card">
+          <header><h2>Takeaways</h2><span class="count" id="takeaways-count">0</span></header>
+          <div class="rows" id="takeaways-list"></div>
+        </article>
+      </section>
+      <section class="panel" id="panel-upcoming" role="tabpanel" hidden>
+        <article class="card">
+          <header><h2>Upcoming</h2><span class="count" id="upcoming-count">0</span></header>
+          <div class="table-wrap"><table><thead><tr><th>Title</th><th>Starts</th><th>Ends</th><th>Now</th><th>Account</th></tr></thead><tbody id="upcoming-body"></tbody></table></div>
+        </article>
+      </section>
+      <section class="panel" id="panel-search" role="tabpanel" hidden>
+        <article class="card">
+          <header><h2>What was said about…</h2><span class="count" id="search-count">0</span></header>
+          <div class="card-body">
+            <form id="search-form">
+              <label>Keyword — an exact case-insensitive substring, not a semantic query<input id="search-text" maxlength="512" minlength="2" autocomplete="off" required></label>
+              <button type="submit" class="button primary">Search meeting memory</button>
+            </form>
+          </div>
+          <div class="rows" id="search-list"></div>
+        </article>
+      </section>
+      <section class="panel" id="panel-activity" role="tabpanel" hidden>
+        <div class="panel-grid">
+          <article class="card"><header><h2>Control ledger</h2></header><div class="rows" id="requests-list"></div></article>
+          <article class="card"><header><h2>Signed destination receipts</h2></header><div class="rows" id="receipts-list"></div></article>
+        </div>
+      </section>
+    </main>
+    <footer id="status" data-state="busy">Starting…</footer>
+  </div>
+  <script src="console.js"></script>
+</body>
+</html>

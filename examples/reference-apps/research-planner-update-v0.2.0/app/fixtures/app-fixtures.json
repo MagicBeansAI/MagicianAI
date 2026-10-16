@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "active_topic",
+      "entity": "research_topic",
+      "value": {
+        "title": "Battery recycling policy",
+        "query": "current battery recycling requirements",
+        "status": "active",
+        "priority": 2,
+        "updated_at": "2026-08-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "reviewed_source",
+      "entity": "research_source",
+      "value": {
+        "topic_id": "topic_demo",
+        "title": "Official recycling guidance",
+        "url": "https://example.test/guidance",
+        "summary": "Reviewed fixture content.",
+        "status": "reviewed",
+        "captured_at": "2026-08-23T09:15:00Z"
+      }
+    },
+    {
+      "name": "draft_plan",
+      "entity": "research_plan",
+      "value": {
+        "topic_id": "topic_demo",
+        "body": "Compare current official requirements.",
+        "status": "draft",
+        "reviewed_at": null
+      }
+    }
+  ],
+  "workflows": [
+    {
+      "name": "build_plan_input",
+      "workflow": "build_plan",
+      "input": {
+        "topic_id": "topic_demo",
+        "query": "current battery recycling requirements",
+        "start_date": "2026-08-01",
+        "end_date": "2026-08-23"
+      },
+      "expected_entities": ["research_plan"]
+    },
+    {
+      "name": "recipe_query_topics_input",
+      "workflow": "recipe_query_topics",
+      "input": { "entity": "research_topic", "limit": 2, "select": ["title"] },
+      "expected_entities": []
+    },
+    {
+      "name": "recipe_get_topic_input",
+      "workflow": "recipe_get_topic",
+      "input": { "entity": "research_topic", "limit": 1, "select": ["title"] },
+      "expected_entities": []
+    },
+    {
+      "name": "recipe_map_value_input",
+      "workflow": "recipe_map_value",
+      "input": { "value": "mapped" },
+      "expected_entities": []
+    },
+    {
+      "name": "recipe_sequence_value_input",
+      "workflow": "recipe_sequence_value",
+      "input": { "value": "sequenced" },
+      "expected_entities": []
+    },
+    {
+      "name": "recipe_parallel_value_input",
+      "workflow": "recipe_parallel_value",
+      "input": { "value": "parallel" },
+      "expected_entities": []
+    },
+    {
+      "name": "recipe_switch_value_input",
+      "workflow": "recipe_switch_value",
+      "input": { "status": "active", "value": { "value": "selected" } },
+      "expected_entities": []
+    }
+  ],
+  "views": [
+    { "name": "topics_view", "view": "topics", "minimum_records": 1 },
+    { "name": "sources_view", "view": "sources", "minimum_records": 1 },
+    { "name": "plans_view", "view": "plans", "minimum_records": 1 }
+  ]
+}

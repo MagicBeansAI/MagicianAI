@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "name": "adversarial_discard_all",
+      "facts": [
+        {
+          "id": "renewal_completed",
+          "item_id": "tp_003",
+          "term_groups": [
+            ["renewal"],
+            ["status ok", "completed", "succeeded", "successful"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "acme_key_recovery",
+          "item_id": "fn_auth_001",
+          "term_groups": [
+            ["acme"],
+            ["key"],
+            ["rejected", "rejection"],
+            ["re registration", "reregistered", "registered again"]
+          ],
+          "required_after_budget": true
+        }
+      ]
+    },
+    {
+      "name": "empty_patch",
+      "facts": [
+        {
+          "id": "march_update_fetched",
+          "item_id": "tp_003",
+          "term_groups": [
+            ["march"],
+            ["fetched", "retrieved"],
+            ["status ok", "successful", "succeeded"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "summary_page_drafted",
+          "item_id": "tp_004",
+          "term_groups": [
+            ["summary page"],
+            ["drafted", "created", "prepared"],
+            ["status ok", "successful", "succeeded"]
+          ],
+          "required_after_budget": true
+        }
+      ]
+    },
+    {
+      "name": "idempotent_replay",
+      "facts": [
+        {
+          "id": "staging_credential_rotated",
+          "item_id": "tp_001",
+          "term_groups": [
+            ["staging"],
+            ["credential"],
+            ["rotated", "rotation"],
+            ["status ok", "successful", "succeeded"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "consumer_one_updated",
+          "item_id": "tp_002",
+          "term_groups": [
+            ["consumer one", "first consumer"],
+            ["updated", "update"],
+            ["status ok", "successful", "succeeded"]
+          ],
+          "required_after_budget": true
+        }
+      ]
+    },
+    {
+      "name": "invalid_patch_falls_back",
+      "facts": [
+        {
+          "id": "seventeen_old_tickets",
+          "item_id": "tp_002",
+          "term_groups": [
+            ["filtered", "filter"],
+            ["17", "seventeen"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "archiving_in_progress",
+          "item_id": "tp_003",
+          "term_groups": [
+            ["archiving", "archive"],
+            ["status running", "in progress", "started", "began"]
+          ],
+          "required_after_budget": true
+        }
+      ]
+    },
+    {
+      "name": "long_run_crunch",
+      "facts": [
+        {
+          "id": "pricing_api_rows",
+          "item_id": "tp_003",
+          "term_groups": [
+            ["pricing api"],
+            ["14", "fourteen"],
+            ["row", "rows"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "rows_normalized",
+          "item_id": "tp_004",
+          "term_groups": [
+            ["normalized", "normalised"],
+            ["row", "rows"],
+            ["status ok", "successful", "succeeded"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "comparison_table_started",
+          "item_id": "tp_005",
+          "term_groups": [
+            ["comparison table"],
+            ["began", "started", "drafted"],
+            ["status ok", "successful", "succeeded"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "pricing_api_retry_recovered",
+          "item_id": "fn_fetch_002",
+          "term_groups": [
+            ["api pricing", "pricing api"],
+            ["timed out", "timeout"],
+            ["retry"],
+            ["succeeding", "succeeded", "successful"]
+          ],
+          "required_after_budget": true
+        }
+      ]
+    },
+    {
+      "name": "protected_heavy_window",
+      "facts": [
+        {
+          "id": "signed_export_checksum",
+          "item_id": "tp_002",
+          "term_groups": [
+            ["signed export", "signed audit export"],
+            ["checksum"],
+            ["9f31"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "checksum_verified",
+          "item_id": "tp_003",
+          "term_groups": [
+            ["checksum"],
+            ["verified", "confirmed"],
+            ["matches", "matched", "match"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "signing_token_refresh_recovered",
+          "item_id": "fn_auth_001",
+          "term_groups": [
+            ["signing service"],
+            ["token"],
+            ["rejected", "rejection"],
+            ["refresh succeeded", "refresh successful", "recovered"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "export_endpoint_rate_limited",
+          "item_id": "fn_fetch_001",
+          "term_groups": [
+            ["export endpoint"],
+            ["http 429", "429", "rate limited"],
+            ["once", "one time"]
+          ],
+          "required_after_budget": true
+        }
+      ]
+    },
+    {
+      "name": "summarize_heavy_tight_budget",
+      "facts": [
+        {
+          "id": "wednesday_zero_missing",
+          "item_id": "tp_003",
+          "term_groups": [
+            ["wednesday"],
+            ["missing"],
+            ["0", "zero", "no missing"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "backfill_running",
+          "item_id": "tp_004",
+          "term_groups": [
+            ["backfill"],
+            ["status running", "running", "in progress", "started"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "sunday_malformed_header_skipped",
+          "item_id": "fn_parse_001",
+          "term_groups": [
+            ["sunday"],
+            ["malformed header", "invalid header"],
+            ["skipped", "omitted"]
+          ],
+          "required_after_budget": true
+        },
+        {
+          "id": "schema_validation_failure",
+          "item_id": "fn_parse_002",
+          "term_groups": [
+            ["one row", "1 row"],
+            ["schema validation", "schema"],
+            ["failed", "failure", "invalid"]
+          ],
+          "required_after_budget": true
+        }
+      ]
+    }
+  ]
+}

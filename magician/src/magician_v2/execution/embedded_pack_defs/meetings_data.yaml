@@ -1,0 +1,214 @@
+name: meetings_data
+description: Read-only, bounded, executor-scoped access to live meeting capture state, meeting threads, transcripts, takeaways, upcoming calendar context, and keyword retrieval across them.
+version: "1.0.0"
+guide: |-
+  Tool name: `meetings_data`
+
+  This is the read-only host binder for the meetings console app. It reads the
+  first-party meeting rails directly and cannot start, join, pause, resume or
+  stop capture — those are the separately reviewed meeting control actions,
+  whose destination is the same join path and meeting-manager transitions the
+  `/meetings` API serves.
+
+  Actions (exactly six):
+
+  - `active_session {}` returns every registered capture session on both rails
+    (passive listener and agent attendee) as one bounded page, with `live`,
+    `paused`, `started_seconds_ago`, `ended_seconds_ago`, and each rail's
+    retention window. The session registries are process-global and in-memory:
+    they answer "is capture running right now", which is what the operator must
+    never have hidden, so this read is deliberately registry-wide exactly like
+    `GET /meetings/active`. But each row is split: `session_id`, `mode`,
+    `status`, `live`, `paused` and the durations are registry-wide, while
+    `thread_id`, `title` and `url` are present only when `in_scope` is true —
+    that is, when the registry recorded THIS scope as the session's owner. A
+    meeting title and a joinable link identify a room as surely as a summary
+    does, and the rolling `latest_summary` the first-party endpoint carries is
+    dropped entirely; meeting content is reachable here only through the scoped
+    thread, transcript and takeaway reads. An ended session disappears once its rail's retention window lapses;
+    the window is reported so an absent row is never mistaken for a failure.
+  - `list_threads {status?, text?, limit?, after_thread_id?}` lists the scope's
+    dated `meeting-<slug>-<date>` chat threads, newest first, one row per
+    thread (a thread may carry rotated sessions; the newest represents it).
+    `status` is `active`, `archived` or `all` (default). `text` is a bounded
+    case-insensitive substring filter over thread id and title, at least two
+    characters. Ordering is the stable `(created_at, thread_id)` tuple — thread
+    ids are names, not a monotonic sequence, so the id is the tie-break, not
+    the ordering. `next_cursor` encodes that tuple as
+    `<epoch-millis>~<thread-id>` and is compared positionally, so a page
+    boundary survives its own row being archived, filtered out by `text`, or
+    re-represented by a rotated session. Pass it back verbatim as
+    `after_thread_id`. A bare thread id is still accepted and resolved against
+    the current page; an unknown one is refused, never silently restarted at
+    page one.
+  - `read_thread {thread_id, session_id?, before_message_id?, limit?}` pages one
+    meeting thread's transcript backwards from newest, capped at 50 messages a
+    page. `thread_id` is mandatory and must name a `meeting-` thread in this
+    scope; an optional `session_id` must belong to that same thread. Only plain
+    text turns are projected: tool cards, attachments and task-status rows are
+    runtime internals, not what was said in the room, and none of their payloads
+    cross this seam (the count appears as `skipped_non_text`). Rows written by
+    the transcript lane are split back into `speaker` + `text`; an ordinary chat
+    turn that merely contains a colon is not treated as an attribution.
+    `before_message_id` must name a message in the selected session — an unknown
+    cursor is refused rather than re-serving the newest page.
+  - `read_takeaways {thread_id?, limit?}` returns the meeting rows of the
+    `user.research_findings` tier — the per-meeting summary, decisions and
+    action items the capture teardown writes, keyed `meeting:<thread-id>`. Only
+    rows the meeting writer stamped are returned; a row that merely borrows the
+    key prefix is not a takeaway. The writer prunes the tier to its own
+    newest-N bound, which is operator-tunable, so an absent older meeting is
+    retention rather than a read failure — the read reports `matched`,
+    `limit` and `truncated` for what it actually held and never mirrors the
+    writer's constant. Ordering parses `updated_at` rather than comparing
+    RFC3339 strings.
+  - `upcoming_meetings {}` projects the scope's next ~12 hours of calendar
+    meetings from the shared 60-second cache the `/meetings/upcoming` endpoint
+    serves. The binder never forces a refresh: an app read must not be able to
+    drive the gws CLI once per poll. Per-account failures are reported in
+    `errors` instead of blanking the section.
+  - `search_meeting_memory {text, limit?}` is keyword retrieval — an honest
+    case-insensitive substring match, not semantics — across meeting takeaways,
+    thread titles AND transcript bodies. Without the bodies the "what was said
+    about X" promise would be false advertising. Each lane is bounded (25 newest
+    threads, 2000 messages total) and `scan_truncated` reports when a budget was
+    reached. `text` is mandatory: retrieval without a keyword would be an
+    unbounded dump of every meeting the scope holds.
+
+  Limits are capped at 50, ids and filters are bounded, serialized results fail
+  closed above 512 KiB, and every call has a 30-second timeout.
+
+  Runtime scope is executor-owned: `__principal` and `__workspace` are injected
+  by the runtime. Public principal/workspace values are assertions only and can
+  never switch scope.
+parameters:
+  - name: action
+    param_type: string
+    description: Optional direct action name. Inner-loop calls set this automatically.
+    enum_values:
+      - active_session
+      - list_threads
+      - read_thread
+      - read_takeaways
+      - upcoming_meetings
+      - search_meeting_memory
+  - name: principal
+    param_type: string
+    description: Optional assertion that must match the runtime-injected principal.
+  - name: workspace
+    param_type: string
+    description: Optional assertion that must match the runtime-injected workspace.
+  - name: status
+    param_type: string
+    description: Optional closed thread-status filter for list_threads.
+  - name: text
+    param_type: string
+    description: Bounded case-insensitive substring; optional for list_threads, required for search_meeting_memory.
+  - name: limit
+    param_type: integer
+    description: Page size, default 20 and capped at 50.
+  - name: after_thread_id
+    param_type: string
+    description: The prior page's `next_cursor` (`<millis>~<thread-id>`), or a bare thread id.
+  - name: thread_id
+    param_type: string
+    description: Exact `meeting-` thread; required by read_thread, optional filter for read_takeaways.
+  - name: session_id
+    param_type: string
+    description: Optional exact rotated session inside the named thread.
+  - name: before_message_id
+    param_type: string
+    description: Page read_thread strictly older than this message of the selected session.
+native_action_schemas:
+  active_session:
+    description: Read both capture registries as one bounded live-capture page.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters: []
+    required: []
+    timeout_secs: 30
+  list_threads:
+    description: List one bounded, newest-first page of the scope's meeting threads.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - status
+      - text
+      - limit
+      - after_thread_id
+    required: []
+    parameter_overrides:
+      status: {type: string, enum: [active, archived, all], default: all}
+      text: {type: string, minLength: 2, maxLength: 512}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+      after_thread_id: {type: string, minLength: 9, maxLength: 255, pattern: "^([0-9]{1,19}~)?meeting-.+$"}
+    timeout_secs: 30
+  read_thread:
+    description: Page one meeting thread's transcript backwards from newest.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - thread_id
+      - session_id
+      - before_message_id
+      - limit
+    required:
+      - thread_id
+    parameter_overrides:
+      thread_id: {type: string, minLength: 9, maxLength: 255, pattern: "^meeting-.+$"}
+      session_id: {type: string, minLength: 1, maxLength: 255}
+      before_message_id: {type: string, minLength: 1, maxLength: 255}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+    timeout_secs: 30
+  read_takeaways:
+    description: Read the meeting rows of the scope's takeaway memory tier.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - thread_id
+      - limit
+    required: []
+    parameter_overrides:
+      thread_id: {type: string, minLength: 9, maxLength: 255, pattern: "^meeting-.+$"}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+    timeout_secs: 30
+  upcoming_meetings:
+    description: Project the scope's cached upcoming calendar meetings.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters: []
+    required: []
+    timeout_secs: 30
+  search_meeting_memory:
+    description: Bounded keyword retrieval over takeaways, thread titles and transcript bodies.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - text
+      - limit
+    required:
+      - text
+    parameter_overrides:
+      text: {type: string, minLength: 2, maxLength: 512}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+    timeout_secs: 30
+implementation:
+  type: primitive
+  provider_name: meetings_data
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - meetings
+    - transcripts
+    - calendar
+    - host_read
+  composition_category: observation
+  sandbox: none

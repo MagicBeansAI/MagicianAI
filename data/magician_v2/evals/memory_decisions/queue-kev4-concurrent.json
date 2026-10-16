@@ -1,0 +1,279 @@
+{
+  "summary": {
+    "requests": 4,
+    "answered": 4,
+    "elapsed_ms": 19626,
+    "physical_calls": 4,
+    "models": [
+      "kev-4b-mlx"
+    ],
+    "queued_calls": 3,
+    "max_queue_wait_ms": 17894,
+    "input_tokens": 948,
+    "output_tokens": 0,
+    "unknown_cache_calls": 4
+  },
+  "request": {
+    "contract_version": 4,
+    "operation": "memory_attach",
+    "state": {
+      "context": null,
+      "item": {
+        "task": "Activity: plan a remote meeting with no travel.",
+        "memory": "for business flights over four hours choose an aisle seat."
+      }
+    },
+    "locality": "cloud",
+    "choice_candidates": {}
+  },
+  "rows": [
+    {
+      "id": 0,
+      "elapsed_ms": 15766,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J4D9ZQ44AP1D0AX4ZG5HQY",
+            "retry_group_id": "01M3J4D9ZQ8SMR8HAPC4J2YM9K",
+            "attempt": 1,
+            "operation": "memory_attach",
+            "adapter": "kev-mlx",
+            "provider": "decision:kev-mlx",
+            "requested_model": "kev-4b-mlx",
+            "model": "kev-4b-mlx",
+            "local": true,
+            "started_at_ms": 1790536230903,
+            "completed_at_ms": 1790536233350,
+            "latency_ms": 2446,
+            "queue_wait_ms": 13303,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 237,
+            "output_tokens": 0,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "kev-mlx",
+            "model": "kev-4b-mlx"
+          },
+          "pack_id": "memory_applicability",
+          "pack_version": "1.0.0",
+          "answers": {
+            "applicable": {
+              "type": "noul",
+              "noul": 0.0176
+            },
+            "load_bearing": {
+              "type": "noul",
+              "noul": 0.0724
+            }
+          },
+          "usage": {
+            "input_tokens": 237,
+            "output_tokens": 0
+          }
+        },
+        "thresholds": {
+          "applicable": 0.75,
+          "load_bearing": 0.75
+        },
+        "error": null,
+        "latency_ms": 15750
+      }
+    },
+    {
+      "id": 1,
+      "elapsed_ms": 13318,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J4CX000K84ETSMAR02Q2SM",
+            "retry_group_id": "01M3J4CX00P3VJR25DSSC0ETVS",
+            "attempt": 1,
+            "operation": "memory_attach",
+            "adapter": "kev-mlx",
+            "provider": "decision:kev-mlx",
+            "requested_model": "kev-4b-mlx",
+            "model": "kev-4b-mlx",
+            "local": true,
+            "started_at_ms": 1790536217600,
+            "completed_at_ms": 1790536230903,
+            "latency_ms": 13302,
+            "queue_wait_ms": 0,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 237,
+            "output_tokens": 0,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "kev-mlx",
+            "model": "kev-4b-mlx"
+          },
+          "pack_id": "memory_applicability",
+          "pack_version": "1.0.0",
+          "answers": {
+            "applicable": {
+              "type": "noul",
+              "noul": 0.0176
+            },
+            "load_bearing": {
+              "type": "noul",
+              "noul": 0.0724
+            }
+          },
+          "usage": {
+            "input_tokens": 237,
+            "output_tokens": 0
+          }
+        },
+        "thresholds": {
+          "applicable": 0.75,
+          "load_bearing": 0.75
+        },
+        "error": null,
+        "latency_ms": 13303
+      }
+    },
+    {
+      "id": 2,
+      "elapsed_ms": 19621,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J4DEF747QWPHGW2D0HT9HK",
+            "retry_group_id": "01M3J4DEF7664TTCF2KZA9WK0Q",
+            "attempt": 1,
+            "operation": "memory_attach",
+            "adapter": "kev-mlx",
+            "provider": "decision:kev-mlx",
+            "requested_model": "kev-4b-mlx",
+            "model": "kev-4b-mlx",
+            "local": true,
+            "started_at_ms": 1790536235495,
+            "completed_at_ms": 1790536237207,
+            "latency_ms": 1711,
+            "queue_wait_ms": 17894,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 237,
+            "output_tokens": 0,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "kev-mlx",
+            "model": "kev-4b-mlx"
+          },
+          "pack_id": "memory_applicability",
+          "pack_version": "1.0.0",
+          "answers": {
+            "applicable": {
+              "type": "noul",
+              "noul": 0.0176
+            },
+            "load_bearing": {
+              "type": "noul",
+              "noul": 0.0724
+            }
+          },
+          "usage": {
+            "input_tokens": 237,
+            "output_tokens": 0
+          }
+        },
+        "thresholds": {
+          "applicable": 0.75,
+          "load_bearing": 0.75
+        },
+        "error": null,
+        "latency_ms": 19606
+      }
+    },
+    {
+      "id": 3,
+      "elapsed_ms": 17908,
+      "reply": {
+        "request_id": "",
+        "engine_instance": "",
+        "policy_revision": "",
+        "model_calls": [
+          {
+            "call_id": "01M3J4DCC6EBGYCX4HPHST0NMA",
+            "retry_group_id": "01M3J4DCC6PCKNA2BQHA2F16GD",
+            "attempt": 1,
+            "operation": "memory_attach",
+            "adapter": "kev-mlx",
+            "provider": "decision:kev-mlx",
+            "requested_model": "kev-4b-mlx",
+            "model": "kev-4b-mlx",
+            "local": true,
+            "started_at_ms": 1790536233350,
+            "completed_at_ms": 1790536235495,
+            "latency_ms": 2144,
+            "queue_wait_ms": 15749,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 237,
+            "output_tokens": 0,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": {
+          "model": {
+            "adapter": "kev-mlx",
+            "model": "kev-4b-mlx"
+          },
+          "pack_id": "memory_applicability",
+          "pack_version": "1.0.0",
+          "answers": {
+            "applicable": {
+              "type": "noul",
+              "noul": 0.0176
+            },
+            "load_bearing": {
+              "type": "noul",
+              "noul": 0.0724
+            }
+          },
+          "usage": {
+            "input_tokens": 237,
+            "output_tokens": 0
+          }
+        },
+        "thresholds": {
+          "applicable": 0.75,
+          "load_bearing": 0.75
+        },
+        "error": null,
+        "latency_ms": 17895
+      }
+    }
+  ]
+}

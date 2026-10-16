@@ -1,0 +1,17 @@
+{
+  "type": "bracket",
+  "aliases": ["square_bracket"],
+  "version": 1,
+  "defaults": { "size": 12, "length": 120 },
+  "draw": [
+    {
+      "op": "polyline",
+      "points": [
+        ["x+size", "y"],
+        ["x", "y"],
+        ["x", "y+(h|height|length)"],
+        ["x+size", "y+(h|height|length)"]
+      ]
+    }
+  ]
+}

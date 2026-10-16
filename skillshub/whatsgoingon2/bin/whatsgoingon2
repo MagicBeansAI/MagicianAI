@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""whatsgoingon2 — deterministic merge engine for source-search envelopes.
+
+Takes pre-fetched envelopes from the source-search tools (reddit-search,
+hackernews-search, github-search, producthunt-search, polymarket-search,
+news-search-via-tavily, browser, etc.) and produces a unified
+ranked + optionally-clustered envelope.
+
+What it does (no LLM, no network — pure data transform):
+
+  1. Dedup items by normalized URL (scheme + trailing-slash tolerant).
+  2. Reciprocal Rank Fusion (RRF) across sources, with per-source
+     weight multipliers (default 1.0 each).
+  3. Score each surviving item:
+        final_score = 0.5 * rrf_norm
+                    + 0.3 * engagement_norm
+                    + 0.2 * freshness_norm
+     Each component normalized to [0, 1].
+  4. Sort descending by final_score.
+  5. (Optional) cluster near-duplicate items by Jaccard similarity on
+     title tokens (threshold 0.5).
+  6. Truncate to --limit.
+  7. Emit JSON envelope on stdout.
+
+The "smart" decisions (which sources to call, what to highlight in
+synthesis) stay with the agent's LLM. This tool brings determinism +
+reproducibility to the cross-source merge so the agent can spend
+context on synthesis instead of re-implementing dedup math.
+
+See SKILL.md for the orchestration recipe (when to invoke, per-topic
+adjustments, browser-augmentation guidance).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import sys
+import time
+import urllib.parse
+from datetime import datetime, timezone
+from pathlib import Path
+
+RRF_K = 60.0  # standard RRF constant; dampens rank-position influence
+CLUSTER_JACCARD_THRESHOLD = 0.5
+STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
+    "he", "in", "is", "it", "its", "of", "on", "or", "that", "the", "to",
+    "was", "were", "will", "with", "this", "we", "you", "they", "have", "but",
+}
+
+
+# ---------------------------------------------------------------------------
+# Input parsing
+# ---------------------------------------------------------------------------
+
+
+def load_envelopes(path: str) -> list[dict]:
+    """Load + lightly validate the list of source envelopes."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise SystemExit(f"--envelopes file not found: {p}")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--envelopes is not valid JSON: {exc}")
+    if not isinstance(data, list):
+        raise SystemExit(
+            f"--envelopes must be a JSON list of source envelopes; "
+            f"got {type(data).__name__}"
+        )
+    cleaned: list[dict] = []
+    for i, env in enumerate(data):
+        if not isinstance(env, dict):
+            sys.stderr.write(f"[whatsgoingon2] WARN: envelope[{i}] not a dict; skipping\n")
+            continue
+        source = env.get("source") or env.get("name") or f"unknown{i}"
+        items = env.get("items") or []
+        if not isinstance(items, list):
+            sys.stderr.write(
+                f"[whatsgoingon2] WARN: envelope[{i}].items not a list (source={source}); skipping\n"
+            )
+            continue
+        cleaned.append({"source": source, "items": items})
+    return cleaned
+
+
+def parse_source_weights(raw: str | None) -> dict[str, float]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--source-weights is not valid JSON: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit("--source-weights must be a JSON object")
+    out: dict[str, float] = {}
+    for k, v in data.items():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            sys.stderr.write(f"[whatsgoingon2] WARN: skipping non-numeric weight {k}={v!r}\n")
+    return out
+
+
+def parse_bool(raw: str | None) -> bool:
+    if raw is None:
+        return True  # default: cluster on
+    return raw.strip().lower() in ("true", "1", "yes", "y", "on")
+
+
+# ---------------------------------------------------------------------------
+# Normalization + dedup
+# ---------------------------------------------------------------------------
+
+
+def normalize_url(url: str | None) -> str:
+    """Normalize for dedup: lower-host, drop scheme prefix, strip trailing /,
+    strip common tracking params, strip url fragment."""
+    if not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(url.strip())
+    except ValueError:
+        return url.strip().lower()
+    host = parsed.netloc.lower().lstrip("www.")
+    path = parsed.path.rstrip("/")
+    # Drop common tracking params to maximize dedup quality
+    drop_keys = {"utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+                 "ref", "ref_src", "fbclid", "gclid"}
+    kept_qs = [
+        (k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=False)
+        if k.lower() not in drop_keys
+    ]
+    query = urllib.parse.urlencode(kept_qs) if kept_qs else ""
+    return f"{host}{path}" + (f"?{query}" if query else "")
+
+
+def normalize_item(item: dict, source: str) -> dict:
+    """Coerce an item to the canonical 9-field shape. Adapter-side
+    variation is tolerated; missing fields become defaults."""
+    return {
+        "title": (item.get("title") or "").strip(),
+        "url": (item.get("url") or "").strip(),
+        "snippet": (item.get("snippet") or item.get("body") or "").strip(),
+        "published_at": item.get("published_at"),
+        "source": item.get("source") or source,
+        "source_native_id": str(item.get("source_native_id") or item.get("id") or ""),
+        "engagement": item.get("engagement") or {},
+        "author": item.get("author"),
+        "container": item.get("container"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# RRF (Reciprocal Rank Fusion)
+# ---------------------------------------------------------------------------
+
+
+def rrf_score(rank_1_indexed: int, k: float = RRF_K) -> float:
+    """Standard RRF formula: 1 / (k + rank). Rank is 1-indexed."""
+    return 1.0 / (k + rank_1_indexed)
+
+
+def fuse_rrf(
+    envelopes: list[dict], source_weights: dict[str, float],
+) -> dict[str, dict]:
+    """Walk each envelope, attach per-source 1-indexed ranks, then sum
+    weighted RRF scores per unique URL. Returns {url_key: {item, rrf_total,
+    sources, source_native_ranks}}.
+    """
+    pool: dict[str, dict] = {}
+    for env in envelopes:
+        source = env["source"]
+        weight = source_weights.get(source, 1.0)
+        for rank, raw_item in enumerate(env["items"], start=1):
+            item = normalize_item(raw_item, source)
+            url_key = normalize_url(item["url"])
+            if not url_key:
+                continue
+            existing = pool.get(url_key)
+            if existing is None:
+                pool[url_key] = {
+                    "item": item,
+                    "rrf_total": weight * rrf_score(rank),
+                    "sources": [source],
+                    "source_native_ranks": {source: rank},
+                }
+            else:
+                existing["rrf_total"] += weight * rrf_score(rank)
+                if source not in existing["sources"]:
+                    existing["sources"].append(source)
+                existing["source_native_ranks"][source] = rank
+                # Prefer the longer snippet between dup items
+                if len(item.get("snippet") or "") > len(existing["item"].get("snippet") or ""):
+                    existing["item"]["snippet"] = item["snippet"]
+                # Merge engagement signals (sum where keys align)
+                for k, v in (item.get("engagement") or {}).items():
+                    if isinstance(v, (int, float)):
+                        prev = existing["item"]["engagement"].get(k)
+                        existing["item"]["engagement"][k] = (
+                            max(prev, v) if isinstance(prev, (int, float)) else v
+                        )
+    return pool
+
+
+# ---------------------------------------------------------------------------
+# Signal scoring (engagement + freshness)
+# ---------------------------------------------------------------------------
+
+
+def engagement_normalized(item: dict) -> float:
+    """0..1 normalized engagement. Sums numeric values in the engagement
+    dict, applies log compression (avoids vote-count outliers dominating)."""
+    engagement = item.get("engagement") or {}
+    total = sum(v for v in engagement.values() if isinstance(v, (int, float)))
+    if total <= 0:
+        return 0.0
+    # log1p compression so 1k upvotes ≠ 1000x weight vs 1 upvote
+    return min(1.0, math.log1p(total) / math.log1p(10000.0))
+
+
+def freshness_normalized(item: dict, now: datetime | None = None) -> float:
+    """0..1 freshness. Linear decay over 30 days; older = lower."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    published_at = item.get("published_at")
+    if not published_at:
+        return 0.5  # unknown — neutral
+    try:
+        dt = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return 0.5
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+    return max(0.0, min(1.0, 1.0 - age_days / 30.0))
+
+
+def rrf_normalized(rrf_total: float, max_rrf: float) -> float:
+    if max_rrf <= 0:
+        return 0.0
+    return min(1.0, rrf_total / max_rrf)
+
+
+def compute_final_scores(pool: dict[str, dict]) -> list[dict]:
+    """Add final_score to each pool entry, return as a list."""
+    if not pool:
+        return []
+    max_rrf = max(entry["rrf_total"] for entry in pool.values()) or 1.0
+    now = datetime.now(timezone.utc)
+    out: list[dict] = []
+    for url_key, entry in pool.items():
+        item = entry["item"]
+        rrf_n = rrf_normalized(entry["rrf_total"], max_rrf)
+        eng_n = engagement_normalized(item)
+        fresh_n = freshness_normalized(item, now=now)
+        final_score = 0.5 * rrf_n + 0.3 * eng_n + 0.2 * fresh_n
+        item["_score_breakdown"] = {
+            "rrf_norm": round(rrf_n, 4),
+            "engagement_norm": round(eng_n, 4),
+            "freshness_norm": round(fresh_n, 4),
+            "final_score": round(final_score, 4),
+        }
+        item["_sources"] = entry["sources"]
+        item["_source_ranks"] = entry["source_native_ranks"]
+        item["_url_key"] = url_key
+        item["_final_score"] = final_score
+        out.append(item)
+    out.sort(key=lambda x: x["_final_score"], reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Clustering (Jaccard on title tokens)
+# ---------------------------------------------------------------------------
+
+
+def _tokens(text: str) -> set[str]:
+    tokens = set()
+    for raw in (text or "").lower().split():
+        cleaned = "".join(c for c in raw if c.isalnum())
+        if cleaned and cleaned not in STOPWORDS and len(cleaned) > 2:
+            tokens.add(cleaned)
+    return tokens
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def cluster_items(items: list[dict], threshold: float = CLUSTER_JACCARD_THRESHOLD) -> list[dict]:
+    """Group items whose title tokens overlap >= threshold. Greedy: walk
+    sorted items, assign to first cluster whose representative matches,
+    or create a new cluster. Returns list of cluster dicts."""
+    clusters: list[dict] = []
+    for item in items:
+        item_tokens = _tokens(item["title"])
+        if not item_tokens:
+            clusters.append({"representative": item, "members": [item], "tokens": item_tokens})
+            continue
+        matched = False
+        for cluster in clusters:
+            if _jaccard(item_tokens, cluster["tokens"]) >= threshold:
+                cluster["members"].append(item)
+                # Representative stays the first (highest-scored) added
+                matched = True
+                break
+        if not matched:
+            clusters.append({"representative": item, "members": [item], "tokens": item_tokens})
+    # Strip the working tokens set before returning
+    for cluster in clusters:
+        del cluster["tokens"]
+    return clusters
+
+
+# ---------------------------------------------------------------------------
+# Envelope assembly
+# ---------------------------------------------------------------------------
+
+
+def build_envelope(
+    query: str,
+    envelopes: list[dict],
+    items: list[dict],
+    clusters: list[dict] | None,
+    duration_ms: int,
+    deduped_count: int,
+) -> dict:
+    source_summary = []
+    for env in envelopes:
+        contributed = sum(
+            1 for it in items
+            if env["source"] in (it.get("_sources") or [])
+        )
+        source_summary.append({
+            "source": env["source"],
+            "input_count": len(env["items"]),
+            "contributed_to_final": contributed,
+        })
+    out_items = [
+        {k: v for k, v in it.items() if not k.startswith("_") or k == "_score_breakdown" or k == "_sources" or k == "_source_ranks"}
+        for it in items
+    ]
+    envelope = {
+        "query": query,
+        "total_items": len(out_items),
+        "items": out_items,
+        "source_summary": source_summary,
+        "dedup_summary": {
+            "total_input_items": sum(len(env["items"]) for env in envelopes),
+            "deduped_count": deduped_count,
+            "final_count": len(out_items),
+        },
+        "duration_ms": duration_ms,
+    }
+    if clusters is not None:
+        envelope["clusters"] = [
+            {
+                "representative_url": cluster["representative"]["url"],
+                "representative_title": cluster["representative"]["title"],
+                "member_count": len(cluster["members"]),
+                "member_urls": [m["url"] for m in cluster["members"]],
+            }
+            for cluster in clusters
+        ]
+    return envelope
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    query = str(request.get("query", ""))
+    envelopes_path = str(request.get("envelopes", ""))
+    do_cluster = bool(request.get("cluster", True))
+    limit = int(request.get("limit", 60))
+    source_weights_value = str(request.get("source_weights", ""))
+    normalize_urls = str(request.get("normalize_urls", ""))
+
+    # Standalone mode: normalize URLs and exit. No merge, no envelope file.
+    if normalize_urls:
+        path = Path(normalize_urls).expanduser()
+        if not path.exists():
+            raise SystemExit(f"--normalize-urls file not found: {path}")
+        try:
+            raw_urls = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--normalize-urls file is not valid JSON: {exc}")
+        if not isinstance(raw_urls, list):
+            raise SystemExit("--normalize-urls file must be a JSON list of URLs")
+        out = [normalize_url(str(u)) for u in raw_urls]
+        print(json.dumps(out))
+        return 0
+
+    if not query or not envelopes_path:
+        raise SystemExit("merge mode requires --query and --envelopes (or use --normalize-urls)")
+
+    started = time.monotonic()
+    envelopes = load_envelopes(envelopes_path)
+    source_weights = parse_source_weights(source_weights_value or None)
+
+    pool = fuse_rrf(envelopes, source_weights)
+    ranked = compute_final_scores(pool)
+    total_input = sum(len(env["items"]) for env in envelopes)
+    deduped_count = total_input - len(pool)
+    truncated = ranked[: max(0, limit)]
+    clusters = cluster_items(truncated) if do_cluster else None
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    envelope = build_envelope(
+        query=query,
+        envelopes=envelopes,
+        items=truncated,
+        clusters=clusters,
+        duration_ms=duration_ms,
+        deduped_count=deduped_count,
+    )
+
+    sys.stderr.write(
+        f"[whatsgoingon2] sources={len(envelopes)} input_items={total_input} "
+        f"deduped={deduped_count} ranked={len(ranked)} returned={len(truncated)} "
+        f"clusters={len(clusters) if clusters else 0} duration_ms={duration_ms}\n"
+    )
+    sys.stderr.flush()
+
+    print(json.dumps(envelope, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

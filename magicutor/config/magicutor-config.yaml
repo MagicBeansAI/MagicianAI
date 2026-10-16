@@ -1,0 +1,11 @@
+server:
+  host: "0.0.0.0"
+  port: 3003
+  # SSE backchannel for streaming ActionImpact events (GD-B01)
+  # Clients connect to GET /events/{correlation_id}
+  # Events are filtered to dom_changes.total_changes > 0
+
+bridge:
+  enabled: true
+  path: "/bridge/native"
+  auth_token: ""

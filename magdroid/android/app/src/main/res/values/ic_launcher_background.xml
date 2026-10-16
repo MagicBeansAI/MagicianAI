@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Magdroid Icon Background Color
+  Fallback solid color for devices that don't support gradients.
+  The brand board's warm cream, behind the star.
+-->
+<resources>
+    <color name="ic_launcher_background">#FFF6E8</color>
+</resources>

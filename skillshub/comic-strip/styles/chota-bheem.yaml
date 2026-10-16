@@ -1,0 +1,18 @@
+name: Chota-Bheem-ish
+prompt_fragment: |
+  Modern Indian animation style. Vibrant flat colors with bold saturation —
+  marigold yellow, kumkum red, peacock blue, fresh green. Expressive
+  cartoon faces with large round eyes and wide smiles. Bold black outlines
+  (2-3px). Action sequences use dynamic action lines and motion blurs;
+  comedic moments use exaggerated poses and surprise expressions
+  (sweatdrop, big sparkle eyes). Backgrounds are richly Indian: village
+  scenes with banyan trees, dusty courtyards, colorful market stalls,
+  ornate temple architecture. Festival lighting (warm golden hour or
+  evening lamp-lit). Speech bubbles white with thick borders.
+  Mood is upbeat, family-friendly, with a celebratory feel.
+ip_safe_note: |
+  Inspired by Indian children's animation aesthetics (Chota Bheem,
+  Motu Patlu, etc.), NOT the trademark characters. Create original
+  characters: village kids with traditional attire, friendly elders,
+  market vendors. Decline if user asks for Bheem/Raju/Jaggu/Chutki
+  by name — offer "an original cheerful village boy hero" instead.

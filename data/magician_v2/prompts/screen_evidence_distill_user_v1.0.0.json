@@ -1,0 +1,28 @@
+{
+  "name": "screen_evidence_distill_user",
+  "version": "1.0.0",
+  "content": [
+    "Distill this desktop screen-observation cluster (one purpose, one day) into an evidence-record proposal per the system contract. Promote only if it evidences substantive activity; otherwise skip.",
+    "",
+    "## Observation cluster",
+    "{observation_cluster_json}"
+  ],
+  "variables": [
+    {
+      "name": "observation_cluster_json",
+      "description": "JSON cluster: { purpose, day, session_count, observed_modes, session_summaries, total_notes, total_alerts }.",
+      "required": true,
+      "default_value": null,
+      "examples": ["{\n  \"purpose\": \"Monitor the deploy\",\n  \"day\": \"2026-06-14\",\n  \"session_count\": 2,\n  \"observed_modes\": [\"watch\"],\n  \"session_summaries\": [\"watched CI, deploy went green\"],\n  \"total_notes\": 5,\n  \"total_alerts\": 1\n}"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt carrying the screen-observation cluster to distill (work-evidence graph, Phase 4 desktop connector).",
+    "author": "magician",
+    "created_at": "2026-06-14T00:00:00Z",
+    "changelog": "v1.0.0: Initial screen-observation-cluster distillation user prompt.",
+    "tags": ["evidence", "work-evidence-graph", "screen", "desktop", "distillation"],
+    "estimated_tokens": 80
+  }
+}

@@ -1,0 +1,65 @@
+name: update_delegation
+description: Propose a delegation_targets change for a subordinate agent or the harness owner's direct roster. Approval-backed in the initial release.
+version: "1.0.0"
+guide: |
+  Tool name: `update_delegation`
+
+  Use this when coordination paths should change between agents.
+  This tool creates a structural proposal; it does not mutate the workspace immediately.
+
+  Guidelines:
+  - target a subordinate already inside the active harness scope, or target the harness owner when adjusting its direct roster
+  - specify at least one addition or removal
+  - keep added delegation targets explicit; do not use `*`
+  - when targeting the harness owner, only add agents that already exist in the same scoped workspace
+  - cite concrete evidence in `evidence_refs`
+parameters:
+  - name: agent_id
+    required: true
+    param_type: string
+    description: Target agent id inside the active harness scope, or the harness owner when adjusting its direct reports.
+  - name: summary
+    required: true
+    param_type: string
+    description: Short rationale for the delegation change.
+  - name: rationale
+    param_type: string
+    description: Optional longer explanation for the reviewer.
+  - name: evidence_refs
+    required: true
+    description: Non-empty list of evidence references backing the proposal.
+    schema:
+      type: array
+      items: { type: string }
+      minItems: 1
+
+  - name: add
+    description: Agent ids to add to delegation_targets.
+    schema:
+      type: array
+      items: { type: string }
+
+  - name: remove
+    description: Agent ids to remove from delegation_targets.
+    schema:
+      type: array
+      items: { type: string }
+
+  - name: payload
+    description: Optional structured metadata to persist alongside the proposal.
+    schema:
+      type: object
+      additionalProperties: true
+
+implementation:
+  type: compiled
+  provider_name: update_delegation
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+    - structure
+    - approval
+  composition_category: action
+  sandbox: none

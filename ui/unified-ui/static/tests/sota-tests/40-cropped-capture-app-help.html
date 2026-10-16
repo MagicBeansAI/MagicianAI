@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test: Cropped Capture App Help</title>
+  <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+  <style>
+    .test-header { background: linear-gradient(135deg, #4338ca, #0891b2); }
+    .mock-app {
+      border: 1px solid rgba(15, 23, 42, 0.14);
+      border-radius: 22px;
+      overflow: hidden;
+      background: #f8fafc;
+      box-shadow: 0 22px 60px rgba(15, 23, 42, 0.12);
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px 18px;
+      border: 3px solid #2563eb;
+      background: #ffffff;
+    }
+    .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 10px; }
+    .tool-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      height: 40px;
+      border: 1px solid rgba(15, 23, 42, 0.16);
+      border-radius: 10px;
+      background: #f8fafc;
+      color: #0f172a;
+      font-weight: 800;
+    }
+    .tool-button.primary {
+      background: #dbeafe;
+      border-color: #60a5fa;
+      color: #1d4ed8;
+    }
+    .mock-body {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      min-height: 420px;
+    }
+    .sidebar { padding: 18px; border-right: 1px solid rgba(15, 23, 42, 0.1); color: #64748b; }
+    .document { padding: 28px; color: #334155; }
+    .document-box { min-height: 260px; border: 1px dashed #cbd5e1; border-radius: 18px; background: #fff; }
+  </style>
+</head>
+<body>
+  <script type="application/json" id="test-metadata">
+  {
+    "testId": "40-cropped-capture-app-help",
+    "phase": "Cropped Capture Tutor",
+    "title": "Cropped Capture App Help",
+    "description": "Stages only a toolbar crop and asks Personal Tutor to point to the create-new-note button without acting.",
+    "totalTests": 1
+  }
+  </script>
+  <script type="application/json" id="tutor-ground-truth">
+  {
+    "fixture_id": "40-cropped-capture-app-help",
+    "capture_target_selector": "[data-sota-crop-target=\"app-toolbar\"]",
+    "expected_capture": "rect-aware-region",
+    "expected_entities": [
+      {"id": "new-note-button", "kind": "button", "label": "New note", "bounds_hint": "toolbar left second button"},
+      {"id": "toolbar", "kind": "toolbar"}
+    ],
+    "expected_overlay_primitives": ["highlight", "arrow", "callout"],
+    "acceptance": [
+      "The debug result shows a staged cropped attachment.",
+      "Tutor points at the New note button.",
+      "Tutor does not click or mutate the fixture.",
+      "Overlay lands on the toolbar crop, not the body or sidebar."
+    ]
+  }
+  </script>
+
+  <div class="page-shell">
+    <div class="test-header">
+      <h1>Cropped Capture Tutor: App Toolbar Help</h1>
+      <p>The debug runner captures only the toolbar and asks the tutor to identify the new-note control.</p>
+      <div class="results-summary">
+        <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+        <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+        <div class="summary-pill">Pending<strong id="pending-count">1</strong></div>
+      </div>
+    </div>
+
+    <div class="fixture-grid">
+      <section class="test-case" id="test-1" data-test-id="40-cropped-app-help" data-status="pending">
+        <div class="test-case-header">
+          <h2 class="test-case-title">Point to the create-note control from a toolbar crop</h2>
+          <span class="test-case-id">40-cropped-app-help</span>
+        </div>
+        <div class="mock-app">
+          <div class="toolbar" data-sota-crop-target="app-toolbar" aria-label="Mock notes toolbar">
+            <div class="toolbar-left">
+              <span class="tool-button" aria-label="More">...</span>
+              <span class="tool-button primary" aria-label="New note">New</span>
+              <span class="tool-button" aria-label="Search">Find</span>
+            </div>
+            <strong>Notes</strong>
+            <div class="toolbar-right">
+              <span class="tool-button" aria-label="Share">Share</span>
+              <span class="tool-button" aria-label="Settings">Gear</span>
+            </div>
+          </div>
+          <div class="mock-body">
+            <aside class="sidebar">Folders and unrelated navigation live here. They are outside the target crop.</aside>
+            <main class="document">
+              <h3>Untitled Workspace</h3>
+              <div class="document-box"></div>
+            </main>
+          </div>
+        </div>
+        <div class="verify-section">
+          <strong>Expected evidence:</strong>
+          <ul>
+            <li data-check="attachment" data-check-state="pending">Debug result shows attachment count greater than zero.</li>
+            <li data-check="target" data-check-state="pending">Overlay points to the New note button.</li>
+            <li data-check="no-action" data-check-state="pending">The fixture remains unchanged; no click is performed.</li>
+          </ul>
+        </div>
+        <div class="fixture-result" aria-live="polite"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="./sota-test-harness.js"></script>
+</body>
+</html>

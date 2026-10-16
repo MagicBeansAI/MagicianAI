@@ -1,0 +1,59 @@
+{
+  "update_id": "mu_fixture_0001",
+  "monitor_task_id": "task_monitor_fixture_001",
+  "monitor_revision": 2,
+  "execution_id": "exec_fixture_0003",
+  "occurred_at": "2026-07-22T06:01:30Z",
+  "status": "changed",
+  "change_fingerprint": "chg_71d3f6a2c4e89b10",
+  "headline": "Acme Robotics pricing: Pro plan +$10/month, new Team tier",
+  "summary": "Two material changes on the pricing page: the Pro plan rose from $49 to $59/month, and a new Team tier ($99/month, 5 seats) was added.",
+  "findings": [
+    {
+      "stable_key": "url:acme-robotics.example/pricing#pro-plan",
+      "title": "Pro plan price increased from $49 to $59",
+      "canonical_url": "https://acme-robotics.example/pricing",
+      "source": "https://acme-robotics.example/pricing",
+      "observed_at": "2026-07-22T06:01:00Z",
+      "published_at": null,
+      "summary": "The Pro plan monthly price changed from $49 to $59; annual pricing unchanged.",
+      "why_it_matters": "The monitored objective tracks price changes; this is a direct fact change on a watched plan.",
+      "entities": ["Acme Robotics", "Pro plan"],
+      "evidence": [
+        {
+          "kind": "quote",
+          "value": "Pro — $59/month, billed monthly",
+          "url": "https://acme-robotics.example/pricing"
+        }
+      ],
+      "content_fingerprint": "cf_5f2a91d340be7701",
+      "classification": "updated"
+    },
+    {
+      "stable_key": "url:acme-robotics.example/pricing#team-plan",
+      "title": "New Team plan tier added",
+      "canonical_url": "https://acme-robotics.example/pricing",
+      "source": "https://acme-robotics.example/pricing",
+      "observed_at": "2026-07-22T06:01:00Z",
+      "published_at": "2026-07-21T00:00:00Z",
+      "summary": "A Team tier at $99/month for 5 seats appeared between the Pro and Enterprise tiers.",
+      "why_it_matters": "A newly discovered stable item matching the monitored pricing objective.",
+      "entities": ["Acme Robotics", "Team plan"],
+      "evidence": [
+        {
+          "kind": "quote",
+          "value": "Team — $99/month, includes 5 seats",
+          "url": "https://acme-robotics.example/pricing"
+        }
+      ],
+      "content_fingerprint": "cf_b81c22e09a4d5512",
+      "classification": "new"
+    }
+  ],
+  "notification": {
+    "policy": "material_changes",
+    "emitted": true,
+    "channel": "today_changed",
+    "dedupe_key": "anonymous/default:task_monitor_fixture_001:2:chg_71d3f6a2c4e89b10:today_changed"
+  }
+}

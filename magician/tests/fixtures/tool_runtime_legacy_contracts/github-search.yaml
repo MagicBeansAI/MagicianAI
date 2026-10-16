@@ -1,0 +1,54 @@
+name: github-search
+version: 0.2.0
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: "Search query / topic."
+- name: days
+  required: false
+  param_type: integer
+  description: "Lookback window in days. Default 3."
+  default: '3'
+- name: limit
+  required: false
+  param_type: integer
+  description: "Max items returned across issues + repos (split 60/40)."
+  default: '10'
+- name: mode
+  required: false
+  param_type: string
+  description: "What to search: 'mixed' (default — issues + repos), 'issues' (only issues/PRs), or 'repos' (only repositories)."
+  default: 'mixed'
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories: [research, search, code]
+  composition_category: research
+  sandbox: none
+native_action_schemas:
+  run:
+    description: |
+      Search GitHub for recent issues/PRs and repositories matching a
+      query. Uses GitHub's REST search-issues + search-repositories
+      APIs. Works keyless (10 req/min anonymous limit); set
+      `GITHUB_TOKEN` env var to raise to 30 req/min.
+    parameters: [query, days, limit, mode]
+    required: [query]
+    parameter_overrides:
+      query: {type: string, description: "Search query"}
+      days: {type: integer, default: '3'}
+      limit: {type: integer, default: '10'}
+      mode: {type: string, default: 'mixed', enum: [mixed, issues, repos]}
+    skip_tool_name: true
+    arg_mappings:
+    - {type: positional, param: query}
+    - {type: flag, flag: '--days', param: days}
+    - {type: flag, flag: '--limit', param: limit}
+    - {type: flag, flag: '--mode', param: mode}
+    timeout_secs: 60
+implementation:
+  type: primitive
+  command: ['bash', '{skill_runtime_root}/scripts/run.sh']
+  cwd: '{skill_runtime_root}'
+  timeout_secs: 60

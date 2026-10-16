@@ -1,0 +1,17 @@
+{
+  "name": "voice_verification_verified",
+  "version": "1.0.0",
+  "content": [
+    "Its code checks passed."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "Conversational",
+    "description": "Spoken clause appended to a task-completion announcement when the task's durable verification_state is exactly `verified` — the repository's own checks ran and passed. This is the ONLY state that may be spoken as verified; `unknown` (the default for every task with no gate) deliberately has no template at all, so nothing is said rather than something implied. Deliberately one short sentence: it is read aloud immediately after the completion sentence, and a second clause there is the difference between a notification and a paragraph.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial verified clause.",
+    "tags": ["voice", "realtime-voice", "verification", "announcement", "vibedev"],
+    "estimated_tokens": 8
+  }
+}

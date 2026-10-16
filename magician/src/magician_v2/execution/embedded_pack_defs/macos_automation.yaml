@@ -1,0 +1,50 @@
+name: macos_automation
+description: Run an AppleScript or JXA (JavaScript-for-Automation) script on the host Mac and return its `{stdout, stderr, exit_code}`. Routes through the desktop app's host gateway (Tauri), so it works natively AND from a container — one code path. Use for scriptable-app automation (Music, Notes, Reminders, Calendar, Safari, Finder, System Events) and system controls where an `osascript` one-liner wins. Requires the macOS desktop app running (Automation TCC grant); returns status=error if the host gateway is unreachable.
+version: "1.0.0"
+guide: |
+  Tool name: `macos_automation`
+
+  Runs `osascript` on the host Mac via the desktop app's host gateway. Set
+  `language: javascript` for JXA (return structured data via `JSON.stringify`);
+  AppleScript is the default. The script's stdout is returned verbatim — have it
+  emit exactly what you need (a value, or JSON for multi-field results).
+
+  - `source` (required): the AppleScript / JXA program text.
+  - `language`: `applescript` (default) or `javascript` (JXA).
+  - `timeout_secs`: host-side timeout, 1–120 (default 30).
+
+  For GUI walks on non-scriptable / Electron apps (clicking buttons in Slack,
+  Figma, etc.) use the `macos-ui-automation` skill instead — this tool is for
+  one-shot scriptable automations.
+
+  Result: `{status: "ok"|"error", stdout, stderr, exit_code}`. A non-zero
+  `exit_code` with a permission error in `stderr` usually means the host needs an
+  Automation/Accessibility TCC grant for the target app. `status: error` with a
+  transport reason means the desktop app (host gateway) is not running.
+parameters:
+  - name: source
+    required: true
+    param_type: string
+    description: The AppleScript (default) or JXA program text to run on the host Mac.
+  - name: language
+    required: false
+    param_type: string
+    description: Script language — `applescript` (default) or `javascript` (JXA, for structured JSON output).
+    enum_values:
+    - applescript
+    - javascript
+  - name: timeout_secs
+    required: false
+    param_type: integer
+    description: "Host-side execution timeout in seconds (1–120, default: 30)."
+implementation:
+  type: compiled
+  provider_name: macos_automation
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 35
+  categories:
+    - macos
+    - automation
+  composition_category: action
+  sandbox: none

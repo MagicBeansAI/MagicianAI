@@ -1,0 +1,26 @@
+[package]
+name = "magician-storage-state"
+version = "0.1.0"
+edition = "2021"
+publish = false
+authors = ["MagicBeansAI"]
+description = "Dormant SQLite/Postgres repository foundations and SQL-backed leases. Not used by default startup."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+magician-storage = { path = "../magician-storage" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+tokio-postgres = "0.7"
+tokio-postgres-rustls = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+webpki-roots = "0.26"
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "process"] }

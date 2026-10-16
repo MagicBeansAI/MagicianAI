@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+*.log
+npm-debug.log*
+.env
+.env.*
+shots/
+audit.txt
+/capture.png
+.scratch/
+tmp/
+
+# example pages are build output: `node examples/<name>/build.mjs [--light]` writes them
+examples/**/*.html

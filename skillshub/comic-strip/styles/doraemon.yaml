@@ -1,0 +1,17 @@
+name: Doraemon-ish
+prompt_fragment: |
+  1990s Japanese anime style for children. Soft cel-shading with two-tone
+  shadows, bold black outlines (3-4px), bright primary palette (sky blue,
+  warm yellow, soft red, grass green), simple rounded character shapes with
+  round friendly faces, large expressive eyes. No shading gradients —
+  flat color fills. Backgrounds are gentle and lived-in: tatami rooms,
+  Japanese suburban streets, sunny afternoons. Speech bubbles are pure
+  white with thick black borders, hiragana-style serif font feel.
+  Mood is warm, gentle, and slightly nostalgic. Panel borders thick
+  black 4-6px.
+ip_safe_note: |
+  Inspired by Doraemon-era anime aesthetics, NOT the trademarked
+  Doraemon character or Nobita/Shizuka/Suneo/Gian. Create original
+  characters that fit the style. Decline if user asks for the
+  trademark robot cat directly — offer an "original blue gadget-using
+  friend character" instead.

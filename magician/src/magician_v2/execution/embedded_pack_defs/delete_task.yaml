@@ -1,0 +1,32 @@
+name: delete_task
+description: Archive a task. The task is removed from the active list but its history is preserved on disk for forensic recovery.
+version: "1.0.0"
+guide: |
+  Tool name: `delete_task`
+
+  Inputs:
+  - `task_id` (required) — task to archive.
+
+  Use when the user asks to "delete" or "remove" a task. Archived
+  tasks no longer appear in `list_tasks` (with default filters) and
+  won't be auto-scheduled, but their manifest + execution history
+  stay on disk under the scope's archive directory.
+
+  This is reversible at the storage layer (an admin restore is
+  possible); from the chat / agent surface treat it as terminal.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: Task id to archive.
+implementation:
+  type: compiled
+  provider_name: delete_task
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - tasks
+    - lifecycle
+  composition_category: action
+  sandbox: none

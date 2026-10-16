@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Chat turn engine eval</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    code { font-family: ui-monospace, monospace; }
+    h1 { font-size: 1.4rem; }
+    li { margin: 0.35rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Chat turn engine</h1>
+  <p>
+    Harness lane for the chat-mouth seam. Visible on <code>/evals</code> via
+    Makefile annotation <code>test-chat-turn-engine-eval</code>
+    (<code>kind=harness</code>, <code>report=evals/chat-turn-engine</code>).
+  </p>
+  <p>What this lane pins:</p>
+  <ul>
+    <li>Default / unknown engine names fail closed to Magician's own mouth.</li>
+    <li>Roster names select a harness; ChatScoped grants keep the conversation surface.</li>
+    <li>Every launchable roster name is a chat mouth. Native-tool posture is per engine (stripped or sandboxed).</li>
+    <li>ChatScoped grants resolve at the process-local MCP door.</li>
+    <li>Grant revoke cancels a child of the chat-turn token, not the conversation.</li>
+    <li>Warm resume sends only the new user text.</li>
+    <li>Gated plane actions refuse (chat HITL is the next user message).</li>
+    <li>A conversation grant's <code>tools/call</code> crosses the plane door.</li>
+  </ul>
+  <p>Recipe: <code>cargo test -p magician --lib chat_turn</code>.</p>
+</body>
+</html>

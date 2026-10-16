@@ -1,0 +1,40 @@
+{
+  "name": "@magician-reference/research-planner",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "External reference app for the supported Magician Apps contract.",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {
+    "@magician/apps": "file:../../../sdk/typescript",
+    "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "typescript": "5.9.2"
+  },
+  "scripts": {
+    "recipes:materialize": "tsc src/recipe-fixtures.ts --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck false --outDir .recipe-build && node scripts/materialize-recipes.mjs",
+    "prebuild": "npm --prefix ../../../sdk/typescript run build",
+    "build": "tsc",
+    "pretypecheck": "npm --prefix ../../../sdk/typescript run build",
+    "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
+    "test": "node --test dist/tests/*.test.js",
+    "pretest:static": "npm run build",
+    "test:static": "node scripts/run-static-tests.mjs",
+    "pretest:contract-canary": "npm run build",
+    "test:contract-canary": "node --test dist/tests/supported-public-consumer-canary.test.js",
+    "pretest:real-server-canary": "npm run build",
+    "test:real-server-canary": "node --test dist/tests/supported-public-real-server-canary.test.js",
+    "app:capability-check": "magician app capability check ./owner-fixtures/skills/research_outline/SKILL.md",
+    "app:check": "magician app check ./app",
+    "app:generate": "magician app check ./app --write-generated",
+    "app:test": "magician app test ./app",
+    "app:preview": "magician app preview ./app",
+    "app:pack": "magician app pack ./app --skills-dir ./owner-fixtures/skills --templates-dir ./owner-fixtures/agents --output ./dist/research-planner-0.1.1.app.zip",
+    "app:pack-reference-set": "node scripts/public-build-packages.mjs"
+  }
+}

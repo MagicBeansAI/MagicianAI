@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Dense Grid / SoM Scalability (Phases 1 & 12)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #28a745, #1e7e34);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] { border-color: #28a745; background: #f0fff4; }
+        .test-case[data-status="fail"] { border-color: #dc3545; background: #fff5f5; }
+        .test-case[data-status="running"] { border-color: #007bff; background: #f0f8ff; }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+
+        /* Product Grid */
+        .product-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        .product-card {
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+        }
+        .product-card h4 { margin: 10px 0 5px 0; font-size: 14px; }
+        .product-card .price { color: #28a745; font-weight: bold; }
+        .product-card button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-top: 8px;
+            width: 100%;
+        }
+
+        /* Data Table */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            font-size: 13px;
+        }
+        .data-table th, .data-table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        .data-table th { background: #f8f9fa; }
+        .data-table .action-btn {
+            padding: 4px 8px;
+            font-size: 11px;
+            margin: 2px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .data-table .edit-btn { background: #ffc107; color: #333; }
+        .data-table .delete-btn { background: #dc3545; color: white; }
+        .data-table .view-btn { background: #17a2b8; color: white; }
+        .table-container { max-height: 300px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; margin: 15px 0; }
+
+        /* Icon Grid */
+        .icon-grid {
+            display: grid;
+            grid-template-columns: repeat(10, 1fr);
+            gap: 5px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        .icon-item {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #e9ecef;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 18px;
+        }
+        .icon-item:hover { background: #007bff; color: white; }
+
+        .stats { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 15px; }
+        .stat-card { background: #e9ecef; padding: 10px 20px; border-radius: 4px; }
+        .stat-card strong { color: #007bff; }
+
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "03-dense-grid",
+        "phase": "Phases 1 & 12",
+        "title": "Dense Grid / SoM Scalability",
+        "description": "Tests handling of pages with 100+ elements, dense data tables, and grid layouts",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phases 1 & 12: Dense Grid / SoM Scalability</h1>
+        <p>Test the agent's ability to navigate pages with many interactive elements without confusion.</p>
+    </div>
+
+    <!-- Test Case 1: Product Grid -->
+    <div class="test-case" id="test-1" data-test-id="03-product-grid" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Find and Click Specific Product in Grid</h3>
+            <span class="test-case-id">03-product-grid</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> In the 48-item product grid below, find and click the "Add to Cart" button for Product #23.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="product-found">Agent correctly identifies Product #23 among 48 products</li>
+                <li data-check="correct-button">Agent clicks the correct "Add to Cart" button (not a different product)</li>
+                <li data-check="handles-density">Agent handles dense region without getting confused</li>
+            </ul>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">Products: <strong>48</strong></div>
+            <div class="stat-card">Buttons: <strong>48</strong></div>
+        </div>
+
+        <div class="product-grid" id="product-grid"></div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Data Table -->
+    <div class="test-case" id="test-2" data-test-id="03-data-table" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Edit User in Data Table</h3>
+            <span class="test-case-id">03-data-table</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> In the 50-row data table below, find the user with email "alice.williams@example.com" and click the "Edit" button for that row.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="scrolls-if-needed">Agent scrolls to find the row if not initially visible</li>
+                <li data-check="finds-correct-row">Agent identifies the correct row by email</li>
+                <li data-check="clicks-edit">Agent clicks the Edit button (yellow) in that specific row</li>
+            </ul>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">Rows: <strong>50</strong></div>
+            <div class="stat-card">Buttons per row: <strong>3</strong></div>
+            <div class="stat-card">Total Buttons: <strong>150</strong></div>
+        </div>
+
+        <div class="table-container">
+            <table class="data-table" id="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body"></tbody>
+            </table>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Icon Grid -->
+    <div class="test-case" id="test-3" data-test-id="03-icon-grid" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Click Icon in Dense 10x10 Grid</h3>
+            <span class="test-case-id">03-icon-grid</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> In the 100-icon grid below (10x10), click the icon at row 5, column 7.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="dense-handled">Agent handles extremely dense region (100 clickable items)</li>
+                <li data-check="correct-position">Agent identifies correct icon by row/column position</li>
+                <li data-check="precise-click">Agent performs precise click on correct icon</li>
+            </ul>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">Icons: <strong>100</strong></div>
+            <div class="stat-card">Grid: <strong>10x10</strong></div>
+        </div>
+
+        <div class="icon-grid" id="icon-grid"></div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Dense Grid Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Generate product grid
+        const productGrid = document.getElementById('product-grid');
+        const products = ['Laptop', 'Phone', 'Tablet', 'Watch', 'Headphones', 'Camera', 'Speaker', 'Monitor'];
+        const emojis = ['📱', '💻', '⌚', '🎧', '📷', '🔊', '🖥️', '📺'];
+        for (let i = 1; i <= 48; i++) {
+            productGrid.innerHTML += `
+                <div class="product-card">
+                    <div style="width:100%;height:80px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:4px;display:flex;align-items:center;justify-content:center;color:white;font-size:24px;">
+                        ${emojis[i % 8]}
+                    </div>
+                    <h4>Product #${i}</h4>
+                    <p style="font-size:12px;color:#666;margin:0;">${products[i % products.length]}</p>
+                    <div class="price">$${(19.99 + i * 10).toFixed(2)}</div>
+                    <button data-testid="add-cart-${i}" aria-label="Add Product ${i} to cart" onclick="alert('Added Product #${i} to cart!')">Add to Cart</button>
+                </div>
+            `;
+        }
+
+        // Generate data table
+        const tableBody = document.getElementById('table-body');
+        const firstNames = ['John', 'Jane', 'Bob', 'Alice', 'Charlie', 'Diana', 'Eve', 'Frank'];
+        const lastNames = ['Doe', 'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller'];
+        const statuses = ['Active', 'Pending', 'Inactive'];
+        for (let i = 1; i <= 50; i++) {
+            const firstName = firstNames[i % firstNames.length];
+            const lastName = lastNames[i % lastNames.length];
+            // Emails are unique per row (suffixed with the row id) so the search
+            // target is unambiguous. Row 27 (naturally an "Alice Williams" row,
+            // mid-table so it requires scrolling) carries the exact target email
+            // used by the goal + detection — making it the ONLY matching row.
+            const email = i === 27
+                ? 'alice.williams@example.com'
+                : `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${i}@example.com`;
+            const status = statuses[i % statuses.length];
+            tableBody.innerHTML += `
+                <tr data-row-id="${i}">
+                    <td>${i}</td>
+                    <td>${firstName} ${lastName}</td>
+                    <td>${email}</td>
+                    <td><span style="color:${status === 'Active' ? '#28a745' : status === 'Pending' ? '#ffc107' : '#dc3545'}">${status}</span></td>
+                    <td>
+                        <button class="action-btn view-btn" data-testid="view-${i}" onclick="alert('View user ${i}')">View</button>
+                        <button class="action-btn edit-btn" data-testid="edit-${i}" onclick="alert('Edit user ${i}')">Edit</button>
+                        <button class="action-btn delete-btn" data-testid="delete-${i}" onclick="alert('Delete user ${i}')">Delete</button>
+                    </td>
+                </tr>
+            `;
+        }
+
+        // Generate icon grid
+        const iconGrid = document.getElementById('icon-grid');
+        const icons = ['⭐', '❤️', '🔥', '⚡', '🎯', '💎', '🚀', '🎨', '🎵', '📌'];
+        for (let i = 0; i < 100; i++) {
+            const row = Math.floor(i / 10) + 1;
+            const col = (i % 10) + 1;
+            iconGrid.innerHTML += `
+                <div class="icon-item" data-testid="icon-${row}-${col}" title="Row ${row}, Col ${col}" onclick="alert('Icon at row ${row}, column ${col} clicked!')">
+                    ${icons[i % icons.length]}
+                </div>
+            `;
+        }
+
+        // Genuine-success detection wiring.
+        // Each [data-check] is marked 'pass' only when the SPECIFIC target action
+        // for that test is performed on the CORRECT element — not on any click.
+
+        // Test 1: "Add to Cart" for Product #23 only.
+        const targetProductBtn = productGrid.querySelector('[data-testid="add-cart-23"]');
+        if (targetProductBtn) {
+            targetProductBtn.addEventListener('click', () => {
+                if (typeof window.setCheckState === 'function') {
+                    // Correct product identified, correct button clicked, density handled.
+                    window.setCheckState('test-1', 'product-found', 'pass');
+                    window.setCheckState('test-1', 'correct-button', 'pass');
+                    window.setCheckState('test-1', 'handles-density', 'pass');
+                }
+            });
+        }
+
+        // Test 2: "Edit" button in a row whose email is alice.williams@example.com.
+        const TARGET_EMAIL = 'alice.williams@example.com';
+        tableBody.querySelectorAll('tr').forEach((row) => {
+            const emailCell = row.children[2];
+            if (!emailCell || emailCell.textContent.trim() !== TARGET_EMAIL) return;
+            const editBtn = row.querySelector('.edit-btn');
+            if (!editBtn) return;
+            editBtn.addEventListener('click', () => {
+                if (typeof window.setCheckState === 'function') {
+                    // Row located (possibly after scrolling), correct row by email, Edit clicked.
+                    window.setCheckState('test-2', 'scrolls-if-needed', 'pass');
+                    window.setCheckState('test-2', 'finds-correct-row', 'pass');
+                    window.setCheckState('test-2', 'clicks-edit', 'pass');
+                }
+            });
+        });
+
+        // Test 3: icon at row 5, column 7 only.
+        const targetIcon = iconGrid.querySelector('[data-testid="icon-5-7"]');
+        if (targetIcon) {
+            targetIcon.addEventListener('click', () => {
+                if (typeof window.setCheckState === 'function') {
+                    // Dense grid handled, correct position identified, precise click landed.
+                    window.setCheckState('test-3', 'dense-handled', 'pass');
+                    window.setCheckState('test-3', 'correct-position', 'pass');
+                    window.setCheckState('test-3', 'precise-click', 'pass');
+                }
+            });
+        }
+
+        // Test management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

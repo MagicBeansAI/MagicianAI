@@ -1,0 +1,24 @@
+name: working_set_search
+description: Search durable evidence previously captured by the server for this principal and workspace. With a working_set_id, searches that one snapshot; without one, searches every snapshot this task has captured so far, so you never have to know which read a fact landed in. Results retain working-set, source and chunk citations for working_set_read.
+parameters:
+  - name: working_set_id
+    required: false
+    param_type: string
+    description: Opaque working-set id returned by content_read. Omit to search everything this task has captured.
+  - name: query
+    required: true
+    param_type: string
+    description: Specific evidence phrase to find. Queries must contain at least three characters.
+  - name: limit
+    required: false
+    param_type: integer
+    description: Maximum number of matching chunks to return. Defaults to 10 and is bounded by the server.
+implementation:
+  type: compiled
+  provider_name: working_set_search
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories: [research, evidence, search]
+  composition_category: action
+  sandbox: none

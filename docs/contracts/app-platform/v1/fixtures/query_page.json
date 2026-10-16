@@ -1,0 +1,42 @@
+{
+  "envelope": {
+    "content_digest": "blake3:997af4cd6b74e8510c6944b8d9789df6ec2bd87bfff64524888245c6e34fb123",
+    "expires_at": "2026-08-14T07:30:00Z",
+    "grant_revision": 2,
+    "handling_labels": {
+      "classification": "personal",
+      "model_processing": "local_only",
+      "policy_digest": "blake3:f98f30111fa85c533ff074620814a853afa1e7b6715a55df740ab987affa4996",
+      "provenance_digest": "blake3:62403b576e4a52499024b60e62fc1e3bedb2ed48dbbcdaac5e12854cecb9ef65"
+    },
+    "installation_id": "install_reading_room",
+    "package_revision_ref": "package:reading_room:1.0.0",
+    "produced_at": "2026-08-14T06:30:00Z",
+    "protocol_version": "1",
+    "schema_revision": 3,
+    "scope_binding_ref": "scope_binding_owner_default",
+    "source": "app_store",
+    "source_refs": [
+      {
+        "kind": "entity_record",
+        "reference": "record:saved_video:video_01",
+        "revision": 7
+      }
+    ],
+    "value": [
+      {
+        "entity": "saved_video",
+        "fields": {
+          "duration_seconds": 1842,
+          "status": "ready",
+          "title": "The Shape of Useful Time"
+        },
+        "record_id": "video_01",
+        "record_revision": 7
+      }
+    ],
+    "value_schema_ref": "schema:saved_video_projection:v1"
+  },
+  "next_cursor": "cursor:v1:page_3",
+  "result_schema_ref": "schema:saved_video_projection:v1"
+}

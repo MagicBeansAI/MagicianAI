@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="360dp"
+    android:height="24dp"
+    android:viewportWidth="360"
+    android:viewportHeight="24">
+
+    <!-- Flowing separator with multiple wave layers -->
+    <path
+        android:fillAlpha="0.2"
+        android:fillColor="@color/primary"
+        android:pathData="M0,8 Q60,4 120,8 T240,8 T360,8 L360,12 Q300,16 240,12 T120,12 T0,12 Z" />
+
+    <path
+        android:fillAlpha="0.15"
+        android:fillColor="@color/accent"
+        android:pathData="M0,12 Q60,10 120,12 T240,12 T360,12 L360,16 Q300,18 240,16 T120,16 T0,16 Z" />
+
+    <path
+        android:fillAlpha="0.1"
+        android:fillColor="@color/primary"
+        android:pathData="M0,4 Q60,2 120,4 T240,4 T360,4 L360,8 Q300,10 240,8 T120,8 T0,8 Z" />
+</vector>

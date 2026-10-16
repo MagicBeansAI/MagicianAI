@@ -1,0 +1,90 @@
+{
+  "contract_version": 1,
+  "fact_schema_version": 2,
+  "journal_schema_version": 1,
+  "content_free": true,
+  "maximum_serialized_fact_bytes": 16384,
+  "idempotency_key": [
+    "record_kind",
+    "stable_id",
+    "revision"
+  ],
+  "record_kinds": [
+    "call_fact",
+    "provider_attempt",
+    "capture_gap"
+  ],
+  "record_revisions": {
+    "call_fact": {
+      "started": 1,
+      "completed": 2
+    },
+    "provider_attempt": {
+      "started": 1,
+      "first_token": 2,
+      "completed": 3
+    },
+    "capture_gap": {
+      "reported": 1
+    }
+  },
+  "capture_modes": [
+    "off",
+    "metadata",
+    "sanitized",
+    "full_local_encrypted"
+  ],
+  "capture_statuses": [
+    "complete",
+    "metadata_only",
+    "redacted",
+    "sampled_out",
+    "policy_denied",
+    "oversize",
+    "backpressure_degraded",
+    "write_failed"
+  ],
+  "cost_sources": [
+    "provider",
+    "computed",
+    "estimated",
+    "unknown"
+  ],
+  "call_terminal_states": [
+    "succeeded",
+    "failed",
+    "cancelled",
+    "tombstoned"
+  ],
+  "attempt_terminal_states": [
+    "succeeded",
+    "failed",
+    "cancelled",
+    "timed_out"
+  ],
+  "required_common_identity": [
+    "trace_id",
+    "llm_call_id",
+    "principal",
+    "workspace",
+    "scope_resolution",
+    "workload_class",
+    "call_role"
+  ],
+  "terminal_timing": {
+    "completed_call": "created_at_ms_completed_at_ms_and_latency_ms_required",
+    "completed_attempt": "completion_and_terminal_state_required_exact_start_and_latency_optional_but_paired",
+    "first_token": "first_token_at_ms_and_ttft_ms_must_coexist_and_match"
+  },
+  "token_integrity": {
+    "folded_total": "input_plus_output_equals_total_when_populated",
+    "cache_subsets": "cache_read_plus_cache_creation_never_exceeds_input",
+    "realtime_modality": "all_audio_and_folded_buckets_required_uncached_audio_plus_cache_never_exceeds_input_and_cache_creation_is_zero"
+  },
+  "opaque_external_ai_runs": "not_provider_call_facts_and_must_not_fabricate_attempts",
+  "successful_zero_attempt_exception": "logical_chunk_summary_only_when_zero_usage_and_non_billing",
+  "provider_attempt_id_format": "{llm_call_id}:a{one_based_ordinal}",
+  "capture_gap_ownership": "call_specific_gaps_carry_llm_call_id_process_wide_gaps_leave_it_null",
+  "categorical_content_boundary": "operation_capability_routing_error_validation_finish_response_gap_exclusion_and_pricing_provenance_fields_are_short_machine_tokens_not_prose",
+  "ordinary_fact_payload_content_allowed": false
+}

@@ -1,0 +1,66 @@
+{
+  "crews": [
+    {
+      "budget_usd": 6.0,
+      "created_at_ms": 1760346000000,
+      "crew_id": "crew_7f3a",
+      "goal": "Login with email codes instead of passwords",
+      "lanes": [
+        {
+          "brief": "API: build its part of login with email codes.",
+          "lane": "API",
+          "owns": [
+            "src/api/auth"
+          ],
+          "role": "work",
+          "run_task_id": "task_api",
+          "status": "done"
+        },
+        {
+          "brief": "Login form: build its part of login with email codes.",
+          "lane": "Login form",
+          "owns": [
+            "web/src/login"
+          ],
+          "role": "work",
+          "run_task_id": "task_form",
+          "status": "running"
+        }
+      ],
+      "mode": "split",
+      "note": "1 of 2 lanes: 1 done, 1 running",
+      "review": true,
+      "spent_usd": 1.48,
+      "status": "running",
+      "updated_at_ms": 1760346600000
+    },
+    {
+      "choose_request_id": "vibedev-crew-crew_race-choose",
+      "created_at_ms": 1760340000000,
+      "crew_id": "crew_race",
+      "goal": "Make checkout one page",
+      "lanes": [
+        {
+          "brief": "Attempt 1 · claude-code: build its part of login with email codes.",
+          "lane": "Attempt 1 · claude-code",
+          "role": "work",
+          "run_task_id": "task_r1",
+          "status": "done"
+        },
+        {
+          "brief": "Attempt 2 · codex: build its part of login with email codes.",
+          "lane": "Attempt 2 · codex",
+          "role": "work",
+          "run_task_id": "task_r2",
+          "status": "failed"
+        }
+      ],
+      "mode": "race",
+      "note": "Pick the attempt to keep",
+      "review": false,
+      "spent_usd": 2.1,
+      "status": "choosing",
+      "updated_at_ms": 1760345000000
+    }
+  ]
+}

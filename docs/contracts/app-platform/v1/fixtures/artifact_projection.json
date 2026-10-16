@@ -1,0 +1,34 @@
+{
+  "content_digest": "blake3:a14d0ce6199e7290e37376a54e0d4a8b65ae3e83c23980f5c04f76d28e9341a4",
+  "expires_at": "2026-08-14T07:30:00Z",
+  "grant_revision": 2,
+  "handling_labels": {
+    "classification": "personal",
+    "model_processing": "local_only",
+    "policy_digest": "blake3:f98f30111fa85c533ff074620814a853afa1e7b6715a55df740ab987affa4996",
+    "provenance_digest": "blake3:62403b576e4a52499024b60e62fc1e3bedb2ed48dbbcdaac5e12854cecb9ef65"
+  },
+  "installation_id": "install_reading_room",
+  "package_revision_ref": "package:reading_room:1.0.0",
+  "produced_at": "2026-08-14T06:30:00Z",
+  "protocol_version": "1",
+  "schema_revision": 3,
+  "scope_binding_ref": "scope_binding_owner_default",
+  "source": "artifact_projection",
+  "source_refs": [
+    {
+      "kind": "entity_record",
+      "reference": "record:saved_video:video_01",
+      "revision": 7
+    }
+  ],
+  "value": {
+    "artifact_ref": "artifact:video:short_01",
+    "artifact_revision": 3,
+    "byte_len": 24000000,
+    "content_digest": "blake3:7fc369680036e1b5dd437b37a8408fbd9c008e97d845939d2e41bca6e0753a71",
+    "media_type": "video/mp4",
+    "value_schema_ref": "schema:video_clip:v1"
+  },
+  "value_schema_ref": "schema:artifact_projection:v1"
+}

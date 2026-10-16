@@ -1,0 +1,26 @@
+name: list_scheduled_tasks
+description: List cron-scheduled tasks bound to the current scope — task_id plus the cron expression each one fires on.
+version: "1.0.0"
+guide: |
+  Tool name: `list_scheduled_tasks`
+
+  Returns `[{task_id, cron}]` for every recurring task scheduled in the
+  active scope. Use when the user asks "what tasks run on a schedule?"
+  or before mutating a scheduled task's cron expression via the task
+  edit tools.
+
+  One-shot tasks (no cron) don't appear here — list them via
+  `list_tasks` with the appropriate status filter.
+parameters: []
+implementation:
+  type: compiled
+  provider_name: list_scheduled_tasks
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - tasks
+    - schedule
+    - introspection
+  composition_category: action
+  sandbox: none

@@ -1,0 +1,26 @@
+{
+  "tests": "Real models through persisted settings API and live reload; isolated engine, no memory mutations or host-ledger claims",
+  "cases": 12,
+  "correct": 12,
+  "fully_eligible": 10,
+  "accepted_wrong": 0,
+  "physical_calls": 14,
+  "cost_usd": 0.000141036,
+  "unpriced": 0,
+  "latency_ms": {
+    "jev_only/H05": 354,
+    "jev_only/H06": 399,
+    "kev_only/H05": 971,
+    "kev_only/H06": 465,
+    "kev_then_jev/H05": 465,
+    "kev_then_jev/H06": 798,
+    "jev_then_kev/H05": 310,
+    "jev_then_kev/H06": 299,
+    "strict_local_kev_cloud_jev/H05": 502,
+    "strict_local_kev_cloud_jev/H06": 463,
+    "local_kev_then_jev/H05": 488,
+    "local_kev_then_jev/H06": 826
+  },
+  "local_remote_rejected": true,
+  "stale_revision_rejected": true
+}

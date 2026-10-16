@@ -1,0 +1,7 @@
+# Unsloth Dynamic 3.0 Qwen3.8-27B UD-Q2_K_XL with Ollama MTP.
+# Rebuild: ollama create qwen3.8-ud2-mtp -f scripts/ollama-qwen38-ud2-mtp.Modelfile
+# Docs: docs/components/magician/local-channel-llm.md
+FROM /Volumes/build/magician/models/Qwen3.8-27B-UD-Q2_K_XL.gguf
+PARAMETER draft_num_predict 4
+PARAMETER temperature 0.1
+PARAMETER num_ctx 32768

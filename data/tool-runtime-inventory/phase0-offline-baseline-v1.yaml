@@ -1,0 +1,109 @@
+schema_version: tool-runtime.phase0-offline-baseline-manifest.v1
+
+measurement:
+  schema_bytes_method: runtime_name_description_compact_parameters_v1
+  token_estimator: utf8_bytes_div_4_ceiling
+  provider_reported_tokens: pending_live_agentic_eval
+
+representative_tasks:
+  - id: public-paper-research
+    action_ids: [arxiv-search::run]
+    expected_auth_strategies: [none]
+    expected_auth_requirement: none
+    expected_profile_policy: none
+    expected_approval_class: ordinary
+    expected_runtime_owner: skill_adapter
+  - id: secret-backed-news-research
+    action_ids: [news-search-via-tavily::run]
+    expected_auth_strategies: [secrets]
+    expected_auth_requirement: required
+    expected_profile_policy: none
+    expected_approval_class: ordinary
+    expected_runtime_owner: skill_adapter
+  - id: google-profile-read-and-send
+    action_ids: [gmail::triage, gmail::send]
+    expected_auth_strategies: [cli_profile]
+    expected_auth_requirement: required
+    expected_profile_policy: selectable
+    expected_approval_class: conditional_external_side_effect
+    expected_runtime_owner: external_cli
+  - id: browser-profile-session
+    action_ids: [browser::open, browser::read]
+    expected_auth_strategies: [browser_profile, delegated_credential]
+    expected_auth_requirement: optional
+    expected_profile_policy: selectable
+    expected_approval_class: conditional_external_side_effect
+    expected_runtime_owner: compiled_provider
+  - id: delegated-coding-session
+    action_ids: [higgsfield::run]
+    expected_auth_strategies: [cli_profile]
+    expected_auth_requirement: required
+    expected_profile_policy: implicit
+    expected_approval_class: ordinary
+    expected_runtime_owner: external_cli
+  - id: conditional-cli-ocr
+    action_ids: [ocr::extract]
+    expected_auth_strategies: [cli_profile]
+    expected_auth_requirement: conditional
+    expected_profile_policy: implicit
+    expected_approval_class: ordinary
+    expected_runtime_owner: skill_adapter
+  - id: fixed-profile-message-send
+    action_ids: [kapso-whatsapp-send::send]
+    expected_auth_strategies: [secrets]
+    expected_auth_requirement: required
+    expected_profile_policy: fixed
+    expected_approval_class: conditional_external_side_effect
+    expected_runtime_owner: skill_adapter
+  - id: native-ui-control
+    action_ids: [macos-ui-automation::call]
+    expected_auth_strategies: [native_permission]
+    expected_auth_requirement: required
+    expected_profile_policy: none
+    expected_approval_class: native_ui_control
+    expected_runtime_owner: skill_adapter
+  - id: host-screen-drawing
+    action_ids: [screen-draw::call]
+    expected_auth_strategies: [none]
+    expected_auth_requirement: none
+    expected_profile_policy: none
+    expected_approval_class: ordinary
+    expected_runtime_owner: host_gateway
+  - id: commerce-oauth-and-checkout
+    action_ids: [swiggy-mcp::list_tools, swiggy-mcp::call_tool]
+    expected_auth_strategies: [oauth_session]
+    expected_auth_requirement: required
+    expected_profile_policy: implicit
+    expected_approval_class: commerce_checkout
+    expected_runtime_owner: legacy_mcp_wrapper
+  - id: local-document-authoring
+    action_ids: [office-word::create, office-word::set]
+    expected_auth_strategies: [none]
+    expected_auth_requirement: none
+    expected_profile_policy: none
+    expected_approval_class: ordinary
+    expected_runtime_owner: external_cli
+  - id: secret-backed-image-generation
+    action_ids: [image-generation::run]
+    expected_auth_strategies: [secrets]
+    expected_auth_requirement: required
+    expected_profile_policy: none
+    expected_approval_class: ordinary
+    expected_runtime_owner: skill_adapter
+
+live_agentic_evidence:
+  status: pending
+  minimum_runs_per_task: 5
+  required_metrics:
+    - task_success
+    - exact_action_selection
+    - schema_validity
+    - auth_profile_correctness
+    - approval_correctness
+    - latency_ms
+    - retries
+    - input_tokens
+    - cached_tokens
+    - output_tokens
+    - cost_usd
+  production_migration: disabled

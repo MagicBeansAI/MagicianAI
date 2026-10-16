@@ -1,0 +1,18 @@
+src/*.mp4
+src/*.png
+
+# Diorama reel: the shipped asset is reel-diorama/f*.webp + manifest.json.
+# Masters and working intermediates are reproducible and stay out of git.
+reel-diorama/src/
+reel-diorama/work/
+reel-diorama/review/
+
+# Life montage: shipped asset will be reel-life/f*.webp + manifest.json.
+# Named per-reel rather than by pattern, so a new reel's masters are an
+# explicit decision instead of an accident.
+reel-life/src/
+reel-life/work/
+reel-life/review/
+
+# Pilot probes — throwaway style tests, never shipped.
+pilot/

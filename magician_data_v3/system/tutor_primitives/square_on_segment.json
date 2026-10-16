@@ -1,0 +1,15 @@
+{
+  "type": "square_on_segment",
+  "version": 1,
+  "draw": [
+    {
+      "op": "polygon",
+      "points": [
+        ["sx", "sy"],
+        ["ex", "ey"],
+        ["ex-(ey-sy)*side_sign", "ey+(ex-sx)*side_sign"],
+        ["sx-(ey-sy)*side_sign", "sy+(ex-sx)*side_sign"]
+      ]
+    }
+  ]
+}

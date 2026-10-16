@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Visual Action Verification (Phase 6)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #dc3545, #c82333);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        /* Test case styling */
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title {
+            margin: 0;
+            color: #333;
+        }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Goal and verification sections */
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        /* Status controls */
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset {
+            background: #6c757d;
+            color: white;
+        }
+        .status-btn.reset:hover { background: #545b62; }
+
+        /* Button styling */
+        .btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn:hover { opacity: 0.9; }
+
+        /* Content areas */
+        .content-area {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            min-height: 100px;
+            margin: 15px 0;
+        }
+        .form-demo {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            margin: 15px 0;
+        }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; }
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .status-box {
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+        }
+
+        /* Results summary */
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+        .status-radio {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #f8fafc;
+            color: #334155;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .status-radio input {
+            margin: 0;
+        }
+
+        .status-radio.pass:has(input:checked) {
+            border-color: #16a34a;
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-radio.fail:has(input:checked) {
+            border-color: #dc2626;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "08-silent-failure",
+        "phase": "Phase 6",
+        "title": "Visual Action Verification",
+        "description": "Tests detection of silent failures where clicks don't produce visible changes",
+        "totalTests": 6
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 6: Visual Action Verification</h1>
+        <p>Test the agent's ability to detect when clicks don't produce expected visual changes (silent failures).</p>
+    </div>
+
+    <!-- Test Case 1: Broken Button -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="08-broken-button"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Broken Button (No Handler)</h3>
+            <span class="test-case-id">08-broken-button</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Submit Order" button below. This button has no click handler attached - it should be detected as a silent failure.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="click-attempted">Agent clicks the button</li>
+                <li data-check="no-change-detected">Pre/post screenshot comparison shows no change</li>
+                <li data-check="failure-reported">Agent reports: "Click may have failed - no visual change detected" or attempts retry</li>
+            </ul>
+        </div>
+
+        <div class="content-area">
+            <button class="btn btn-danger" data-testid="broken-button">
+                Submit Order
+            </button>
+            <p style="color:#666; font-size:14px; margin-top:10px;">Expected: Button should submit the order and show confirmation</p>
+
+            <div class="status-box" id="broken-status">
+                Status: Waiting for click...
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-1" value="pass" data-status-radio="test-1"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-1" value="fail" data-status-radio="test-1"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Working Button -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="08-working-button"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Working Button (Control)</h3>
+            <span class="test-case-id">08-working-button</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click the "Add to Cart" button and verify it worked by checking that the cart count increases.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="click-success">Agent clicks the button</li>
+                <li data-check="visual-change">Visual change detected (cart count updates)</li>
+                <li data-check="success-confirmed">Agent confirms: "Action succeeded - cart now shows 1 item"</li>
+            </ul>
+        </div>
+
+        <div class="content-area">
+            <button class="btn btn-success" onclick="handleWorkingClick()" data-testid="working-button">
+                Add to Cart
+            </button>
+
+            <div class="status-box" id="working-status">
+                Cart: 0 items
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Delayed Response -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="08-delayed-response"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Delayed Response</h3>
+            <span class="test-case-id">08-delayed-response</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click "Process Payment" and wait for the confirmation message. The response is delayed by 3 seconds - the agent should wait for the result.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="click-initiated">Agent clicks the button</li>
+                <li data-check="processing-detected">Initial state shows "Processing..."</li>
+                <li data-check="agent-waits">Agent waits (doesn't report failure immediately)</li>
+                <li data-check="success-after-delay">After delay, confirms "Payment successful"</li>
+            </ul>
+        </div>
+
+        <div class="content-area">
+            <button class="btn btn-primary" onclick="handleDelayedClick()" data-testid="delayed-button">
+                Process Payment
+            </button>
+
+            <div class="status-box" id="delayed-status">
+                Payment status: Ready
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 4: Silent Form Submit -->
+    <div class="test-case"
+         id="test-4"
+         data-test-id="08-silent-form"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 4: Form Submission - No Feedback</h3>
+            <span class="test-case-id">08-silent-form</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Enter email "test@example.com" and click Subscribe. The form submits silently with no visual feedback - detect this missing feedback.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="form-filled">Agent fills form and clicks submit</li>
+                <li data-check="silent-submit">Form is silently processed (no visible change)</li>
+                <li data-check="missing-feedback-detected">Agent detects lack of visual feedback</li>
+                <li data-check="uncertainty-reported">Agent may report: "Form submitted but no confirmation shown"</li>
+            </ul>
+        </div>
+
+        <div class="form-demo">
+            <form id="silent-form" onsubmit="handleSilentSubmit(event)">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" name="email" required data-testid="silent-email">
+                </div>
+                <button type="submit" class="btn btn-primary" data-testid="silent-submit">
+                    Subscribe
+                </button>
+            </form>
+            <div class="status-box" id="silent-form-status">
+                (No status indicator - bad UX)
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-4">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-4" value="pass" data-status-radio="test-4"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-4" value="fail" data-status-radio="test-4"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-4">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 5: Visual Feedback Button -->
+    <div class="test-case"
+         id="test-5"
+         data-test-id="08-visual-feedback"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 5: Button with Visual Feedback</h3>
+            <span class="test-case-id">08-visual-feedback</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click "Save Changes" and confirm the changes were saved. The button shows clear visual state changes (color and text).
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="saving-state">Button shows "Saving..." state with yellow color</li>
+                <li data-check="saved-state">Button changes to green "Saved!" state</li>
+                <li data-check="visual-change-detected">Agent detects visual change (button color, text)</li>
+                <li data-check="action-confirmed">Agent confirms action succeeded</li>
+            </ul>
+        </div>
+
+        <div class="content-area">
+            <button
+                id="visual-feedback-btn"
+                class="btn btn-primary"
+                onclick="handleVisualClick()"
+                data-testid="visual-button"
+                style="transition: all 0.2s;">
+                Save Changes
+            </button>
+
+            <div class="status-box" id="visual-status">
+                Changes unsaved
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-5">
+            <button class="status-btn reset" type="button" data-status-reset="test-5">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 6: Disabled Button -->
+    <div class="test-case"
+         id="test-6"
+         data-test-id="08-disabled-button"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 6: Disabled Button Click</h3>
+            <span class="test-case-id">08-disabled-button</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Attempt to click the "Continue (Disabled)" button. The agent should detect that the button is disabled and report this.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="disabled-detected">Agent detects button is disabled</li>
+                <li data-check="disabled-reported">Agent reports: "Button is disabled and cannot be clicked"</li>
+                <li data-check="prerequisite-identified">Or agent identifies prerequisite (checkbox required)</li>
+            </ul>
+        </div>
+
+        <div class="content-area">
+            <button class="btn btn-primary" disabled data-testid="disabled-button" style="opacity: 0.5; cursor: not-allowed;">
+                Continue (Disabled)
+            </button>
+
+            <p style="color:#666; font-size:14px;">You must agree to terms first</p>
+
+            <div class="status-box">
+                Checkbox required to enable button
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-6">
+            <label class="status-radio pass"><input type="radio" name="manual-status-test-6" value="pass" data-status-radio="test-6"> Pass</label>
+            <label class="status-radio fail"><input type="radio" name="manual-status-test-6" value="fail" data-status-radio="test-6"> Fail</label>
+            <button class="status-btn reset" type="button" data-status-reset="test-6">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Visual Action Verification Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">6</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let cartCount = 0;
+
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Working button handler
+        function handleWorkingClick() {
+            cartCount++;
+            const workingStatus = document.getElementById('working-status');
+            workingStatus.textContent = '';
+            const cartStrong = document.createElement('strong');
+            cartStrong.textContent = `${cartCount} item${cartCount !== 1 ? 's' : ''}`;
+            workingStatus.append('Cart: ', cartStrong);
+
+            // Genuine success: the cart count actually incremented (0 -> >=1) and the
+            // status box visibly updated. All three checks describe this same real action.
+            if (cartCount >= 1 && typeof window.setCheckState === 'function') {
+                window.setCheckState('08-working-button', 'click-success', 'pass');
+                window.setCheckState('08-working-button', 'visual-change', 'pass');
+                window.setCheckState('08-working-button', 'success-confirmed', 'pass');
+            }
+        }
+
+        // Delayed button handler
+        function handleDelayedClick() {
+            const status = document.getElementById('delayed-status');
+            const btn = document.querySelector('[data-testid="delayed-button"]');
+            btn.disabled = true;
+            btn.textContent = 'Processing...';
+            status.textContent = '';
+            const processingSpan = document.createElement('span');
+            processingSpan.style.color = '#ffc107';
+            processingSpan.textContent = 'Processing...';
+            status.append('Payment status: ', processingSpan);
+
+            // Click initiated and the visible "Processing..." state is now showing.
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState('08-delayed-response', 'click-initiated', 'pass');
+                window.setCheckState('08-delayed-response', 'processing-detected', 'pass');
+            }
+
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = 'Process Payment';
+                status.textContent = '';
+                const successSpan = document.createElement('span');
+                successSpan.style.color = '#28a745';
+                successSpan.style.fontWeight = 'bold';
+                successSpan.textContent = '✓ Payment Successful!';
+                status.append('Payment status: ', successSpan);
+
+                // Genuine terminal success only arrives after the full 3s delay. Reaching
+                // this state proves the wait completed, so the wait + delayed-success checks
+                // are satisfied together at the real success moment.
+                if (typeof window.setCheckState === 'function') {
+                    window.setCheckState('08-delayed-response', 'agent-waits', 'pass');
+                    window.setCheckState('08-delayed-response', 'success-after-delay', 'pass');
+                }
+            }, 3000);
+        }
+
+        // Silent form submit
+        function handleSilentSubmit(event) {
+            event.preventDefault();
+            // Form "submits" but gives no visual feedback (intentionally bad UX)
+            console.log('Form submitted silently');
+            // Status doesn't change - this is the test
+        }
+
+        // Visual feedback button
+        function handleVisualClick() {
+            const btn = document.getElementById('visual-feedback-btn');
+            const status = document.getElementById('visual-status');
+
+            // Show saving state
+            btn.textContent = 'Saving...';
+            btn.style.background = '#ffc107';
+            btn.style.color = '#333';
+            status.textContent = '';
+            const savingSpan = document.createElement('span');
+            savingSpan.style.color = '#ffc107';
+            savingSpan.textContent = 'Saving changes...';
+            status.append(savingSpan);
+
+            // Genuine intermediate state: the button is visibly in the yellow "Saving..." state.
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState('08-visual-feedback', 'saving-state', 'pass');
+            }
+
+            setTimeout(() => {
+                // Show saved state
+                btn.textContent = '✓ Saved!';
+                btn.style.background = '#28a745';
+                btn.style.color = 'white';
+                status.textContent = '';
+                const savedSpan = document.createElement('span');
+                savedSpan.style.color = '#28a745';
+                savedSpan.style.fontWeight = 'bold';
+                savedSpan.textContent = '✓ All changes saved';
+                status.append(savedSpan);
+
+                // Genuine success: the button reached the green "Saved!" state. This visual
+                // change is the confirmed action; the remaining checks describe the same moment.
+                if (typeof window.setCheckState === 'function') {
+                    window.setCheckState('08-visual-feedback', 'saved-state', 'pass');
+                    window.setCheckState('08-visual-feedback', 'visual-change-detected', 'pass');
+                    window.setCheckState('08-visual-feedback', 'action-confirmed', 'pass');
+                }
+
+                // Reset after 2 seconds
+                setTimeout(() => {
+                    btn.textContent = 'Save Changes';
+                    btn.style.background = '#007bff';
+                    btn.style.color = 'white';
+                }, 2000);
+            }, 1500);
+        }
+
+        // Initialize
+        updateResultsSummary();
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

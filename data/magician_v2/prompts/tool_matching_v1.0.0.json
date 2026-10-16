@@ -1,0 +1,176 @@
+{
+  "name": "tool_matching",
+  "version": "1.0.0",
+  "content": [
+    "# Tool Selection Task",
+    "",
+    "{{#if has_parent_task}}",
+    "## Hierarchical Context",
+    "",
+    "This is a child task of a larger workflow:",
+    "**Parent Task**: {parent_task}",
+    "**Current Task**: {task}",
+    "",
+    "⚠️ **IMPORTANT**: The parent task provides crucial context for disambiguation. Tools should align with the parent task's domain.",
+    "",
+    "For example:",
+    "- If parent is \"Perform **Google Search**\", favor **web/search tools** over database tools",
+    "- If parent is \"Query **Database**\", favor **database tools** over web search tools",
+    "- If parent mentions \"**file**\", favor **filesystem tools** over other categories",
+    "{{else}}",
+    "You are evaluating tools to find the best match for this task:",
+    "**Task**: {task}",
+    "{{/if}}",
+    "",
+    "{{#if has_required_capabilities}}",
+    "## Required Capabilities",
+    "",
+    "This task requires ALL of the following capabilities:",
+    "",
+    "{required_capabilities_list}",
+    "",
+    "⚠️ **CRITICAL**: Tools must satisfy ALL required capabilities to be viable. Single-capability tools that only address one requirement should receive low scores.",
+    "{{/if}}",
+    "",
+    "## Available Tools",
+    "",
+    "Below are the top candidates (already pre-filtered). Evaluate each tool's fit for the task.",
+    "",
+    "{candidates_section}",
+    "## Evaluation Instructions",
+    "",
+    "For each candidate, provide:",
+    "1. **Confidence Score** (0.0-1.0): How well does this tool fit the task?",
+    "   - 1.0 = Perfect match (satisfies ALL capabilities)",
+    "   - 0.7-0.9 = Good match (satisfies most capabilities)",
+    "   - 0.4-0.6 = Moderate match (satisfies some capabilities)",
+    "   - 0.0-0.3 = Poor match (satisfies few or no capabilities)",
+    "",
+    "2. **Reasoning**: Brief explanation (1-2 sentences)",
+    "",
+    "{{#if has_required_capabilities}}",
+    "3. **Capability Coverage Analysis** (REQUIRED when capabilities are specified):",
+    "   - **fulfilled_capabilities**: List of capability names this tool can satisfy",
+    "   - **missing_capabilities**: List of capability names this tool CANNOT satisfy",
+    "   - **coverage_ratio**: Fraction of required capabilities fulfilled (0.0-1.0)",
+    "",
+    "⚠️ **CRITICAL CAPABILITY SCORING RULES**:",
+    "- Tools that satisfy ALL required capabilities: 0.8-1.0 confidence",
+    "- Tools that satisfy SOME capabilities: 0.3-0.6 confidence (proportional to coverage)",
+    "- Tools that satisfy ONLY ONE capability in a multi-capability task: 0.1-0.3 confidence (penalized heavily)",
+    "- Tools that satisfy NO capabilities: 0.0-0.1 confidence",
+    "{{/if}}",
+    "",
+    "## Output Format",
+    "",
+    "**CRITICAL INSTRUCTIONS:**",
+    "- Return ONLY a valid JSON array. No markdown code blocks, no explanations, no prose.",
+    "- Your response MUST start with `[` and end with `]`",
+    "- Do NOT wrap in ```json``` code blocks",
+    "- Do NOT include any text before or after the JSON array",
+    "- Invalid JSON will cause system failure",
+    "",
+    "{{#if has_required_capabilities}}",
+    "Required format with capability analysis (one entry per candidate above):",
+    "[",
+    "  {",
+    "    \"tool_name\": \"exact_tool_name_from_above\",",
+    "    \"confidence\": 0.85,",
+    "    \"reasoning\": \"Brief explanation\",",
+    "    \"fulfilled_capabilities\": [\"capability1\", \"capability2\"],",
+    "    \"missing_capabilities\": [\"capability3\"],",
+    "    \"coverage_ratio\": 0.67",
+    "  }",
+    "]",
+    "{{else}}",
+    "Required format (one entry per candidate above):",
+    "[",
+    "  {",
+    "    \"tool_name\": \"exact_tool_name_from_above\",",
+    "    \"confidence\": 0.85,",
+    "    \"reasoning\": \"Brief explanation\"",
+    "  }",
+    "]",
+    "{{/if}}",
+    "",
+    "**Important**: Evaluate based on semantic fit and capability coverage. Consider:",
+    "- Does the tool's purpose align with the task?",
+    "- Does the tool satisfy ALL required capabilities (if specified)?",
+    "- Would this tool solve the user's problem effectively?",
+    "- For multi-capability tasks, can this SINGLE tool handle ALL requirements?",
+    "",
+    "Respond now with ONLY the JSON array:"
+  ],
+  "variables": [
+    {
+      "name": "task",
+      "description": "Current task description being matched",
+      "required": true,
+      "default_value": "",
+      "examples": [
+        "find the latest sales report and save it"
+      ]
+    },
+    {
+      "name": "parent_task",
+      "description": "Parent task description when this is a sub-task",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "Perform Google search for quarterly reports"
+      ]
+    },
+    {
+      "name": "has_parent_task",
+      "description": "Whether parent task context should be rendered",
+      "required": false,
+      "default_value": "false",
+      "examples": [
+        "true",
+        "false"
+      ]
+    },
+    {
+      "name": "required_capabilities_list",
+      "description": "Formatted capability bullets used in required capabilities section",
+      "required": false,
+      "default_value": "",
+      "examples": [
+        "- **web_search**: Find docs (required: true)"
+      ]
+    },
+    {
+      "name": "has_required_capabilities",
+      "description": "Whether capability-specific scoring/format sections should be rendered",
+      "required": false,
+      "default_value": "false",
+      "examples": [
+        "true",
+        "false"
+      ]
+    },
+    {
+      "name": "candidates_section",
+      "description": "Formatted candidate list with per-candidate metadata",
+      "required": true,
+      "default_value": "",
+      "examples": [
+        "### Candidate 1: shell\\n- **Description**: Run shell commands\\n- **Category**: shell"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "ToolMatching",
+    "description": "Tier-4 tool disambiguation prompt template used by LlmEvaluator",
+    "author": "MagicianV2",
+    "created_at": "2026-03-02T00:00:00Z",
+    "changelog": "Extracted hardcoded prompt text from tool_matcher/llm_evaluator.rs into PromptManager",
+    "tags": [
+      "tool_matching",
+      "llm_evaluation",
+      "planner",
+      "disambiguation"
+    ],
+    "estimated_tokens": 550
+  }
+}

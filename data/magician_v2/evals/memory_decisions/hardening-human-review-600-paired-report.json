@@ -1,0 +1,462 @@
+{
+  "dataset_sha256": "94a190130664af0d9fe043cfea11c659907222ac5fb51025c5a04b78fc02fe32",
+  "route": "jev -> kev-4b",
+  "split": "160 development + 40 held-out per operation",
+  "operation_results": {
+    "memory_applicability": {
+      "per_item": {
+        "cases": 200,
+        "requests": 40,
+        "correct_cases": 123,
+        "fully_eligible_cases": 142,
+        "accepted_wrong_heads": 44,
+        "accepted_wrong_cases": 43,
+        "non_answered_cases": 0,
+        "status_counts": {
+          "answered": 200
+        },
+        "physical_calls": 290,
+        "call_status_counts": {
+          "succeeded": 288,
+          "failed": 2
+        },
+        "model_calls": {
+          "jev-1.13.0": 200,
+          "kev-4b-mlx": 90
+        },
+        "input_tokens": 127402,
+        "output_tokens": 8200,
+        "cache_read_known_calls": 0,
+        "cache_write_known_calls": 0,
+        "known_cost_usd": 0.004453806000000004,
+        "unknown_price_calls": 0,
+        "cost_per_offered_item_usd": 2.226903000000002e-05,
+        "cost_per_correct_case_usd": 3.620980487804881e-05,
+        "request_p50_ms": 1535,
+        "request_p95_ms": 2748,
+        "request_p99_ms": 3013,
+        "queue_p50_ms": 0,
+        "queue_p95_ms": 1152,
+        "call_p95_ms": 604,
+        "confusion": {
+          "applicable": {
+            "True->True": 119,
+            "False->False": 79,
+            "True->False": 1,
+            "False->True": 1
+          },
+          "load_bearing": {
+            "True->True": 40,
+            "False->True": 76,
+            "False->False": 84
+          }
+        }
+      },
+      "shared_chunk": {
+        "cases": 200,
+        "requests": 40,
+        "correct_cases": 94,
+        "fully_eligible_cases": 135,
+        "accepted_wrong_heads": 41,
+        "accepted_wrong_cases": 41,
+        "non_answered_cases": 65,
+        "status_counts": {
+          "answered": 135,
+          "failed": 65
+        },
+        "physical_calls": 78,
+        "call_status_counts": {
+          "succeeded": 40,
+          "failed": 38
+        },
+        "model_calls": {
+          "jev-1.13.0": 40,
+          "kev-4b-mlx": 38
+        },
+        "input_tokens": 73855,
+        "output_tokens": 7760,
+        "cache_read_known_calls": 0,
+        "cache_write_known_calls": 0,
+        "known_cost_usd": 0.003101909999999999,
+        "unknown_price_calls": 0,
+        "cost_per_offered_item_usd": 1.5509549999999995e-05,
+        "cost_per_correct_case_usd": 3.299904255319148e-05,
+        "request_p50_ms": 3013,
+        "request_p95_ms": 3016,
+        "request_p99_ms": 3017,
+        "queue_p50_ms": 0,
+        "queue_p95_ms": 0,
+        "call_p95_ms": 2712,
+        "confusion": {
+          "applicable": {
+            "True->True": 77,
+            "True->MISSING": 43,
+            "False->False": 58,
+            "False->MISSING": 22
+          },
+          "load_bearing": {
+            "True->True": 36,
+            "False->True": 41,
+            "False->MISSING": 61,
+            "False->False": 58,
+            "True->MISSING": 4
+          }
+        }
+      },
+      "paired_correctness": {
+        "mean_percentage_points": -14.500000000000004,
+        "ci95_percentage_points": [
+          -20.000000000000004,
+          -9.500000000000004
+        ],
+        "method": "paired percentile bootstrap of 40 whole scenario groups, 20,000 draws, seed 73019",
+        "groups": 40
+      },
+      "eligibility_delta_percentage_points": -3.5,
+      "non_answered_delta_percentage_points": 32.5,
+      "cost_delta_percent": -30.353724432541597,
+      "p95_delta_percent": 9.752547307132463,
+      "newly_accepted_wrong": [
+        {
+          "case_id": "A222",
+          "partition": "development",
+          "head": "load_bearing",
+          "expected": false,
+          "actual": true
+        },
+        {
+          "case_id": "A230",
+          "partition": "development",
+          "head": "load_bearing",
+          "expected": false,
+          "actual": true
+        }
+      ]
+    },
+    "memory_utility_review": {
+      "per_item": {
+        "cases": 200,
+        "requests": 40,
+        "correct_cases": 82,
+        "fully_eligible_cases": 72,
+        "accepted_wrong_heads": 40,
+        "accepted_wrong_cases": 40,
+        "non_answered_cases": 0,
+        "status_counts": {
+          "answered": 200
+        },
+        "physical_calls": 295,
+        "call_status_counts": {
+          "succeeded": 295
+        },
+        "model_calls": {
+          "jev-1.13.0": 200,
+          "kev-4b-mlx": 95
+        },
+        "input_tokens": 321308,
+        "output_tokens": 15632,
+        "cache_read_known_calls": 0,
+        "cache_write_known_calls": 0,
+        "known_cost_usd": 0.010633013999999998,
+        "unknown_price_calls": 0,
+        "cost_per_offered_item_usd": 5.316506999999999e-05,
+        "cost_per_correct_case_usd": 0.00012967090243902436,
+        "request_p50_ms": 4471,
+        "request_p95_ms": 6789,
+        "request_p99_ms": 6832,
+        "queue_p50_ms": 0,
+        "queue_p95_ms": 0,
+        "call_p95_ms": 1554,
+        "confusion": {
+          "utility": {
+            "load_bearing->load_bearing": 30,
+            "useful->load_bearing": 39,
+            "stale->harmful": 28,
+            "irrelevant->irrelevant": 20,
+            "unknown->useful": 15,
+            "referenced->stale": 3,
+            "referenced->unknown": 20,
+            "harmful->harmful": 9,
+            "stale->stale": 10,
+            "unknown->stale": 2,
+            "referenced->referenced": 10,
+            "referenced->useful": 4,
+            "referenced->load_bearing": 3,
+            "harmful->unknown": 1,
+            "useful->unknown": 1,
+            "unknown->unknown": 3,
+            "stale->load_bearing": 2
+          }
+        }
+      },
+      "shared_chunk": {
+        "cases": 200,
+        "requests": 40,
+        "correct_cases": 83,
+        "fully_eligible_cases": 81,
+        "accepted_wrong_heads": 43,
+        "accepted_wrong_cases": 43,
+        "non_answered_cases": 0,
+        "status_counts": {
+          "answered": 200
+        },
+        "physical_calls": 259,
+        "call_status_counts": {
+          "succeeded": 259
+        },
+        "model_calls": {
+          "jev-1.13.0": 136,
+          "kev-4b-mlx": 123
+        },
+        "input_tokens": 363704,
+        "output_tokens": 23244,
+        "cache_read_known_calls": 0,
+        "cache_write_known_calls": 0,
+        "known_cost_usd": 0.009716028000000002,
+        "unknown_price_calls": 0,
+        "cost_per_offered_item_usd": 4.858014000000001e-05,
+        "cost_per_correct_case_usd": 0.00011706057831325303,
+        "request_p50_ms": 7557,
+        "request_p95_ms": 17120,
+        "request_p99_ms": 17713,
+        "queue_p50_ms": 0,
+        "queue_p95_ms": 532,
+        "call_p95_ms": 4367,
+        "confusion": {
+          "utility": {
+            "load_bearing->load_bearing": 30,
+            "useful->load_bearing": 39,
+            "stale->harmful": 26,
+            "irrelevant->irrelevant": 20,
+            "unknown->useful": 14,
+            "referenced->stale": 3,
+            "referenced->unknown": 19,
+            "harmful->harmful": 9,
+            "stale->stale": 10,
+            "unknown->stale": 2,
+            "referenced->referenced": 11,
+            "useful->harmful": 1,
+            "referenced->useful": 4,
+            "stale->load_bearing": 4,
+            "referenced->load_bearing": 3,
+            "harmful->unknown": 1,
+            "unknown->unknown": 3,
+            "unknown->irrelevant": 1
+          }
+        }
+      },
+      "paired_correctness": {
+        "mean_percentage_points": 0.5,
+        "ci95_percentage_points": [
+          -1.0,
+          2.5
+        ],
+        "method": "paired percentile bootstrap of 40 whole scenario groups, 20,000 draws, seed 73019",
+        "groups": 40
+      },
+      "eligibility_delta_percentage_points": 4.5,
+      "non_answered_delta_percentage_points": 0.0,
+      "cost_delta_percent": -8.623951778865301,
+      "p95_delta_percent": 152.17263219914568,
+      "newly_accepted_wrong": [
+        {
+          "case_id": "U158",
+          "partition": "development",
+          "head": "utility",
+          "expected": "stale",
+          "actual": "load_bearing"
+        },
+        {
+          "case_id": "U196",
+          "partition": "development",
+          "head": "utility",
+          "expected": "useful",
+          "actual": "load_bearing"
+        },
+        {
+          "case_id": "U207",
+          "partition": "development",
+          "head": "utility",
+          "expected": "useful",
+          "actual": "load_bearing"
+        },
+        {
+          "case_id": "U287",
+          "partition": "development",
+          "head": "utility",
+          "expected": "stale",
+          "actual": "load_bearing"
+        }
+      ]
+    },
+    "memory_episode_quality": {
+      "per_item": {
+        "cases": 200,
+        "requests": 40,
+        "correct_cases": 85,
+        "fully_eligible_cases": 61,
+        "accepted_wrong_heads": 73,
+        "accepted_wrong_cases": 58,
+        "non_answered_cases": 0,
+        "status_counts": {
+          "answered": 200
+        },
+        "physical_calls": 339,
+        "call_status_counts": {
+          "succeeded": 339
+        },
+        "model_calls": {
+          "jev-1.13.0": 200,
+          "kev-4b-mlx": 139
+        },
+        "input_tokens": 267570,
+        "output_tokens": 18995,
+        "cache_read_known_calls": 0,
+        "cache_write_known_calls": 0,
+        "known_cost_usd": 0.008088528000000005,
+        "unknown_price_calls": 0,
+        "cost_per_offered_item_usd": 4.044264000000002e-05,
+        "cost_per_correct_case_usd": 9.515915294117653e-05,
+        "request_p50_ms": 5930,
+        "request_p95_ms": 6832,
+        "request_p99_ms": 13042,
+        "queue_p50_ms": 0,
+        "queue_p95_ms": 0,
+        "call_p95_ms": 1175,
+        "confusion": {
+          "classification": {
+            "high_signal->high_signal": 90,
+            "mixed_signal->mixed_signal": 43,
+            "progress_only_or_low_signal->progress_only_or_low_signal": 60,
+            "mixed_signal->progress_only_or_low_signal": 7
+          },
+          "priority": {
+            "high->high": 86,
+            "normal->low": 48,
+            "low->low": 60,
+            "normal->normal": 2,
+            "high->low": 2,
+            "high->normal": 2
+          },
+          "score": {
+            "6->6": 33,
+            "5->3": 7,
+            "2->2": 11,
+            "0->0": 50,
+            "5->4": 41,
+            "3->1": 4,
+            "2->1": 29,
+            "1->0": 8,
+            "1->1": 2,
+            "3->3": 2,
+            "6->5": 5,
+            "5->2": 2,
+            "6->4": 2,
+            "3->0": 4
+          }
+        }
+      },
+      "shared_chunk": {
+        "cases": 200,
+        "requests": 40,
+        "correct_cases": 94,
+        "fully_eligible_cases": 99,
+        "accepted_wrong_heads": 66,
+        "accepted_wrong_cases": 53,
+        "non_answered_cases": 0,
+        "status_counts": {
+          "answered": 200
+        },
+        "physical_calls": 286,
+        "call_status_counts": {
+          "succeeded": 286
+        },
+        "model_calls": {
+          "jev-1.13.0": 145,
+          "kev-4b-mlx": 141
+        },
+        "input_tokens": 456376,
+        "output_tokens": 30028,
+        "cache_read_known_calls": 0,
+        "cache_write_known_calls": 0,
+        "known_cost_usd": 0.011505816000000007,
+        "unknown_price_calls": 0,
+        "cost_per_offered_item_usd": 5.752908000000004e-05,
+        "cost_per_correct_case_usd": 0.0001224022978723405,
+        "request_p50_ms": 10981,
+        "request_p95_ms": 19141,
+        "request_p99_ms": 21329,
+        "queue_p50_ms": 0,
+        "queue_p95_ms": 0,
+        "call_p95_ms": 8313,
+        "confusion": {
+          "classification": {
+            "high_signal->high_signal": 90,
+            "mixed_signal->mixed_signal": 45,
+            "progress_only_or_low_signal->progress_only_or_low_signal": 60,
+            "mixed_signal->progress_only_or_low_signal": 5
+          },
+          "priority": {
+            "high->high": 87,
+            "normal->low": 48,
+            "low->low": 60,
+            "normal->normal": 2,
+            "high->normal": 2,
+            "high->low": 1
+          },
+          "score": {
+            "6->6": 38,
+            "5->3": 7,
+            "2->2": 10,
+            "0->0": 50,
+            "5->4": 41,
+            "3->1": 5,
+            "5->2": 2,
+            "2->1": 30,
+            "1->1": 6,
+            "3->3": 2,
+            "1->0": 4,
+            "3->0": 3,
+            "6->5": 2
+          }
+        }
+      },
+      "paired_correctness": {
+        "mean_percentage_points": 4.499999999999999,
+        "ci95_percentage_points": [
+          2.0,
+          7.000000000000001
+        ],
+        "method": "paired percentile bootstrap of 40 whole scenario groups, 20,000 draws, seed 73019",
+        "groups": 40
+      },
+      "eligibility_delta_percentage_points": 19.0,
+      "non_answered_delta_percentage_points": 0.0,
+      "cost_delta_percent": 42.24857724421551,
+      "p95_delta_percent": 180.16686182669787,
+      "newly_accepted_wrong": [
+        {
+          "case_id": "E203",
+          "partition": "development",
+          "head": "score",
+          "expected": 2,
+          "actual": 1
+        },
+        {
+          "case_id": "E248",
+          "partition": "held_out",
+          "head": "score",
+          "expected": 6,
+          "actual": 5
+        },
+        {
+          "case_id": "E290",
+          "partition": "development",
+          "head": "priority",
+          "expected": "normal",
+          "actual": "low"
+        }
+      ]
+    }
+  }
+}

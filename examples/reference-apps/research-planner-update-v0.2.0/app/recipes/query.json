@@ -1,0 +1,131 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "local_only"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 1,
+              "required": true
+            },
+            "limit": {
+              "value_type": 2,
+              "required": true
+            },
+            "select": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 64
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 4,
+          "min_items": 1,
+          "max_items": 16
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        }
+      ]
+    },
+    "projection": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "local_only"
+      },
+      "nodes": [
+        {
+          "kind": "entity_projection_ref",
+          "entity": "research_topic",
+          "value_schema_ref": "workflow-schema:blake3:5fefafbb8ab25da034c0d67bb1ab5ef8b04bf8850cf2ed57206086122382fe9f"
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:5fefafbb8ab25da034c0d67bb1ab5ef8b04bf8850cf2ed57206086122382fe9f",
+    "output": {
+      "kind": "entity_projection",
+      "schema_ref": "workflow-schema:blake3:a2d394510145d79c8d4384c9a1580029b63d81de687be2a28921cbfd43988e66",
+      "authority": "authoritative"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:5fefafbb8ab25da034c0d67bb1ab5ef8b04bf8850cf2ed57206086122382fe9f",
+        "output": {
+          "kind": "entity_projection",
+          "schema_ref": "workflow-schema:blake3:a2d394510145d79c8d4384c9a1580029b63d81de687be2a28921cbfd43988e66",
+          "authority": "authoritative"
+        },
+        "node": {
+          "kind": "query",
+          "entity": "research_topic"
+        },
+        "effect": {
+          "class": "read_only",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "impossible"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:entity-read"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 1000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 4096,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 0,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 100
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 32768,
+      "max_active_millis": 1000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 0
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

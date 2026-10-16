@@ -1,0 +1,1476 @@
+{
+  "schema_version": 1,
+  "status": "INCOMPLETE",
+  "groups": [
+    {
+      "qualification_id": "005f7c11501a4ccf7b309e77bc34b50a37f95886ca7fb4be81e01f23d1a384fc",
+      "identity": {
+        "operation": "procedure_feedback",
+        "projection_version": "procedure_feedback_used_v1",
+        "reference_version": "012d9764c78319479f50017a5f7e4871dd28a2eccd3c803fe09c71942e711808",
+        "behavior_fingerprint": "3431a9eb00c49dac525fb70892aceef4d8063341819a797402a1ae5640000180",
+        "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+        "adapter": "typesafe",
+        "model": "jev-1.13.0",
+        "provider": "decision:typesafe",
+        "pack": "procedure_feedback",
+        "pack_version": "1.0.0",
+        "threshold_fingerprint": "cffe69a01cf03b2179b35d80043508c683b76337687335e90764d8fef7155643",
+        "reference_model": null,
+        "reference_provider": null,
+        "required_questions": [
+          "verdict",
+          "deprecation_recommended"
+        ]
+      },
+      "status": "INCOMPLETE",
+      "failures": [],
+      "missing": [
+        "deprecation_recommended:200_distinct_eligible_held_out_cases",
+        "deprecation_recommended:balanced_reference_labels",
+        "deprecation_recommended:held_out_dataset_manifest",
+        "exact_identity",
+        "foreground_budget",
+        "human_review",
+        "live_invariants",
+        "paired_live_evidence",
+        "verdict:200_distinct_eligible_held_out_cases",
+        "verdict:balanced_reference_labels",
+        "verdict:held_out_dataset_manifest"
+      ],
+      "distinct_cases": 1,
+      "offered_cohort_cases": 1,
+      "questions": {
+        "deprecation_recommended": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "verdict": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        }
+      },
+      "decision_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 799,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 110,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_read_fraction": null
+      },
+      "incumbent_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "text_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 5884,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 198,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": 3318,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": 2440,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_fraction": 0.5639021074099252
+      },
+      "timing_ms": {
+        "discovery": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_queue_wait": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_attempt": {
+          "p50": 412,
+          "p95": 412,
+          "count": 1
+        },
+        "engine": {
+          "p50": 412,
+          "p95": 412,
+          "count": 1
+        },
+        "foreground": {
+          "p50": 3062,
+          "p95": 3062,
+          "count": 1
+        },
+        "evidence_completion": {
+          "p50": 414,
+          "p95": 414,
+          "count": 1
+        },
+        "incumbent": {
+          "p50": null,
+          "p95": null,
+          "count": 0
+        }
+      },
+      "decision_calls": 1,
+      "decision_cost_usd": 3.3558e-05,
+      "reference_calls": 0,
+      "reference_cost_usd": 0,
+      "text_calls": 1,
+      "text_cost_usd": 0.00044978,
+      "observed_total_cost_usd": 0.000483338,
+      "shadow_total_cost_usd": null,
+      "paired_foreground_p95_ms": null,
+      "paired_gate_cost_usd": null,
+      "paired_incumbent_cost_usd": null
+    },
+    {
+      "qualification_id": "062f3b6dbf3a5f374ddfc99d2351e0593b337d40b8767bf9bb2e763bf3e898fc",
+      "identity": {
+        "operation": "memory_lifecycle_relation",
+        "projection_version": "memory_lifecycle_pair_v1",
+        "reference_version": "d863d93d952fb7c1c46f1a3ddd2d9f998f7a66fbb9d47aa98a1515778b205c4b",
+        "behavior_fingerprint": "5dc318a02b956e7c0a172beb75eeeb6f55a4b6bc5985c057deb0ac83407b5c2c",
+        "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+        "adapter": "typesafe",
+        "model": "jev-1.13.0",
+        "provider": "decision:typesafe",
+        "pack": "memory_lifecycle_relation",
+        "pack_version": "1.1.0",
+        "threshold_fingerprint": "7a0d8d349dd12d8248aa85792e6931df6462569f184c2afd2f598adc72bc955a",
+        "reference_model": null,
+        "reference_provider": null,
+        "required_questions": [
+          "kind",
+          "relation",
+          "incoming_coverage",
+          "same_subject_and_aspect",
+          "same_context",
+          "explicit_correction"
+        ]
+      },
+      "status": "INCOMPLETE",
+      "failures": [],
+      "missing": [
+        "exact_identity",
+        "explicit_correction:200_distinct_eligible_held_out_cases",
+        "explicit_correction:balanced_reference_labels",
+        "explicit_correction:held_out_dataset_manifest",
+        "foreground_budget",
+        "human_review",
+        "incoming_coverage:200_distinct_eligible_held_out_cases",
+        "incoming_coverage:balanced_reference_labels",
+        "incoming_coverage:held_out_dataset_manifest",
+        "kind:200_distinct_eligible_held_out_cases",
+        "kind:balanced_reference_labels",
+        "kind:held_out_dataset_manifest",
+        "live_invariants",
+        "paired_live_evidence",
+        "relation:200_distinct_eligible_held_out_cases",
+        "relation:balanced_reference_labels",
+        "relation:held_out_dataset_manifest",
+        "same_context:200_distinct_eligible_held_out_cases",
+        "same_context:balanced_reference_labels",
+        "same_context:held_out_dataset_manifest",
+        "same_subject_and_aspect:200_distinct_eligible_held_out_cases",
+        "same_subject_and_aspect:balanced_reference_labels",
+        "same_subject_and_aspect:held_out_dataset_manifest"
+      ],
+      "distinct_cases": 1,
+      "offered_cohort_cases": 1,
+      "questions": {
+        "explicit_correction": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "incoming_coverage": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "kind": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "relation": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "same_context": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "same_subject_and_aspect": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        }
+      },
+      "decision_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 1382,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 210,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_read_fraction": null
+      },
+      "incumbent_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "text_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 1560,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 221,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": 0,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": 1557,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_fraction": 0.0
+      },
+      "timing_ms": {
+        "discovery": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_queue_wait": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_attempt": {
+          "p50": 423,
+          "p95": 423,
+          "count": 1
+        },
+        "engine": {
+          "p50": 424,
+          "p95": 424,
+          "count": 1
+        },
+        "foreground": {
+          "p50": 4279,
+          "p95": 4279,
+          "count": 1
+        },
+        "evidence_completion": {
+          "p50": 426,
+          "p95": 426,
+          "count": 1
+        },
+        "incumbent": {
+          "p50": null,
+          "p95": null,
+          "count": 0
+        }
+      },
+      "decision_calls": 1,
+      "decision_cost_usd": 5.8044e-05,
+      "reference_calls": 0,
+      "reference_cost_usd": 0,
+      "text_calls": 1,
+      "text_cost_usd": 0.000305425,
+      "observed_total_cost_usd": 0.000363469,
+      "shadow_total_cost_usd": null,
+      "paired_foreground_p95_ms": null,
+      "paired_gate_cost_usd": null,
+      "paired_incumbent_cost_usd": null
+    },
+    {
+      "qualification_id": "0f30cd38d75dff2f3951ee1a98b902db23f07624769e048218e52e7948fe1fcf",
+      "identity": {
+        "operation": "memory_utility_review",
+        "projection_version": "memory_utility_v1",
+        "reference_version": "88db5191ff48b99510869811ca0cea980e05d50c64b9fa20c41d96ba187be62f",
+        "behavior_fingerprint": "176e89ccc1c75d89d22d7cbba806cafcf6d9b10ec3962e4fd4ebf8f3965b5be0",
+        "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+        "adapter": "typesafe",
+        "model": "jev-1.13.0",
+        "provider": "decision:typesafe",
+        "pack": "memory_utility_review",
+        "pack_version": "1.0.0",
+        "threshold_fingerprint": "cf4f5d855603975fd4db3e7eb3c643ac3b87a60804b5906dcfe18ae9be8a998f",
+        "reference_model": null,
+        "reference_provider": null,
+        "required_questions": [
+          "utility"
+        ]
+      },
+      "status": "INCOMPLETE",
+      "failures": [],
+      "missing": [
+        "exact_identity",
+        "foreground_budget",
+        "human_review",
+        "live_invariants",
+        "paired_live_evidence",
+        "utility:200_distinct_eligible_held_out_cases",
+        "utility:balanced_reference_labels",
+        "utility:held_out_dataset_manifest"
+      ],
+      "distinct_cases": 1,
+      "offered_cohort_cases": 1,
+      "questions": {
+        "utility": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        }
+      },
+      "decision_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 676,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 79,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_read_fraction": null
+      },
+      "incumbent_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "text_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 277,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 70,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": 0,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": 0,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_fraction": 0.0
+      },
+      "timing_ms": {
+        "discovery": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_queue_wait": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_attempt": {
+          "p50": 524,
+          "p95": 524,
+          "count": 1
+        },
+        "engine": {
+          "p50": 530,
+          "p95": 530,
+          "count": 1
+        },
+        "foreground": {
+          "p50": 2440,
+          "p95": 2440,
+          "count": 1
+        },
+        "evidence_completion": {
+          "p50": 539,
+          "p95": 539,
+          "count": 1
+        },
+        "incumbent": {
+          "p50": null,
+          "p95": null,
+          "count": 0
+        }
+      },
+      "decision_calls": 1,
+      "decision_cost_usd": 2.8392e-05,
+      "reference_calls": 0,
+      "reference_cost_usd": 0,
+      "text_calls": 1,
+      "text_cost_usd": 6.27e-05,
+      "observed_total_cost_usd": 9.1092e-05,
+      "shadow_total_cost_usd": null,
+      "paired_foreground_p95_ms": null,
+      "paired_gate_cost_usd": null,
+      "paired_incumbent_cost_usd": null
+    },
+    {
+      "qualification_id": "624b3060b399f16a968c593b6c34c7540d6989a36e68e97c913787f66dc3f7cc",
+      "identity": {
+        "operation": "memory_connection_gate",
+        "projection_version": "memory_connection_sources_v1",
+        "reference_version": "52ad76027f9c240f27cb2ad595e9a075bf6a858c6f50ebd3e7d4bd93b5e307f7",
+        "behavior_fingerprint": "3f15e308ec5164cde5a206a5e4127fe33802bad817ae420057cf8105c6401bf4",
+        "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+        "adapter": "typesafe",
+        "model": "jev-1.13.0",
+        "provider": "decision:typesafe",
+        "pack": "memory_connection_gate",
+        "pack_version": "1.1.0",
+        "threshold_fingerprint": "909a6db3890458a3bf1cb07ed4b81564142312090bdeeb1ddf4b255766c89150",
+        "reference_model": null,
+        "reference_provider": null,
+        "required_questions": [
+          "worth_surfacing",
+          "surface"
+        ]
+      },
+      "status": "INCOMPLETE",
+      "failures": [],
+      "missing": [
+        "exact_identity",
+        "foreground_budget",
+        "human_review",
+        "live_invariants",
+        "paired_live_evidence",
+        "surface:200_distinct_eligible_held_out_cases",
+        "surface:balanced_reference_labels",
+        "surface:held_out_dataset_manifest",
+        "worth_surfacing:200_distinct_eligible_held_out_cases",
+        "worth_surfacing:balanced_reference_labels",
+        "worth_surfacing:held_out_dataset_manifest"
+      ],
+      "distinct_cases": 1,
+      "offered_cohort_cases": 1,
+      "questions": {
+        "surface": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "worth_surfacing": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        }
+      },
+      "decision_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 687,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 70,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_read_fraction": null
+      },
+      "incumbent_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "text_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 624,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 175,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": 0,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": 0,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_fraction": 0.0
+      },
+      "timing_ms": {
+        "discovery": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_queue_wait": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_attempt": {
+          "p50": 477,
+          "p95": 477,
+          "count": 1
+        },
+        "engine": {
+          "p50": 478,
+          "p95": 478,
+          "count": 1
+        },
+        "foreground": {
+          "p50": 4737,
+          "p95": 4737,
+          "count": 1
+        },
+        "evidence_completion": {
+          "p50": 480,
+          "p95": 480,
+          "count": 1
+        },
+        "incumbent": {
+          "p50": null,
+          "p95": null,
+          "count": 0
+        }
+      },
+      "decision_calls": 1,
+      "decision_cost_usd": 2.8854e-05,
+      "reference_calls": 0,
+      "reference_cost_usd": 0,
+      "text_calls": 1,
+      "text_cost_usd": 0.0001499,
+      "observed_total_cost_usd": 0.00017875400000000002,
+      "shadow_total_cost_usd": null,
+      "paired_foreground_p95_ms": null,
+      "paired_gate_cost_usd": null,
+      "paired_incumbent_cost_usd": null
+    },
+    {
+      "qualification_id": "89a8679808fd9b3f8c0bdc1fe8b500ee1c918325b533e6f7e237734fd9be1a02",
+      "identity": {
+        "operation": "memory_conflict_review",
+        "projection_version": "memory_conflict_pair_v1",
+        "reference_version": "9f12757df37767f3772f31af8fd129cd738117147585ae60ca991b6fda30a69f",
+        "behavior_fingerprint": "b1e38ecb78587e4c9d1e06c7a313920dc88e1e53bfb0dec5432d78919c3b8103",
+        "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+        "adapter": "typesafe",
+        "model": "jev-1.13.0",
+        "provider": "decision:typesafe",
+        "pack": "memory_conflict_review",
+        "pack_version": "1.0.0",
+        "threshold_fingerprint": "e7eba9b8c7823239ff34aaf2068c290cd6a99531fae4bb8906b420499aa9f8d2",
+        "reference_model": null,
+        "reference_provider": null,
+        "required_questions": [
+          "resolution"
+        ]
+      },
+      "status": "INCOMPLETE",
+      "failures": [],
+      "missing": [
+        "exact_identity",
+        "foreground_budget",
+        "human_review",
+        "live_invariants",
+        "paired_live_evidence",
+        "resolution:200_distinct_eligible_held_out_cases",
+        "resolution:balanced_reference_labels",
+        "resolution:held_out_dataset_manifest"
+      ],
+      "distinct_cases": 1,
+      "offered_cohort_cases": 1,
+      "questions": {
+        "resolution": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        }
+      },
+      "decision_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 605,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 44,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_read_fraction": null
+      },
+      "incumbent_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "text_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "timing_ms": {
+        "discovery": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_queue_wait": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_attempt": {
+          "p50": 454,
+          "p95": 454,
+          "count": 1
+        },
+        "engine": {
+          "p50": 454,
+          "p95": 454,
+          "count": 1
+        },
+        "foreground": {
+          "p50": 456,
+          "p95": 456,
+          "count": 1
+        },
+        "evidence_completion": {
+          "p50": 456,
+          "p95": 456,
+          "count": 1
+        },
+        "incumbent": {
+          "p50": null,
+          "p95": null,
+          "count": 0
+        }
+      },
+      "decision_calls": 1,
+      "decision_cost_usd": 2.541e-05,
+      "reference_calls": 0,
+      "reference_cost_usd": 0,
+      "text_calls": 0,
+      "text_cost_usd": 0,
+      "observed_total_cost_usd": 2.541e-05,
+      "shadow_total_cost_usd": null,
+      "paired_foreground_p95_ms": null,
+      "paired_gate_cost_usd": null,
+      "paired_incumbent_cost_usd": null
+    },
+    {
+      "qualification_id": "ab8dc8d902293ea265b56f26d9a3ab29f8f72e94850da63f2e14bdb80bcf87a7",
+      "identity": {
+        "operation": "evidence_promote",
+        "projection_version": "evidence_promote_v1_importance_quarters",
+        "reference_version": "8053b6945a8be20de5f32bc453c5148a258ae6d5a2e75ec57724431644e857d7",
+        "behavior_fingerprint": "9c46298ca08b31878500b623aea053eadccbd39ff0d144d6e2db2af6a82bbcb8",
+        "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+        "adapter": "typesafe",
+        "model": "jev-1.13.0",
+        "provider": "decision:typesafe",
+        "pack": "evidence_promote",
+        "pack_version": "1.1.0",
+        "threshold_fingerprint": "ebf853570874efd1a5662000ff69170717b962a65ff845beb2efed171695b3b8",
+        "reference_model": null,
+        "reference_provider": null,
+        "required_questions": [
+          "promote",
+          "importance"
+        ]
+      },
+      "status": "INCOMPLETE",
+      "failures": [],
+      "missing": [
+        "exact_identity",
+        "foreground_budget",
+        "human_review",
+        "importance:200_distinct_eligible_held_out_cases",
+        "importance:balanced_reference_labels",
+        "importance:held_out_dataset_manifest",
+        "live_invariants",
+        "paired_live_evidence",
+        "promote:200_distinct_eligible_held_out_cases",
+        "promote:balanced_reference_labels",
+        "promote:held_out_dataset_manifest"
+      ],
+      "distinct_cases": 1,
+      "offered_cohort_cases": 1,
+      "questions": {
+        "importance": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "promote": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        }
+      },
+      "decision_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 717,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 34,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_read_fraction": null
+      },
+      "incumbent_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "text_usage": {
+        "receipts": 1,
+        "physical_calls": 1,
+        "input_tokens": {
+          "reported_sum": 755,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 377,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": 0,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": 0,
+          "reported_calls": 1,
+          "complete": true
+        },
+        "cache_read_fraction": 0.0
+      },
+      "timing_ms": {
+        "discovery": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_queue_wait": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_attempt": {
+          "p50": 331,
+          "p95": 331,
+          "count": 1
+        },
+        "engine": {
+          "p50": 331,
+          "p95": 331,
+          "count": 1
+        },
+        "foreground": {
+          "p50": 4181,
+          "p95": 4181,
+          "count": 1
+        },
+        "evidence_completion": {
+          "p50": 333,
+          "p95": 333,
+          "count": 1
+        },
+        "incumbent": {
+          "p50": null,
+          "p95": null,
+          "count": 0
+        }
+      },
+      "decision_calls": 1,
+      "decision_cost_usd": 3.0114e-05,
+      "reference_calls": 0,
+      "reference_cost_usd": 0,
+      "text_calls": 1,
+      "text_cost_usd": 0.000264,
+      "observed_total_cost_usd": 0.000294114,
+      "shadow_total_cost_usd": null,
+      "paired_foreground_p95_ms": null,
+      "paired_gate_cost_usd": null,
+      "paired_incumbent_cost_usd": null
+    },
+    {
+      "qualification_id": "ea53fdfff2cb8350a808c59b17a19e6459656cb8c95d3408219014d272bf87cd",
+      "identity": {
+        "operation": "memory_episode_quality",
+        "projection_version": "episode_quality_v1_score_round_0_6",
+        "reference_version": "196d98d4a16bafd7ff17c19fe00e230258a6c4fa59d278152bc3f2a93fb08a55",
+        "behavior_fingerprint": "f07739c69c0b8f994f5c5014975a9b72ea2eecf670405fb795462e5b9b0f6fb6",
+        "policy_revision": "8ad38797925fbaf975ac66db1085c3dc7076df66189aa7c299fc5fb1fc88dae9",
+        "adapter": "typesafe",
+        "model": "jev-1.13.0",
+        "provider": "decision:typesafe",
+        "pack": "memory_episode_quality",
+        "pack_version": "1.0.0",
+        "threshold_fingerprint": "940d8935925669cf924624341e3dde0435c4c7b483658c80d784f8130982d24d",
+        "reference_model": null,
+        "reference_provider": null,
+        "required_questions": [
+          "classification",
+          "priority",
+          "score"
+        ]
+      },
+      "status": "INCOMPLETE",
+      "failures": [],
+      "missing": [
+        "classification:200_distinct_eligible_held_out_cases",
+        "classification:balanced_reference_labels",
+        "classification:held_out_dataset_manifest",
+        "exact_identity",
+        "foreground_budget",
+        "human_review",
+        "live_invariants",
+        "paired_live_evidence",
+        "priority:200_distinct_eligible_held_out_cases",
+        "priority:balanced_reference_labels",
+        "priority:held_out_dataset_manifest",
+        "score:200_distinct_eligible_held_out_cases",
+        "score:balanced_reference_labels",
+        "score:held_out_dataset_manifest"
+      ],
+      "distinct_cases": 1,
+      "offered_cohort_cases": 1,
+      "questions": {
+        "classification": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 1,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 1.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "priority": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 0,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 0.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        },
+        "score": {
+          "offered": 1,
+          "answered": 1,
+          "eligible": 0,
+          "reference": 0,
+          "compared": 0,
+          "agree": 0,
+          "agreement": null,
+          "agreement_95ci": null,
+          "held_out_compared": 0,
+          "held_out_agreement": null,
+          "held_out_agreement_95ci": null,
+          "coverage": 0.0,
+          "unanswered": 0,
+          "missing_reference": 1,
+          "per_label": {},
+          "confusion": []
+        }
+      },
+      "decision_usage": {
+        "receipts": 2,
+        "physical_calls": 2,
+        "input_tokens": {
+          "reported_sum": 1322,
+          "reported_calls": 2,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": 94,
+          "reported_calls": 2,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": false
+        },
+        "cache_read_fraction": null
+      },
+      "incumbent_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "text_usage": {
+        "receipts": 0,
+        "physical_calls": 0,
+        "input_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "output_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_write_tokens": {
+          "reported_sum": null,
+          "reported_calls": 0,
+          "complete": true
+        },
+        "cache_read_fraction": null
+      },
+      "timing_ms": {
+        "discovery": {
+          "p50": 0,
+          "p95": 0,
+          "count": 1
+        },
+        "model_queue_wait": {
+          "p50": 0,
+          "p95": 0,
+          "count": 2
+        },
+        "model_attempt": {
+          "p50": 418,
+          "p95": 4664,
+          "count": 2
+        },
+        "engine": {
+          "p50": 5083,
+          "p95": 5083,
+          "count": 1
+        },
+        "foreground": {
+          "p50": 5087,
+          "p95": 5087,
+          "count": 1
+        },
+        "evidence_completion": {
+          "p50": 5087,
+          "p95": 5087,
+          "count": 1
+        },
+        "incumbent": {
+          "p50": null,
+          "p95": null,
+          "count": 0
+        }
+      },
+      "decision_calls": 2,
+      "decision_cost_usd": 3.670800000000001e-05,
+      "reference_calls": 0,
+      "reference_cost_usd": 0,
+      "text_calls": 0,
+      "text_cost_usd": 0,
+      "observed_total_cost_usd": 3.670800000000001e-05,
+      "shadow_total_cost_usd": null,
+      "paired_foreground_p95_ms": null,
+      "paired_gate_cost_usd": null,
+      "paired_incumbent_cost_usd": null
+    }
+  ],
+  "skipped_cache_records": 0,
+  "unanswered_records": 0,
+  "invocation_outcomes": {},
+  "gate_changed": false
+}

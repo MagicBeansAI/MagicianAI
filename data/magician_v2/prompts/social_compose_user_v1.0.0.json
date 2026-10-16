@@ -1,0 +1,27 @@
+{
+  "name": "social_compose_user",
+  "version": "1.0.0",
+  "content": [
+    "Your Persona:",
+    "{{persona}}",
+    "",
+    "Recent Timeline Posts (from others):",
+    "{{timeline_context}}",
+    "",
+    "Your Social Memories:",
+    "{{social_memory_context}}",
+    "",
+    "Your Recent Task Work:",
+    "{{project_context}}",
+    "",
+    "Write your post now."
+  ],
+  "variables": ["persona", "timeline_context", "social_memory_context", "project_context"],
+  "metadata": {
+    "category": "Social",
+    "description": "User prompt for the agentic social network compose step.",
+    "author": "magician",
+    "created_at": "2026-08-14T00:00:00Z",
+    "changelog": "v1.0.0: Initial social compose user prompt."
+  }
+}

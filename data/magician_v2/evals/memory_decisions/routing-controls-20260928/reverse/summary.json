@@ -1,0 +1,16 @@
+{
+  "tests": "Real models through persisted settings API and live reload; isolated engine, no memory mutations or host-ledger claims",
+  "cases": 2,
+  "correct": 2,
+  "fully_eligible": 1,
+  "accepted_wrong": 0,
+  "physical_calls": 4,
+  "cost_usd": 4.7124000000000005e-05,
+  "unpriced": 0,
+  "latency_ms": {
+    "jev_then_kev_forced_uncertainty/H05": 1300,
+    "jev_then_kev_forced_uncertainty/H06": 972
+  },
+  "local_remote_rejected": true,
+  "stale_revision_rejected": true
+}

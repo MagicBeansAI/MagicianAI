@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Code Universe — 3D Graph</title>
+    <script>
+      // Apply the persisted theme as early as possible — before
+      // graph3d.css paints — so we never flash the wrong palette.
+      try {
+        var t = localStorage.getItem("codegraph3d-theme");
+        if (t === "dark" || t === "light") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (e) { /* ignore — SSR or privacy mode */ }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="graph3d.css" />
+  </head>
+  <body>
+    <div id="3d-graph"></div>
+
+    <!-- Warp speed overlay during fly-to -->
+    <div id="warp-overlay" class="warp-overlay"></div>
+
+    <!-- HUD: top bar -->
+    <header class="hud-top">
+      <div class="hud-title">
+        <h1>CODE UNIVERSE</h1>
+        <span id="graph-stats" class="hud-stats">Loading&hellip;</span>
+      </div>
+      <div class="hud-search">
+        <div class="search-container">
+          <!-- type="text" (not "search") + named + full anti-autofill
+               attrs so the browser's own history dropdown stops
+               appearing on top of our custom slash palette. -->
+          <input
+            id="search-input"
+            type="text"
+            name="codegraph-search-no-history"
+            placeholder="Search… or type / for commands"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+          <kbd class="search-kbd">/</kbd>
+          <div id="search-results" class="search-results" hidden></div>
+        </div>
+      </div>
+      <div class="hud-actions">
+        <a href="c4.html" class="hud-btn" title="Open the C4 architecture canvas (runtime → areas → code)">Architecture</a>
+        <a href="plane.html" class="hud-btn" title="GPU-batched 2D plane view of the whole graph">Plane</a>
+        <a href="explorer.html" class="hud-btn" title="Advanced analysis explorer (impact, blast, flows)">2D View</a>
+        <button id="btn-reset" class="hud-btn" title="Reset camera (R)">Reset</button>
+        <button id="btn-edges" class="hud-btn active" title="Toggle edges (E)">Edges</button>
+        <button id="btn-theme" class="hud-btn" title="Toggle light / dark theme (T)">Theme</button>
+        <label class="hud-btn hud-btn-toggle" title="FPS-style fly mode: WASD moves, mouse looks. Click canvas to engage, Esc to release.">
+          <input id="btn-fly-mode" type="checkbox" />
+          <span>Fly</span>
+        </label>
+      </div>
+    </header>
+
+    <!-- HUD: legend -->
+    <aside id="legend" class="hud-legend">
+      <h3>NODE TYPES</h3>
+      <div id="legend-items"></div>
+    </aside>
+
+    <!-- HUD: keyboard hints -->
+    <div class="hud-keys">
+      <span><kbd>/</kbd> Search</span>
+      <span><kbd>R</kbd> Reset</span>
+      <span><kbd>E</kbd> Edges</span>
+      <span><kbd>T</kbd> Theme</span>
+      <span><kbd>Esc</kbd> Deselect</span>
+      <span><kbd>&larr;</kbd><kbd>&rarr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd> / <kbd>WASD</kbd> Pan camera</span>
+      <span><kbd>Shift</kbd>+<kbd>&larr;</kbd><kbd>&rarr;</kbd> Caller/callee &middot; <kbd>Shift</kbd>+<kbd>&uarr;</kbd><kbd>&darr;</kbd> Parent/child</span>
+      <span>Drag to orbit &middot; Right-drag to pan &middot; Scroll to zoom</span>
+      <span>Fly mode: click toggle, then click canvas; <kbd>WASD</kbd> moves, mouse looks, <kbd>Space</kbd>/<kbd>Ctrl</kbd> up/down, <kbd>Shift</kbd> boost, <kbd>Esc</kbd> release</span>
+    </div>
+
+    <!-- HUD: selected node info -->
+    <footer id="info-panel" class="hud-info">
+      <div class="info-content">
+        <div class="info-header">
+          <span id="info-kind" class="info-kind"></span>
+          <h2 id="info-label"></h2>
+          <button id="info-close" class="info-close" title="Close (Esc)">&times;</button>
+        </div>
+        <div id="info-details" class="info-details"></div>
+      </div>
+    </footer>
+
+    <!-- HUD: command results panel -->
+    <aside id="command-panel" class="hud-command" hidden>
+      <div class="command-header">
+        <h2 id="command-title">Command</h2>
+        <button id="command-close" class="info-close" title="Close">&times;</button>
+      </div>
+      <div id="command-body" class="command-body"></div>
+    </aside>
+
+    <!-- Loading screen -->
+    <div id="loading-overlay" class="loading-overlay">
+      <div class="loading-content">
+        <div class="loading-ring">
+          <div class="loading-ring-inner"></div>
+        </div>
+        <p class="loading-title">CODE UNIVERSE</p>
+        <p id="loading-status" class="loading-status">Initializing&hellip;</p>
+      </div>
+    </div>
+
+    <!-- Three.js r149 (IIFE, sets window.THREE) -->
+    <script src="vendor/three.min.js"></script>
+    <!-- Suppress harmless "Multiple instances" warning from bundled copy -->
+    <script>var _w=console.warn;console.warn=function(){if(typeof arguments[0]==="string"&&arguments[0].indexOf("Multiple instances")!==-1)return;_w.apply(console,arguments)};</script>
+    <script src="vendor/3d-force-graph.min.js"></script>
+    <script>console.warn=_w;</script>
+    <script src="graph3d_fast.js"></script>
+    <script src="graph3d.js"></script>
+  </body>
+</html>

@@ -1,0 +1,31 @@
+name: request_preference_wording
+description: Ask the owner to let you read the wording of their preferences for this one investigation.
+version: "1.0.0"
+guide: |
+  Tool name: `request_preference_wording`
+
+  `internal_data` returns the owner's preferences, their history and check
+  records with the wording redacted (`[taste · 6 words · #a3f9]`). Kinds,
+  evidence strengths, lifecycles, ids, revisions and timings are always
+  visible, and are usually enough to explain a check.
+
+  When you truly need the words, call this with a short, specific `reason`.
+  The owner answers on their web or iOS app. If they allow it, `internal_data`
+  reads in this same run return wording; another run must ask again. If they
+  decline or do not answer within 15 minutes, keep working from structure.
+parameters:
+  - name: reason
+    required: true
+    param_type: string
+    description: Why the wording is needed for this investigation, in one or two sentences the owner will read.
+implementation:
+  type: compiled
+  provider_name: request_preference_wording
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - owner
+    - analysis
+  composition_category: communication
+  sandbox: none

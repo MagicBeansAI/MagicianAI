@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "AppErrorCode": {
+      "description": "Stable cross-adapter error families. Concrete HTTP error strings remain a\nfiner-grained compatibility surface and are listed per operation.",
+      "enum": [
+        "invalid_request",
+        "not_authorized",
+        "not_found",
+        "conflict",
+        "stale_revision",
+        "schema_mismatch",
+        "policy_denied",
+        "resource_exhausted",
+        "rate_limited",
+        "unavailable",
+        "timeout",
+        "canceled",
+        "external_outcome_uncertain",
+        "internal"
+      ],
+      "type": "string"
+    },
+    "AppErrorDisposition": {
+      "description": "Machine-interpretable recovery posture for canonical app failures.",
+      "enum": [
+        "terminal",
+        "retry_same_input",
+        "refresh_and_retry",
+        "reauthorize",
+        "user_action_required",
+        "outcome_uncertain"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-error-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Bounded, machine-interpretable failure detail shared by every app adapter.\n`message` is display context, never the semantic error contract.",
+  "properties": {
+    "code": {
+      "$ref": "#/$defs/AppErrorCode"
+    },
+    "details": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "disposition": {
+      "$ref": "#/$defs/AppErrorDisposition"
+    },
+    "message": {
+      "type": "string"
+    },
+    "retry_after_ms": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "code",
+    "disposition",
+    "message"
+  ],
+  "title": "AppErrorEnvelope",
+  "type": "object"
+}

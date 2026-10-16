@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ============================================ -->
+    <!-- Spacing System (8dp Grid) -->
+    <!-- ============================================ -->
+
+    <!-- Base spacing unit (8dp) -->
+    <dimen name="spacing_unit">8dp</dimen>
+
+    <!-- Spacing Scale -->
+    <dimen name="spacing_none">0dp</dimen>
+    <dimen name="spacing_tiny">4dp</dimen>      <!-- 0.5x -->
+    <dimen name="spacing_small">8dp</dimen>     <!-- 1x -->
+    <dimen name="spacing_medium">16dp</dimen>   <!-- 2x -->
+    <dimen name="spacing_large">24dp</dimen>    <!-- 3x -->
+    <dimen name="spacing_xlarge">32dp</dimen>   <!-- 4x -->
+    <dimen name="spacing_xxlarge">48dp</dimen>  <!-- 6x -->
+    <dimen name="spacing_huge">64dp</dimen>     <!-- 8x -->
+
+    <!-- ============================================ -->
+    <!-- Wave-Inspired Corner Radii -->
+    <!-- ============================================ -->
+
+    <!-- Small Components (Chips, Small Buttons) -->
+    <dimen name="corner_radius_small">8dp</dimen>
+
+    <!-- Medium Components (Buttons, Text Fields) -->
+    <dimen name="corner_radius_medium">16dp</dimen>
+
+    <!-- Large Components (Cards, Dialogs) -->
+    <dimen name="corner_radius_large">24dp</dimen>
+
+    <!-- Extra Large (Bottom Sheets, Large Cards) -->
+    <dimen name="corner_radius_xlarge">32dp</dimen>
+
+    <!-- Signature Wave Curves -->
+    <dimen name="corner_radius_wave">48dp</dimen>
+
+    <!-- Specific Component Corner Radii -->
+    <dimen name="corner_radius_button">16dp</dimen>
+    <dimen name="corner_radius_card">24dp</dimen>
+    <dimen name="corner_radius_chip">8dp</dimen>
+    <dimen name="corner_radius_input">12dp</dimen>
+    <dimen name="corner_radius_fab">28dp</dimen>
+    <dimen name="corner_radius_dialog">28dp</dimen>
+    <dimen name="corner_radius_bottom_sheet">32dp</dimen>
+
+    <!-- Switch Component Radii -->
+    <dimen name="corner_radius_switch_track">16dp</dimen>
+    <dimen name="corner_radius_switch_thumb">10dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Elevation (Material Design 3 Scale) -->
+    <!-- ============================================ -->
+
+    <dimen name="elevation_none">0dp</dimen>
+    <dimen name="elevation_level1">1dp</dimen>
+    <dimen name="elevation_level2">3dp</dimen>
+    <dimen name="elevation_level3">6dp</dimen>
+    <dimen name="elevation_level4">8dp</dimen>
+    <dimen name="elevation_level5">12dp</dimen>
+
+    <!-- Component-Specific Elevations -->
+    <dimen name="elevation_card">2dp</dimen>
+    <dimen name="elevation_button">2dp</dimen>
+    <dimen name="elevation_fab">6dp</dimen>
+    <dimen name="elevation_appbar">4dp</dimen>
+    <dimen name="elevation_bottom_nav">8dp</dimen>
+    <dimen name="elevation_dialog">24dp</dimen>
+    <dimen name="elevation_modal_bottom_sheet">16dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Component Heights -->
+    <!-- ============================================ -->
+
+    <!-- Button Heights -->
+    <dimen name="button_height_default">48dp</dimen>
+    <dimen name="button_height_small">32dp</dimen>
+    <dimen name="button_height_large">56dp</dimen>
+
+    <!-- Input Field Heights -->
+    <dimen name="input_height_default">56dp</dimen>
+    <dimen name="input_height_dense">40dp</dimen>
+
+    <!-- List Item Heights -->
+    <dimen name="list_item_height_single_line">56dp</dimen>
+    <dimen name="list_item_height_two_line">72dp</dimen>
+    <dimen name="list_item_height_three_line">88dp</dimen>
+
+    <!-- AppBar Heights -->
+    <dimen name="appbar_height_default">56dp</dimen>
+    <dimen name="appbar_height_large">112dp</dimen>
+    <dimen name="appbar_height_medium">96dp</dimen>
+
+    <!-- Bottom Navigation Height -->
+    <dimen name="bottom_nav_height">80dp</dimen>
+
+    <!-- FAB Sizes -->
+    <dimen name="fab_size_default">56dp</dimen>
+    <dimen name="fab_size_small">40dp</dimen>
+    <dimen name="fab_size_large">96dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Stroke Widths -->
+    <!-- ============================================ -->
+
+    <dimen name="stroke_width_thin">0.5dp</dimen>
+    <dimen name="stroke_width_default">1dp</dimen>
+    <dimen name="stroke_width_thick">2dp</dimen>
+    <dimen name="stroke_width_bold">3dp</dimen>
+
+    <!-- Input Field Stroke Widths -->
+    <dimen name="stroke_width_input">1dp</dimen>
+    <dimen name="stroke_width_input_focused">2dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Icon Sizes -->
+    <!-- ============================================ -->
+
+    <dimen name="icon_size_tiny">16dp</dimen>
+    <dimen name="icon_size_small">20dp</dimen>
+    <dimen name="icon_size_default">24dp</dimen>
+    <dimen name="icon_size_medium">32dp</dimen>
+    <dimen name="icon_size_large">48dp</dimen>
+    <dimen name="icon_size_xlarge">64dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Avatar & Thumbnail Sizes -->
+    <!-- ============================================ -->
+
+    <dimen name="avatar_size_small">32dp</dimen>
+    <dimen name="avatar_size_default">40dp</dimen>
+    <dimen name="avatar_size_large">56dp</dimen>
+    <dimen name="avatar_size_xlarge">80dp</dimen>
+
+    <dimen name="thumbnail_size_small">64dp</dimen>
+    <dimen name="thumbnail_size_default">96dp</dimen>
+    <dimen name="thumbnail_size_large">128dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Progress Indicator Dimensions -->
+    <!-- ============================================ -->
+
+    <dimen name="progress_indicator_size">48dp</dimen>
+    <dimen name="progress_indicator_size_small">32dp</dimen>
+    <dimen name="progress_indicator_size_large">64dp</dimen>
+    <dimen name="progress_indicator_track_thickness">4dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Min Touch Target Sizes (Accessibility) -->
+    <!-- ============================================ -->
+
+    <dimen name="min_touch_target">48dp</dimen>
+    <dimen name="min_touch_target_small">32dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Content Padding & Margins -->
+    <!-- ============================================ -->
+
+    <!-- Screen Edge Padding -->
+    <dimen name="screen_padding_horizontal">16dp</dimen>
+    <dimen name="screen_padding_vertical">16dp</dimen>
+
+    <!-- Card Content Padding -->
+    <dimen name="card_padding">16dp</dimen>
+    <dimen name="card_padding_compact">12dp</dimen>
+    <dimen name="card_padding_spacious">24dp</dimen>
+
+    <!-- Dialog Content Padding -->
+    <dimen name="dialog_padding">24dp</dimen>
+    <dimen name="dialog_padding_title">24dp</dimen>
+    <dimen name="dialog_padding_content">20dp</dimen>
+
+    <!-- List Item Padding -->
+    <dimen name="list_item_padding_horizontal">16dp</dimen>
+    <dimen name="list_item_padding_vertical">12dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Divider Dimensions -->
+    <!-- ============================================ -->
+
+    <dimen name="divider_height">1dp</dimen>
+    <dimen name="divider_inset">16dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Banner & Snackbar Dimensions -->
+    <!-- ============================================ -->
+
+    <dimen name="snackbar_height_single_line">48dp</dimen>
+    <dimen name="snackbar_height_multi_line">80dp</dimen>
+    <dimen name="snackbar_margin">8dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Grid & Column Widths -->
+    <!-- ============================================ -->
+
+    <!-- Responsive Breakpoints -->
+    <dimen name="max_content_width">1200dp</dimen>
+    <dimen name="max_content_width_medium">840dp</dimen>
+    <dimen name="max_content_width_small">600dp</dimen>
+
+    <!-- Grid Spacing -->
+    <dimen name="grid_spacing">8dp</dimen>
+    <dimen name="grid_spacing_large">16dp</dimen>
+
+    <!-- ============================================ -->
+    <!-- Animation Durations (for programmatic use) -->
+    <!-- Note: These are dimension resources for convenience, -->
+    <!-- but represent milliseconds in animation code -->
+    <!-- ============================================ -->
+
+    <integer name="animation_duration_short">150</integer>
+    <integer name="animation_duration_medium">300</integer>
+    <integer name="animation_duration_long">500</integer>
+    <integer name="animation_duration_extra_long">700</integer>
+
+    <!-- ============================================ -->
+    <!-- Z-Index / Layer Ordering (for programmatic use) -->
+    <!-- ============================================ -->
+
+    <integer name="z_index_background">0</integer>
+    <integer name="z_index_content">1</integer>
+    <integer name="z_index_appbar">10</integer>
+    <integer name="z_index_fab">20</integer>
+    <integer name="z_index_bottom_nav">30</integer>
+    <integer name="z_index_dialog">40</integer>
+    <integer name="z_index_snackbar">50</integer>
+    <integer name="z_index_tooltip">60</integer>
+</resources>

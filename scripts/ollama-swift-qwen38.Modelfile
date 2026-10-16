@@ -1,0 +1,7 @@
+# UkisAI Swift-Qwen3.8-27B GGUF with Ollama MTP. Eval-only — do not pin
+# runtime.ollama.local_generation.selected. scripts/eval-swift-qwen38.sh
+# substitutes FROM. Docs: docs/components/magician/local-channel-llm.md
+FROM __SWIFT_GGUF__
+PARAMETER draft_num_predict 4
+PARAMETER temperature 0.1
+PARAMETER num_ctx 32768

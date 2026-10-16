@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Typed calendar operations over the existing, profile-bound gws transport."""
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import urllib.error
+import urllib.request
+import shutil
+import subprocess
+import sys
+import urllib.parse
+
+
+def instant(value):
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("calendar instants require an explicit UTC offset")
+    return parsed.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def valid_interval(start, end):
+    if dt.datetime.fromisoformat(start.replace("Z", "+00:00")) >= dt.datetime.fromisoformat(end.replace("Z", "+00:00")):
+        raise ValueError("calendar interval must have positive duration")
+
+
+def recipients(values):
+    result = sorted(set(value.strip().lower() for value in values))
+    if not result or any("@" not in value or any(c.isspace() or ord(c) < 32 for c in value) for value in result):
+        raise ValueError("explicit attendee mailboxes are required")
+    return result
+
+
+class CalendarError(RuntimeError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(f"calendar transport refused the operation (HTTP {code}); do not retry a write automatically")
+
+
+def conditional_write(program, method, params, body, etag):
+    # Reuse the same broker-selected gws profile. Export is in-memory only;
+    # no credential file, subprocess argument or result contains a token.
+    token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN")
+    if not token:
+        exported = subprocess.run([program, "auth", "export", "--unmasked"], capture_output=True, text=True, timeout=10)
+        if exported.returncode or len(exported.stdout) > 65536:
+            raise RuntimeError("selected calendar profile cannot provide conditional-write credentials")
+        credential = json.loads(exported.stdout)
+        if credential.get("type") != "authorized_user" or any(not credential.get(k) for k in ("client_id", "client_secret", "refresh_token")):
+            raise RuntimeError("conditional writes require the selected profile's authorized-user credentials")
+        form = urllib.parse.urlencode({"grant_type": "refresh_token", **{k: credential[k] for k in ("client_id", "client_secret", "refresh_token")}}).encode()
+        refresh = urllib.request.Request("https://oauth2.googleapis.com/token", data=form, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        with urllib.request.urlopen(refresh, timeout=10) as response:
+            token = json.loads(response.read(65537)).get("access_token")
+        if not token:
+            raise RuntimeError("selected calendar profile did not yield an access token")
+    url = "https://www.googleapis.com/calendar/v3/calendars/" + urllib.parse.quote(params["calendarId"], safe="") + "/events/" + urllib.parse.quote(params["eventId"], safe="") + "?" + urllib.parse.urlencode({"sendUpdates": "all"})
+    request = urllib.request.Request(url, method="PATCH" if method[-1] == "patch" else "DELETE", data=None if body is None else json.dumps(body).encode(), headers={"Authorization": "Bearer " + token, "If-Match": etag, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            raw = response.read(10 * 1024 * 1024 + 1)
+            if len(raw) > 10 * 1024 * 1024:
+                raise RuntimeError("calendar response exceeds the output limit")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as error:
+        raise CalendarError(error.code) from None
+
+
+def gws(method, params, body=None, allow_empty=False, if_match=None):
+    program = shutil.which("gws")
+    if not program:
+        raise RuntimeError("gws is not installed")
+    if if_match is not None:
+        return conditional_write(program, method, params, body, if_match)
+    argv = [program, "calendar", *method, "--params", json.dumps(params)]
+    if body is not None:
+        argv += ["--json", json.dumps(body)]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+    if result.returncode:
+        try:
+            code = json.loads(result.stdout).get("error", {}).get("code", result.returncode)
+        except (ValueError, AttributeError):
+            code = result.returncode
+        raise CalendarError(code)
+    if len(result.stdout) > 10 * 1024 * 1024:
+        raise RuntimeError("calendar response exceeds the output limit")
+    if allow_empty and not result.stdout.strip():
+        return {}
+    decoded = json.loads(result.stdout)
+    if not isinstance(decoded, dict) or "error" in decoded:
+        raise RuntimeError("calendar transport returned an error or non-object response")
+    return decoded
+
+
+def execute(request, transport=gws):
+    action = request["action"]
+    # Resolve aliases through the selected profile, never through a model's
+    # claim about which account owns a calendar.
+    calendar = transport(["calendars", "get"], {"calendarId": request["calendar_id"]})
+    calendar_id = calendar.get("id")
+    if not isinstance(calendar_id, str) or not calendar_id.strip():
+        raise ValueError("calendar metadata did not identify the actual calendar")
+    if action == "free_busy":
+        start, end = instant(request["start"]), instant(request["end"])
+        valid_interval(start, end)
+        result = transport(["freebusy", "query"], {}, {"timeMin": start, "timeMax": end, "items": [{"id": calendar_id}]})
+        row = result.get("calendars", {}).get(calendar_id)
+        if not isinstance(row, dict) or row.get("errors") or not isinstance(row.get("busy"), list):
+            raise ValueError("calendar availability is unknown; it must not be treated as free")
+        for interval in row["busy"]:
+            if not isinstance(interval, dict):
+                raise ValueError("calendar returned an invalid busy interval")
+            valid_interval(instant(interval["start"]), instant(interval["end"]))
+        return {"calendar_id": calendar_id, "start": start, "end": end, "busy": row["busy"], "time_zone": calendar.get("timeZone")}
+
+    audience = recipients(request["attendees"])
+    if action == "create_event":
+        start, end = instant(request["start"]), instant(request["end"])
+        valid_interval(start, end)
+        content = {"summary": request["summary"], "start": {"dateTime": start}, "end": {"dateTime": end}, "attendees": [{"email": x} for x in audience]}
+        for field in ["description", "location"]:
+            if request.get(field):
+                content[field] = request[field]
+        fingerprint = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        # Google event IDs permit base32hex; hexadecimal is a valid subset.
+        event_id = hashlib.sha256(json.dumps([calendar_id, request["idempotency_key"]]).encode()).hexdigest()[:52]
+        content["id"] = event_id
+        content["extendedProperties"] = {"private": {"magician_request": fingerprint}}
+        try:
+            result = transport(["events", "insert"], {"calendarId": calendar_id, "sendUpdates": "all"}, content)
+        except CalendarError as error:
+            if error.code != 409:
+                raise
+            result = transport(["events", "get"], {"calendarId": calendar_id, "eventId": event_id})
+            if result.get("extendedProperties", {}).get("private", {}).get("magician_request") != fingerprint:
+                raise ValueError("booking key belongs to a different request")
+    else:
+        event_id = request["event_id"]
+        current = transport(["events", "get"], {"calendarId": calendar_id, "eventId": event_id})
+        actual = recipients([item["email"] for item in current.get("attendees", []) if isinstance(item, dict) and "email" in item])
+        if actual != audience or current.get("id") != event_id or not current.get("etag"):
+            raise ValueError("existing event does not match the reviewed event and attendees")
+        if action == "delete_event":
+            transport(["events", "delete"], {"calendarId": calendar_id, "eventId": event_id, "sendUpdates": "all"}, allow_empty=True, if_match=current["etag"])
+            result = current
+        else:
+            start, end = instant(request["start"]), instant(request["end"])
+            valid_interval(start, end)
+            body = {"start": {"dateTime": start}, "end": {"dateTime": end}}
+            for field in ["summary", "description", "location"]:
+                if request.get(field) is not None:
+                    body[field] = request[field]
+            result = transport(["events", "patch"], {"calendarId": calendar_id, "eventId": event_id, "sendUpdates": "all"}, body, if_match=current["etag"])
+
+    if result.get("id") != event_id or not result.get("etag"):
+        raise ValueError("calendar effect has no confirmed event ID and revision; do not retry automatically")
+    if action != "delete_event":
+        confirmed_audience = recipients([item["email"] for item in result.get("attendees", []) if isinstance(item, dict) and "email" in item])
+        if confirmed_audience != audience or instant(result["start"]["dateTime"]) != start or instant(result["end"]["dateTime"]) != end:
+            raise ValueError("calendar effect differs from the reviewed attendees or interval; do not retry automatically")
+    resource_ref = "gcal://" + urllib.parse.quote(calendar_id, safe="") + "/" + urllib.parse.quote(event_id, safe="")
+    receipt_id = hashlib.sha256(json.dumps([resource_ref, action, result["etag"]]).encode()).hexdigest()
+    effect = {"resource_kind": "calendar_event", "operation": {"create_event": "create", "update_event": "update", "delete_event": "delete"}[action], "resource_ref": resource_ref, "attributes": {"attendees": audience}}
+    if action != "delete_event":
+        effect["attributes"].update(start=start, end=end)
+    return {"provider_receipt_id": receipt_id, "resource_effect": effect, "calendar_id": calendar_id, "event_id": event_id, "revision": result["etag"]}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("action", choices=["free_busy", "create_event", "update_event", "delete_event"])
+    parser.add_argument("--calendar-id", default="primary")
+    for name in ["start", "end", "summary", "description", "location", "event-id", "idempotency-key"]:
+        parser.add_argument("--" + name)
+    parser.add_argument("--attendee", action="append", dest="attendees", default=[])
+    parser.add_argument("recipient", nargs="*")
+    request = vars(parser.parse_args())
+    request["attendees"] += request.pop("recipient")
+    required = ["start", "end"] if request["action"] == "free_busy" else (["start", "end", "summary", "idempotency_key"] if request["action"] == "create_event" else (["event_id", "start", "end"] if request["action"] == "update_event" else ["event_id"]))
+    if any(not request.get(field) for field in required):
+        parser.error("missing fields: " + ", ".join(field for field in required if not request.get(field)))
+    try:
+        print(json.dumps(execute(request)))
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

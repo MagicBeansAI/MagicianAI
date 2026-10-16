@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""Bounded Claude web-search adapter for the governed skill runtime."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Callable
+from types import SimpleNamespace
+
+
+ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+WEB_SEARCH_TOOL_VERSION = "web_search_20260209"
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+MAX_TOTAL_RESPONSE_BYTES = 20 * 1024 * 1024
+MAX_PAUSE_CONTINUATIONS = 4
+MAX_ANSWER_CHARS = 64_000
+MAX_SOURCES = 200
+MAX_SOURCE_TITLE_CHARS = 4_096
+MAX_SOURCE_URL_CHARS = 8_192
+MAX_CITED_TEXT_CHARS = 512
+MAX_QUERY_CHARS = 4_096
+MAX_DOMAINS_INPUT_CHARS = 4_096
+MAX_DOMAINS = 100
+MAX_MODEL_CHARS = 256
+MAX_SEARCHES = 20
+MAX_INPUT_BYTES = 65_536
+MAX_FAILURE_DETAIL_CHARS = 512
+MAX_FAILURE_BODY_BYTES = 8 * 1024
+DOMAIN_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+UrlOpen = Callable[..., Any]
+
+# --- Governed timeout budget -------------------------------------------------
+# INVARIANT:
+#   GOVERNED_KILL_CEILING_SECS >= INNER_WORST_CASE_SECS + GOVERNED_KILL_MARGIN_SECS
+#
+# PROVIDER_TIMEOUT_SECS is the deliberate Anthropic SLA for one Messages call.
+# `perform_search` issues one call plus up to MAX_PAUSE_CONTINUATIONS pause-turn
+# continuations, so the adapter's own deadline budget is:
+#
+#   INNER_WORST_CASE_SECS = PROVIDER_TIMEOUT_SECS * (MAX_PAUSE_CONTINUATIONS + 1)
+#                         = 60 * 5 = 300
+#
+# GOVERNED_KILL_CEILING_SECS mirrors `runtime.limits.timeout_secs` in this
+# skill's SKILL.md, which is the runtime's wall-clock kill. That kill is a
+# backstop for a process that has stopped responding, not the primary provider
+# deadline: if it fires first, every one of this adapter's timeout and
+# pause-turn error paths becomes unreachable code and each slow provider looks
+# like a blunt kill instead of a described failure. It must therefore stay
+# above the budget above by at least GOVERNED_KILL_MARGIN_SECS, which covers
+# interpreter start, stdin read, and response normalization.
+#
+# The manifest is YAML this adapter must not read at execution time, so the
+# ceiling is mirrored here. Both sides are pinned together by
+# `tests/test_claude_websearch.py::test_governed_kill_outlasts_the_inner_provider_budget`
+# and by `tool-runtime-core/tests/phase7_migration.rs::
+# credentialed_adapter_governed_kill_outlasts_its_inner_provider_budget`.
+#
+# Raising MAX_PAUSE_CONTINUATIONS or PROVIDER_TIMEOUT_SECS REQUIRES raising
+# `runtime.limits.timeout_secs` in SKILL.md by the same amount. Note the socket
+# deadline is per operation, not a total wall clock, so INNER_WORST_CASE_SECS is
+# a lower bound on true elapsed time; the governed kill remains the only total
+# bound, which is exactly why it must be the outer one.
+PROVIDER_TIMEOUT_SECS = 60
+INNER_WORST_CASE_SECS = 300
+GOVERNED_KILL_MARGIN_SECS = 5
+GOVERNED_KILL_CEILING_SECS = 305
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the fixed provider credential on its declared origin."""
+
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def open_without_redirects(request: urllib.request.Request, timeout: int) -> Any:
+    return urllib.request.build_opener(NoRedirectHandler()).open(request, timeout=timeout)
+
+
+def parse_input(raw: bytes) -> SimpleNamespace:
+    if not raw or len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("invalid governed input envelope")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("invalid governed input envelope")
+    value.setdefault("allowed_domains", None)
+    return SimpleNamespace(**value)
+
+
+def normalize_domain(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        raise ValueError("empty allowed domain")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in candidate):
+        raise ValueError("allowed domain contains control characters")
+    if "://" in candidate:
+        parsed = urllib.parse.urlsplit(candidate)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError("allowed domain URL must use HTTP or HTTPS")
+    else:
+        parsed = urllib.parse.urlsplit(f"//{candidate}")
+    if parsed.username or parsed.password:
+        raise ValueError("allowed domain must not contain credentials")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("allowed domain contains an invalid port") from error
+    if port is not None:
+        raise ValueError("allowed domain must not contain a port")
+    if parsed.query or parsed.fragment:
+        raise ValueError("allowed domain must not contain a query or fragment")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("allowed domain must contain a hostname")
+    try:
+        hostname = hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError as error:
+        raise ValueError("allowed domain is invalid") from error
+    if len(hostname) > 253:
+        raise ValueError("allowed domain is too long")
+    if any(not DOMAIN_LABEL.fullmatch(label) for label in hostname.split(".")):
+        raise ValueError("allowed domain is invalid")
+    path = "" if parsed.path in ("", "/") else parsed.path
+    return f"{hostname}{path}"
+
+
+def normalize_domains(value: str | None) -> list[str]:
+    if not value:
+        return []
+    parts = [part for part in value.split(",") if part.strip()]
+    if len(parts) > MAX_DOMAINS:
+        raise ValueError(f"at most {MAX_DOMAINS} allowed domains are supported")
+    output: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        domain = normalize_domain(part)
+        if domain not in seen:
+            seen.add(domain)
+            output.append(domain)
+    return output
+
+
+def request_body(
+    args: SimpleNamespace,
+    messages: list[dict[str, Any]],
+    remaining_searches: int,
+) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "type": WEB_SEARCH_TOOL_VERSION,
+        "name": "web_search",
+        "max_uses": remaining_searches,
+        # Direct mode supports the public default and custom models that do not
+        # implement programmatic tool calling, while retaining the current tool schema.
+        "allowed_callers": ["direct"],
+    }
+    allowed_domains = normalize_domains(args.allowed_domains)
+    if allowed_domains:
+        tool["allowed_domains"] = allowed_domains
+    return {
+        "model": args.model,
+        "max_tokens": 8_192,
+        "tools": [tool],
+        "messages": messages,
+    }
+
+
+def bounded_text(value: Any, limit: int) -> str:
+    return value[:limit] if isinstance(value, str) else ""
+
+
+def safe_source(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    raw_url = value.get("url")
+    if (
+        not isinstance(raw_url, str)
+        or not raw_url
+        or len(raw_url) > MAX_SOURCE_URL_CHARS
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in raw_url)
+    ):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(raw_url)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in ("http", "https")
+        or not hostname
+        or parsed.username
+        or parsed.password
+    ):
+        return None
+    source = {
+        "title": bounded_text(value.get("title"), MAX_SOURCE_TITLE_CHARS),
+        "url": raw_url,
+    }
+    cited_text = bounded_text(value.get("cited_text"), MAX_CITED_TEXT_CHARS)
+    if cited_text:
+        source["cited_text"] = cited_text
+    return source
+
+
+def add_source(
+    sources: list[dict[str, str]],
+    source_indexes: dict[str, int],
+    value: Any,
+) -> None:
+    source = safe_source(value)
+    if source is None:
+        return
+    existing = source_indexes.get(source["url"])
+    if existing is not None:
+        if source.get("title"):
+            sources[existing]["title"] = source["title"]
+        if source.get("cited_text"):
+            sources[existing]["cited_text"] = source["cited_text"]
+        return
+    if len(sources) >= MAX_SOURCES:
+        return
+    source_indexes[source["url"]] = len(sources)
+    sources.append(source)
+
+
+def add_usage(target: dict[str, int], value: Any) -> None:
+    if not isinstance(value, dict):
+        return
+    for field in (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ):
+        count = value.get(field)
+        if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 2**63 - 1:
+            target[field] = min(2**63 - 1, target.get(field, 0) + count)
+    server_tool_use = value.get("server_tool_use")
+    if isinstance(server_tool_use, dict):
+        count = server_tool_use.get("web_search_requests")
+        if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 2**63 - 1:
+            target["web_search_requests"] = min(
+                2**63 - 1, target.get("web_search_requests", 0) + count
+            )
+
+
+def observed_search_uses(response: dict[str, Any]) -> int:
+    usage_count = 0
+    usage = response.get("usage")
+    if isinstance(usage, dict):
+        server_tool_use = usage.get("server_tool_use")
+        if isinstance(server_tool_use, dict):
+            count = server_tool_use.get("web_search_requests")
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                usage_count = min(MAX_SEARCHES, count)
+    result_count = sum(
+        1
+        for block in response.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "web_search_tool_result"
+    )
+    return max(usage_count, min(MAX_SEARCHES, result_count))
+
+
+def validate_provider_response(response: dict[str, Any]) -> None:
+    if "error" in response and response.get("error") is not None:
+        raise ValueError("Anthropic returned a provider error")
+    content = response.get("content")
+    if not isinstance(content, list):
+        raise ValueError("Anthropic returned invalid message content")
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "web_search_tool_result":
+            continue
+        tool_content = block.get("content")
+        if isinstance(tool_content, dict) and tool_content.get("type") == "web_search_tool_result_error":
+            raise ValueError("Anthropic web search returned a tool error")
+
+
+def normalize_responses(responses: list[dict[str, Any]]) -> dict[str, Any]:
+    answer_parts: list[str] = []
+    remaining_answer = MAX_ANSWER_CHARS
+    sources: list[dict[str, str]] = []
+    source_indexes: dict[str, int] = {}
+    usage: dict[str, int] = {}
+    model = ""
+    for response in responses:
+        candidate_model = bounded_text(response.get("model"), MAX_MODEL_CHARS)
+        if candidate_model:
+            model = candidate_model
+        add_usage(usage, response.get("usage"))
+        for block in response.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text = block.get("text")
+                if remaining_answer > 0 and isinstance(text, str) and text:
+                    chunk = text[:remaining_answer]
+                    answer_parts.append(chunk)
+                    remaining_answer -= len(chunk)
+                citations = block.get("citations", [])
+                if isinstance(citations, list):
+                    for citation in citations:
+                        if (
+                            isinstance(citation, dict)
+                            and citation.get("type") == "web_search_result_location"
+                        ):
+                            add_source(sources, source_indexes, citation)
+            elif block.get("type") == "web_search_tool_result":
+                results = block.get("content")
+                if isinstance(results, list):
+                    for result in results:
+                        if isinstance(result, dict) and result.get("type") == "web_search_result":
+                            add_source(sources, source_indexes, result)
+    return {
+        "answer": "\n".join(answer_parts)[:MAX_ANSWER_CHARS],
+        "sources": sources,
+        "model": model,
+        "usage": usage,
+    }
+
+
+def perform_search(
+    api_key: str,
+    args: SimpleNamespace,
+    *,
+    opener: UrlOpen = open_without_redirects,
+) -> dict[str, Any]:
+    messages: list[dict[str, Any]] = [{"role": "user", "content": args.query}]
+    responses: list[dict[str, Any]] = []
+    total_response_bytes = 0
+    remaining_searches = args.max_searches
+    for continuation in range(MAX_PAUSE_CONTINUATIONS + 1):
+        payload = json.dumps(
+            request_body(args, messages, remaining_searches), separators=(",", ":")
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            ANTHROPIC_MESSAGES_ENDPOINT,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": ANTHROPIC_VERSION,
+            },
+            method="POST",
+        )
+        with opener(request, timeout=PROVIDER_TIMEOUT_SECS) as response:
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise ValueError("Anthropic response exceeded the per-response size limit")
+        total_response_bytes += len(raw)
+        if total_response_bytes > MAX_TOTAL_RESPONSE_BYTES:
+            raise ValueError("Anthropic responses exceeded the total size limit")
+        decoded = json.loads(raw)
+        if not isinstance(decoded, dict):
+            raise ValueError("Anthropic returned a non-object response")
+        validate_provider_response(decoded)
+        responses.append(decoded)
+        remaining_searches = max(0, remaining_searches - observed_search_uses(decoded))
+        stop_reason = decoded.get("stop_reason")
+        if stop_reason != "pause_turn":
+            if stop_reason == "tool_use":
+                raise ValueError("Anthropic returned an unsupported client-tool pause")
+            return normalize_responses(responses)
+        if continuation >= MAX_PAUSE_CONTINUATIONS:
+            raise ValueError("Anthropic exceeded the pause-turn continuation limit")
+        if remaining_searches == 0:
+            raise ValueError("Anthropic paused after exhausting the search-use limit")
+        messages.append({"role": "assistant", "content": decoded["content"]})
+    raise ValueError("Anthropic continuation loop terminated unexpectedly")
+
+
+def redacted(value: str, api_key: str) -> str:
+    return value.replace(api_key, "[redacted]") if api_key else value
+
+
+def provider_detail(error: urllib.error.HTTPError, api_key: str) -> str:
+    """The provider's own account of a refusal, bounded and credential-free.
+
+    Anthropic answers a refusal with `{"error": {"type": ..., "message": ...}}`,
+    and the message is the only place the actionable cause appears: an
+    unfunded account, a retired model id, a tool version this account cannot
+    use, and an expired key are all HTTP 4xx and are indistinguishable without
+    it. The credential travels in a header rather than the body, but redaction
+    runs anyway — before the bound, so a key cannot survive as a tail fragment
+    — because a provider may quote a request back.
+    """
+    try:
+        raw = error.read(MAX_FAILURE_BODY_BYTES)
+    except Exception:  # noqa: BLE001 - a stream that cannot be read has no detail
+        return ""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    try:
+        decoded = json.loads(text)
+    except (ValueError, TypeError):
+        decoded = None
+    message = ""
+    if isinstance(decoded, dict):
+        envelope = decoded.get("error")
+        if isinstance(envelope, dict):
+            message = envelope.get("message") or envelope.get("type") or ""
+        elif isinstance(envelope, str):
+            message = envelope
+        if not isinstance(message, str):
+            message = ""
+    if not message:
+        message = text
+    message = redacted(" ".join(message.split()), api_key)
+    return message[:MAX_FAILURE_DETAIL_CHARS]
+
+
+def failure_envelope(error: BaseException, api_key: str) -> dict[str, Any]:
+    """One shape for every failure, carrying whatever the failure actually knew.
+
+    The class name alone was the whole envelope, which reported `HTTPError` for
+    a refusal whose real content was "your credit balance is too low". A name
+    with no status and no message cannot be acted on and cannot be told apart
+    from an outage, so the lane's red taught nothing. The name is kept — it is
+    the stable field callers already read — and the status and the provider's
+    message are added beside it.
+    """
+    envelope: dict[str, Any] = {"error": type(error).__name__}
+    if isinstance(error, urllib.error.HTTPError):
+        envelope["status"] = error.code
+        detail = provider_detail(error, api_key)
+        if detail:
+            envelope["detail"] = detail
+    return envelope
+
+
+def main(input_bytes: bytes | None = None) -> int:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        print(json.dumps({"error": "ANTHROPIC_API_KEY not set"}), file=sys.stderr)
+        return 2
+    try:
+        args = parse_input(input_bytes if input_bytes is not None else sys.stdin.buffer.read(MAX_INPUT_BYTES + 1))
+        output = perform_search(api_key, args)
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ) as error:
+        print(json.dumps(failure_envelope(error, api_key)), file=sys.stderr)
+        return 1
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,63 @@
+name: app_discover
+description: Discover enabled apps and, only after selecting one, its bounded personal-agent entity, view, action and sanitized schema contracts. Direct attested owner chat only; metadata follows the caller's trusted processing class.
+version: "1.0.0"
+result_projection:
+  contract_id: app_discovery_metadata_v1
+  priority_fields:
+    - kind
+    - error_code
+    - installation_id
+    - name
+    - entities
+    - views
+    - actions
+    - next_cursor
+    - has_more
+guide: |
+  Tool name: `app_discover`
+
+  Call without `installation_id` to list or prefix-search a bounded page of enabled
+  apps. Then call with exactly one returned `installation_id` to inspect that
+  app's currently approved fields, views, user-triggered actions and sanitized
+  input/result shapes. Actions with a denied runner, personality, tool, or any
+  input field unsafe for this physical model are omitted. Detail mode cannot
+  be combined with list arguments.
+
+  Discovery returns identifiers and schema shape, not app record values,
+  permissions, storage, routes, authority revisions or policy internals.
+  Disabled, revoked, cross-scope, unknown, globally policy-denied and
+  operationally unavailable apps all return the same stable unavailable code.
+  `result_delivery: typed_when_eligible` means direct invoke may return the
+  complete displayed result schema; `run_handle_only` omits that schema.
+  Use `app_action_compose` for result-to-action transfer with provenance.
+parameters:
+  - name: installation_id
+    param_type: string
+    description: Selected enabled installation. Omit for shallow list/search mode.
+    schema: {type: string, minLength: 1}
+  - name: query
+    param_type: string
+    description: Optional case-insensitive app-name prefix, at most 128 bytes. List mode only.
+    schema: {type: string, minLength: 1, maxLength: 128}
+  - name: cursor
+    param_type: string
+    description: Opaque query-bound cursor returned by a prior list page. List mode only.
+    schema: {type: string, minLength: 1, maxLength: 512}
+  - name: limit
+    param_type: integer
+    description: List page size in [1, 24]. Defaults to 12. List mode only.
+    schema: {type: integer, minimum: 1, maximum: 24}
+implementation:
+  type: compiled
+  provider_name: app_discover
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - apps
+    - discovery
+  composition_category: action
+  sandbox: none
+reliability:
+  read_only: true
+  idempotent: true

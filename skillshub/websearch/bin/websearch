@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Bounded DuckDuckGo HTML search over canonical governed input.
+
+Two failure modes are kept apart on purpose, because collapsing them is what
+took this skill dark: "DuckDuckGo answered and had nothing for this query"
+prints an empty array, while "DuckDuckGo was not reached, served its bot
+challenge, or returned a page with no results container" prints an error
+envelope. Silence used to cover both.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+
+ENDPOINT = "https://html.duckduckgo.com/html/"
+
+# A complete, well-formed browser User-Agent. This is load-bearing, not
+# decoration: the previous value stopped at "AppleWebKit/537.36" with no
+# "(KHTML, like Gecko) Chrome/... Safari/..." tail, and DuckDuckGo answered
+# every such request with HTTP 202 and its "bots use DuckDuckGo too" CAPTCHA
+# page instead of results. The parser was never the problem — it still matches
+# the current markup — the request was.
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+ACCEPT_LANGUAGE = "en-US,en;q=0.9"
+
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_SNIPPET_CHARS = 2_000
+# Every organic result link is wrapped in this redirect. Sponsored blocks use
+# `//duckduckgo.com/y.js?ad_provider=` instead, so requiring the wrapper drops
+# ads without needing a separate ad-detection rule that would rot on its own.
+REDIRECT_PATH = "/l/"
+# DuckDuckGo serves the protocol-relative form today. The host-relative form is
+# accepted too: we only ever parse DuckDuckGo's own document, so a same-origin
+# `/l/?uddg=` there is unambiguously the same wrapper. Rejecting it would mean a
+# markup change drops every result and returns zero without an error, which is
+# the silent-zero failure this adapter was repaired for.
+REDIRECT_HOSTS = ("duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com")
+CHALLENGE_MARKERS = ("anomaly-modal", "anomaly.js")
+# One retry only. The challenge is sometimes served to a well-formed request
+# under load; a persistent challenge is a real outage and must be reported as
+# one rather than retried until the governed timeout kills the call.
+CHALLENGE_RETRIES = 1
+CHALLENGE_BACKOFF_SECS = 2.0
+
+
+class ProviderUnavailable(RuntimeError):
+    """The provider was not reached, or answered with something unparseable."""
+
+
+class DuckDuckGoResults(HTMLParser):
+    """Extract results by structure rather than by one ordered mega-regex.
+
+    This keys off the two things DuckDuckGo has kept stable across redesigns:
+    the `//duckduckgo.com/l/?uddg=` redirect wrapper that every organic result
+    link carries, and the `result__a` / `result__snippet` class hooks. Title
+    and snippet are collected independently, so a result shipped without a
+    snippet is still returned; the single ordered regex this replaces required
+    both, in that order, and dropped the whole block otherwise.
+
+    It also records whether the results container was present at all. That is
+    the difference between "the page said there is nothing" and "this was not
+    a results page", and only the second is an error.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict] = []
+        self.saw_results_container = False
+        self._title_depth = 0
+        self._snippet_depth = 0
+        self._buffer: list[str] = []
+        self._pending_url: str | None = None
+
+    @staticmethod
+    def _classes(attrs: dict[str, str | None]) -> set[str]:
+        return set((attrs.get("class") or "").split())
+
+    @staticmethod
+    def _target_url(href: str | None) -> str | None:
+        """Unwrap DuckDuckGo's redirect into the destination it points at."""
+        if not href:
+            return None
+        parsed = urllib.parse.urlsplit(href)
+        # `//duckduckgo.com/l/?uddg=...` parses as netloc + path; a relative
+        # `/l/?uddg=...` parses as path only. Accept either, but never another
+        # host: an absolute link to somewhere else is not DuckDuckGo's wrapper.
+        if parsed.netloc and parsed.netloc.lower() not in REDIRECT_HOSTS:
+            return None
+        if not parsed.path.startswith(REDIRECT_PATH):
+            return None
+        target = urllib.parse.parse_qs(parsed.query).get("uddg")
+        if not target or not target[0]:
+            return None
+        return target[0]
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        attributes = dict(attrs)
+        if attributes.get("id") == "links":
+            self.saw_results_container = True
+
+        if self._title_depth:
+            self._title_depth += 1
+            return
+        if self._snippet_depth:
+            self._snippet_depth += 1
+            return
+
+        classes = self._classes(attributes)
+        if "result__a" in classes:
+            target = self._target_url(attributes.get("href"))
+            if target is None:
+                return
+            self._pending_url = target
+            self._title_depth = 1
+            self._buffer = []
+        elif "result__snippet" in classes and self.results:
+            self._snippet_depth = 1
+            self._buffer = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._title_depth:
+            self._title_depth -= 1
+            if self._title_depth == 0:
+                self.results.append({
+                    "title": "".join(self._buffer).strip(),
+                    "url": self._pending_url or "",
+                    "snippet": "",
+                })
+                self._buffer = []
+                self._pending_url = None
+            return
+        if self._snippet_depth:
+            self._snippet_depth -= 1
+            if self._snippet_depth == 0:
+                text = " ".join("".join(self._buffer).split())
+                if self.results and not self.results[-1]["snippet"]:
+                    self.results[-1]["snippet"] = text[:MAX_SNIPPET_CHARS]
+                self._buffer = []
+
+    def handle_data(self, data: str) -> None:
+        if self._title_depth or self._snippet_depth:
+            self._buffer.append(data)
+
+
+def parse_results(markup: str, num_results: int) -> list[dict]:
+    """Turn a DuckDuckGo results page into bounded result records.
+
+    Raises `ProviderUnavailable` when the markup is not a results page —
+    a challenge, an error page, or a redesign this parser no longer
+    understands. An empty list means the page was a results page that
+    carried nothing.
+    """
+    if any(marker in markup for marker in CHALLENGE_MARKERS):
+        raise ProviderUnavailable(
+            "DuckDuckGo served its bot challenge instead of results"
+        )
+    parser = DuckDuckGoResults()
+    parser.feed(markup)
+    parser.close()
+    if not parser.saw_results_container:
+        raise ProviderUnavailable(
+            "response carried no DuckDuckGo results container; the endpoint or "
+            "its markup changed"
+        )
+    return [result for result in parser.results if result["url"]][:num_results]
+
+
+def fetch(query: str, timeout_secs: int) -> tuple[str, int]:
+    url = f"{ENDPOINT}?{urllib.parse.urlencode({'q': query})}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": ACCEPT,
+            "Accept-Language": ACCEPT_LANGUAGE,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout_secs) as response:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise ProviderUnavailable("provider response exceeds local size limit")
+        return raw.decode("utf-8", errors="replace"), response.status
+
+
+def search(query: str, num_results: int, timeout_secs: int) -> list[dict]:
+    last_error: ProviderUnavailable | None = None
+    for attempt in range(CHALLENGE_RETRIES + 1):
+        markup, status = fetch(query, timeout_secs)
+        try:
+            return parse_results(markup, num_results)
+        except ProviderUnavailable as error:
+            last_error = ProviderUnavailable(f"{error} (HTTP {status})")
+            if attempt < CHALLENGE_RETRIES:
+                time.sleep(CHALLENGE_BACKOFF_SECS)
+    raise last_error  # type: ignore[misc]
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    query = str(request["query"])
+    num_results = int(request.get("num_results", 10))
+    timeout_secs = int(request.get("timeout_secs", 15))
+
+    started = time.monotonic()
+    error: dict | None = None
+    results: list[dict] = []
+    try:
+        results = search(query, num_results, timeout_secs)
+    except urllib.error.HTTPError as exc:
+        error = {"kind": "HTTPError", "message": f"HTTP {exc.code}: {exc.reason}"}
+    except urllib.error.URLError as exc:
+        error = {"kind": "URLError", "message": f"network: {exc.reason}"}
+    except Exception as exc:  # noqa: BLE001
+        error = {"kind": type(exc).__name__, "message": str(exc)[:500]}
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    parts = [
+        "[websearch]",
+        f"status={'failed' if error else 'ok'}",
+        f"count={len(results)}",
+        f"duration_ms={duration_ms}",
+    ]
+    if error:
+        parts.append(f'reason="{error["message"]}"')
+    sys.stderr.write(" ".join(parts) + "\n")
+    sys.stderr.flush()
+
+    # An error is an object and a success is an array. The shapes are
+    # deliberately different so a consumer that expected results cannot read a
+    # failure as "nothing matched" — which is exactly how this went unnoticed.
+    print(json.dumps({"error": error} if error else results, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

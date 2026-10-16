@@ -1,0 +1,63 @@
+name: save_selection_to_note
+description: Save a passage from somewhere else into Notes, keeping where it came from. Use for quoted material, not for prose you wrote.
+version: "1.0.0"
+guide: |
+  Tool name: `save_selection_to_note`
+
+  Files text that belongs to something else — a web page, a document, a message —
+  into the owner's Notes with its source attached. The passage is quoted in the
+  note, and the source is written beneath it.
+
+  Use it when the owner says to keep, clip, or save something they are looking
+  at, or when you are quoting a source they will want to check later. A quote
+  filed without its origin is a quote they cannot verify, which is most of why
+  they wanted it kept.
+
+  Use `append_note` instead for prose YOU wrote — a summary, a conclusion, your
+  own note to them. That text has no external source, and quoting it would
+  misattribute your words to somewhere else.
+
+  Pass whatever provenance you actually have. `source_url`, `source_title` and
+  `source_app` are each optional and omitted fields are simply left out — do NOT
+  invent a plausible URL or title to fill them, because a wrong source is worse
+  than a missing one.
+
+  With no `target_path` the capture lands on that day's `Inbox` page, which is
+  where captures collect without asking the owner to choose a home.
+
+  Read the response rather than assuming it: `provider` is where it ACTUALLY
+  landed, and `used_fallback` true means the requested provider was unavailable,
+  with `fallback_reason` saying why. `path` is what to show the owner.
+
+  On error, `retryable` distinguishes a provider outage — worth one retry — from
+  a bad argument, which retrying unchanged cannot fix.
+parameters:
+  - name: text
+    required: true
+    param_type: string
+    description: The passage to save, exactly as it appears in the source.
+  - name: source_url
+    param_type: string
+    description: Where the passage came from, if there is a URL. Omit rather than guess.
+  - name: source_title
+    param_type: string
+    description: Title of the page or document, if known. Omit rather than guess.
+  - name: source_app
+    param_type: string
+    description: Application the passage was read in, if known.
+  - name: target_path
+    param_type: string
+    description: Note to file it into, relative to the notes space. Omit for that day's Inbox page.
+  - name: provider
+    param_type: string
+    description: Optional notes provider override. Normally omit — the scope's configured default and fallback already apply.
+implementation:
+  type: compiled
+  provider_name: save_selection_to_note
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - notes
+  composition_category: action
+  sandbox: none

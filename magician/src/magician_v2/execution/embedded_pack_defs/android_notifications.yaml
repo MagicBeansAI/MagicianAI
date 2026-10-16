@@ -1,0 +1,49 @@
+name: android_notifications
+description: Read what is waiting in the Android phone's notification shade. Use when the person asks what their phone is showing them, or when an app's state is easier to learn from its notification than from its screen.
+version: "1.0.0"
+guide: |
+  Tool name: `android_notifications`
+
+  Returns the phone's notifications: title, text, package, timestamp, and
+  whether each can be cleared. Pass `active_only: true` for the shade as it
+  stands now, rather than what has been posted recently.
+
+  Verification material is withheld before it reaches you. A notification the
+  phone judges to carry a login code, a one-time passcode or similar comes
+  back with its title and text replaced by a withheld marker, and the number
+  of such notifications is reported as `withheld_count`. This is deliberate:
+  a code reaches a run through the custody lane, never through a tool result,
+  so reading it here would put it in front of the model — which is the one
+  place it must never be.
+
+  So when `withheld_count` is not zero, do not go looking for the same text
+  another way. A screenshot or a UI snapshot of the shade is the same secret
+  through a different door, and it is the door without the lock. Ask the
+  person, or — if a run is waiting on a code — let the phone answer the ask
+  itself; that path is already built and needs nothing from you.
+parameters:
+  - name: active_only
+    param_type: boolean
+    description: Only the notifications currently showing in the shade.
+  - name: device
+    param_type: string
+    description: Which phone, when more than one is connected.
+implementation:
+  type: compiled
+  provider_name: android_notifications
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 45
+  # Deliberately NOT `android`: that category marks a pack as an Apps
+  # Android device-owner primitive, which must resolve to reviewed action
+  # leaves under the eight-action owner roster. Reading notifications is not
+  # one of those actions — the handset serves it under its own
+  # NOTIFICATION_FILTERED disposition, without action review — so claiming the
+  # category makes the primitive catalog unable to resolve this pack and takes
+  # the whole compiled catalog down with it.
+  categories:
+    - mobile
+    - notifications
+    - read
+  composition_category: read
+  sandbox: none

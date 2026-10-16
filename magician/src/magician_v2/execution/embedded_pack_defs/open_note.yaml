@@ -1,0 +1,42 @@
+name: open_note
+description: Find an existing note and return the link that opens it. Read-only — creates nothing.
+version: "1.0.0"
+guide: |
+  Tool name: `open_note`
+
+  Resolves one note by its path inside the owner's Notes space and returns the
+  URL that opens it, plus which provider it actually lives in.
+
+  Use it when you are about to point the owner at a note — after writing one,
+  or when they ask where something is. Giving them a link beats naming a file.
+
+  `path` is relative to the notes space, exactly as `create_note`,
+  `append_note` and `publish_task_to_note` return it in their `path` field. A
+  note created without a `target_dir` lives under `Inbox`.
+
+  Read-only: it does not create the note, its folder, or anything else. A path
+  that exists in no configured provider comes back as `note_not_found` with
+  `retryable` false — that means the path is wrong, not that the space is down,
+  so re-check the path rather than calling again.
+
+  `open_url` can be null even on success when the provider cannot express a
+  link for that page. `absolute_path` is still correct, so fall back to telling
+  the owner the path rather than presenting a null link.
+
+  This tool does NOT search. If you do not already know the path, you cannot
+  discover it here.
+parameters:
+  - name: path
+    required: true
+    param_type: string
+    description: Path of the note relative to the notes space, as returned in the `path` field of a notes write.
+implementation:
+  type: compiled
+  provider_name: open_note
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - notes
+  composition_category: read
+  sandbox: none

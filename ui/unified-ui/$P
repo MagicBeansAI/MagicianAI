@@ -1,0 +1,727 @@
+/**
+ * The seam: a `Task` from the store, mapped onto the panel's `TaskPanelModel`.
+ *
+ * Pure, and deliberately the **only** place the two vocabularies meet. The task
+ * store and the panel's modules disagree about three things, and each
+ * disagreement is settled here once rather than at every call site:
+ *
+ * 1. **How absence is spelled.** The store says `undefined` (`Task.planStatus?`,
+ *    `Task.lastProgressAt?`); the pure modules say `null` throughout. The
+ *    coercion is a `?? null` here, at the boundary — never a widening of the
+ *    modules to `| null | undefined`, which would put two spellings for absence
+ *    inside one module and make every downstream check ambiguous.
+ * 2. **What a status is called.** `TaskStatus` has nine values; `deriveVerdict`
+ *    models five status words. See `VERDICT_STATUS`.
+ * 3. **What an output file is.** The store carries artifact names; the outputs
+ *    endpoint carries a relative path and a media type, which is what the
+ *    panel's kind classification and its open/reveal affordances both need.
+ *
+ * It also takes one input that is neither store nor panel: the raw
+ * `/execution-panel` payload for this task's current run. That is deliberate and
+ * not a fourth vocabulary — two of the panel's slices are derived from it, and
+ * both have to be about the execution the Run act names, which is a fact only
+ * this function holds. Deriving them at the four call sites instead would be
+ * four chances to read a different run's events under this run's heading.
+ *
+ * See `docs/plans/2026-07-29-unified-task-panel-design.md` and
+ * `docs/components/unified-ui/unified-task-panel.md`.
+ */
+
+import type { HitlOpenTarget } from '$lib/hitl/types';
+import type { PlanStep, Task, TaskStatus } from '$lib/stores/taskStore';
+import type { ExecutionPanelState } from '$lib/types/executionPanel';
+
+import type { OutputKind } from './actSummaries';
+import { askTargetFrom, runAttentionFrom, type TaskAsk } from './taskAttention';
+import { deriveTimeline } from './taskTimeline';
+import type {
+	RunStepStatus,
+	TaskPanelFile,
+	TaskPanelModel,
+	TaskPanelOutput,
+	TaskPanelPlan,
+	TaskPanelQuestion,
+	TaskPanelRun,
+	TaskPanelRunStep
+} from './UnifiedTaskPanel.svelte';
+
+/**
+ * One provenance row, restated structurally rather than imported from
+ * `TaskActSection.svelte`. The panel's slices type theirs as `ProvenanceEntry`,
+ * so these still have to satisfy it — a field added there fails to compile here
+ * rather than passing through under-populated.
+ */
+export interface ProvenanceRow {
+	label: string;
+	value: string;
+}
+
+/**
+ * An output file the panel renders.
+ *
+ * **One name for one thing**: this is `TaskPanelFile`, the panel's own file
+ * shape, re-exported under the name both workspaces already import. It used to
+ * be a wider local type over a narrower panel one, because the panel's contract
+ * needed only a name and a kind — but a row that shows a thumbnail, a size and a
+ * download needs the path, the mime and a URL, and two shapes for one file is
+ * how a row and the handler that acts on it come to disagree about which file
+ * they mean.
+ */
+export type PanelOutputFile = TaskPanelFile;
+
+/**
+ * One row of `GET /api/magician/v3/tasks/{id}/outputs`. Only the fields this
+ * module reads are declared; the endpoint sends more, and a shape that restated
+ * all of it would be a second copy of a contract nothing here checks.
+ */
+export interface TaskOutputRef {
+	relative_path?: string | null;
+	media_type?: string | null;
+	size_bytes?: number | null;
+}
+
+/**
+ * Where a file's bytes are served, given its path — or `null` when the caller
+ * cannot say.
+ *
+ * A function rather than a base URL, because only the caller knows the scope the
+ * request has to carry, and only the caller knows whether its task id is one the
+ * outputs endpoint can answer for at all. A caller with no answer returns `null`
+ * and every affordance that needs a URL is simply absent, which is the same
+ * absent-not-greyed rule the acts follow.
+ */
+export type OutputUrlFor = (path: string) => string | null;
+
+/**
+ * The status word each task status becomes for `deriveVerdict`.
+ *
+ * A `Record<TaskStatus, string>`, so a tenth task status is a compile error
+ * here. That guard is the point: `deriveVerdict`'s final branch is
+ * unconditional, so **an unmapped status silently reads `Finished`** — the
+ * loudest possible lie about a task that has not started, and one nothing on
+ * screen would contradict.
+ *
+ * Five of the nine map onto a status word the verdict models. The other four —
+ * `pending`, `planning`, `ready`, `deferred` — are all "has not started", and
+ * `queued` is the verdict's only state that says that without claiming
+ * finality, progress or failure.
+ *
+ * **`paused` is mapped to `queued` under protest, and it is the one row here
+ * that is not a translation but a compromise.** A paused run is suspended, not
+ * queued, and `queued`'s second line reads `Waiting for a free slot`, which is
+ * the wrong reason for the right state. The alternatives are worse: `running`
+ * would claim progress and start the stall clock on a deliberate pause, and
+ * `cancelled` is `SETTLED`, so the Output act would answer `no output` for a run
+ * that can still resume.
+ *
+ * **This comment used to claim the common case was covered, and it was wrong.**
+ * The store does normalise `waiting_for_user` to `paused` — but the questions
+ * that would rank such a task as `waiting` before this map is consulted are
+ * *plan-time* clarifications, and a task blocked mid-run on an approval, a diff
+ * review, an escalation or a bot sign-in carries none of them. Every one of
+ * those read `Queued · Waiting for a free slot` while waiting on the reader,
+ * which is the exact failure the design was written to prevent. The ask is now
+ * fetched separately and reaches the verdict through `attentionOf`; see
+ * `taskAttention.ts`. What is left on this row is a genuinely user-paused run,
+ * which reads `Queued`, and a mid-run block whose ask the fetch could not read.
+ *
+ * The remaining honest fix is a design decision rather than an adapter one:
+ * either an eighth verdict state, or per-status copy on the `queued` row.
+ * Recorded in the component doc.
+ */
+const VERDICT_STATUS: Record<TaskStatus, string> = {
+	running: 'running',
+	failed: 'failed',
+	cancelled: 'cancelled',
+	completed: 'finished',
+	pending: 'queued',
+	planning: 'queued',
+	ready: 'queued',
+	deferred: 'queued',
+	paused: 'queued'
+};
+
+/** Media types a reader opens and reads. Everything else is data or unknown. */
+const DOCUMENT_MEDIA_TYPES = new Set([
+	'application/pdf',
+	'application/msword',
+	'application/rtf',
+	'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+]);
+
+/**
+ * Extensions, for the rows that arrive without a media type. A weaker signal
+ * than the mime, so it is consulted second and never overrides one.
+ */
+const DOCUMENT_EXTENSIONS = new Set(['md', 'markdown', 'txt', 'pdf', 'html', 'htm', 'doc', 'docx', 'rtf']);
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif']);
+
+function extensionOf(path: string): string {
+	const base = path.split('/').pop() ?? path;
+	const dot = base.lastIndexOf('.');
+	return dot <= 0 ? '' : base.slice(dot + 1).toLowerCase();
+}
+
+/**
+ * What kind of thing this file is, for the summary's plural. The mime is
+ * authoritative when present — design §4 notes that real output carries one —
+ * and the extension is the fallback rather than the rule.
+ *
+ * There is no `chart` kind and no `data` kind, for the reasons `KIND_PLURAL`
+ * gives: nothing here can tell a chart from a photograph, and `2 data files`
+ * tells a reader no more than `2 other files`.
+ */
+export function outputKindOf(mediaType: string | null | undefined, path: string): OutputKind {
+	const mime = (mediaType ?? '').trim().toLowerCase();
+	if (mime) {
+		if (mime.startsWith('image/')) return 'image';
+		if (mime.startsWith('text/') || DOCUMENT_MEDIA_TYPES.has(mime)) return 'document';
+		return 'other';
+	}
+
+	const extension = extensionOf(path);
+	if (IMAGE_EXTENSIONS.has(extension)) return 'image';
+	if (DOCUMENT_EXTENSIONS.has(extension)) return 'document';
+	return 'other';
+}
+
+/**
+ * The outputs endpoint's rows as panel files, in the order it sent them —
+ * `outputSummary` names the first one, so the order is the caller's claim about
+ * which output matters, not this module's.
+ *
+ * Rows with no path are dropped rather than rendered nameless: there is nothing
+ * to display, nothing to open, and a blank row would assert a file exists while
+ * being unable to say which.
+ */
+export function outputFilesFrom(
+	refs: readonly TaskOutputRef[],
+	urlFor: OutputUrlFor = () => null
+): PanelOutputFile[] {
+	const files: PanelOutputFile[] = [];
+	for (const ref of refs) {
+		const path = typeof ref.relative_path === 'string' ? ref.relative_path.trim() : '';
+		if (!path) continue;
+		const mediaType = typeof ref.media_type === 'string' ? ref.media_type.trim() : '';
+		files.push({
+			// The basename, because the design's line is `report.md and 2 images`
+			// rather than a directory tree. The full path is kept on `path` and
+			// rendered in the act's provenance, which is where L3 detail belongs.
+			name: path.split('/').pop() || path,
+			kind: outputKindOf(ref.media_type, path),
+			path,
+			// The mime as reported, never inferred from the extension. `outputKindOf`
+			// above does fall back to the extension, and deliberately so — it is
+			// choosing a plural for a summary. This is shown to the reader as a
+			// fact about the file, and an extension-derived mime would be a guess
+			// printed as one.
+			mediaType: mediaType || null,
+			sizeBytes:
+				typeof ref.size_bytes === 'number' && Number.isFinite(ref.size_bytes)
+					? ref.size_bytes
+					: null,
+			url: urlFor(path)
+		});
+	}
+	return files;
+}
+
+/**
+ * The asks blocking this task, first one first. Empty strings are not asks.
+ *
+ * **They keep their ids**, which is what B5 turned from decoration into
+ * load-bearing: the id a task-list row carries for a plan question is the same
+ * id the backend uses as that clarification's `correlation_id`, so it is what
+ * matches the store's ask to the answerable target the run payload publishes for
+ * it. Matching on the question *text* would work today and stop working the
+ * first time either side trimmed or reflowed a string, with nothing to notice.
+ */
+function questionsOf(task: Task): TaskPanelQuestion[] {
+	const listed = task.pendingQuestions ?? (task.pendingQuestion ? [task.pendingQuestion] : []);
+	return listed
+		.map((entry) => ({ id: entry.id?.trim() ?? '', question: entry.question?.trim() ?? '' }))
+		.filter((entry) => entry.question.length > 0);
+}
+
+/**
+ * The answerable target the run payload published for one plan question, by id.
+ *
+ * `/execution-panel` builds a `hitl_request` for every pending clarification and
+ * sets its `id` to the session question's id — the same id the task-list row
+ * carries. So this is an identifier match against a contract, not a heuristic:
+ * either the payload holds a target for *this* question or it holds none, and a
+ * near-miss produces `null` rather than a control that answers a different ask.
+ */
+function clarificationTargetFor(
+	runState: ExecutionPanelState | null,
+	questionId: string
+): HitlOpenTarget | null {
+	if (!questionId) return null;
+	for (const question of runState?.run?.pending_questions ?? []) {
+		const target = askTargetFrom(question?.hitl_request);
+		if (target && target.id === questionId) return target;
+	}
+	return null;
+}
+
+/**
+ * **B6 — a draft plan is an ask, and it never read as one.**
+ *
+ * `planStatus: 'draft'` normalises to task status `pending`, which
+ * `VERDICT_STATUS` maps to `queued`, so a plan sitting there waiting for the
+ * reader's approval reported `Queued · Waiting for a free slot`. That is the
+ * same lie the mid-run ask fixed one field over, and it is why `approvePlan` and
+ * `rejectPlan` had no reachable call site from this route: there was nothing on
+ * the panel saying an approval was wanted.
+ *
+ * **The wire wins when it speaks.** Phase F surfaces plan approval as a
+ * confirmation-shaped HITL in `/attention`, so when the run payload carries one
+ * it arrives through `runAttentionFrom` and this never fires. This is the
+ * fallback for a task whose row says `draft` and whose payload published no row
+ * — which is the common case on `/tasks`, because a task awaiting plan approval
+ * has no live execution for `/execution-panel` to describe.
+ *
+ * Everything here is a fact on the task record rather than a construction:
+ * `correlation_id` **is** the plan id (the runtime's dispatcher looks the plan up
+ * by it), `task_id` is the responder identity the dispatcher requires, and
+ * `raisedAt` is the plan record's own update instant — for a draft, the update
+ * that produced it, which is when the approval became due. A task with no
+ * `latestPlanId` yields nothing: there is no id to answer against, and an ask
+ * that cannot be answered is worse than a status that is merely vague.
+ */
+function planApprovalAsk(task: Task): TaskAsk | null {
+	if (task.planStatus !== 'draft') return null;
+	const planId = text(task.latestPlanId);
+	if (!planId) return null;
+	return {
+		attention: {
+			source: 'plan_approval',
+			// No summary, so `deriveVerdict` fills the detail from `ATTENTION_COPY`
+			// — `Approve the plan before it can run`. Writing a sentence here would
+			// be a second copy of copy that already exists for this source.
+			summary: null,
+			raisedAt: task.planGeneratedAt ?? null
+		},
+		ask: {
+			id: planId,
+			source: 'plan_approval',
+			input_type: 'confirmation',
+			prompt: 'Approve this plan so it can run?',
+			input_schema: { confirm_label: 'Approve', deny_label: 'Reject' },
+			identifiers: { correlation_id: planId },
+			scope: { workflow_id: task.id, task_id: task.id },
+			at: task.planGeneratedAt
+		}
+	};
+}
+
+/**
+ * The ask blocking this task, or `null`.
+ *
+ * **Two sources, and they answer different questions.** The store's
+ * `pendingQuestions` are *plan-time* clarifications and nothing else — they are
+ * the only ask a task-list row carries. A task blocked **mid-run** on an
+ * approval, a diff review, an escalation or a bot sign-in appears on that row as
+ * an ordinary `paused`, which this module maps to `queued`, and the panel then
+ * reads `Queued · Waiting for a free slot` for a task that is waiting on the
+ * reader. `runAttention` is the second source, fetched per task from the
+ * execution-panel payload; see `taskAttention.ts` for why that endpoint and not
+ * another.
+ *
+ * **Plan questions keep priority**, so nothing an existing task reads today
+ * changes: the mid-run ask fills a gap rather than competing for a slot. The
+ * pathological case — a stale plan question on a task now blocked mid-run —
+ * opens the Plan act on the question it can still see, which is wrong about
+ * where to go and right about what is being asked.
+ *
+ * For a plan question, **`source: 'clarification'` is chosen because it routes
+ * to the act that holds the ask, not because the store told us the source.** The
+ * store carries the questions and nothing about where they came from;
+ * `VerdictAttention.source` is read for exactly two things, and only one of them
+ * is reachable here. It picks the default-open act — and the Plan act is the
+ * only place this model renders questions, so any run-time source would open an
+ * act where nothing is being asked. The other use, the per-source fallback
+ * sentence, never fires: `summary` is always the question itself, which outranks
+ * it. `raisedAt` is `null` because no timestamp for a plan question exists on the
+ * task record; design §5 is explicit that the duration is omitted rather than
+ * approximated from the nearest available instant.
+ *
+ * A run ask has neither problem. Its source is a fact the backend supplied
+ * rather than a routing choice, and it carries the instant it was raised — so it
+ * is the first ask on this panel whose `Waiting on you · 12m` is measured rather
+ * than omitted.
+ *
+ * `runAttentionFrom` is the same reader the execution adapter uses, over the
+ * same field of the same payload, so the two surfaces cannot come to different
+ * conclusions about which rows are asks.
+ *
+ * **Each branch carries the control for its own ask, or none.** The plan-question
+ * branch looks its target up by the question's id and the run branch keeps the
+ * one attached to the row it read, so the verdict and the control always name the
+ * same ask — see `TaskAsk`. A branch that found no target still returns: the
+ * verdict is about an ask that exists whether or not this client can answer it.
+ */
+function attentionOf(task: Task, runState: ExecutionPanelState | null): TaskAsk | null {
+	const questions = questionsOf(task);
+	if (questions.length > 0) {
+		return {
+			attention: { source: 'clarification', summary: questions[0].question, raisedAt: null },
+			ask: clarificationTargetFor(runState, questions[0].id)
+		};
+	}
+	return runAttentionFrom(runState?.run?.needs_attention ?? []) ?? planApprovalAsk(task);
+}
+
+/**
+ * The step the run is on, 1-based, or `null`.
+ *
+ * Read off the step list the Run act body renders rather than off
+ * `Task.currentStepIndex`, for the reason design §4 gives about the Run act's
+ * counts: two sources for one fact can disagree about the same run, and the
+ * body is the one the reader can check. `currentStepIndex` is also only written
+ * for an execution this browser session is driving, so it is absent for exactly
+ * the tasks a panel is most often opened on.
+ */
+function liveStepOf(task: Task): number | null {
+	const index = (task.planSteps ?? []).findIndex((step) => step.status === 'in_progress');
+	return index === -1 ? null : index + 1;
+}
+
+/**
+ * The step statuses this client recognises. A `Record` over the store's own
+ * union, so a seventh `PlanStep` status is a compile error here rather than a
+ * row whose mark quietly disappears — and the values are the panel's union, so a
+ * typo fails against it rather than rendering nothing.
+ *
+ * The two unions are spelled identically today and are still mapped rather than
+ * cast: they belong to different modules with different reasons to change, and
+ * the map is what makes a divergence a compile error instead of a silent gap.
+ */
+const STEP_STATUS: Record<PlanStep['status'], RunStepStatus> = {
+	pending: 'pending',
+	in_progress: 'in_progress',
+	completed: 'completed',
+	failed: 'failed',
+	skipped: 'skipped',
+	cancelled: 'cancelled'
+};
+
+/**
+ * The step statuses a **delegated child run** reports, as this client's.
+ *
+ * The wire word is `WaitingState`, serialised as its Rust variant name — so the
+ * keys are `PascalCase` and not the snake_case the rest of this payload uses.
+ * That is not a typo to tidy: the enum carries no `rename_all`, its sibling
+ * enums do, and `ExecutionResponsibilityPanel.svelte` already switches on the
+ * same PascalCase spellings. A fixture written in snake_case would be a fixture
+ * asserting a shape the backend cannot produce, and every test over it would
+ * pass while the feature was dead.
+ *
+ * Not a `Record` over a union, because the field is typed `string` on the wire:
+ * there is no union to be exhaustive against and no compile error to be had. The
+ * guard available instead is the fallback — an unmapped word yields `null` and
+ * the row renders **no** marker, which claims least.
+ *
+ * Three rows are judgements rather than translations:
+ *
+ * - **`WaitingChildren` is `in_progress`**, not `waiting`. The child is mid-run
+ *   and waiting on *its own* children; nothing is being asked of the reader, and
+ *   `waiting` on this panel means work that has stopped until something acts.
+ * - **`WaitingUser` and `Paused` are `waiting`**, which is the status this union
+ *   gained for them. `pending` would claim the work never started — false for a
+ *   run suspended mid-flight, and the reader would have no way to tell.
+ * - **`Runnable` and `PlanningComplete` are `pending`**: both mean "ready, not
+ *   yet begun", which is exactly what `pending` says.
+ */
+const CHILD_STATUS: Readonly<Record<string, RunStepStatus>> = {
+	Planning: 'pending',
+	PlanningComplete: 'pending',
+	Runnable: 'pending',
+	Executing: 'in_progress',
+	WaitingChildren: 'in_progress',
+	WaitingUser: 'waiting',
+	Paused: 'waiting',
+	Completed: 'completed',
+	Failed: 'failed',
+	Cancelled: 'cancelled'
+};
+
+/** A non-empty trimmed string, or `null`. Absence and blank are one answer. */
+function text(raw: string | null | undefined): string | null {
+	if (typeof raw !== 'string') return null;
+	const trimmed = raw.trim();
+	return trimmed ? trimmed : null;
+}
+
+function runStepsOf(task: Task): TaskPanelRunStep[] {
+	return (task.planSteps ?? []).map((step) => ({
+		label: step.description,
+		durationMs: step.duration_ms ?? null,
+		// The store's `PlanStep` records no retry count, so this is `0` rather
+		// than a guess. `runSummary` drops a zero segment entirely, so the header
+		// says nothing about retries rather than claiming there were none.
+		retries: 0,
+		// `?? null` rather than a default: a record carrying a status this client
+		// does not know renders **no** mark, where `pending` would claim the step
+		// has not started. The row still lists the step, which is the fact we do
+		// have.
+		status: STEP_STATUS[step.status] ?? null,
+		origin: 'step',
+		// **Both of these already arrived and were being thrown away.** The store
+		// fills `PlanStep` from `plan_graph.steps[]`, where `tool` is the
+		// capability the planner chose and `providing_agent_id` is the agent it
+		// routed the step to; `extractPlanStepsFromPlanGraph` has carried them
+		// since long before this panel existed. A row that says *which agent*
+		// searched is the difference between a log and an account of the work.
+		capability: text(step.tool_name),
+		delegate: text(step.providing_agent_id)
+	}));
+}
+
+/**
+ * The work this run handed to other agents, as rows for the Run act's step
+ * list — or an empty list when it delegated none, or when nothing can be read.
+ *
+ * **Exported and shared, because both adapters need it over the same payload.**
+ * A second projection would be a second answer to what counts as a delegated
+ * child of this run, and the two would disagree the first time either was
+ * edited, invisibly — each surface renders only its own.
+ *
+ * **These are children of the *run*, and of nothing narrower.** The wire says
+ * which agent owns each child and what it was asked to do; it does **not** say
+ * which step delegated it. `DelegationReadinessEntry` carries a
+ * `parent_step_id` server-side and `ExecutionPanelResponsibilityChild` drops it,
+ * so no payload this panel can read attributes a child to a step. Nesting these
+ * rows under whichever step happens to precede them would be a parentage every
+ * value on screen corroborates and nothing can falsify — so `origin` says
+ * `delegated` and the indent means "under this run", which is the relation the
+ * payload actually states.
+ *
+ * **The guard is the record's own claim about which run it describes.** The
+ * responsibility snapshot names its execution; if that is not the execution the
+ * Run act names, this returns nothing rather than another attempt's children
+ * under this attempt's heading. That is the same failure `deriveTimeline` guards
+ * against one field over, and for the same reason: a task row that moved on
+ * between fetches produces it, and every individual value would corroborate the
+ * result.
+ *
+ * A child whose sub-goal the payload does not carry keeps its row rather than
+ * being dropped. Unlike an output file with no path there **is** something to
+ * say about it — which agent owns it, and what state it is in — and dropping it
+ * would make the run look like it delegated less work than it did.
+ */
+export function delegatedStepsFrom(
+	runState: ExecutionPanelState | null,
+	executionId: string | null
+): TaskPanelRunStep[] {
+	if (runState === null || executionId === null) return [];
+	const responsibility = runState.run?.responsibility ?? null;
+	if (responsibility === null) return [];
+	if (text(responsibility.execution_id) !== executionId) return [];
+
+	const rows: TaskPanelRunStep[] = [];
+	for (const child of responsibility.active_children ?? []) {
+		if (!child) continue;
+		rows.push({
+			label: text(child.title) ?? 'Delegated work',
+			// Nothing on this payload times a child run: the snapshot carries the
+			// child's *state*, not its instants. Design §5 omits rather than
+			// approximates, so no duration is claimed.
+			durationMs: null,
+			retries: 0,
+			status: CHILD_STATUS[child.waiting_state] ?? null,
+			origin: 'delegated',
+			// A child run is not a capability. The payload names no tool for it, and
+			// the sub-goal is already the label.
+			capability: null,
+			delegate: text(child.active_owner_agent_id)
+		});
+	}
+	return rows;
+}
+
+/**
+ * Provenance rows, with every entry that has nothing to say dropped.
+ *
+ * Exported because the internal-task adapter builds the same act provenance
+ * from a different payload, and the rule it enforces is one nobody should have
+ * to remember twice: a row whose value is absent or empty renders a label with
+ * a blank `<dd>`, which claims an identifier exists while being unable to say
+ * what it is.
+ */
+export function provenanceRows(
+	entries: Array<[string, string | null | undefined]>
+): ProvenanceRow[] {
+	return entries
+		.filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0)
+		.map(([label, value]) => ({ label, value }));
+}
+
+/**
+ * The status word this task status becomes for `deriveVerdict`.
+ *
+ * Exported because there is **one** status vocabulary in this directory and two
+ * adapters that need it — this one and `internalTaskPanelModel.ts`. A second
+ * copy of `VERDICT_STATUS` would be a second answer to what `paused` means, and
+ * the two would disagree the first time a status is added to either.
+ *
+ * The parameter is a `TaskStatus` rather than a `string`, so a raw wire status
+ * can only reach it through `normalizeV3TaskStatus` — which is where the policy
+ * for an unrecognised status already lives, and answers `pending`. That matters:
+ * a status passed through raw would fall to `deriveVerdict`'s unconditional last
+ * branch and read `Finished`, while `pending` maps to `queued` and reads
+ * `Queued`. Both are wrong about an unknown status; only one of them claims the
+ * task is done.
+ */
+export function verdictStatusOf(status: TaskStatus): string {
+	return VERDICT_STATUS[status];
+}
+
+function planOf(task: Task, questions: TaskPanelQuestion[]): TaskPanelPlan | null {
+	const steps = task.planSteps ?? [];
+	const hasPlanAct =
+		Boolean(task.hasPlan) || task.planStatus !== undefined || steps.length > 0 || questions.length > 0;
+	if (!hasPlanAct) return null;
+
+	return {
+		status: task.planStatus ?? null,
+		// The plan record's last-update instant. `planSummary` reads it only when
+		// the status is `approved`, and the update that set that status is the
+		// approval, so on that one row the two coincide. Absent for a plan the
+		// server never timestamped, which renders as `approved` with no age
+		// rather than an invented one.
+		approvedAt: task.planGeneratedAt ?? null,
+		steps: steps.map((step) => step.description),
+		questions,
+		provenance: provenanceRows([
+			['Plan id', task.latestPlanId],
+			['Approved plan id', task.approvedPlanId]
+		])
+	};
+}
+
+/**
+ * The Run act exists when the task has an execution — not when it has steps.
+ * A planned task that has never run has a plan to read and no run to watch, and
+ * an empty Run act would assert it started.
+ */
+function runOf(task: Task, runState: ExecutionPanelState | null): TaskPanelRun | null {
+	const executionId = task.activeExecutionId ?? task.executionId;
+	if (!executionId) return null;
+	return {
+		// **Delegated rows go last, after every plan step**, and that ordering is
+		// load-bearing rather than cosmetic: the panel marks the live step by its
+		// position in this list, and `liveStepOf` counts positions in the plan. Any
+		// interleaving would put a delegated row at a plan step's index. The
+		// `origin` field is what the panel actually checks — the ordering is the
+		// second thing that has to be true, not the thing being relied on.
+		steps: [...runStepsOf(task), ...delegatedStepsFrom(runState, executionId)],
+		// **The store `Task` still carries no events** — the list endpoint that
+		// fills it projects none — so this comes entirely from the separately
+		// fetched run state, and is `null` for every caller that passes none.
+		//
+		// The id is the task row's, not the payload's, because it is the id this
+		// act's provenance names two lines below and the two must be one run.
+		// `deriveTimeline` returns `null` rather than the other run's rows when the
+		// payload disagrees, which is the case a row that moved on between fetches
+		// produces.
+		timeline: deriveTimeline(runState, executionId),
+		provenance: provenanceRows([
+			['Execution id', executionId],
+			['Task id', task.id]
+		])
+	};
+}
+
+function outputOf(task: Task, files: readonly PanelOutputFile[] | null): TaskPanelOutput | null {
+	// `null` is design §6's partial load: the outputs request failed or has not
+	// answered, so the act is absent. An empty act would answer `no output`,
+	// which is a claim about the task made out of a fact about the network.
+	//
+	// **The written report is hostage to that**, and knowingly: a task whose
+	// summary is its deliverable renders nothing when the *file* request fails.
+	// The alternative is an Output act built on half an observation, whose L1
+	// line would have to claim something about files nobody read. Absent is the
+	// answer that claims least, and the panel's Retry re-reads both.
+	if (files === null) return null;
+	return {
+		files,
+		// The run's own account of what it did, straight off the task record.
+		// Blank is absence: a summary of `""` is not a report, and rendering it
+		// would open an empty markdown block above the file list.
+		summary: task.completionSummary?.trim() || null,
+		provenance: provenanceRows([
+			['Source execution id', task.activeExecutionId ?? task.executionId],
+			// L3 is where the paths live — design §4 asks the Output act for them,
+			// and the file rows above carry only the name a reader can read.
+			...files.map((file): [string, string] => [file.name, file.path])
+		])
+	};
+}
+
+/**
+ * The panel's whole model for one task.
+ *
+ * `outputs` is the loaded output list, or `null` when the outputs request has
+ * not answered or failed. The two are different claims and the panel renders
+ * them differently, so they are different values here rather than one empty
+ * array standing for both.
+ *
+ * `runState` is this task's current run as `/execution-panel` reports it, from
+ * the caller that fetched it, or `null` when the caller has no such request or
+ * it did not answer. **Two things are read out of it and both are read here**:
+ * the ask blocking the run, and the log of what the run did. Handing the payload
+ * over rather than two pre-derived values is what keeps the timeline's run and
+ * the Run act's run the same run — only this function knows which execution the
+ * act names, because only it holds the task row.
+ *
+ * Its absence is a single `null`, unlike `outputs`: everything derived from it
+ * renders nothing when it is missing, so no empty shape could assert anything,
+ * and the panel degrades to exactly the verdict the task's own status earns.
+ */
+export function toTaskPanelModel(
+	task: Task,
+	outputs: readonly PanelOutputFile[] | null,
+	runState: ExecutionPanelState | null = null
+): TaskPanelModel {
+	const questions = questionsOf(task);
+	const steps = task.planSteps ?? [];
+	const liveStep = liveStepOf(task);
+	// One call, so the verdict's ask and the control that answers it can never
+	// come from two different rows — see `TaskAsk`.
+	const asked = attentionOf(task, runState);
+
+	return {
+		// The panel's identity, and the reason the model carries one at all: it is
+		// how the panel tells a task swap from another poll of the same task, and
+		// therefore whose reader-choice the open act belongs to. Straight from the
+		// store's id — anything derived would be a second name for the same task.
+		id: task.id,
+		status: VERDICT_STATUS[task.status],
+		attention: asked?.attention ?? null,
+		ask: asked?.ask ?? null,
+		error: task.errorMessage ?? null,
+		currentStep: liveStep,
+		// `0 of 0` is not a denominator. An empty list means the total is unknown,
+		// which `stepPhrase` renders by dropping the `of N` entirely.
+		totalSteps: steps.length > 0 ? steps.length : null,
+		currentStepLabel:
+			(liveStep === null ? null : (steps[liveStep - 1]?.description ?? null))
+			?? task.currentStepTitle
+			?? null,
+		// **Not wired, deliberately.** No run-start instant reaches this store:
+		// `executionHistory` is never populated on the V3 path, and `createdAt` is
+		// when the task was written, not when the run began. Design §5's rule is
+		// to omit a duration rather than approximate it, so every headline that
+		// carries one drops it rather than reporting the wrong number.
+		elapsedMs: null,
+		// The Task 7 field, and the whole reason stall detection can work. Already
+		// parsed by `parseLastProgressAt` (never `parseTimestampToIso`, which
+		// answers *now* for anything unreadable and would make a wedged run
+		// un-stallable); all that is left here is the absence coercion.
+		lastProgressAt: task.lastProgressAt ?? null,
+		plan: planOf(task, questions),
+		run: runOf(task, runState),
+		output: outputOf(task, outputs)
+	};
+}

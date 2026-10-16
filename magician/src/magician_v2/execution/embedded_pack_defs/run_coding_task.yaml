@@ -1,0 +1,109 @@
+name: run_coding_task
+description: Run Pi in a scoped shadow workspace, import its workspace changes as a proposal, and pause for the existing diff-approval HITL flow before any real workspace write.
+version: "1.0.0"
+guide: |
+  Tool name: `run_coding_task`
+
+  Use this for coding tasks that should be handled by the Pi coding
+  engine instead of direct file-edit tools. Provide a concise but
+  complete implementation request in `prompt`.
+
+  The tool copies the selected repo root into a shadow workspace, runs
+  Pi there, computes the shadow-vs-real diff, stages that diff as a
+  code proposal, and returns `status: pending_approval` with a
+  `diff_approval` HITL payload when there are changes. The real repo is
+  not modified until the operator applies the proposal.
+
+  `repo_path` is optional and defaults to `.`. Use it when the coding
+  request belongs to a VibeDev Project or any known subdirectory. The
+  path may be workspace-relative under the scoped `workdirs/home`, `~`
+  / `$HOME`-relative, or an absolute path to any existing directory the
+  The backend process can access it. Missing relative folders may be
+  created by VibeDev at Project creation; absolute paths must already
+  exist. The coding runtime diffs and applies proposals against that selected repo
+  root, and Pi is launched with that repo root as its current working
+  directory inside the shadow copy. That keeps generated diffs
+  apply-safe while letting Pi run installs, tests, and file edits from
+  the intended project directory.
+
+  `coding_profile` is optional. Omit it to use
+  `coding.default_profile` from `magician-config.yaml`. The selected
+  coding profile maps to an existing `llm.router.profiles` entry; Pi
+  provider/model arguments are derived internally and are not part of
+  the public tool contract.
+
+  When the caller has #vibedev chat-session attachments, pass
+  `attachment_session_id` plus `attachment_ids`. The tool validates and
+  copies those files into Pi's shadow workspace under
+  `.cache/magician/vibedev_attachments/`, appends the materialized paths
+  to the coding prompt, and excludes that cache directory from the final
+  real-repo diff.
+
+  VibeDev follow-ups do not need custom session plumbing. When this tool
+  is invoked from a task in `uiThreadId: "vibedev"`, the compiled handler
+  reads the task chain, enables Pi session persistence, and uses the root
+  VibeDev task id as the stable Pi session name. `session_name`,
+  `persist_session`, and `pi_binary` are rejected on VibeDev tasks.
+parameters:
+  - name: prompt
+    required: true
+    param_type: string
+    description: Coding request for Pi to execute in the shadow workspace.
+  - name: summary
+    required: false
+    param_type: string
+    description: Short proposal summary shown in the diff-approval UI.
+  - name: coding_profile
+    required: false
+    param_type: string
+    description: Optional coding profile id from magician-config.yaml > coding.profiles.
+  - name: repo_path
+    required: false
+    param_type: string
+    description: Project directory where Pi should start. Use "." or a scoped relative path under workdirs/home, ~/path, $HOME/path, or an absolute path to an existing accessible directory. Defaults to ".".
+  - name: attachment_session_id
+    required: false
+    param_type: string
+    description: Chat session id whose uploaded attachments should be materialized into the Pi shadow workspace.
+  - name: attachment_ids
+    required: false
+    param_type: array
+    description: Uploaded chat attachment ids to copy into Pi's shadow workspace for read-only coding context.
+  - name: turn_timeout_secs
+    required: false
+    param_type: integer
+    description: >-
+      Outer wall-clock backstop for ONE Pi turn, in seconds. Defaults to
+      coding.turn_timeout_secs. Leave this alone in almost every case: whether a
+      run should stop is decided by the no-progress detector (silence) and the
+      cost ceiling, not by duration. Raising it does not make a stalled run
+      survive, and lowering it can kill healthy long work. 0 = no wall clock.
+      The legacy name `timeout_secs` is still accepted.
+  - name: timeout_secs
+    required: false
+    param_type: integer
+    description: Deprecated alias for turn_timeout_secs.
+  - name: pi_binary
+    required: false
+    param_type: string
+    description: Optional Pi executable path for non-VibeDev callers. Defaults to pi. Rejected on VibeDev tasks.
+  - name: session_name
+    required: false
+    param_type: string
+    description: Optional Pi session name for non-VibeDev callers. Rejected on VibeDev tasks.
+  - name: persist_session
+    required: false
+    param_type: boolean
+    description: Persist Pi session state for non-VibeDev callers. Rejected on VibeDev tasks.
+implementation:
+  type: compiled
+  provider_name: run_coding_task
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 3600
+  categories:
+    - coding
+    - filesystem
+    - write
+  composition_category: action
+  sandbox: none

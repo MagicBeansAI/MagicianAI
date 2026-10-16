@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "frozen_at": 1785283200000,
+  "privacy": "synthetic_content_free_control_plane_only",
+  "purpose": "Replay the checkpoint, revision, scheduling, and disabled-rollout invariants for incremental semantic extraction coverage.",
+  "extractor": {
+    "schema_version": 1,
+    "contract": "channel_attention_semantics_v1",
+    "prompt_version": "1.1.0",
+    "model": "gemma4:12b",
+    "profile": "op-channel-classify-local"
+  },
+  "defaults": {
+    "attention_learning_enabled": false,
+    "semantic_backfill_enabled": false,
+    "actionability_mode": "disabled",
+    "actionability_snapshot_id": null
+  },
+  "coverage_contract": {
+    "denominator": "eligible_active_candidates_in_the_requested_scope_and_surface",
+    "covered_when": "one succeeded envelope exactly matches candidate revision plus schema, extractor, prompt, model, and profile",
+    "not_covered_statuses": ["missing", "invalid", "stale", "incompatible", "pending", "in_flight", "retry", "dead"],
+    "checkpoint_identity": ["principal", "workspace", "surface"],
+    "checkpoint_cursor": "opaque_source_owned_cursor",
+    "candidate_identity": ["principal", "workspace", "surface", "candidate_id"],
+    "admin_authority": "schedule_only"
+  },
+  "cases": [
+    {
+      "id": "follow_up_resume_after_checkpoint",
+      "scope": {"principal": "owner-a", "workspace": "workspace-a", "surface": "follow_up"},
+      "existing_checkpoint": null,
+      "eligible_candidates": [
+        {"candidate_id": "follow-up-001", "source_revision": "distill:41", "envelope": null},
+        {"candidate_id": "follow-up-002", "source_revision": "distill:42", "envelope": {"status": "succeeded", "source_revision": null, "input_revision": 42, "prompt_version": "1.1.0", "model": "gemma4:12b", "profile": "op-channel-classify-local"}},
+        {"candidate_id": "follow-up-003", "source_revision": "distill:43", "envelope": null}
+      ],
+      "schedule_passes": [
+        {
+          "limit": 1,
+          "expected_scheduled_candidate_ids": ["follow-up-001"],
+          "expected_checkpoint": "follow-up-cursor-001"
+        },
+        {
+          "limit": 1,
+          "resume_from": "follow-up-cursor-001",
+          "expected_scheduled_candidate_ids": ["follow-up-003"],
+          "expected_checkpoint": "follow-up-cursor-003"
+        }
+      ],
+      "expected": {
+        "already_compatible_count": 1,
+        "scheduled_count": 2,
+        "duplicate_work_rows": 0,
+        "model_calls_during_schedule": 0,
+        "lifecycle_mutations_during_schedule": 0
+      }
+    },
+    {
+      "id": "worth_opaque_revision_exact_match",
+      "scope": {"principal": "owner-a", "workspace": "workspace-a", "surface": "worth_a_look"},
+      "eligible_candidates": [
+        {"candidate_id": "worth-001", "source_revision": "rss:edition-010", "envelope": {"status": "succeeded", "source_revision": "rss:edition-010", "input_revision": 0, "prompt_version": "1.1.0", "model": "gemma4:12b", "profile": "op-channel-classify-local"}},
+        {"candidate_id": "worth-002", "source_revision": "provider-rev:alpha-10", "envelope": {"status": "succeeded", "source_revision": "provider-rev:alpha-9", "input_revision": 10, "prompt_version": "1.1.0", "model": "gemma4:12b", "profile": "op-channel-classify-local"}},
+        {"candidate_id": "worth-003", "source_revision": "sha256:000abc", "envelope": null}
+      ],
+      "expected": {
+        "compatible_candidate_ids": ["worth-001"],
+        "scheduled_candidate_ids": ["worth-002", "worth-003"],
+        "revision_comparison": "opaque_exact_string_equality",
+        "numeric_or_lexical_revision_ordering_used": false,
+        "coverage_before": {"numerator": 1, "denominator": 3},
+        "model_calls_during_schedule": 0
+      }
+    },
+    {
+      "id": "source_revision_changes_while_leased",
+      "scope": {"principal": "owner-b", "workspace": "workspace-b", "surface": "worth_a_look"},
+      "scheduled_work": {"candidate_id": "worth-race-001", "source_revision": "event:v1", "lease_owner": "worker-a"},
+      "candidate_at_completion": {"candidate_id": "worth-race-001", "source_revision": "event:v2"},
+      "expected": {
+        "completion_persisted_as_compatible": false,
+        "stale_result_can_score_or_rank": false,
+        "current_revision_scheduled": "event:v2",
+        "candidate_lifecycle_changed": false
+      }
+    },
+    {
+      "id": "extractor_contract_migration_reopens_coverage",
+      "scope": {"principal": "owner-c", "workspace": "workspace-c", "surface": "follow_up"},
+      "candidate": {"candidate_id": "follow-up-migration-001", "source_revision": "distill:8"},
+      "stored_envelope": {"status": "succeeded", "source_revision": null, "input_revision": 8, "prompt_version": "1.0.0", "model": "gemma4:12b", "profile": "op-channel-classify-local"},
+      "requested_extractor": {"prompt_version": "1.1.0", "model": "gemma4:12b", "profile": "op-channel-classify-local"},
+      "expected": {
+        "covered": false,
+        "scheduled": true,
+        "reason": "extractor_identity_incompatible",
+        "legacy_route_preserved": true
+      }
+    },
+    {
+      "id": "repeated_admin_schedule_is_idempotent",
+      "scope": {"principal": "owner-d", "workspace": "workspace-d", "surface": "worth_a_look"},
+      "candidate": {"candidate_id": "worth-idempotent-001", "source_revision": "feed:revision-a"},
+      "admin_requests": [
+        {"request_id": "schedule-request-001", "limit": 50},
+        {"request_id": "schedule-request-002", "limit": 50}
+      ],
+      "expected": {
+        "durable_work_rows": 1,
+        "scheduled_candidate_count_first": 1,
+        "scheduled_candidate_count_second": 0,
+        "model_calls": 0,
+        "inline_extractions": 0,
+        "actionability_mode_after": "disabled",
+        "configuration_edits": 0
+      }
+    },
+    {
+      "id": "disabled_defaults_are_inert",
+      "scope": {"principal": "owner-e", "workspace": "workspace-e", "surface": "follow_up"},
+      "config": {
+        "attention_learning_enabled": false,
+        "semantic_backfill_enabled": false,
+        "actionability_mode": "disabled",
+        "actionability_snapshot_id": null
+      },
+      "eligible_candidate_count": 25,
+      "expected": {
+        "automatic_scheduled_count": 0,
+        "leased_count": 0,
+        "model_calls": 0,
+        "served_order_changed": false,
+        "served_lane_changed": false,
+        "diagnostic_candidate_count": 25
+      }
+    }
+  ],
+  "required_summary_metrics": [
+    "eligible_candidate_count",
+    "compatible_extraction_count",
+    "semantic_extraction_coverage",
+    "scheduled_count",
+    "already_pending_count",
+    "stale_or_incompatible_count",
+    "checkpoint_before",
+    "checkpoint_after",
+    "model_calls_during_schedule",
+    "candidate_total_reconciliation"
+  ]
+}

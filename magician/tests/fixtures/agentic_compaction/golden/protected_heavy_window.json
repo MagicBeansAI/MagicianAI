@@ -1,0 +1,108 @@
+{
+  "name": "protected_heavy_window",
+  "description": "Mostly-protected window: protected discards downgrade (one to summarize, one to keep) and the ceiling evicts protected items only last, floor intact.",
+  "iteration": 15,
+  "char_budget": 300,
+  "keep_newest_pairs": 1,
+  "goal_line": "Produce the signed quarterly audit export and record its checksum.",
+  "open_requirements": [
+    "The final yield must cite the signed export checksum."
+  ],
+  "open_requirement_ids": [],
+  "terminal_evidence_ids": [
+    "tp_002"
+  ],
+  "replay": false,
+  "items": [
+    {
+      "id": "tp_001",
+      "kind": "turn_pair",
+      "ordinal": 0,
+      "age_iterations": 2,
+      "content": "[assistant] Iteration 1: tried the legacy export tool. [user tool_result call_1] {\"status\":\"ok\",\"columns\":\"missing_audit\"}.............................................................................."
+    },
+    {
+      "id": "tp_002",
+      "kind": "turn_pair",
+      "ordinal": 1,
+      "age_iterations": 1,
+      "content": "[assistant] Iteration 2: generated the signed export. [user tool_result call_2] {\"status\":\"ok\",\"checksum\":\"9f31\"}......................................................................................."
+    },
+    {
+      "id": "tp_003",
+      "kind": "turn_pair",
+      "ordinal": 2,
+      "age_iterations": 0,
+      "content": "[assistant] Iteration 3: verified the checksum matches. [user tool_result call_3] {\"status\":\"ok\"}....................................................."
+    },
+    {
+      "id": "fn_auth_001",
+      "kind": "failure_note",
+      "ordinal": 0,
+      "age_iterations": 3,
+      "capability": "auth",
+      "content": "auth: the signing service rejected the first token; refresh succeeded..............................."
+    },
+    {
+      "id": "fn_fetch_001",
+      "kind": "failure_note",
+      "ordinal": 1,
+      "age_iterations": 4,
+      "capability": "fetch",
+      "content": "fetch: the export endpoint returned HTTP 429 once under load........................................"
+    }
+  ],
+  "patch": {
+    "patches": [
+      {
+        "id": "tp_001",
+        "action": "summarize",
+        "summary": "Iteration 1 used the legacy export; audit columns missing..."
+      },
+      {
+        "id": "tp_002",
+        "action": "discard",
+        "summary": "Iteration 2 captured the signed audit export checksum for evidence...."
+      },
+      {
+        "id": "fn_auth_001",
+        "action": "discard"
+      }
+    ],
+    "rationale": "The legacy-export exploration can shrink; the signed-export turn and failure notes look redundant now."
+  },
+  "expect": {
+    "validation_rejected": null,
+    "protected_ids": [
+      "fn_auth_001",
+      "fn_fetch_001",
+      "tp_002",
+      "tp_003"
+    ],
+    "counts": {
+      "kept": 3,
+      "summarized": 2,
+      "discarded": 0,
+      "downgraded": 2
+    },
+    "downgraded_ids": [
+      "tp_002",
+      "fn_auth_001"
+    ],
+    "surviving_ids": [
+      "tp_002",
+      "tp_003"
+    ],
+    "compacted_ids": [
+      "tp_002"
+    ],
+    "residue_evicted_ids": [
+      "tp_001",
+      "fn_fetch_001",
+      "fn_auth_001"
+    ],
+    "chars_after_patch": 480,
+    "chars_after": 220,
+    "patch_rejected": null
+  }
+}

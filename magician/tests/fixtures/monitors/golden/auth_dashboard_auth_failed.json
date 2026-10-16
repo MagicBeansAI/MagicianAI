@@ -1,0 +1,158 @@
+{
+  "name": "auth_dashboard_auth_failed",
+  "description": "Authenticated dashboard: baseline captures two report rows, then two consecutive auth_failed scans. Removal safety must hold (nothing reads as deleted), nothing notifies, and the per-source failure streak reaches the Attention threshold (2) on the second failure.",
+  "notification_policy": "material_changes",
+  "notify_initial_baseline": false,
+  "steps": [
+    {
+      "label": "baseline while signed in",
+      "execution_id": "exec_auth_1",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_auth_1",
+        "monitor_revision": 3,
+        "started_at": "2026-07-22T07:00:00Z",
+        "completed_at": "2026-07-22T07:01:00Z",
+        "status": "unchanged",
+        "complete_scan": true,
+        "source_outcomes": [
+          {
+            "source": "https://dash.example/reports",
+            "status": "ok",
+            "complete": true,
+            "items_scanned": 2
+          }
+        ],
+        "counts": { "scanned": 2, "new": 0, "updated": 0, "unchanged": 2, "possibly_removed": 0 },
+        "findings": [
+          {
+            "stable_key": "native:report-q3-revenue",
+            "title": "Q3 revenue report",
+            "canonical_url": "https://dash.example/reports/q3-revenue",
+            "source": "https://dash.example/reports",
+            "observed_at": "2026-07-22T07:00:30Z",
+            "published_at": null,
+            "summary": "Q3 revenue report present.",
+            "why_it_matters": "Tracked dashboard row.",
+            "entities": ["Q3 revenue"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_1001",
+            "classification": "unchanged"
+          },
+          {
+            "stable_key": "native:report-churn",
+            "title": "Churn report",
+            "canonical_url": "https://dash.example/reports/churn",
+            "source": "https://dash.example/reports",
+            "observed_at": "2026-07-22T07:00:30Z",
+            "published_at": null,
+            "summary": "Churn report present.",
+            "why_it_matters": "Tracked dashboard row.",
+            "entities": ["Churn"],
+            "evidence": [],
+            "content_fingerprint": "cf_model_claim_1002",
+            "classification": "unchanged"
+          }
+        ],
+        "run_fingerprint": "rf_model_claim_1001",
+        "change_fingerprint": null
+      },
+      "expect": {
+        "status": "baseline",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": true,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 2, "updated": 0, "unchanged": 0, "possibly_removed": 0 },
+        "retained_ledger_keys": 2
+      }
+    },
+    {
+      "label": "first auth failure — quiet by design",
+      "execution_id": "exec_auth_2",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_auth_2",
+        "monitor_revision": 3,
+        "started_at": "2026-07-23T07:00:00Z",
+        "completed_at": "2026-07-23T07:01:00Z",
+        "status": "degraded",
+        "complete_scan": false,
+        "source_outcomes": [
+          {
+            "source": "https://dash.example/reports",
+            "status": "auth_failed",
+            "complete": false,
+            "items_scanned": 0,
+            "note": "Session expired; sign-in required."
+          }
+        ],
+        "counts": { "scanned": 0, "new": 0, "updated": 0, "unchanged": 0, "possibly_removed": 0 },
+        "findings": [],
+        "run_fingerprint": "rf_model_claim_1002",
+        "change_fingerprint": null,
+        "access_problem": {
+          "source": "https://dash.example/reports",
+          "kind": "auth_failed",
+          "message": "Session expired - sign in to dash.example again.",
+          "since": "2026-07-23T07:00:10Z"
+        }
+      },
+      "expect": {
+        "status": "degraded",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": false,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 0, "updated": 0, "unchanged": 0, "possibly_removed": 0 },
+        "retained_ledger_keys": 2,
+        "source_failure_streaks": { "https://dash.example/reports": 1 }
+      }
+    },
+    {
+      "label": "second consecutive auth failure — Attention threshold",
+      "execution_id": "exec_auth_3",
+      "incoming": {
+        "monitor_task_id": "task_golden_monitor",
+        "execution_id": "exec_auth_3",
+        "monitor_revision": 3,
+        "started_at": "2026-07-24T07:00:00Z",
+        "completed_at": "2026-07-24T07:01:00Z",
+        "status": "degraded",
+        "complete_scan": false,
+        "source_outcomes": [
+          {
+            "source": "https://dash.example/reports",
+            "status": "auth_failed",
+            "complete": false,
+            "items_scanned": 0,
+            "note": "Still signed out."
+          }
+        ],
+        "counts": { "scanned": 0, "new": 0, "updated": 0, "unchanged": 0, "possibly_removed": 0 },
+        "findings": [],
+        "run_fingerprint": "rf_model_claim_1003",
+        "change_fingerprint": null,
+        "access_problem": {
+          "source": "https://dash.example/reports",
+          "kind": "auth_failed",
+          "message": "Session expired - sign in to dash.example again.",
+          "since": "2026-07-23T07:00:10Z"
+        }
+      },
+      "expect": {
+        "status": "degraded",
+        "material": false,
+        "would_notify": false,
+        "update_recorded": false,
+        "projects_to_changed": false,
+        "change_fingerprint_present": false,
+        "counts": { "new": 0, "updated": 0, "unchanged": 0, "possibly_removed": 0 },
+        "retained_ledger_keys": 2,
+        "source_failure_streaks": { "https://dash.example/reports": 2 }
+      }
+    }
+  ]
+}

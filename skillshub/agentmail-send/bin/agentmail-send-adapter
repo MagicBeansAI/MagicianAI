@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Keep AgentMail's send result and add only observed mail-header identifiers.
+
+The governed runtime still owns credentials, approval, send usage and argv.
+The extra request is a read of the message that this exact send returned.
+Failure to read headers never turns an accepted send into a retryable send.
+"""
+
+import json
+import shutil
+import subprocess
+import sys
+
+MAX_METADATA_BYTES = 10 * 1024 * 1024
+
+
+def enrich(result, inbox_id, fetch):
+    message_id = result.get("message_id")
+    if not isinstance(message_id, str) or not message_id.strip():
+        return result
+    if not inbox_id:
+        result["delivery_correlation_error"] = "sent-message headers could not be read: missing inbox"
+        return result
+    try:
+        message = fetch(inbox_id, message_id)
+        if message.get("message_id") != message_id or message.get("inbox_id") != inbox_id:
+            raise ValueError("sent-message metadata does not match the send")
+        headers = message.get("headers")
+        if not isinstance(headers, dict):
+            raise ValueError("the provider returned no sent-message headers")
+        ids = [value.strip() for key, value in headers.items()
+               if key.lower() == "message-id" and isinstance(value, str)]
+        if len(ids) != 1 or not ids[0] or any(ord(c) < 32 for c in ids[0]):
+            raise ValueError("the provider returned no single usable Message-ID header")
+        result["delivery_identifiers"] = {"message_id": ids[0]}
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+        result["delivery_correlation_error"] = "accepted send retained; its actual Message-ID header could not be verified"
+    return result
+
+
+def main(argv):
+    cli = shutil.which("agentmail")
+    if cli is None:
+        print("agentmail CLI is not installed", file=sys.stderr)
+        return 127
+    try:
+        completed = subprocess.run([cli, *argv], capture_output=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        print("AgentMail send timed out; dispatch outcome is unknown, do not resend automatically", file=sys.stderr)
+        return 1
+    if completed.stderr:
+        sys.stderr.buffer.write(completed.stderr)
+    if completed.returncode:
+        sys.stdout.buffer.write(completed.stdout)
+        return completed.returncode
+    try:
+        result = json.loads(completed.stdout)
+    except (ValueError, UnicodeError):
+        sys.stdout.buffer.write(completed.stdout)
+        return 0
+    if not isinstance(result, dict):
+        sys.stdout.buffer.write(completed.stdout)
+        return 0
+    inbox_values = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--inbox-id"]
+    inbox_id = inbox_values[-1] if inbox_values else None
+    def fetch(inbox_id, message_id):
+        metadata = subprocess.run(
+            [cli, "--format", "json", "inboxes:messages", "get",
+             "--inbox-id", inbox_id, "--message-id", message_id],
+            capture_output=True, timeout=8,
+        )
+        if metadata.returncode or len(metadata.stdout) > MAX_METADATA_BYTES:
+            raise ValueError("sent-message metadata could not be read within its limit")
+        return json.loads(metadata.stdout)
+    enrich(result, inbox_id, fetch)
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

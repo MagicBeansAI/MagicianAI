@@ -1,0 +1,16 @@
+name: Ghibli-ish
+prompt_fragment: |
+  Painterly Japanese animation style inspired by 90s-2000s anime films.
+  Soft watercolor backgrounds with detailed natural settings (forests,
+  countryside, sky studies, rural villages). Character design is gentle
+  and approachable: simple shapes, large but soft eyes, expressive mouths,
+  understated body language. Light is naturalistic — golden hour, gentle
+  morning glow, lantern-lit nights. Color palette is harmonious: muted
+  greens, sky blues, warm earth tones, butter yellow. Outlines are
+  delicate (1-2px) and sometimes broken by light/color. Compositions
+  emphasize negative space and atmospheric perspective. Mood is
+  contemplative, warm, with a sense of wonder. Avoid hard cell-shading.
+ip_safe_note: |
+  Inspired by Studio Ghibli aesthetics, NOT the trademark characters
+  (Totoro, Kiki, Chihiro, etc.). Create original characters and
+  settings in the visual style.

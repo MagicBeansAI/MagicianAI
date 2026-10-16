@@ -1,0 +1,198 @@
+{
+  "$defs": {
+    "AppDataClassification": {
+      "enum": [
+        "public",
+        "ordinary",
+        "personal",
+        "sensitive",
+        "secret"
+      ],
+      "type": "string"
+    },
+    "AppDataSource": {
+      "enum": [
+        "user_input",
+        "app_store",
+        "app_action",
+        "artifact_projection",
+        "external_adapter",
+        "import",
+        "brokered_transfer"
+      ],
+      "type": "string"
+    },
+    "AppDigest": {
+      "type": "string"
+    },
+    "AppFieldPath": {
+      "type": "string"
+    },
+    "AppHandlingLabels": {
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "$ref": "#/$defs/AppDataClassification"
+        },
+        "model_processing": {
+          "$ref": "#/$defs/AppModelProcessing"
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/AppDigest"
+        },
+        "provenance_digest": {
+          "$ref": "#/$defs/AppDigest"
+        }
+      },
+      "required": [
+        "classification",
+        "model_processing",
+        "policy_digest",
+        "provenance_digest"
+      ],
+      "type": "object"
+    },
+    "AppInstallationId": {
+      "type": "string"
+    },
+    "AppModelProcessing": {
+      "enum": [
+        "none",
+        "local_only",
+        "remote_allowed"
+      ],
+      "type": "string"
+    },
+    "AppProtocolVersion": {
+      "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    },
+    "AppReference": {
+      "type": "string"
+    },
+    "AppRevision": {
+      "description": "A positive, monotonically increasing contract revision.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "AppScopeBindingRef": {
+      "type": "string"
+    },
+    "AppSourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/AppFieldPath"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/AppSourceRefKind"
+        },
+        "reference": {
+          "$ref": "#/$defs/AppReference"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "AppSourceRefKind": {
+      "enum": [
+        "entity_record",
+        "entity_field",
+        "artifact",
+        "external_receipt",
+        "mutation_receipt"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-data-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+  "properties": {
+    "content_digest": {
+      "$ref": "#/$defs/AppDigest"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "grant_revision": {
+      "$ref": "#/$defs/AppRevision"
+    },
+    "handling_labels": {
+      "$ref": "#/$defs/AppHandlingLabels"
+    },
+    "installation_id": {
+      "$ref": "#/$defs/AppInstallationId"
+    },
+    "package_revision_ref": {
+      "$ref": "#/$defs/AppReference"
+    },
+    "produced_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "protocol_version": {
+      "$ref": "#/$defs/AppProtocolVersion"
+    },
+    "schema_revision": {
+      "$ref": "#/$defs/AppRevision"
+    },
+    "scope_binding_ref": {
+      "$ref": "#/$defs/AppScopeBindingRef"
+    },
+    "source": {
+      "$ref": "#/$defs/AppDataSource"
+    },
+    "source_refs": {
+      "items": {
+        "$ref": "#/$defs/AppSourceRef"
+      },
+      "type": "array"
+    },
+    "value": true,
+    "value_schema_ref": {
+      "$ref": "#/$defs/AppReference"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "source",
+    "scope_binding_ref",
+    "installation_id",
+    "package_revision_ref",
+    "schema_revision",
+    "grant_revision",
+    "value_schema_ref",
+    "value",
+    "handling_labels",
+    "content_digest",
+    "produced_at"
+  ],
+  "title": "AppDataEnvelope",
+  "type": "object"
+}

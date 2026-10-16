@@ -1,0 +1,16 @@
+[package]
+name = "magician-registry-admission-checks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+tokio = { version = "=1.51.1", features = ["rt", "sync", "time", "macros", "test-util"] }
+parking_lot = { version = "0.12", features = ["arc_lock"] }
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "hooks"] }
+tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"

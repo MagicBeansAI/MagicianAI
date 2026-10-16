@@ -1,0 +1,14 @@
+{
+  "type": "cursive_text",
+  "version": 1,
+  "defaults": { "font_size": 92 },
+  "draw": [
+    {
+      "op": "cursive_label",
+      "at": ["x", "y"],
+      "text": "text|d",
+      "size": "font_size",
+      "anchor": "leading"
+    }
+  ]
+}

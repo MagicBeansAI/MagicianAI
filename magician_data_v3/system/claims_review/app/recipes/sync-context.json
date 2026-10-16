@@ -1,0 +1,1057 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "after_entity_key": {
+              "value_type": 1,
+              "required": false
+            },
+            "after_record_id": {
+              "value_type": 2,
+              "required": false
+            },
+            "after_term_id": {
+              "value_type": 3,
+              "required": false
+            },
+            "agent_id": {
+              "value_type": 4,
+              "required": true
+            },
+            "audience_id": {
+              "value_type": 5,
+              "required": true
+            },
+            "audience_kind": {
+              "value_type": 6,
+              "required": true
+            },
+            "commitment_status": {
+              "value_type": 7,
+              "required": false
+            },
+            "limit": {
+              "value_type": 8,
+              "required": false
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "integer"
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:c092873dbcc8a7782d07ec3ab6f289c2eae75cbd02f16d886a1238cbc642bd1d",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:c092873dbcc8a7782d07ec3ab6f289c2eae75cbd02f16d886a1238cbc642bd1d",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {
+            "commitments": {
+              "tool": "evidence_data",
+              "action": "list_commitments",
+              "primitive_ref": "primitive:platform:55f72632cfc42295c06643459e02fed4546fb7ca57e4256e81dbb0487d99a988",
+              "action_ref": "primitive-action:platform:546a676b0fe7e0f51320ac4a1ef231ff2d1c9b7c4fdecfebc54924324baf6425",
+              "parameters": {
+                "limit": 20
+              },
+              "input_parameters": {
+                "audience_kind": "audience_kind",
+                "audience_id": "audience_id",
+                "status": "commitment_status",
+                "after_term_id": "after_term_id"
+              },
+              "when_input_present": null,
+              "rows": {
+                "kind": "document"
+              }
+            },
+            "evidence": {
+              "tool": "evidence_data",
+              "action": "list_evidence_records",
+              "primitive_ref": "primitive:platform:55f72632cfc42295c06643459e02fed4546fb7ca57e4256e81dbb0487d99a988",
+              "action_ref": "primitive-action:platform:1b124c990bfc3649b116fe4cc58be0dec1b864b67d6991c43db1b03d1e61040f",
+              "parameters": {
+                "limit": 20
+              },
+              "input_parameters": {
+                "agent_id": "agent_id",
+                "after_record_id": "after_record_id"
+              },
+              "when_input_present": null,
+              "rows": {
+                "kind": "document"
+              }
+            },
+            "entities": {
+              "tool": "evidence_data",
+              "action": "list_entities",
+              "primitive_ref": "primitive:platform:55f72632cfc42295c06643459e02fed4546fb7ca57e4256e81dbb0487d99a988",
+              "action_ref": "primitive-action:platform:02220f2ce6a2255cb40ed69092e74925abaeccea3c8052d185b5c587d1af621a",
+              "parameters": {
+                "limit": 20
+              },
+              "input_parameters": {
+                "agent_id": "agent_id",
+                "after_entity_key": "after_entity_key"
+              },
+              "when_input_present": null,
+              "rows": {
+                "kind": "document"
+              }
+            }
+          },
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/limit"
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "coalesce",
+                  "values": [
+                    3,
+                    4
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "clamp",
+                  "value": 5,
+                  "minimum": 6,
+                  "maximum": 7
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/commitments/count"
+                },
+                {
+                  "kind": "present",
+                  "value": 9
+                },
+                {
+                  "kind": "if",
+                  "condition": 10,
+                  "then_value": 9,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/commitments/scanned"
+                },
+                {
+                  "kind": "present",
+                  "value": 12
+                },
+                {
+                  "kind": "if",
+                  "condition": 13,
+                  "then_value": 12,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/commitments/scan_truncated"
+                },
+                {
+                  "kind": "present",
+                  "value": 15
+                },
+                {
+                  "kind": "if",
+                  "condition": 16,
+                  "then_value": 15,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/commitments/next_cursor"
+                },
+                {
+                  "kind": "present",
+                  "value": 18
+                },
+                {
+                  "kind": "if",
+                  "condition": 19,
+                  "then_value": 18,
+                  "else_value": 0
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "count": 11,
+                    "scanned": 14,
+                    "scan_truncated": 17,
+                    "next_cursor": 20
+                  }
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/evidence/count"
+                },
+                {
+                  "kind": "present",
+                  "value": 22
+                },
+                {
+                  "kind": "if",
+                  "condition": 23,
+                  "then_value": 22,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/evidence/scan_truncated"
+                },
+                {
+                  "kind": "present",
+                  "value": 25
+                },
+                {
+                  "kind": "if",
+                  "condition": 26,
+                  "then_value": 25,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/evidence/next_cursor"
+                },
+                {
+                  "kind": "present",
+                  "value": 28
+                },
+                {
+                  "kind": "if",
+                  "condition": 29,
+                  "then_value": 28,
+                  "else_value": 0
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "count": 24,
+                    "scan_truncated": 27,
+                    "next_cursor": 30
+                  }
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/entities/count"
+                },
+                {
+                  "kind": "present",
+                  "value": 32
+                },
+                {
+                  "kind": "if",
+                  "condition": 33,
+                  "then_value": 32,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/entities/scan_truncated"
+                },
+                {
+                  "kind": "present",
+                  "value": 35
+                },
+                {
+                  "kind": "if",
+                  "condition": 36,
+                  "then_value": 35,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/entities/next_cursor"
+                },
+                {
+                  "kind": "present",
+                  "value": 38
+                },
+                {
+                  "kind": "if",
+                  "condition": 39,
+                  "then_value": 38,
+                  "else_value": 0
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "count": 34,
+                    "scan_truncated": 37,
+                    "next_cursor": 40
+                  }
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/commitments/commitments"
+                },
+                {
+                  "kind": "slice",
+                  "value": 42,
+                  "limit": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/commitment_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/status"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/direction"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/terms"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/audience/kind"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/audience/id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/confirmed_by"
+                },
+                {
+                  "kind": "present",
+                  "value": 50
+                },
+                {
+                  "kind": "if",
+                  "condition": 51,
+                  "then_value": 50,
+                  "else_value": 0
+                },
+                {
+                  "kind": "present",
+                  "value": 0
+                },
+                {
+                  "kind": "if",
+                  "condition": 53,
+                  "then_value": 0,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/revision"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/recorded_at"
+                },
+                {
+                  "kind": "project",
+                  "rows": 43,
+                  "pointer": "/commitment_id",
+                  "skip_missing": false
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 57
+                },
+                {
+                  "kind": "less_than",
+                  "left": 58,
+                  "right": 59
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/commitment_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 61,
+                  "key_pointer": "/fields/term_id",
+                  "key": 44,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 61,
+                  "key_pointer": "/fields/term_id",
+                  "key": 44,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 62
+                },
+                {
+                  "kind": "not",
+                  "value": 64
+                },
+                {
+                  "kind": "literal",
+                  "value": "commitment"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    66,
+                    44
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/evidence/records"
+                },
+                {
+                  "kind": "slice",
+                  "value": 68,
+                  "limit": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/evidence_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/status"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/summary"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/first_seen_at"
+                },
+                {
+                  "kind": "project",
+                  "rows": 69,
+                  "pointer": "/evidence_id",
+                  "skip_missing": false
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 74
+                },
+                {
+                  "kind": "less_than",
+                  "left": 75,
+                  "right": 76
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/evidence_record_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 78,
+                  "key_pointer": "/fields/record_id",
+                  "key": 70,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 78,
+                  "key_pointer": "/fields/record_id",
+                  "key": 70,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 79
+                },
+                {
+                  "kind": "not",
+                  "value": 81
+                },
+                {
+                  "kind": "literal",
+                  "value": "evidence_record"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    83,
+                    70
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/entities/entities"
+                },
+                {
+                  "kind": "slice",
+                  "value": 85,
+                  "limit": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/entity_key"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/entity_type"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/canonical_name"
+                },
+                {
+                  "kind": "project",
+                  "rows": 86,
+                  "pointer": "/entity_key",
+                  "skip_missing": false
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 90
+                },
+                {
+                  "kind": "less_than",
+                  "left": 91,
+                  "right": 92
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/evidence_entity_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 94,
+                  "key_pointer": "/fields/entity_key",
+                  "key": 87,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 94,
+                  "key_pointer": "/fields/entity_key",
+                  "key": 87,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 95
+                },
+                {
+                  "kind": "not",
+                  "value": 97
+                },
+                {
+                  "kind": "literal",
+                  "value": "evidence_entity"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    99,
+                    87
+                  ]
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "commitments": 21,
+                    "evidence": 31,
+                    "entities": 41
+                  }
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "source_pages": 101
+                  }
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 102
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "commitment_existing",
+                "entity": "commitment",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "term_id"
+                  ],
+                  "limit": 100,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "in",
+                        "field": "term_id",
+                        "values": []
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/values": 57
+                }
+              },
+              {
+                "name": "evidence_record_existing",
+                "entity": "evidence_record",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "record_id"
+                  ],
+                  "limit": 100,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "in",
+                        "field": "record_id",
+                        "values": []
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/values": 74
+                }
+              },
+              {
+                "name": "evidence_entity_existing",
+                "entity": "evidence_entity",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "entity_key"
+                  ],
+                  "limit": 100,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "in",
+                        "field": "entity_key",
+                        "values": []
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/values": 90
+                }
+              }
+            ],
+            "query_when": {
+              "commitment_existing": 60,
+              "evidence_record_existing": 77,
+              "evidence_entity_existing": 93
+            },
+            "guards": [],
+            "mutations": [
+              {
+                "entity": "commitment",
+                "for_each": 43,
+                "when": 65,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 67,
+                  "fields": {
+                    "term_id": 44,
+                    "status": 45,
+                    "direction": 46,
+                    "term_text": 47,
+                    "audience_kind": 48,
+                    "audience_id": 49,
+                    "named_person": 52,
+                    "source_claim_id": 54,
+                    "expected_revision": 55,
+                    "created_at": 56,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "commitment",
+                "for_each": 43,
+                "when": 64,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 62,
+                  "fields": {
+                    "term_id": 44,
+                    "status": 45,
+                    "direction": 46,
+                    "term_text": 47,
+                    "audience_kind": 48,
+                    "audience_id": 49,
+                    "named_person": 52,
+                    "source_claim_id": 54,
+                    "expected_revision": 55,
+                    "created_at": 56,
+                    "synced_at": 1
+                  },
+                  "revision": 63
+                }
+              },
+              {
+                "entity": "evidence_record",
+                "for_each": 69,
+                "when": 82,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 84,
+                  "fields": {
+                    "record_id": 70,
+                    "state": 71,
+                    "summary": 72,
+                    "created_at": 73,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "evidence_record",
+                "for_each": 69,
+                "when": 81,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 79,
+                  "fields": {
+                    "record_id": 70,
+                    "state": 71,
+                    "summary": 72,
+                    "created_at": 73,
+                    "synced_at": 1
+                  },
+                  "revision": 80
+                }
+              },
+              {
+                "entity": "evidence_entity",
+                "for_each": 86,
+                "when": 98,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 100,
+                  "fields": {
+                    "entity_key": 87,
+                    "entity_kind": 88,
+                    "label": 89,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "evidence_entity",
+                "for_each": 86,
+                "when": 97,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 95,
+                  "fields": {
+                    "entity_key": 87,
+                    "entity_kind": 88,
+                    "label": 89,
+                    "synced_at": 1
+                  },
+                  "revision": 96
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64,
+            "source_parameters": {
+              "commitments": {
+                "limit": 8
+              },
+              "evidence": {
+                "limit": 8
+              },
+              "entities": {
+                "limit": 8
+              }
+            },
+            "scan_queries": [
+              "commitment_existing",
+              "evidence_record_existing",
+              "evidence_entity_existing"
+            ],
+            "summary": 103
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 3,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 3
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

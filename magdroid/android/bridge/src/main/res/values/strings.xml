@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Strings the automation engine itself needs. The shell keeps its own. -->
+    <string name="app_name">Magican</string>
+    <string name="service_description">Lets Magician see and act on this phone on your behalf.\n\nThis service can:\n\u2022 Read what is on screen in any app\n\u2022 Tap, swipe and type\n\u2022 Capture screenshots\n\u2022 Open and close apps\n\nIt only acts when you or your agent asks it to, and it connects out to your own Magician rather than accepting connections from the network.</string>
+    <string name="foreground_service_title">Magican Active</string>
+    <string name="foreground_service_message">Connected to your Magician when configured</string>
+</resources>

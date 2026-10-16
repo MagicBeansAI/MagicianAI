@@ -1,0 +1,50 @@
+{
+  "ui": {
+    "footer": {
+      "hideContextPercentage": false
+    }
+  },
+  "general": {
+    "previewFeatures": true
+  },
+  "context": {
+    "fileName": ["AGENTS.md"]
+  },
+  "mcpServers": {
+    "codegraph": {
+      "command": "python3",
+      "args": [
+        "docs/codegraph/mcp_server.py"
+      ],
+      "trust": true
+    }
+  },
+  "hooks": {
+    "AfterTool": [
+      {
+        "matcher": "write_file|replace",
+        "hooks": [
+          {
+            "name": "docs-remind",
+            "type": "command",
+            "command": "$(git rev-parse --show-toplevel)/scripts/docs_remind_hook.sh gemini",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "docs-remind-stop",
+            "type": "command",
+            "command": "$(git rev-parse --show-toplevel)/scripts/docs_remind_hook.sh gemini",
+            "timeout": 30000
+          }
+        ]
+      }
+    ]
+  }
+}

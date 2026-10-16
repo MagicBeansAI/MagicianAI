@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""Extract readable text from a URL or local HTML file.
+
+HTTPS trust: Python's bundled CA list does not include corporate proxy /
+Zscaler / MITM root certs that are installed in the OS trust store
+(macOS Keychain, Windows cert store, /etc/ssl on Linux). To make this
+helper work in those environments we try, in order:
+
+  1. `truststore.inject_into_ssl()` (PyPI `truststore`, py3.10+) — bridges
+     Python's `ssl` module to the OS trust store. Best path; keeps urllib.
+  2. `urllib` with the default ssl context — fine on machines without
+     enterprise interception.
+The adapter never creates a child process; timeout and process ownership remain
+with the governed runtime.
+"""
+
+import json
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+)
+
+
+def rewrite_search_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path or "/"
+    query = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+    if query and (
+        ((host.startswith("www.google.") or host == "google.com") and path == "/search")
+        or (host == "www.bing.com" and path == "/search")
+    ):
+        return "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote_plus(query)
+    return url
+
+
+def _try_inject_truststore() -> None:
+    """Best-effort: bridge Python's ssl module to the OS trust store. Idempotent."""
+    try:
+        import truststore  # type: ignore[import-not-found]
+
+        truststore.inject_into_ssl()
+    except Exception:
+        # truststore not installed (or already injected, or older Python) —
+        # we'll fall back to curl on cert failures.
+        pass
+
+
+def read_html(url: str, input_file: str, timeout_secs: int) -> str:
+    if url:
+        _try_inject_truststore()
+        target_url = rewrite_search_url(url)
+        request = urllib.request.Request(
+            target_url,
+            headers={"User-Agent": _USER_AGENT},
+        )
+        with urllib.request.urlopen(request, timeout=timeout_secs) as response:
+            content = response.read(8 * 1024 * 1024)
+            charset = response.headers.get_content_charset() or "utf-8"
+            return content.decode(charset, errors="replace")
+    if input_file:
+        with open(input_file, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    return "<html><body>Error: provide url or input_file</body></html>"
+
+
+def extract_text(html: str, include_links: bool) -> tuple[str, str, str]:
+    """Extract readable text, reporting which backend produced it.
+
+    The third return value is a diagnosis, non-empty only when *neither*
+    extractor could run. That case used to be indistinguishable from a page
+    with no article text: both raised, `text` was set to `""`, and the caller
+    emitted `chars_extracted: 0` with no error field. Under the governed
+    runtime — whose PATH is built solely from the manifest's declared bins —
+    that is exactly what happened whenever `python3` resolved to an
+    interpreter without trafilatura and beautifulsoup4 installed. The fetch
+    succeeded, the process exited zero, and the reader received nothing with
+    no account of why.
+
+    An extractor that runs and legitimately finds nothing still returns an
+    empty string and no diagnosis, because "this page has no article text" is
+    a real answer about the page rather than a broken installation.
+    """
+    text = None
+    method = "none"
+    trafilatura_failure = ""
+    try:
+        import trafilatura
+
+        text = trafilatura.extract(
+            html,
+            include_links=include_links,
+            include_tables=True,
+            include_comments=False,
+        )
+        if text and len(text) >= 50:
+            method = "trafilatura"
+    except Exception as exc:
+        trafilatura_failure = f"{type(exc).__name__}: {exc}"
+        text = None
+
+    if not text or len(text) < 50:
+        try:
+            from bs4 import BeautifulSoup
+
+            soup = BeautifulSoup(html, "html.parser")
+            for tag in soup(
+                [
+                    "script",
+                    "style",
+                    "nav",
+                    "footer",
+                    "header",
+                    "aside",
+                    "form",
+                    "iframe",
+                    "svg",
+                    "noscript",
+                ]
+            ):
+                tag.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            method = "beautifulsoup_fallback"
+        except Exception as exc:
+            return (
+                "",
+                "none",
+                "no HTML extractor is available to this interpreter "
+                f"({sys.executable}): beautifulsoup4 raised "
+                f"{type(exc).__name__}: {exc}"
+                + (f"; trafilatura raised {trafilatura_failure}" if trafilatura_failure else ""),
+            )
+
+    if text and method == "trafilatura":
+        text = recover_dropped_tables(html, text)
+    return text or "", method, ""
+
+
+# Tables inside these are site chrome, never page content.
+CHROME_TAGS = ("nav", "footer", "header", "aside", "form")
+MAX_RECOVERED_TABLE_CHARS = 20_000
+
+
+MAX_TABLE_NOTE_CHARS = 200
+
+
+def table_notes(table) -> list[str]:
+    """Short captions that belong to a table: its own <caption>, a
+    <figcaption> of its figure, and <small> notes in the heading block just
+    before it — the nearest preceding sibling of the table or of one of its
+    wrappers, walking up until a sibling is found or a section boundary is
+    reached (component frameworks nest a table six or seven wrappers deep).
+    Nearest first, deduplicated, each under `MAX_TABLE_NOTE_CHARS` so a
+    paragraph never masquerades as a note."""
+    notes: list[str] = []
+
+    def add(node) -> None:
+        if node is None:
+            return
+        note = re.sub(r"\s+", " ", node.get_text(" ", strip=True))
+        if 0 < len(note) <= MAX_TABLE_NOTE_CHARS and note not in notes:
+            notes.append(note)
+
+    add(table.find("caption"))
+    figure = table.find_parent("figure")
+    if figure is not None:
+        add(figure.find("figcaption"))
+    node = table
+    for _ in range(12):
+        sibling = node.find_previous_sibling()
+        if sibling is not None and getattr(sibling, "name", None):
+            if sibling.name in ("small", "figcaption"):
+                add(sibling)
+            else:
+                for small in sibling.find_all(["small", "figcaption"]):
+                    add(small)
+            if notes:
+                break
+        node = node.parent
+        if node is None or node.name in ("body", "main", "article", "section", "[document]"):
+            break
+    return notes
+
+
+def recover_dropped_tables(html: str, text: str) -> str:
+    """Append every content table the article extractor left out.
+
+    Documentation sites wrap tables in scroll containers — Fern
+    (`div.fern-table-root.not-prose`), Mintlify, Docusaurus — and the article
+    extractor prunes the wrapper as boilerplate, keeping the prose around it
+    and reporting a confident page with the table gone. The web researcher
+    read a pricing page that way on 2026-09-19: 1,330 characters of intro,
+    and "the rates were not exposed", with the rate table in the HTML all
+    along. Pricing, limits and parameter tables are exactly what research
+    reads pages for, so a table the extractor dropped is recovered here, as
+    pipe-separated rows under the article, header row first. A table the
+    extractor kept is left alone (its first row's text is already present),
+    and a table inside site chrome is not content.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except Exception:
+        return text
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return text
+    compact = re.sub(r"\s+", " ", text)
+    text_lines = text.split("\n")
+    recovered: list[str] = []
+    budget = MAX_RECOVERED_TABLE_CHARS
+    for table in soup.find_all("table"):
+        if table.find_parent(CHROME_TAGS) is not None or table.find_parent("table") is not None:
+            continue
+        rows: list[list[str]] = []
+        for tr in table.find_all("tr"):
+            cells = [re.sub(r"\s+", " ", cell.get_text(" ", strip=True)) for cell in tr.find_all(["th", "td"])]
+            if any(cells):
+                rows.append(cells)
+        if not rows:
+            continue
+        # A row with two or more non-empty cells is a fact the extractor
+        # would have had to keep. Whatever layout it renders a kept table
+        # in, a row's cells land in order on one line — so a table is
+        # "kept" when some data row's cells occur in order within one line
+        # of the text, not when each cell happens to be a word the prose
+        # also uses.
+        data_rows = [row for row in rows if sum(1 for cell in row if cell) >= 2]
+        if not data_rows:
+            continue
+        kept = any(row_on_one_line(row, text_lines) for row in data_rows)
+        # The note that gives a table its unit — "Prices per 1M tokens." —
+        # is a <small> or <caption> the extractor prunes even when it keeps
+        # the table, and a table without its unit is what the researcher
+        # then calls "a table that does not state its billing unit".
+        notes = [note for note in table_notes(table) if note not in compact]
+        if kept and not notes:
+            continue
+        note_lines = [f"Table note: {note}" for note in notes]
+        if kept:
+            # The rows are already in the text: put the note directly above
+            # the line the table starts on, where it reads as the table's.
+            # A note far from its table reads as unattached, and the
+            # researcher then hedges that the unit "did not clearly attach".
+            placed, text = insert_before_table(text, rows, note_lines)
+            if placed:
+                compact = re.sub(r"\s+", " ", text)
+                text_lines = text.split("\n")
+                continue
+            note_lines.append("| " + " | ".join(rows[0]) + " |")
+            rendered = "\n".join(note_lines)
+        else:
+            rendered = "\n".join(note_lines + ["| " + " | ".join(row) + " |" for row in rows])
+        if len(rendered) > budget:
+            break
+        budget -= len(rendered)
+        recovered.append(rendered)
+    if not recovered:
+        return text
+    return text.rstrip() + "\n\n" + "\n\n".join(recovered) + "\n"
+
+
+ROW_SEPARATOR = re.compile(r"^[\s|]*$")
+
+
+def row_on_one_line(row: list[str], lines: list[str]) -> bool:
+    """Whether some line renders the row: its non-empty cells in order with
+    nothing but whitespace or pipes between them. Prose that happens to
+    mention the same values in the same order has words between them and
+    does not count."""
+    cells = [cell for cell in row if cell]
+    for line in lines:
+        position = 0
+        for cell in cells:
+            found = line.find(cell, position)
+            if found < 0 or not ROW_SEPARATOR.match(line[position:found]):
+                break
+            position = found + len(cell)
+        else:
+            return True
+    return False
+
+
+# Hydration payload sources, framework-agnostic. Scripts typed as data
+# (Next/Nuxt/SvelteKit/Remix `application/json`, Qwik), inline scripts that
+# push serialized chunks (Next app router), and any element attribute that
+# holds a JSON document (Astro `props`, `data-props`, Inertia `data-page`).
+# `ld+json` is search-engine metadata that mirrors rendered content; it is
+# never hidden content and never counts.
+HYDRATION_SCRIPT_TYPES = ("application/json", "qwik/json", "text/x-component")
+HYDRATION_ATTR_MIN_BYTES = 256
+HYDRATION_STRING_MIN_CHARS = 8
+SHELL_MIN_HIDDEN_CHARS = 150
+SHELL_EMPTY_ROOT_IDS = ("root", "app", "__next", "___gatsby", "__nuxt", "q-container", "svelte", "main")
+SHELL_EMPTY_ROOT_MIN_SCRIPT_BYTES = 8_000
+
+
+def detect_client_rendered_shell(html: str, text: str) -> dict:
+    """Whether the page rendered its content on the client, not the server.
+
+    The reader's quality boundary is a character count, so a 458-character
+    blurb over a 198 KB application shell counted as a sufficient page and
+    the researcher reported rates it never received. What the count cannot
+    see, the extractor can: content the page ships for client-side
+    hydration that the server never rendered. Two signals, either decides:
+
+    * more content in hydration payloads than in the rendered text — the
+      string values of every hydration payload that do not occur in the
+      extracted text, when their total exceeds both the rendered text and
+      a floor; a payload that repeats what was rendered hides nothing;
+    * an empty application root beside a script bundle — nothing rendered
+      at all, whatever the payload looks like.
+
+    Returns a verdict the reader can act on: `shell`, a `reason`, the counts,
+    and a sample of the hidden strings so a log can show what was missed.
+    """
+    verdict = {"shell": False, "reason": "", "rendered_chars": len(text.strip()),
+               "hidden_payload_chars": 0, "sample": []}
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return verdict
+    # Hidden means absent from what the SERVER rendered — the whole DOM, nav
+    # and all — not absent from the extracted article: a sidebar label the
+    # extractor strips as boilerplate was still rendered, and a page whose
+    # payload mirrors its DOM (Next.js flight, hydrated islands of rendered
+    # markup) hides nothing.
+    for script in soup.find_all(["script", "style", "noscript"]):
+        script.decompose()
+    # Title and meta descriptions are rendered by the server too — as
+    # attributes rather than text — and every framework mirrors them into
+    # its payload.
+    rendered_attrs = [meta.get("content") or "" for meta in soup.find_all("meta")]
+    rendered_attrs += [element.get("alt") or "" for element in soup.find_all(["img", "area"])]
+    dom_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True) + " " + " ".join(rendered_attrs))
+    try:
+        payload_soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return verdict
+
+    hidden: list[str] = []
+    hidden_chars = 0
+    seen: set[str] = set()
+    for value in hydration_strings(payload_soup):
+        if value in seen:
+            continue
+        seen.add(value)
+        if value not in dom_text:
+            hidden.append(value)
+            hidden_chars += len(value)
+    verdict["hidden_payload_chars"] = hidden_chars
+    verdict["sample"] = hidden[:8]
+    rendered = verdict["rendered_chars"]
+    if hidden_chars >= SHELL_MIN_HIDDEN_CHARS and hidden_chars > rendered:
+        verdict["shell"] = True
+        verdict["reason"] = (
+            f"{hidden_chars} characters of content in client hydration payloads never rendered "
+            f"on the server, against {rendered} rendered"
+        )
+        return verdict
+
+    script_bytes = sum(len(script.string or "") for script in payload_soup.find_all("script"))
+    for root_id in SHELL_EMPTY_ROOT_IDS:
+        root = payload_soup.find(id=root_id)
+        if root is not None and not root.get_text(strip=True) and script_bytes >= SHELL_EMPTY_ROOT_MIN_SCRIPT_BYTES:
+            verdict["shell"] = True
+            verdict["reason"] = (
+                f"empty application root #{root_id} beside {script_bytes} bytes of script; "
+                "nothing was rendered on the server"
+            )
+            return verdict
+    return verdict
+
+
+def hydration_strings(soup):
+    """Every string value carried in a hydration payload, in document order."""
+    for script in soup.find_all("script"):
+        kind = (script.get("type") or "").strip().lower()
+        body = script.string or ""
+        if not body:
+            continue
+        if kind in HYDRATION_SCRIPT_TYPES or (script.get("id") or "").upper() in ("__NEXT_DATA__", "__NUXT_DATA__"):
+            yield from json_string_values(body)
+        elif kind in ("", "text/javascript", "module") and "__next_f.push" in body:
+            yield from json_string_values(body)
+    for element in soup.find_all(True):
+        for name, value in element.attrs.items():
+            if isinstance(value, str) and len(value) >= HYDRATION_ATTR_MIN_BYTES and value.lstrip()[:1] in "{[":
+                yield from json_string_values(value)
+
+
+JSON_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+CLASS_LIST_TOKEN = re.compile(r"^[a-z0-9][a-z0-9:\-\[\]/.%!#_]*$")
+# A word (letters, with an inner apostrophe or hyphen, trailing punctuation
+# allowed) or a number with an optional currency sign and unit suffix.
+# What makes a phrase prose rather than coordinates: a plain word, or a
+# number that carries a currency sign or a percent.
+ANCHOR_TOKEN = re.compile(r"^(?:[^\W\d_]{2,}[.,;:!?)]*|[₹$€£¥]\d[\d,.]*[A-Za-z%]{0,3}[.,;:!?)]*|\d[\d,.]*%[.,;:!?)]*)$")
+WORD_TOKEN = re.compile(
+    r"^(?:[^\W\d_]{2,}(?:['’\-][^\W\d_]+)*[.,;:!?)]*|[₹$€£¥]?\d[\d,.]*[A-Za-z%]{0,3}[.,;:!?)]*)$"
+)
+# Keys whose values are presentation or wiring, never page content.
+PRESENTATIONAL_KEYS = frozenset({
+    "classname", "class", "style", "id", "key", "href", "src", "srcset", "sizes", "type", "rel", "role",
+    "target", "name", "url", "path", "slug", "component", "module", "chunk", "hash", "icon", "variant",
+    "color", "font", "width", "height", "ref", "for", "as", "loading", "decoding", "fetchpriority", "$$typeof",
+})
+PRECEDING_KEY = re.compile(r'"([^"\\]{1,64})"\s*:\s*$')
+NESTED_PAYLOAD_MIN_CHARS = 200
+
+
+def json_string_values(payload: str, depth: int = 0):
+    """String literals in a JSON-ish payload that read as content: a phrase
+    of two or more words (a price like `₹29.28 / ₹10.98 / ₹73.20` is content
+    with no letters at all); never a lone word, a key, a value under a
+    presentational key, a URL, a path, or a class list. A
+    string that is itself serialized data — a Next.js flight chunk is JSON
+    pushed as a JSON string — is descended into, not counted."""
+    for match in JSON_STRING.finditer(payload):
+        raw = match.group(1)
+        try:
+            value = json.loads('"' + raw + '"')
+        except Exception:
+            continue
+        if payload[match.end():match.end() + 1] == ":":
+            continue
+        if depth < 3 and len(value) >= NESTED_PAYLOAD_MIN_CHARS and '"' in value and (":" in value or "[" in value):
+            yield from json_string_values(value, depth + 1)
+            continue
+        value = re.sub(r"\s+", " ", value).strip()
+        if len(value) < HYDRATION_STRING_MIN_CHARS:
+            continue
+        key = PRECEDING_KEY.search(payload[max(0, match.start() - 80):match.start()])
+        if key and key.group(1).lower() in PRESENTATIONAL_KEYS:
+            continue
+        if value.startswith(("http://", "https://", "/", "#", "data:")):
+            continue
+        tokens = value.split(" ")
+        # A lone word — a route segment, a flag name, a prop value — is never
+        # evidence of hidden content. Content is phrases made of words (or
+        # numbers with a unit or currency): SVG path data, inline CSS and
+        # script fragments are payload strings too, and they are not.
+        if len(tokens) < 2:
+            continue
+        word_like = sum(1 for token in tokens if WORD_TOKEN.match(token))
+        anchored = any(ANCHOR_TOKEN.match(token) for token in tokens)
+        if not anchored or word_like < 2 or word_like * 2 < len(tokens):
+            continue
+        if all(CLASS_LIST_TOKEN.match(token) for token in tokens) and any(
+            "-" in token or ":" in token or "[" in token for token in tokens
+        ):
+            continue
+        yield value
+
+
+def insert_before_table(text: str, rows: list[list[str]], note_lines: list[str]) -> tuple[bool, str]:
+    """Insert the note lines above the line where the kept table begins.
+
+    The extractor renders a table row as its cells in order on one line, so
+    the first line holding every cell of the table's first non-empty row is
+    where the table starts; if no line holds them, the caller appends."""
+    first = next((row for row in rows if any(row)), None)
+    if first is None:
+        return False, text
+    cells = [cell for cell in first if cell]
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if all(cell in line for cell in cells):
+            lines[index:index] = note_lines
+            return True, "\n".join(lines)
+    return False, text
+
+
+def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
+    max_chars = max(1, max_chars)
+    if len(text) <= max_chars:
+        return text, False
+    marker = f"\n\n[truncated at {max_chars} chars]"
+    if len(marker) >= max_chars:
+        return text[:max_chars], True
+    return text[: max_chars - len(marker)] + marker, True
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    url = str(request.get("url", "")).strip()
+    input_file = str(request.get("input_file", "")).strip()
+    max_chars = int(request.get("max_chars", 12000))
+    include_links = bool(request.get("include_links", True))
+    timeout_secs = int(request.get("timeout_secs", 15))
+
+    try:
+        html = read_html(url, input_file, timeout_secs)
+        if not html.strip():
+            print(json.dumps({"error": "empty response", "chars_extracted": 0, "content": ""}))
+            return 0
+        text, method, unavailable = extract_text(html, include_links)
+        if unavailable:
+            # Zero exit, on stdout, with `/error` set — the same shape as the
+            # "empty response" branch below and the one this package's own
+            # manifest declares (`content_reader.output.error_pointer:
+            # /error`). It matters which: the governed runtime parses stdout
+            # only when the process exits zero and parses stderr otherwise, so
+            # an envelope printed to stdout beside a non-zero exit is read by
+            # nobody. Both the canary's declared error pointer and the reader's
+            # see this one.
+            print(
+                json.dumps(
+                    {"error": unavailable, "chars_extracted": 0, "content": ""}
+                )
+            )
+            return 0
+        client_rendered = detect_client_rendered_shell(html, text)
+        text, truncated = truncate_text(text, max_chars)
+        print(
+            json.dumps(
+                {
+                    "url": url,
+                    "input_file": input_file,
+                    "method": method,
+                    "chars_extracted": len(text),
+                    "truncated": truncated,
+                    "content": text,
+                    "client_rendered": client_rendered,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    except Exception as exc:
+        # Zero exit for the same reason as the branch above: this envelope is
+        # on stdout, and the governed runtime only parses stdout when the exit
+        # code is zero. Returning 1 here discarded the one account of what went
+        # wrong — including the SSL-trust failure this package's canary is
+        # written to detect through `/error`, which could not have resolved
+        # while the diagnosis was being thrown away.
+        print(json.dumps({"error": str(exc), "chars_extracted": 0, "content": ""}))
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

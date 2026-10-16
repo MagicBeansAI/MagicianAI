@@ -1,0 +1,150 @@
+name: imessage
+description: Read iMessages from the local macOS Messages SQLite database — search conversations, list recent messages, get thread history. Requires macOS Full Disk Access granted to the process hosting the backend in System Settings > Privacy & Security.
+guide: |-
+  Tool name: `imessage`
+  Inner-loop action: `query`
+  Primary parameter: `sql`
+  Requires: macOS Full Disk Access granted to the process hosting the backend
+  Auth: None (reads local SQLite database)
+
+  Prefer this `imessage` tool for all Messages database lookups. Do not call
+  raw `duckdb` for `~/Library/Messages/chat.db`; DuckDB is for analytics and
+  persistent finance tables, not for Apple Messages reads.
+
+  This tool executes your SQL directly against the macOS Messages SQLite
+  database at `~/Library/Messages/chat.db` in read-only mode using bundled
+  Rust-native SQLite. It does not require the system `sqlite3` binary. Use
+  SQLite SQL syntax and direct table names. Do not use DuckDB-only functions
+  such as `sqlite_scan(...)`, `to_timestamp(...)`, or DuckDB `strftime(...)`
+  signatures. If an older prompt provides
+  `sqlite_scan('~/Library/Messages/chat.db', 'message')`, the runtime rewrites
+  that wrapper to the SQLite table name for compatibility, but new SQL should
+  use direct table names.
+
+  ## Prerequisites
+
+  macOS Full Disk Access must be granted to the process hosting the backend:
+    1. Open System Settings > Privacy & Security > Full Disk Access
+    2. Add the backend binary (or Terminal/IDE if running from there)
+    3. Restart the backend process
+
+  Without Full Disk Access, queries will fail with a permission error when
+  trying to read ~/Library/Messages/chat.db.
+
+  ## Schema Reference
+
+  Key tables:
+
+  **message** — individual messages
+    - ROWID, text, date (nanoseconds since 2001-01-01), is_from_me (0/1), handle_id, is_read
+    - Date conversion: datetime(date/1000000000 + 978307200, 'unixepoch', 'localtime')
+    - For date filters, call `time_math` first and use its Apple absolute
+      nanosecond half-open boundaries against message.date.
+
+  **chat** — conversations
+    - ROWID, display_name (group name or null), chat_identifier (phone/email), service_name
+
+  **handle** — contacts/phone numbers
+    - ROWID, id (phone number or email), service
+
+  **chat_message_join** — links chats to messages
+    - chat_id, message_id
+
+  ## Common Queries
+
+  Recent conversations with latest message:
+    SELECT c.ROWID as chat_id, c.display_name, c.chat_identifier,
+           m.text as last_message,
+           datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as sent_at,
+           m.is_from_me
+    FROM chat c
+    JOIN chat_message_join cmj ON c.ROWID = cmj.chat_id
+    JOIN message m ON cmj.message_id = m.ROWID
+    WHERE m.date = (
+      SELECT MAX(m2.date)
+      FROM chat_message_join cmj2
+      JOIN message m2 ON cmj2.message_id = m2.ROWID
+      WHERE cmj2.chat_id = c.ROWID
+    )
+    ORDER BY m.date DESC LIMIT 20;
+
+  Search messages by text:
+    SELECT c.display_name, c.chat_identifier, m.text,
+           datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as sent_at,
+           m.is_from_me
+    FROM message m
+    JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+    JOIN chat c ON cmj.chat_id = c.ROWID
+    WHERE m.text LIKE '%search term%'
+    ORDER BY m.date DESC LIMIT 20;
+
+  Get thread messages:
+    SELECT m.text, datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as sent_at,
+           m.is_from_me, h.id as sender
+    FROM message m
+    JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+    LEFT JOIN handle h ON m.handle_id = h.ROWID
+    WHERE cmj.chat_id = <chat_id>
+    ORDER BY m.date DESC LIMIT 50;
+
+  ## Notes
+  - All queries are read-only
+  - Do not filter to unread messages unless the user's goal explicitly asks for unread messages
+  - Phone numbers appear as handles (e.g., +1234567890)
+  - Group chats have display_name set; 1:1 chats may not
+  - Date is nanoseconds since 2001-01-01 (Apple epoch), convert with: date/1000000000 + 978307200
+parameters:
+- name: sql
+  required: true
+  param_type: string
+  description: Read-only SQLite query to execute against the Messages database. Use direct table names such as message, handle, chat, and chat_message_join.
+- name: output_format
+  param_type: string
+  description: 'Output format: json (default), csv, or table'
+  default: json
+  enum_values:
+  - json
+  - csv
+  - table
+- name: timeout_secs
+  param_type: integer
+  description: Query timeout in seconds
+  default: '30'
+native_action_schemas:
+  query:
+    description: Execute one read-only SQLite query against ~/Library/Messages/chat.db through the Rust iMessage provider. Use direct SQLite table names; do not use DuckDB sqlite_scan wrappers.
+    parameters:
+    - sql
+    - output_format
+    - timeout_secs
+    required:
+    - sql
+    parameter_overrides:
+      sql:
+        type: string
+        description: Read-only SQLite query against message, handle, chat, and chat_message_join.
+      output_format:
+        type: string
+        enum:
+        - json
+        - csv
+        - table
+        default: json
+        description: Result format. Prefer json for analysis; table for human inspection.
+      timeout_secs:
+        type: integer
+        default: 30
+        description: Query timeout in seconds.
+implementation:
+  type: primitive
+  provider_name: imessage
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - messaging
+  - imessage
+  - communication
+  composition_category: messaging_operations
+  sandbox: none

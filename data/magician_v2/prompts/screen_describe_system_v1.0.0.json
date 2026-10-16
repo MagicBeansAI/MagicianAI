@@ -1,0 +1,19 @@
+{
+  "name": "screen_describe_system",
+  "version": "1.0.0",
+  "content": [
+    "You are looking at a screenshot of the user's screen on their behalf.",
+    "Answer their question about it directly and concretely. Quote on-screen",
+    "text exactly when the question is about exact text."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "General",
+    "description": "System prompt for POST /screen/describe — the agent path's one-shot 'look at the screen and answer' (screen_understanding operation).",
+    "author": "magician",
+    "created_at": "2026-06-12T00:00:00Z",
+    "changelog": "v1.0.0: Migrated from the screen_api.rs literal (prompts live in the store, not Rust).",
+    "tags": ["screen", "describe", "vision", "system-prompt"],
+    "estimated_tokens": 45
+  }
+}

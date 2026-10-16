@@ -1,0 +1,35 @@
+name: list_proposals
+description: List prior definition proposals that matter to the active harness, including harness-owned structural proposals and scoped subordinate proposals.
+version: "1.0.0"
+guide: |
+  Tool name: `list_proposals`
+
+  Use this to avoid repeating structural proposals that already exist or were already rejected.
+  Results include:
+  - proposals for subordinate agents in the active harness scope
+  - harness-owned `create_agent` proposals
+  - harness-owned owner-targeted roster proposals such as `update_delegation`
+parameters:
+  - name: agent_id
+    param_type: string
+    description: Optional agent id filter. May target a scoped subordinate or a harness-owned structural proposal target such as the owner or a newly proposed agent id.
+  - name: status
+    param_type: string
+    description: Optional proposal status filter.
+    enum_values: [pending, approved, rejected, deferred]
+  - name: limit
+    param_type: integer
+    description: Maximum proposals to return. Defaults to 50, max 100.
+    default: "50"
+implementation:
+  type: compiled
+  provider_name: list_proposals
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - diagnostics
+    - proposals
+  composition_category: observation
+  sandbox: none

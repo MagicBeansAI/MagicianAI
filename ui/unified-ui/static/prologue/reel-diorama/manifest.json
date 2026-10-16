@@ -1,0 +1,113 @@
+{
+  "frames": 610,
+  "width": 1280,
+  "height": 720,
+  "pattern": "f%03d.webp",
+  "fps": 12,
+  "version": 2,
+  "matchCut": {
+    "screen": {
+      "x": 341,
+      "y": 161,
+      "w": 597,
+      "h": 435
+    },
+    "case": {
+      "x": 192,
+      "y": 25,
+      "w": 900,
+      "h": 689
+    },
+    "surround": [
+      156,
+      116,
+      87
+    ],
+    "screenTint": [
+      34,
+      26,
+      20
+    ]
+  },
+  "beats": [
+    {
+      "id": "bang",
+      "start": 1,
+      "end": 61
+    },
+    {
+      "id": "cooling",
+      "start": 62,
+      "end": 122
+    },
+    {
+      "id": "world",
+      "start": 123,
+      "end": 183
+    },
+    {
+      "id": "dive",
+      "start": 184,
+      "end": 244
+    },
+    {
+      "id": "shallows",
+      "start": 245,
+      "end": 305
+    },
+    {
+      "id": "shore",
+      "start": 306,
+      "end": 366
+    },
+    {
+      "id": "fire",
+      "start": 367,
+      "end": 427
+    },
+    {
+      "id": "blade",
+      "start": 428,
+      "end": 488
+    },
+    {
+      "id": "tools",
+      "start": 489,
+      "end": 549
+    },
+    {
+      "id": "desk",
+      "start": 550,
+      "end": 610
+    }
+  ],
+  "captions": [
+    {
+      "text": "life learns to walk",
+      "a": 340,
+      "b": 356,
+      "c": 392,
+      "d": 406
+    },
+    {
+      "text": "the first tool",
+      "a": 408,
+      "b": 424,
+      "c": 460,
+      "d": 474
+    },
+    {
+      "text": "ours — every tool since",
+      "a": 512,
+      "b": 528,
+      "c": 564,
+      "d": 578
+    }
+  ],
+  "aria": {
+    "bang": "The first light",
+    "evo": "A world forms, and life leaves the water",
+    "fire": "Fire — the first tool",
+    "blade": "The stone blade, and every tool since"
+  }
+}

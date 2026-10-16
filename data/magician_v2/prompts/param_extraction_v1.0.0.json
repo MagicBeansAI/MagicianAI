@@ -1,0 +1,73 @@
+{
+  "name": "param_extraction",
+  "version": "1.0.0",
+  "content": [
+    "Extract the explicit value for parameter '{parameter_name}' from the user's message.",
+    "",
+    "Parameter Name: {parameter_name}",
+    "Display Name: {display_name}",
+    "Description: {description}",
+    "User Message: \"{user_message}\"",
+    "",
+    "Task: Analyze if the user EXPLICITLY mentioned a value for this parameter in their message.",
+    "",
+    "Return JSON only:",
+    "{",
+    "  \"found\": true|false,",
+    "  \"value\": \"extracted_value\" | null,",
+    "  \"confidence\": 0.0-1.0,",
+    "  \"reasoning\": \"why this value or why not found\"",
+    "}",
+    "",
+    "Guidelines:",
+    "- found=true ONLY if value is explicitly mentioned (e.g., \"ping google.com\" → target=\"google.com\")",
+    "- found=false if value is implied, assumed, or not mentioned at all",
+    "- confidence: 0.7-0.9 for explicit mentions, 0.0 if not found",
+    "- value: the actual extracted value (string, number, etc.)",
+    "- reasoning: brief explanation"
+  ],
+  "variables": [
+    {
+      "name": "parameter_name",
+      "description": "The technical name of the parameter to extract",
+      "required": true,
+      "default_value": null,
+      "examples": ["target_host", "timeout_ms", "port"]
+    },
+    {
+      "name": "display_name",
+      "description": "Human-readable name for the parameter",
+      "required": true,
+      "default_value": null,
+      "examples": ["Target Host", "Timeout (ms)", "Port Number"]
+    },
+    {
+      "name": "description",
+      "description": "Description of what this parameter represents",
+      "required": true,
+      "default_value": null,
+      "examples": ["The hostname or IP address to ping", "Maximum time to wait for response"]
+    },
+    {
+      "name": "user_message",
+      "description": "The user's original message or request",
+      "required": true,
+      "default_value": null,
+      "examples": ["ping google.com", "check if the server is up"]
+    }
+  ],
+  "metadata": {
+    "category": "ParameterElicitation",
+    "description": "Extracts explicitly mentioned parameter values from user messages with high confidence",
+    "author": "MagicianV2-ProgressiveElicitation",
+    "created_at": "2025-10-22T00:00:00Z",
+    "changelog": "Initial version for Phase 2.1 LLM extraction",
+    "tags": [
+      "elicitation",
+      "extraction",
+      "progressive",
+      "inference"
+    ],
+    "estimated_tokens": 280
+  }
+}

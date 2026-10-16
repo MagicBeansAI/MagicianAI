@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="magican_glance_widget_description">See what needs you and what is active, or start talking.</string>
+
+    <string name="setup_title">Setup Instructions</string>
+    <string name="setup_step_1">1. Enable AccessibilityService in Settings → Accessibility → Magdroid</string>
+    <string name="setup_step_2">2. Grant "Allow restricted settings" permission in Settings → Apps → Magdroid → Advanced</string>
+    <string name="setup_step_3">3. Enable Notification access in Settings → Notifications → Notification access → Magdroid</string>
+<string name="setup_step_5">5. Pair this device with your Magician</string>
+
+    <string name="action_open_settings">Open Accessibility Settings</string>
+    <string name="action_test_connection">Test Connection</string>
+    <!-- Magician bridge pairing -->
+    <string name="bridge_section_eyebrow">MAGICIAN</string>
+    <string name="bridge_section_title">Connect to Magician</string>
+    <string name="bridge_status_unpaired">Not connected. This device dials out to Magician and never listens for connections, so it works from any network without opening a port on your phone.</string>
+    <string name="bridge_status_paired">Configured. The bridge connects when the service is running.</string>
+    <string name="bridge_status_connected">Connected to Magician.</string>
+    <string name="bridge_saved">Saved. Restart the accessibility service to reconnect.</string>
+    <string name="bridge_incomplete">A URL and a token are both required.</string>
+    <string name="splash_tagline">Your phone, reachable by an agent</string>
+    <string name="access_host_hint">https://your-magician-host</string>
+    <string name="access_client_id_hint">CF-Access-Client-Id</string>
+    <string name="access_client_secret_hint">CF-Access-Client-Secret (leave blank to keep)</string>
+    <string name="bridge_pairing_token_hint">Pairing token (leave blank to keep)</string>
+    <string name="access_save">Save</string>
+    <string name="chat_title">Chat</string>
+
+    <!-- Launcher shortcuts. Short labels are what the launcher shows and are
+         held to roughly ten characters before it truncates them; the long form
+         is used where there is room. -->
+    <string name="shortcut_new_chat_short">New chat</string>
+    <string name="shortcut_new_chat_long">Start a new chat</string>
+    <string name="shortcut_tutor_short">Ask Tutor</string>
+    <string name="shortcut_tutor_long">Explain a concept on the blackboard</string>
+    <string name="shortcut_listen_short">Listen</string>
+    <string name="shortcut_listen_long">Start listening to this room</string>
+</resources>

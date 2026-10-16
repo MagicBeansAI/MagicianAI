@@ -1,0 +1,65 @@
+name: analyze_image_via_openai
+description: Vision-analyze a sandbox-authorized local image with an explicitly OpenAI-routed MagicLLM operation. Returns a structured description plus a short voice_summary suitable for spoken delivery.
+guide: |-
+  Tool name: `analyze_image_via_openai`
+
+  When to reach for this instead of the general `analyze_image`:
+    - You want explicit OpenAI attribution. The dedicated
+      `analyze_image_via_openai` operation is pinned to an OpenAI vision
+      profile while still using the shared dispatch/telemetry path.
+    - You're A/B comparing OpenAI vs MiniMax (`analyze_image_via_minimax`).
+    - You need the dedicated OpenAI vision profile independently of other
+      screen-understanding mappings.
+
+  Auth: requires `OPENAI_API_KEY` in env. The skill auto-discovers the
+  key from the standard env; nothing else to configure.
+
+  Input shapes:
+    - `image_ref` (required) — an absolute filesystem path inside the
+      effective file-sandbox roots. Chat-session file ids are not resolved by
+      compiled providers. URLs are NOT accepted; download externally first.
+    - `question` (optional) — free-form question about the image.
+      Defaults to a generic structured-description prompt.
+    - `model` (optional) — OpenAI vision-capable Chat-Completions model
+      name. Defaults to `gpt-6-luna`. Any model that accepts
+      `image_url` content works (gpt-6-luna, gpt-5.6-terra, etc.).
+
+  Output:
+    - `description` — full text from the vision model. Lead-with-summary
+      preamble so the first paragraph is voice-friendly and the rest
+      is structured detail for screen rendering.
+    - `voice_summary` — derived 1–2 sentence summary the realtime voice
+      pipeline can read aloud. Picked up automatically by
+      `derive_voice_tool_summary` in the voice orchestrator.
+    - `label`, `media_type`, `question`, `model`, `provider: "openai"`
+      for grounding.
+
+  Image format: JPEG / PNG / GIF / WebP / HEIC / HEIF, regular files only,
+  maximum 20 MiB. Larger images inflate the request ~33 % from base64
+  encoding; downsize upstream.
+parameters:
+- name: image_ref
+  required: true
+  param_type: string
+  description: Absolute filesystem path to a regular image inside the effective file-sandbox roots. Chat-session ids and URLs are not supported.
+- name: question
+  param_type: string
+  description: Optional free-form question. Defaults to a structured description prompt.
+  default: ''
+- name: model
+  param_type: string
+  description: Optional OpenAI vision model name. Defaults to gpt-6-luna.
+  default: gpt-6-luna
+implementation:
+  type: compiled
+  provider_name: analyze_image_via_openai
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories:
+  - vision
+  - image
+  - analysis
+  - openai
+  composition_category: media_operations
+  sandbox: none

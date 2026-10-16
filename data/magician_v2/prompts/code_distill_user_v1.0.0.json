@@ -1,0 +1,55 @@
+{
+  "name": "code_distill_user",
+  "version": "1.0.0",
+  "content": [
+    "Distill durable, reusable codebase knowledge from the following coding-session episodes.",
+    "",
+    "## Source episodes ({episode_count})",
+    "{source_json}",
+    "",
+    "## Target tier schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Extract only DURABLE code facts that help a FUTURE coding run in the same codebase: locations, conventions/patterns, build/test/run commands, architecture & boundaries, decisions + rationale, and failures (what was tried, why it broke, the fix).",
+    "2. Skip transient run details, ephemeral IDs, and anything not reusable.",
+    "3. Never emit secrets, credentials, tokens, or personal data.",
+    "4. When an episode names the project/repo, prefix the `key` with it (`<project>:<area>:<topic>`); the key is the dedup identity, so reuse the same key when refining an existing fact.",
+    "5. Deduplicate overlapping facts into a single most-specific item.",
+    "6. Conform each item to the target tier schema above (emit `key` and `value`; omit `last_seen`).",
+    "",
+    "Return ONLY a valid JSON array of {key, value} objects. No markdown, no code blocks, no prose. If nothing durable is present, return []."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized coding-session episodes to distill code knowledge from.",
+      "required": true,
+      "default_value": null,
+      "examples": ["[{\"summary\": \"Implemented auth middleware in src/auth/middleware.rs using thiserror\"}]"]
+    },
+    {
+      "name": "tier_schema",
+      "description": "JSON schema of the target code-knowledge tier (key/value/last_seen item shape).",
+      "required": true,
+      "default_value": "{}",
+      "examples": ["{\"entries\": {\"item_schema\": {\"key\": \"text\", \"value\": \"text\", \"last_seen\": \"date_time\"}}}"]
+    },
+    {
+      "name": "episode_count",
+      "description": "Number of coding-session episodes provided as source.",
+      "required": false,
+      "default_value": "0",
+      "examples": ["10", "23"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to distill coding-session episodes into durable {key, value} code-knowledge facts conforming to the target tier schema.",
+    "author": "magician",
+    "created_at": "2026-06-15T00:00:00Z",
+    "changelog": "v1.0.0: Initial code-distillation user prompt (M3 code_knowledge P2).",
+    "tags": ["memory", "consolidation", "code-knowledge", "code-distillation"],
+    "estimated_tokens": 220
+  }
+}

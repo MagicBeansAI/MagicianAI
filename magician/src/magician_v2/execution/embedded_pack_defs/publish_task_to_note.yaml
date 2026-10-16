@@ -1,0 +1,59 @@
+name: publish_task_to_note
+description: Publish a finished task's record into the owner's Notes space as a browsable page. Only settled tasks can be published.
+version: "1.0.0"
+guide: |
+  Tool name: `publish_task_to_note`
+
+  Publishes a task the owner already has — its result, outputs, and step
+  timeline — into their Notes space as a Markdown page they can read, search,
+  and link to later.
+
+  Only a SETTLED task can be published: completed, failed, or cancelled. Asking
+  for a running task is refused rather than publishing a half-story, so do not
+  call this to "save progress" mid-run.
+
+  Republishing the same task REPAIRS its existing page rather than creating a
+  second one, so calling it again after the task changed is safe and is the
+  right way to refresh a stale page.
+
+  `mode` controls how much lands on the page:
+  - `compact` — the result and little else;
+  - `standard` — the default; result plus the material context;
+  - `diagnostic` — the full record, including step-level detail. Use only when
+    the owner is investigating what happened, not for ordinary keeping.
+
+  `include_assets` bundles the task's selected output files alongside the page.
+
+  Read the response rather than assuming it: `provider` is where the page
+  ACTUALLY landed, and `used_fallback` true means it went somewhere other than
+  the requested provider, with `fallback_reason` saying why. Tell the owner
+  where it really is, and give them `note_path`.
+
+  This does not replace `create_note`. Use `create_note` for something you or
+  the owner wrote; use this for a task's own record.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: The settled task to publish.
+  - name: mode
+    param_type: string
+    description: How much of the record to include. Defaults to standard.
+    enum_values: [compact, standard, diagnostic]
+  - name: include_assets
+    param_type: boolean
+    description: Bundle the task's selected output files alongside the page.
+  - name: provider
+    param_type: string
+    description: Optional notes provider override. Normally omit — the scope's configured default and fallback already apply.
+implementation:
+  type: compiled
+  provider_name: publish_task_to_note
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - notes
+    - tasks
+  composition_category: action
+  sandbox: none

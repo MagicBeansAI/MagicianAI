@@ -1,0 +1,44 @@
+{
+  "name": "task_user_output_synthesize",
+  "version": "1.0.0",
+  "content": [
+    "Synthesize the user-facing task output from the following structured bundle.",
+    "",
+    "## Task-User Output Bundle",
+    "{bundle_section}",
+    "",
+    "## Instructions",
+    "1. Choose exactly one `media_type` from `allowed_media_types` in the bundle. Prefer `preferred_media_type` unless another allowed type is clearly better.",
+    "2. Produce the final user-facing result in the chosen format.",
+    "3. Lead with the outcome, then include only the most important supporting details.",
+    "4. Mention important source outputs or artifacts only when they help the user understand or act on the result.",
+    "5. Avoid internal implementation noise unless it materially changes the outcome.",
+    "",
+    "Respond with ONLY valid JSON using this shape:",
+    "{",
+    "  \"media_type\": \"one of allowed_media_types\",",
+    "  \"body_text\": \"user-facing body in markdown/html/plain text\",",
+    "  \"body_json\": null",
+    "}"
+  ],
+  "variables": [
+    {
+      "name": "bundle_section",
+      "description": "Structured task-user synthesis bundle wrapped in <synthesis_bundle> tags",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "<synthesis_bundle format=\\\"json\\\">\\n{\\n  \\\"manifest\\\": {\\\"title\\\": \\\"Reconcile receipts\\\"},\\n  \\\"outcome\\\": {\\\"outcome_summary\\\": \\\"Reconciled 18 receipts\\\"}\\n}\\n</synthesis_bundle>"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "ResponseGeneration",
+    "description": "User prompt for Magician V3 task-scoped user output synthesis.",
+    "author": "magician",
+    "created_at": "2026-03-28T00:00:00Z",
+    "changelog": "v1.0.0: Initial task-user output synthesis user prompt for V3 finalizer cutover. Updated to return a media-type envelope.",
+    "tags": ["artifact-v2", "task-user-output", "synthesis"],
+    "estimated_tokens": 250
+  }
+}

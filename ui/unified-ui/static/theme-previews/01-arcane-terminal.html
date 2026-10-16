@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Theme 1: Arcane Terminal - Magician UI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       THEME 1: ARCANE TERMINAL
+       Dark, Mystical Tech - A wizard's console
+       ============================================ */
+
+    :root {
+      /* Core palette */
+      --bg-deep: #08080c;
+      --bg-surface: #0d0d14;
+      --bg-elevated: #13131d;
+      --bg-hover: #1a1a28;
+
+      /* Text hierarchy */
+      --text-primary: #f0f0f5;
+      --text-secondary: #8888a0;
+      --text-muted: #55556a;
+
+      /* Accent spectrum - aurora inspired */
+      --accent-violet: #8b5cf6;
+      --accent-violet-bright: #a78bfa;
+      --accent-cyan: #06b6d4;
+      --accent-cyan-bright: #22d3ee;
+      --accent-pink: #ec4899;
+
+      /* Status colors */
+      --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.3);
+      --warning: #f59e0b;
+      --warning-glow: rgba(245, 158, 11, 0.3);
+      --error: #ef4444;
+      --error-glow: rgba(239, 68, 68, 0.3);
+
+      /* Borders & dividers */
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-default: rgba(255, 255, 255, 0.1);
+      --border-accent: rgba(139, 92, 246, 0.4);
+
+      /* Glows */
+      --glow-violet: 0 0 30px rgba(139, 92, 246, 0.3);
+      --glow-cyan: 0 0 30px rgba(6, 182, 212, 0.3);
+
+      /* Typography */
+      --font-display: 'Space Grotesk', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+
+      /* Spacing */
+      --space-xs: 0.25rem;
+      --space-sm: 0.5rem;
+      --space-md: 1rem;
+      --space-lg: 1.5rem;
+      --space-xl: 2.5rem;
+      --space-2xl: 4rem;
+
+      /* Radii */
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --radius-full: 9999px;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: var(--font-display);
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* Animated background */
+    .bg-pattern {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(139, 92, 246, 0.15), transparent),
+        radial-gradient(ellipse 60% 40% at 100% 50%, rgba(6, 182, 212, 0.1), transparent),
+        radial-gradient(ellipse 50% 30% at 0% 80%, rgba(236, 72, 153, 0.08), transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Grid overlay */
+    .grid-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+      background-size: 50px 50px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-xl);
+    }
+
+    /* ===== HEADER ===== */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--space-lg) 0;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: var(--space-2xl);
+    }
+
+    .logo {
+      font-size: 1.5rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent-violet-bright), var(--accent-cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.02em;
+    }
+
+    .logo span {
+      color: var(--text-muted);
+      -webkit-text-fill-color: var(--text-muted);
+    }
+
+    nav {
+      display: flex;
+      gap: var(--space-lg);
+    }
+
+    nav a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      padding: var(--space-sm) var(--space-md);
+      border-radius: var(--radius-sm);
+      transition: all 0.2s ease;
+    }
+
+    nav a:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+
+    nav a.active {
+      color: var(--accent-violet-bright);
+      background: rgba(139, 92, 246, 0.1);
+    }
+
+    /* ===== HERO ===== */
+    .hero {
+      text-align: center;
+      padding: var(--space-2xl) 0;
+      margin-bottom: var(--space-2xl);
+    }
+
+    .hero h1 {
+      font-size: 4rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: var(--space-md);
+      background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero h1 .accent {
+      background: linear-gradient(135deg, var(--accent-violet), var(--accent-cyan));
+      -webkit-background-clip: text;
+      background-clip: text;
+    }
+
+    .hero p {
+      font-size: 1.25rem;
+      color: var(--text-secondary);
+      max-width: 500px;
+      margin: 0 auto var(--space-xl);
+    }
+
+    /* ===== INPUT AREA ===== */
+    .input-area {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      padding: var(--space-lg);
+      max-width: 700px;
+      margin: 0 auto var(--space-2xl);
+      transition: all 0.3s ease;
+    }
+
+    .input-area:focus-within {
+      border-color: var(--accent-violet);
+      box-shadow: var(--glow-violet);
+    }
+
+    .input-wrapper {
+      display: flex;
+      gap: var(--space-md);
+      align-items: flex-end;
+    }
+
+    .input-field {
+      flex: 1;
+    }
+
+    .input-field label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: var(--space-xs);
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .input-field input {
+      width: 100%;
+      background: var(--bg-deep);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: var(--space-md);
+      color: var(--text-primary);
+      font-family: var(--font-display);
+      font-size: 1rem;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .input-field input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .input-field input:focus {
+      border-color: var(--accent-violet);
+      background: var(--bg-elevated);
+    }
+
+    /* ===== BUTTONS ===== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: var(--space-md) var(--space-lg);
+      border-radius: var(--radius-sm);
+      font-family: var(--font-display);
+      font-size: 0.9rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-violet), var(--accent-violet-bright));
+      color: white;
+      box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 25px rgba(139, 92, 246, 0.4);
+    }
+
+    .btn-secondary {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border-default);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-accent);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+    }
+
+    .btn-ghost:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+
+    /* ===== SECTION ===== */
+    .section {
+      margin-bottom: var(--space-2xl);
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: var(--space-lg);
+    }
+
+    .section-title {
+      font-size: 0.8rem;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+    }
+
+    /* ===== TASK CARDS ===== */
+    .task-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+      gap: var(--space-lg);
+    }
+
+    .task-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: var(--space-lg);
+      transition: all 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .task-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent-violet), var(--accent-cyan));
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .task-card:hover {
+      border-color: var(--border-accent);
+      transform: translateY(-4px);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    }
+
+    .task-card:hover::before {
+      opacity: 1;
+    }
+
+    .task-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: var(--space-md);
+    }
+
+    .task-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: var(--space-xs);
+    }
+
+    .task-id {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .task-description {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      margin-bottom: var(--space-lg);
+      line-height: 1.7;
+    }
+
+    .task-meta {
+      display: flex;
+      gap: var(--space-md);
+      flex-wrap: wrap;
+    }
+
+    /* ===== BADGES ===== */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-xs);
+      padding: var(--space-xs) var(--space-sm);
+      border-radius: var(--radius-full);
+      font-size: 0.75rem;
+      font-weight: 500;
+      font-family: var(--font-mono);
+    }
+
+    .badge-success {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-warning {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warning);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .badge-error {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--error);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .badge-info {
+      background: rgba(139, 92, 246, 0.15);
+      color: var(--accent-violet-bright);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+    }
+
+    .badge-neutral {
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-subtle);
+    }
+
+    /* Status dot */
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* ===== TIMELINE ===== */
+    .timeline {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: var(--space-lg);
+    }
+
+    .timeline-item {
+      display: flex;
+      gap: var(--space-md);
+      padding: var(--space-md) 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .timeline-item:last-child {
+      border-bottom: none;
+    }
+
+    .timeline-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.9rem;
+      flex-shrink: 0;
+    }
+
+    .timeline-icon.success {
+      background: rgba(16, 185, 129, 0.15);
+    }
+
+    .timeline-icon.info {
+      background: rgba(139, 92, 246, 0.15);
+    }
+
+    .timeline-icon.warning {
+      background: rgba(245, 158, 11, 0.15);
+    }
+
+    .timeline-content {
+      flex: 1;
+    }
+
+    .timeline-title {
+      font-weight: 500;
+      margin-bottom: var(--space-xs);
+    }
+
+    .timeline-detail {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+    }
+
+    .timeline-time {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    /* ===== COLOR PALETTE DISPLAY ===== */
+    .palette-section {
+      margin-top: var(--space-2xl);
+      padding-top: var(--space-2xl);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md);
+    }
+
+    .color-swatch {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+
+    .color-preview {
+      height: 80px;
+    }
+
+    .color-info {
+      padding: var(--space-sm);
+    }
+
+    .color-name {
+      font-size: 0.8rem;
+      font-weight: 500;
+      margin-bottom: var(--space-xs);
+    }
+
+    .color-value {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    /* ===== TYPOGRAPHY SHOWCASE ===== */
+    .type-showcase {
+      margin-top: var(--space-2xl);
+      padding-top: var(--space-2xl);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .type-sample {
+      margin-bottom: var(--space-lg);
+    }
+
+    .type-label {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: var(--space-xs);
+    }
+
+    .type-display {
+      font-size: 3rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .type-heading {
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+
+    .type-body {
+      font-size: 1rem;
+      color: var(--text-secondary);
+      max-width: 600px;
+    }
+
+    .type-mono {
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: var(--accent-cyan);
+      background: var(--bg-elevated);
+      padding: var(--space-sm) var(--space-md);
+      border-radius: var(--radius-sm);
+      display: inline-block;
+    }
+
+    /* ===== FOOTER ===== */
+    footer {
+      margin-top: var(--space-2xl);
+      padding-top: var(--space-xl);
+      border-top: 1px solid var(--border-subtle);
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-pattern"></div>
+  <div class="grid-overlay"></div>
+
+  <div class="container">
+    <header>
+      <div class="logo">magician<span>.ai</span></div>
+      <nav>
+        <a href="#" class="active">Mission Control</a>
+        <a href="#">Tools</a>
+        <a href="#">History</a>
+        <a href="#">Settings</a>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <h1><span class="accent">done.</span></h1>
+      <p>AI-powered task automation. Describe what you want, and watch the magic happen.</p>
+    </section>
+
+    <div class="input-area">
+      <div class="input-wrapper">
+        <div class="input-field" style="flex: 1;">
+          <label>Task Description</label>
+          <input type="text" placeholder="What would you like me to do?">
+        </div>
+        <button class="btn btn-primary">
+          Execute
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 12h14M12 5l7 7-7 7"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <section class="section">
+      <div class="section-header">
+        <h2 class="section-title">Active Tasks</h2>
+        <button class="btn btn-ghost">View All</button>
+      </div>
+
+      <div class="task-grid">
+        <div class="task-card">
+          <div class="task-header">
+            <div>
+              <h3 class="task-title">Scrape product prices from Amazon</h3>
+              <span class="task-id">TASK-2847</span>
+            </div>
+            <span class="badge badge-success">
+              <span class="status-dot"></span>
+              Running
+            </span>
+          </div>
+          <p class="task-description">Navigate to Amazon, search for "mechanical keyboard", extract prices and ratings from first 10 results.</p>
+          <div class="task-meta">
+            <span class="badge badge-neutral">Browser</span>
+            <span class="badge badge-neutral">12 steps</span>
+            <span class="badge badge-info">78% complete</span>
+          </div>
+        </div>
+
+        <div class="task-card">
+          <div class="task-header">
+            <div>
+              <h3 class="task-title">Generate weekly report</h3>
+              <span class="task-id">TASK-2846</span>
+            </div>
+            <span class="badge badge-warning">
+              <span class="status-dot"></span>
+              Pending
+            </span>
+          </div>
+          <p class="task-description">Compile analytics data from the past 7 days and format into a summary report.</p>
+          <div class="task-meta">
+            <span class="badge badge-neutral">Analysis</span>
+            <span class="badge badge-neutral">5 steps</span>
+          </div>
+        </div>
+
+        <div class="task-card">
+          <div class="task-header">
+            <div>
+              <h3 class="task-title">Monitor server health</h3>
+              <span class="task-id">TASK-2845</span>
+            </div>
+            <span class="badge badge-error">
+              <span class="status-dot"></span>
+              Failed
+            </span>
+          </div>
+          <p class="task-description">Check all production servers and alert if CPU usage exceeds 80%.</p>
+          <div class="task-meta">
+            <span class="badge badge-neutral">Monitoring</span>
+            <span class="badge badge-error">Retry available</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <h2 class="section-title">Execution Timeline</h2>
+      </div>
+
+      <div class="timeline">
+        <div class="timeline-item">
+          <div class="timeline-icon success">✓</div>
+          <div class="timeline-content">
+            <div class="timeline-title">Navigated to amazon.com</div>
+            <div class="timeline-detail">URL: https://www.amazon.com</div>
+          </div>
+          <div class="timeline-time">2s ago</div>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-icon info">🔍</div>
+          <div class="timeline-content">
+            <div class="timeline-title">Searching for "mechanical keyboard"</div>
+            <div class="timeline-detail">Typed into search field, pressed Enter</div>
+          </div>
+          <div class="timeline-time">5s ago</div>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-icon warning">⏳</div>
+          <div class="timeline-content">
+            <div class="timeline-title">Waiting for results to load</div>
+            <div class="timeline-detail">Timeout: 10000ms</div>
+          </div>
+          <div class="timeline-time">8s ago</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Color Palette Display -->
+    <section class="palette-section">
+      <h2 class="section-title" style="margin-bottom: var(--space-lg);">Color Palette</h2>
+      <div class="palette-grid">
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #08080c;"></div>
+          <div class="color-info">
+            <div class="color-name">Deep Background</div>
+            <div class="color-value">#08080c</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #8b5cf6;"></div>
+          <div class="color-info">
+            <div class="color-name">Accent Violet</div>
+            <div class="color-value">#8b5cf6</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #06b6d4;"></div>
+          <div class="color-info">
+            <div class="color-name">Accent Cyan</div>
+            <div class="color-value">#06b6d4</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #ec4899;"></div>
+          <div class="color-info">
+            <div class="color-name">Accent Pink</div>
+            <div class="color-value">#ec4899</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #10b981;"></div>
+          <div class="color-info">
+            <div class="color-name">Success</div>
+            <div class="color-value">#10b981</div>
+          </div>
+        </div>
+        <div class="color-swatch">
+          <div class="color-preview" style="background: #f59e0b;"></div>
+          <div class="color-info">
+            <div class="color-name">Warning</div>
+            <div class="color-value">#f59e0b</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Typography Showcase -->
+    <section class="type-showcase">
+      <h2 class="section-title" style="margin-bottom: var(--space-lg);">Typography — Space Grotesk + JetBrains Mono</h2>
+
+      <div class="type-sample">
+        <div class="type-label">Display / Hero</div>
+        <div class="type-display">Task Automation</div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Heading</div>
+        <div class="type-heading">Execute complex workflows with natural language</div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Body</div>
+        <div class="type-body">Magician breaks down your requests into atomic steps, orchestrates browser automation, and delivers results. All powered by advanced AI models.</div>
+      </div>
+
+      <div class="type-sample">
+        <div class="type-label">Monospace / Code</div>
+        <div class="type-mono">const result = await magician.execute(task);</div>
+      </div>
+    </section>
+
+    <footer>
+      <p>Theme Preview: Arcane Terminal — Dark Mystical Tech</p>
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "items": [
+    {
+      "task_id": "task_monitor_fixture_001",
+      "title": "Acme Robotics pricing",
+      "objective": "Watch the Acme Robotics pricing page and report material price or plan changes",
+      "state": "active",
+      "cadence_summary": "Cron 0 6 * * 1 (America/Los_Angeles)",
+      "monitor_revision": 2,
+      "last_run_at": "2026-07-23T06:01:05Z",
+      "last_run_status": "unchanged",
+      "next_run_at": "2026-07-27T13:00:00Z",
+      "health": "ok"
+    },
+    {
+      "task_id": "task_monitor_fixture_002",
+      "title": "Analytics dashboard",
+      "objective": "Check the signed-in analytics dashboard every morning and report material changes",
+      "state": "active",
+      "cadence_summary": "Cron 0 7 * * * (America/Los_Angeles)",
+      "monitor_revision": 1,
+      "last_run_at": "2026-07-22T07:02:10Z",
+      "last_run_status": "degraded",
+      "next_run_at": "2026-07-23T14:00:00Z",
+      "health": "needs_attention"
+    }
+  ],
+  "next_cursor": "cur_task_monitor_fixture_002",
+  "limit": 50,
+  "total": 3,
+  "offset": 0
+}

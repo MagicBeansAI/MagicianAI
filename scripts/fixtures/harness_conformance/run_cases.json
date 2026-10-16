@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "lane": "run",
+  "description": "Run-engine replacement: one real task executed under the `magician` baseline and every installed harness engine (`PUT /plane/engine`), graded by effect (the run's own task carries the change it was asked for) plus proof of who decided the run's turns (an external engine leaves a `harness_turn_settled` fact naming itself in the run's journal; the baseline leaves none and decides through its native loop). Each case is a task description, not chat turns: the rig creates a probe task titled `HC-{nonce}` with that description, executes it, waits for a terminal status, then reads the task, the journal and the task's `llm_calls` facts. A run that stops in a state that needs a person is cancelled and fails (`run_waited_for_input`); a run past `--turn-timeout-secs` is cancelled and inconclusive. `trace: true` adds the parent-engine rule read off the facts attributed to the task: no `agentic_decision*` row may ride a `harness-*` provider (and on the baseline no row may), and on an external engine at least one other operation must ride `harness-<family>` (claude_code->claude, codex/codex_app_server->codex, grok, agy); no rows within the analytics poll is inconclusive (`no_analytics_rows`).",
+  "cases": [
+    {
+      "id": "run_task_update",
+      "description": "Update this task's title to exactly `HC-{nonce}-run-updated` using your task tools. Do nothing else.",
+      "effect": {
+        "kind": "task_field_contains",
+        "field": "title",
+        "value": "HC-{nonce}-run-updated"
+      }
+    },
+    {
+      "id": "run_parent_follow",
+      "description": "Update this task's title to exactly `HC-{nonce}-run-updated` using your task tools. Do nothing else.",
+      "effect": {
+        "kind": "task_field_contains",
+        "field": "title",
+        "value": "HC-{nonce}-run-updated"
+      },
+      "trace": true
+    }
+  ]
+}

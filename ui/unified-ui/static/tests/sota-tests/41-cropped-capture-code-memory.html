@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test: Cropped Capture Code Memory Tutor</title>
+  <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+  <style>
+    .test-header { background: linear-gradient(135deg, #581c87, #0f766e); }
+    .crop-target {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 18px;
+      border: 3px solid #7c3aed;
+      border-radius: 22px;
+      padding: 18px;
+      background: #f8fafc;
+      box-shadow: 0 20px 60px rgba(88, 28, 135, 0.14);
+    }
+    pre {
+      margin: 0;
+      min-height: 360px;
+      border-radius: 16px;
+      padding: 18px;
+      background: #0f172a;
+      color: #dbeafe;
+      font: 700 15px ui-monospace, SFMono-Regular, Menlo, monospace;
+      line-height: 1.7;
+      overflow: hidden;
+    }
+    .memory-panel {
+      display: grid;
+      grid-template-rows: 1fr 1fr;
+      gap: 14px;
+    }
+    .memory-box {
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-radius: 16px;
+      background: #fff;
+      padding: 16px;
+      position: relative;
+    }
+    .memory-box strong { display: block; margin-bottom: 10px; color: #4c1d95; }
+    .frame, .object-row {
+      border: 1px solid #c4b5fd;
+      border-radius: 12px;
+      padding: 9px 10px;
+      margin: 8px 0;
+      background: #f5f3ff;
+      color: #312e81;
+      font-weight: 800;
+    }
+    .arrow {
+      position: absolute;
+      left: -70px;
+      top: 82px;
+      color: #0f766e;
+      font-size: 34px;
+      font-weight: 900;
+    }
+  </style>
+</head>
+<body>
+  <script type="application/json" id="test-metadata">
+  {
+    "testId": "41-cropped-capture-code-memory",
+    "phase": "Cropped Capture Tutor",
+    "title": "Cropped Capture Code Memory Tutor",
+    "description": "Stages only a code plus memory crop and checks whether tutor overlays map stack/heap relations from crop-local coordinates.",
+    "totalTests": 1
+  }
+  </script>
+  <script type="application/json" id="tutor-ground-truth">
+  {
+    "fixture_id": "41-cropped-capture-code-memory",
+    "capture_target_selector": "[data-sota-crop-target=\"code-memory\"]",
+    "expected_capture": "rect-aware-region",
+    "expected_entities": [
+      {"id": "code-reference-line", "kind": "code_region", "text": "node.next"},
+      {"id": "stack-frame", "kind": "stack_frame", "text": "current"},
+      {"id": "heap-object", "kind": "heap_object", "text": "Node B"},
+      {"id": "pointer", "kind": "pointer_arrow"}
+    ],
+    "expected_overlay_primitives": ["code_highlight", "stack_frame", "heap_object", "pointer_arrow", "callout"],
+    "acceptance": [
+      "The debug result shows a staged cropped attachment.",
+      "Tutor distinguishes stack frame from heap object.",
+      "Tutor draws or describes a pointer/reference relation.",
+      "Overlay lands inside the cropped code/memory panel."
+    ]
+  }
+  </script>
+
+  <div class="page-shell">
+    <div class="test-header">
+      <h1>Cropped Capture Tutor: Code And Memory</h1>
+      <p>The debug runner captures only the code/memory panel and asks the tutor to explain the pointer relationship.</p>
+      <div class="results-summary">
+        <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+        <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+        <div class="summary-pill">Pending<strong id="pending-count">1</strong></div>
+      </div>
+    </div>
+
+    <div class="fixture-grid">
+      <section class="test-case" id="test-1" data-test-id="41-cropped-code-memory" data-status="pending">
+        <div class="test-case-header">
+          <h2 class="test-case-title">Explain stack-to-heap reference from a crop</h2>
+          <span class="test-case-id">41-cropped-code-memory</span>
+        </div>
+        <div class="crop-target" data-sota-crop-target="code-memory" aria-label="Code and memory crop target">
+          <pre><code>function walk(node) {
+  let current = node;
+  while (current) {
+    visit(current.value);
+    current = current.next;
+  }
+}</code></pre>
+          <div class="memory-panel">
+            <div class="memory-box">
+              <strong>Stack</strong>
+              <div class="frame">walk() frame</div>
+              <div class="frame">current -> heap:Node B</div>
+            </div>
+            <div class="memory-box">
+              <strong>Heap</strong>
+              <span class="arrow">-&gt;</span>
+              <div class="object-row">Node A { next: Node B }</div>
+              <div class="object-row">Node B { next: null }</div>
+            </div>
+          </div>
+        </div>
+        <div class="verify-section">
+          <strong>Expected evidence:</strong>
+          <ul>
+            <li data-check="attachment" data-check-state="pending">Debug result shows attachment count greater than zero.</li>
+            <li data-check="stack-heap" data-check-state="pending">Tutor distinguishes stack and heap regions.</li>
+            <li data-check="pointer" data-check-state="pending">Tutor marks the current-to-heap reference.</li>
+          </ul>
+        </div>
+        <div class="fixture-result" aria-live="polite"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="./sota-test-harness.js"></script>
+</body>
+</html>

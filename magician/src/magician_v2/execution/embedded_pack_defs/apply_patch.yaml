@@ -1,0 +1,31 @@
+name: apply_patch
+description: Stage a unified diff as an approval-gated file-edit transaction. The tool parses create/modify/delete hunks, computes the resulting file contents in memory, and returns a diff approval request. It does not write to disk until the operator applies the transaction.
+version: "1.0.0"
+guide: |
+  Tool name: `apply_patch`
+
+  Provide a standard unified diff in the `patch` field. Paths are
+  workspace-relative; `a/` and `b/` prefixes are accepted and stripped.
+  The tool stages all hunks as one transaction and returns
+  `status: pending_approval` with a `diff_approval` HITL payload.
+
+  Use this for multi-file edits or when a generated patch is clearer
+  than many `edit_file` calls. Use `edit_file` for narrow exact-string
+  replacements. The actual disk write happens only after the operator
+  chooses Apply in the diff approval modal.
+parameters:
+  - name: patch
+    required: true
+    param_type: string
+    description: Unified diff to stage. Supports create, modify, and delete hunks.
+implementation:
+  type: compiled
+  provider_name: apply_patch
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - filesystem
+    - write
+  composition_category: action
+  sandbox: none

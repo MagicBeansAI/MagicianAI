@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["docs/codegraph/mcp_server.py"]
+    }
+  }
+}

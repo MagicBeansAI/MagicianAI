@@ -1,0 +1,62 @@
+{
+  "name": "memory_extract_insights",
+  "version": "1.0.0",
+  "content": [
+    "Analyze the following entity data to find patterns and extract actionable insights.",
+    "",
+    "## Source Entity Data",
+    "{source_json}",
+    "",
+    "## Target Tier Schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Examine the entities, their attributes, and any `artifact_output` data for recurring patterns. Artifact outputs capture concrete task outcomes and can reveal tool-usage patterns and success/failure trends.",
+    "2. Look for preferences that appear consistently across multiple data points",
+    "3. Identify workflow patterns, tool affinities, and scheduling habits",
+    "4. Distinguish between genuine preferences and one-time behaviors",
+    "5. Rate each insight by confidence and staleness risk",
+    "6. Conform insights to the target tier schema provided above",
+    "",
+    "Pattern types to look for:",
+    "- **Preferences**: Consistent choices (e.g., always uses dark mode, prefers morning meetings)",
+    "- **Habits**: Repeated behavioral sequences (e.g., checks email then calendar every morning)",
+    "- **Workflow patterns**: Multi-step processes the user follows regularly",
+    "- **Tool affinities**: Preferred tools for specific tasks",
+    "- **Scheduling**: Time-of-day or day-of-week patterns",
+    "- **Collaboration**: Frequent contacts or team interaction patterns",
+    "",
+    "Return the JSON array of insight objects as specified by your system prompt.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized entity data to analyze for patterns and insights",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"name\": \"dark_mode\", \"type\": \"preference\", \"mentions\": 12, \"attributes\": {\"setting\": \"enabled\"}}]"
+      ]
+    },
+    {
+      "name": "tier_schema",
+      "description": "JSON schema describing the target memory tier structure for extracted insights",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "{\"insights\": {\"type\": \"collection\", \"item_schema\": {\"pattern\": {\"type\": \"text\"}, \"confidence\": {\"type\": \"text\"}}}}"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to find patterns and extract insights from entity data. Covers preferences, habits, workflows, tool affinities, and collaboration patterns.",
+    "author": "magician",
+    "created_at": "2026-03-04T00:00:00Z",
+    "changelog": "v1.0.0: Initial insight extraction user prompt for memory consolidation pipeline.",
+    "tags": ["memory", "consolidation", "insight-extraction", "pattern-detection"],
+    "estimated_tokens": 250
+  }
+}

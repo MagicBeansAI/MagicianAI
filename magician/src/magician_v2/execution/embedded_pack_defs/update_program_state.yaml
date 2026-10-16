@@ -1,0 +1,55 @@
+name: update_program_state
+description: Update the mutable runtime state for the active harness program without editing program.md.
+version: "1.0.0"
+guide: |
+  Tool name: `update_program_state`
+
+  Use this at meaningful program boundaries: after a harness cycle finishes,
+  when an open loop is created or closed, when the next action changes, when a
+  stop condition is met, or when a meta-harness review changes what should
+  happen next.
+
+  This tool updates only mutable runtime state. It must not rewrite durable
+  program policy, scope, approvals, budgets, or agent definitions. Use
+  proposal tools for those.
+
+  Supported patch fields:
+  - `current_phase`: string or null
+  - `current_step`: string or null
+  - `open_loops`: array of objects or strings
+  - `last_run_summary`: object/string/array/null
+  - `next_action_hints`: array of strings
+  - `blocked` or `blocked_status`: object/string/null
+  - `stop_conditions` or `stop_condition_status`: array
+  - `recent_learning_candidates`: array
+  - `last_meta_harness_verdict` or `meta_harness_verdict`: object/string/null
+  - `goal_id`: string or null
+
+  Keep updates compact and evidence-backed. Include `reason`, and include
+  `candidate_id` when applying a `program_state_update` learning candidate.
+parameters:
+  - name: patch
+    required: true
+    param_type: object
+    description: JSON object containing only the supported mutable state fields.
+  - name: reason
+    param_type: string
+    description: Why this state update is correct now.
+  - name: actor
+    param_type: string
+    description: Optional actor label; defaults to the active harness owner.
+  - name: candidate_id
+    param_type: string
+    description: Optional learning candidate id that caused this update.
+implementation:
+  type: compiled
+  provider_name: update_program_state
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - programs
+    - state
+  composition_category: action
+  sandbox: none

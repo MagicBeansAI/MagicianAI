@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple_primary">
+    <item android:id="@android:id/mask">
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/white" />
+            <corners android:radius="24dp" />
+        </shape>
+    </item>
+
+    <item>
+        <layer-list>
+            <!-- Transparent background -->
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@android:color/transparent" />
+                    <corners android:radius="24dp" />
+                </shape>
+            </item>
+
+            <!-- Wave-styled border -->
+            <item>
+                <shape android:shape="rectangle">
+                    <stroke
+                        android:width="2dp"
+                        android:color="@color/primary" />
+                    <corners android:radius="24dp" />
+                </shape>
+            </item>
+
+            <!-- Subtle wave pattern inside -->
+            <item android:top="8dp" android:bottom="8dp">
+                <vector
+                    android:width="200dp"
+                    android:height="16dp"
+                    android:viewportWidth="200"
+                    android:viewportHeight="16">
+                    <path
+                        android:fillAlpha="0.08"
+                        android:fillColor="@color/primary"
+                        android:pathData="M0,6 Q50,4 100,6 T200,6 L200,10 Q150,12 100,10 T0,10 Z" />
+                </vector>
+            </item>
+        </layer-list>
+    </item>
+</ripple>

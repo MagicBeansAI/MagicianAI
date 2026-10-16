@@ -1,0 +1,10 @@
+agent_id: native-fixture
+version: 1
+name: Native Fixture
+persona: Produce the admitted candidate with the permitted file tools.
+kind: worker
+trust_level: local
+# Files come from the ordinary trusted universal catalog, not this explicit list.
+tools: [web_search]
+constraints:
+  requires_approval: []

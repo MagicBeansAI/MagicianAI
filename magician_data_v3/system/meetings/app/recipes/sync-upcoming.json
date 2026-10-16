@@ -1,0 +1,521 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "limit": {
+              "value_type": 1,
+              "required": false
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:6169663f48168ac3a77917f3e062b1895d78f169c43a179a564eba2f1081890a",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:6169663f48168ac3a77917f3e062b1895d78f169c43a179a564eba2f1081890a",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "store_transaction",
+          "sources": {
+            "upcoming": {
+              "tool": "meetings_data",
+              "action": "upcoming_meetings",
+              "primitive_ref": "primitive:platform:1e210ace99d5d06dbba1aa938b7b1cbec97d333b740a78beb1f72210a024b806",
+              "action_ref": "primitive-action:platform:d896c7defe4246646397b551bedd6dbc28d62e88c15d7dc54526c9ae499105a4",
+              "parameters": {},
+              "input_parameters": {},
+              "when_input_present": null,
+              "rows": {
+                "kind": "document"
+              }
+            }
+          },
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "input",
+                  "pointer": "/limit"
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "coalesce",
+                  "values": [
+                    3,
+                    4
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                },
+                {
+                  "kind": "literal",
+                  "value": 20
+                },
+                {
+                  "kind": "clamp",
+                  "value": 5,
+                  "minimum": 6,
+                  "maximum": 7
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/upcoming/count"
+                },
+                {
+                  "kind": "present",
+                  "value": 9
+                },
+                {
+                  "kind": "if",
+                  "condition": 10,
+                  "then_value": 9,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/upcoming/errors"
+                },
+                {
+                  "kind": "present",
+                  "value": 12
+                },
+                {
+                  "kind": "if",
+                  "condition": 13,
+                  "then_value": 12,
+                  "else_value": 0
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "count": 11,
+                    "errors": 14
+                  }
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/upcoming/events"
+                },
+                {
+                  "kind": "slice",
+                  "value": 16,
+                  "limit": 8
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/event_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/title"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/start"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/end"
+                },
+                {
+                  "kind": "present",
+                  "value": 21
+                },
+                {
+                  "kind": "if",
+                  "condition": 22,
+                  "then_value": 21,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/meet_url"
+                },
+                {
+                  "kind": "present",
+                  "value": 24
+                },
+                {
+                  "kind": "if",
+                  "condition": 25,
+                  "then_value": 24,
+                  "else_value": 0
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/live_now"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/account"
+                },
+                {
+                  "kind": "present",
+                  "value": 18
+                },
+                {
+                  "kind": "project",
+                  "rows": 17,
+                  "pointer": "/event_id",
+                  "skip_missing": true
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "length",
+                  "value": 30
+                },
+                {
+                  "kind": "less_than",
+                  "left": 31,
+                  "right": 32
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/upcoming_meeting_existing"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 34,
+                  "key_pointer": "/fields/event_id",
+                  "key": 18,
+                  "value_pointer": "/record_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 34,
+                  "key_pointer": "/fields/event_id",
+                  "key": 18,
+                  "value_pointer": "/record_revision"
+                },
+                {
+                  "kind": "present",
+                  "value": 35
+                },
+                {
+                  "kind": "not",
+                  "value": 37
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    38,
+                    29
+                  ]
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    37,
+                    29
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": "upcoming_meeting"
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "projection",
+                  "parts": [
+                    41,
+                    18
+                  ]
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "upcoming": 15
+                  }
+                },
+                {
+                  "kind": "object",
+                  "fields": {
+                    "source_pages": 43
+                  }
+                },
+                {
+                  "kind": "canonical_json",
+                  "value": 44
+                }
+              ]
+            },
+            "queries": [
+              {
+                "name": "upcoming_meeting_existing",
+                "entity": "upcoming_meeting",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "event_id"
+                  ],
+                  "limit": 100,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "in",
+                        "field": "event_id",
+                        "values": []
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/values": 30
+                }
+              }
+            ],
+            "query_when": {
+              "upcoming_meeting_existing": 33
+            },
+            "guards": [],
+            "mutations": [
+              {
+                "entity": "upcoming_meeting",
+                "for_each": 17,
+                "when": 39,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 42,
+                  "fields": {
+                    "event_id": 18,
+                    "title": 19,
+                    "starts_at": 20,
+                    "ends_at": 23,
+                    "meet_url": 26,
+                    "live_now": 27,
+                    "account": 28,
+                    "synced_at": 1
+                  }
+                }
+              },
+              {
+                "entity": "upcoming_meeting",
+                "for_each": 17,
+                "when": 40,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 35,
+                  "fields": {
+                    "event_id": 18,
+                    "title": 19,
+                    "starts_at": 20,
+                    "ends_at": 23,
+                    "meet_url": 26,
+                    "live_now": 27,
+                    "account": 28,
+                    "synced_at": 1
+                  },
+                  "revision": 36
+                }
+              }
+            ],
+            "max_mutations": 256,
+            "max_query_pages": 64,
+            "source_parameters": {},
+            "scan_queries": [
+              "upcoming_meeting_existing"
+            ],
+            "summary": 45
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 0,
+          "max_tool_calls": 1,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 0,
+      "max_tool_calls": 1
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

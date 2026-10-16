@@ -1,0 +1,23 @@
+[package]
+name = "magkindle"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Magician thin client for Kindle Paperwhite 3 (i.MX6SL, armv7)"
+
+[[bin]]
+name = "magkindle"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+# Pure-Rust glyph rasteriser. Emits 8-bit coverage per pixel, which maps
+# directly onto this panel's 8bpp greyscale framebuffer with no conversion.
+fontdue = { version = "0.9", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

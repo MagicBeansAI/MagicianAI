@@ -1,0 +1,332 @@
+{
+  "$defs": {
+    "AppActionStatus": {
+      "enum": [
+        "completed",
+        "waiting",
+        "failed",
+        "uncertain"
+      ],
+      "type": "string"
+    },
+    "AppDataClassification": {
+      "enum": [
+        "public",
+        "ordinary",
+        "personal",
+        "sensitive",
+        "secret"
+      ],
+      "type": "string"
+    },
+    "AppDataEnvelope": {
+      "additionalProperties": false,
+      "description": "Canonical data/provenance carrier. This contains no bearer authority;\nadapters must independently resolve `scope_binding_ref` and every revision.",
+      "properties": {
+        "content_digest": {
+          "$ref": "#/$defs/AppDigest"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grant_revision": {
+          "$ref": "#/$defs/AppRevision"
+        },
+        "handling_labels": {
+          "$ref": "#/$defs/AppHandlingLabels"
+        },
+        "installation_id": {
+          "$ref": "#/$defs/AppInstallationId"
+        },
+        "package_revision_ref": {
+          "$ref": "#/$defs/AppReference"
+        },
+        "produced_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "protocol_version": {
+          "$ref": "#/$defs/AppProtocolVersion"
+        },
+        "schema_revision": {
+          "$ref": "#/$defs/AppRevision"
+        },
+        "scope_binding_ref": {
+          "$ref": "#/$defs/AppScopeBindingRef"
+        },
+        "source": {
+          "$ref": "#/$defs/AppDataSource"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/AppSourceRef"
+          },
+          "type": "array"
+        },
+        "value": true,
+        "value_schema_ref": {
+          "$ref": "#/$defs/AppReference"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "source",
+        "scope_binding_ref",
+        "installation_id",
+        "package_revision_ref",
+        "schema_revision",
+        "grant_revision",
+        "value_schema_ref",
+        "value",
+        "handling_labels",
+        "content_digest",
+        "produced_at"
+      ],
+      "type": "object"
+    },
+    "AppDataSource": {
+      "enum": [
+        "user_input",
+        "app_store",
+        "app_action",
+        "artifact_projection",
+        "external_adapter",
+        "import",
+        "brokered_transfer"
+      ],
+      "type": "string"
+    },
+    "AppDigest": {
+      "type": "string"
+    },
+    "AppErrorCode": {
+      "description": "Stable cross-adapter error families. Concrete HTTP error strings remain a\nfiner-grained compatibility surface and are listed per operation.",
+      "enum": [
+        "invalid_request",
+        "not_authorized",
+        "not_found",
+        "conflict",
+        "stale_revision",
+        "schema_mismatch",
+        "policy_denied",
+        "resource_exhausted",
+        "rate_limited",
+        "unavailable",
+        "timeout",
+        "canceled",
+        "external_outcome_uncertain",
+        "internal"
+      ],
+      "type": "string"
+    },
+    "AppErrorDisposition": {
+      "description": "Machine-interpretable recovery posture for canonical app failures.",
+      "enum": [
+        "terminal",
+        "retry_same_input",
+        "refresh_and_retry",
+        "reauthorize",
+        "user_action_required",
+        "outcome_uncertain"
+      ],
+      "type": "string"
+    },
+    "AppErrorEnvelope": {
+      "additionalProperties": false,
+      "description": "Bounded, machine-interpretable failure detail shared by every app adapter.\n`message` is display context, never the semantic error contract.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/AppErrorCode"
+        },
+        "details": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "disposition": {
+          "$ref": "#/$defs/AppErrorDisposition"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retry_after_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "disposition",
+        "message"
+      ],
+      "type": "object"
+    },
+    "AppFieldPath": {
+      "type": "string"
+    },
+    "AppHandlingLabels": {
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "$ref": "#/$defs/AppDataClassification"
+        },
+        "model_processing": {
+          "$ref": "#/$defs/AppModelProcessing"
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/AppDigest"
+        },
+        "provenance_digest": {
+          "$ref": "#/$defs/AppDigest"
+        }
+      },
+      "required": [
+        "classification",
+        "model_processing",
+        "policy_digest",
+        "provenance_digest"
+      ],
+      "type": "object"
+    },
+    "AppInstallationId": {
+      "type": "string"
+    },
+    "AppModelProcessing": {
+      "enum": [
+        "none",
+        "local_only",
+        "remote_allowed"
+      ],
+      "type": "string"
+    },
+    "AppName": {
+      "type": "string"
+    },
+    "AppProtocolVersion": {
+      "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    },
+    "AppReference": {
+      "type": "string"
+    },
+    "AppRevision": {
+      "description": "A positive, monotonically increasing contract revision.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "AppScopeBindingRef": {
+      "type": "string"
+    },
+    "AppSourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/AppFieldPath"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/AppSourceRefKind"
+        },
+        "reference": {
+          "$ref": "#/$defs/AppReference"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "AppSourceRefKind": {
+      "enum": [
+        "entity_record",
+        "entity_field",
+        "artifact",
+        "external_receipt",
+        "mutation_receipt"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-action-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_id": {
+      "$ref": "#/$defs/AppName"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AppErrorEnvelope"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "external_effect_receipt_refs": {
+      "items": {
+        "$ref": "#/$defs/AppReference"
+      },
+      "type": "array"
+    },
+    "mutation_receipt_refs": {
+      "items": {
+        "$ref": "#/$defs/AppReference"
+      },
+      "type": "array"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AppDataEnvelope"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocol_version": {
+      "$ref": "#/$defs/AppProtocolVersion"
+    },
+    "run_ref": {
+      "$ref": "#/$defs/AppReference",
+      "description": "Stable logical run identity, never a particular execution attempt."
+    },
+    "status": {
+      "$ref": "#/$defs/AppActionStatus"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "action_id",
+    "run_ref",
+    "status"
+  ],
+  "title": "AppActionResult",
+  "type": "object"
+}

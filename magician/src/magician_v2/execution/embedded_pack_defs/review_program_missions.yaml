@@ -1,0 +1,36 @@
+name: review_program_missions
+description: Gather board-review evidence — missions plus each bound officer's runtime-state outcomes, per program (read-only).
+version: "1.0.0"
+guide: |
+  Tool name: `review_program_missions`
+
+  The board-review companion to `propose_program_missions`. For every program
+  carrying a managed `## Missions (CEO)` section (or one specific `program`),
+  it returns: the missions body, the bound officers (agents whose focus areas
+  bind that program), and each officer's program runtime state — the harness
+  writes `last_run_summary`, `open_loops`, `blocked`, and `next_action_hints`
+  every cycle. A `null` state means that officer has not run since the
+  missions landed.
+
+  Guidelines:
+  - call this FIRST in a board review — consolidate from evidence, not memory
+  - judge each program: progressing (summaries advance, loops close), stuck
+    (`blocked` set or loops stagnant), or unstarted (state null / stale
+    `updated_at`)
+  - your consolidation is the deliverable: brief the owner on outcomes, risks,
+    and what you will re-decompose or escalate; propose new missions only via
+    `propose_program_missions` (approval-gated), never here
+  - read-only: this tool never edits programs, never triggers officers
+parameters:
+  - name: program
+    required: false
+    param_type: string
+    description: Review one program document (e.g. product_strategy.md). Omit to review every program that has a managed missions section.
+implementation:
+  type: compiled
+  provider_name: review_program_missions
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 20
+  categories:
+    - harness

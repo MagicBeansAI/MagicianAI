@@ -1,0 +1,53 @@
+name: search
+description: Search workspace files using ripgrep (rg)
+guide: |-
+  Tool name: `search`
+  Required parameter: `query`
+  Supported target: workspace
+  Optional parameters: path, file_glob, case_sensitive, max_results
+  Examples:
+  - {"query":"PlanExecutor","path":"project/src","file_glob":"*.rs","max_results":20}
+  - {"query":"TODO","path":".","case_sensitive":false}
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: Search query pattern
+- name: path
+  param_type: string
+  description: Root path to search (defaults to .)
+  default: .
+- name: file_glob
+  param_type: string
+  description: Optional file glob filter (for example *.rs)
+- name: case_sensitive
+  param_type: boolean
+  description: Enable case-sensitive matching
+  default: 'false'
+- name: max_results
+  param_type: integer
+  description: Max result lines to return
+  default: '50'
+- name: target
+  param_type: string
+  description: Search target (workspace)
+  default: workspace
+- name: timeout_secs
+  param_type: integer
+  description: Optional timeout for the underlying search command
+  default: '30'
+- name: working_dir
+  param_type: string
+  description: Optional working directory for search execution
+implementation:
+  type: compiled
+  provider_name: search
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - search
+  - information_retrieval
+  - workspace
+  composition_category: search_operations
+  sandbox: shell

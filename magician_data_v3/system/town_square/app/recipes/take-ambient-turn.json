@@ -1,0 +1,1310 @@
+{
+  "version": "v1",
+  "schemas": {
+    "input": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "public",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "cursor_id": {
+              "value_type": 1,
+              "required": true
+            },
+            "last_member_id": {
+              "value_type": 2,
+              "required": false
+            },
+            "turns_taken": {
+              "value_type": 4,
+              "required": true
+            },
+            "updated_at": {
+              "value_type": 5,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "nullable",
+          "value_type": 3
+        },
+        {
+          "kind": "text",
+          "max_bytes": 262144
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "timestamp"
+        }
+      ]
+    },
+    "result": {
+      "version": "v1",
+      "root": 0,
+      "handling_floor": {
+        "classification": "personal",
+        "model_processing": "remote_allowed"
+      },
+      "nodes": [
+        {
+          "kind": "record",
+          "fields": {
+            "change_sequence": {
+              "value_type": 1,
+              "required": true
+            },
+            "committed_record_revisions": {
+              "value_type": 4,
+              "required": true
+            },
+            "receipt_ref": {
+              "value_type": 8,
+              "required": true
+            },
+            "summary": {
+              "value_type": 9,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "nullable",
+          "value_type": 2
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "first": {
+              "value_type": 3,
+              "required": true
+            },
+            "last": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "integer"
+        },
+        {
+          "kind": "array",
+          "items": 5,
+          "min_items": 0,
+          "max_items": 256
+        },
+        {
+          "kind": "record",
+          "fields": {
+            "entity": {
+              "value_type": 6,
+              "required": true
+            },
+            "record_id": {
+              "value_type": 7,
+              "required": true
+            },
+            "revision": {
+              "value_type": 3,
+              "required": true
+            }
+          }
+        },
+        {
+          "kind": "text",
+          "max_bytes": 128
+        },
+        {
+          "kind": "text",
+          "max_bytes": 255
+        },
+        {
+          "kind": "nullable",
+          "value_type": 7
+        },
+        {
+          "kind": "nullable",
+          "value_type": 10
+        },
+        {
+          "kind": "text",
+          "max_bytes": 4096
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "version": "v1",
+    "input_schema_ref": "workflow-schema:blake3:b2d5cf464923e95630d867d0df0c23251e8c34bae5c1f1b82282bcf9c59dd5c3",
+    "output": {
+      "kind": "typed_value",
+      "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+      "authority": "derived"
+    },
+    "root": "root",
+    "nodes": {
+      "root": {
+        "input_schema_ref": "workflow-schema:blake3:b2d5cf464923e95630d867d0df0c23251e8c34bae5c1f1b82282bcf9c59dd5c3",
+        "output": {
+          "kind": "typed_value",
+          "schema_ref": "workflow-schema:blake3:5070b8d4dce0ed7f006b9dc1cf90d201afca187a17d6e348a4c85095592fdb36",
+          "authority": "derived"
+        },
+        "node": {
+          "kind": "contextual_round",
+          "source": {
+            "tool": "agent_roster_data",
+            "action": "list_members",
+            "primitive_ref": "primitive:platform:0ea1ea5135fd33b324e06906c3c1d95252fc663f5371f52228d8ca53248aa7de",
+            "action_ref": "primitive-action:platform:e98872729b3b4128b707abf9ea0868d2ec9ed4d73a9ba2e5835c54b3aac0cb90",
+            "parameters": {
+              "limit": 200
+            },
+            "input_parameters": {},
+            "when_input_present": null,
+            "rows": {
+              "kind": "page",
+              "rows_field": "members",
+              "next_cursor_field": "next_cursor",
+              "truncated_field": "scan_truncated"
+            }
+          },
+          "cursor_parameter": "after_agent_id",
+          "max_source_pages": 8,
+          "program": {
+            "values": {
+              "expressions": [
+                {
+                  "kind": "literal",
+                  "value": null
+                },
+                {
+                  "kind": "literal",
+                  "value": false
+                },
+                {
+                  "kind": "literal",
+                  "value": true
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.1
+                },
+                {
+                  "kind": "timestamp"
+                },
+                {
+                  "kind": "run_id"
+                },
+                {
+                  "kind": "participant_id"
+                },
+                {
+                  "kind": "literal",
+                  "value": []
+                },
+                {
+                  "kind": "read",
+                  "source": "model",
+                  "pointer": "/outcome"
+                },
+                {
+                  "kind": "literal",
+                  "value": "draft"
+                },
+                {
+                  "kind": "equal",
+                  "left": 10,
+                  "right": 11
+                },
+                {
+                  "kind": "literal",
+                  "value": "quiet"
+                },
+                {
+                  "kind": "equal",
+                  "left": 10,
+                  "right": 13
+                },
+                {
+                  "kind": "read",
+                  "source": "model",
+                  "pointer": "/reason"
+                },
+                {
+                  "kind": "read",
+                  "source": "model",
+                  "pointer": "/body"
+                },
+                {
+                  "kind": "trim",
+                  "value": 16
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/policy/0/fields/max_post_chars"
+                },
+                {
+                  "kind": "truncate",
+                  "value": 17,
+                  "max_chars": 18
+                },
+                {
+                  "kind": "length",
+                  "value": 19
+                },
+                {
+                  "kind": "less_than",
+                  "left": 3,
+                  "right": 20
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    12,
+                    21
+                  ]
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "post",
+                  "parts": [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/feed"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/members"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/mentions"
+                },
+                {
+                  "kind": "read",
+                  "source": "model",
+                  "pointer": "/target_post_id"
+                },
+                {
+                  "kind": "lookup",
+                  "rows": 24,
+                  "key_pointer": "/fields/post_id",
+                  "key": 27,
+                  "value_pointer": "/fields/author_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "model",
+                  "pointer": "/post_type"
+                },
+                {
+                  "kind": "literal",
+                  "value": "reply"
+                },
+                {
+                  "kind": "equal",
+                  "left": 29,
+                  "right": 30
+                },
+                {
+                  "kind": "present",
+                  "value": 28
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    31,
+                    32
+                  ]
+                },
+                {
+                  "kind": "if",
+                  "condition": 33,
+                  "then_value": 27,
+                  "else_value": 0
+                },
+                {
+                  "kind": "literal",
+                  "value": "reply"
+                },
+                {
+                  "kind": "read",
+                  "source": "model",
+                  "pointer": "/post_type"
+                },
+                {
+                  "kind": "literal",
+                  "value": "question"
+                },
+                {
+                  "kind": "equal",
+                  "left": 36,
+                  "right": 37
+                },
+                {
+                  "kind": "literal",
+                  "value": "question"
+                },
+                {
+                  "kind": "read",
+                  "source": "model",
+                  "pointer": "/post_type"
+                },
+                {
+                  "kind": "literal",
+                  "value": "link"
+                },
+                {
+                  "kind": "equal",
+                  "left": 40,
+                  "right": 41
+                },
+                {
+                  "kind": "literal",
+                  "value": "link"
+                },
+                {
+                  "kind": "literal",
+                  "value": "thought"
+                },
+                {
+                  "kind": "if",
+                  "condition": 42,
+                  "then_value": 43,
+                  "else_value": 44
+                },
+                {
+                  "kind": "if",
+                  "condition": 38,
+                  "then_value": 39,
+                  "else_value": 45
+                },
+                {
+                  "kind": "if",
+                  "condition": 33,
+                  "then_value": 35,
+                  "else_value": 46
+                },
+                {
+                  "kind": "literal",
+                  "value": "feed"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/member_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/display_name"
+                },
+                {
+                  "kind": "read",
+                  "source": "model",
+                  "pointer": "/mentioned_member_ids"
+                },
+                {
+                  "kind": "contains",
+                  "value": 51,
+                  "member": 49
+                },
+                {
+                  "kind": "contains",
+                  "value": 19,
+                  "member": 50
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    52,
+                    53
+                  ]
+                },
+                {
+                  "kind": "equal",
+                  "left": 49,
+                  "right": 28
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    33,
+                    55
+                  ]
+                },
+                {
+                  "kind": "equal",
+                  "left": 49,
+                  "right": 8
+                },
+                {
+                  "kind": "not",
+                  "value": 57
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    54,
+                    56
+                  ]
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    22,
+                    58,
+                    59
+                  ]
+                },
+                {
+                  "kind": "stable_id",
+                  "prefix": "mention",
+                  "parts": [
+                    23,
+                    49
+                  ]
+                },
+                {
+                  "kind": "literal",
+                  "value": "reply_notification"
+                },
+                {
+                  "kind": "literal",
+                  "value": "explicit_mention"
+                },
+                {
+                  "kind": "if",
+                  "condition": 56,
+                  "then_value": 62,
+                  "else_value": 63
+                },
+                {
+                  "kind": "literal",
+                  "value": "pending"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/delivery_kind"
+                },
+                {
+                  "kind": "literal",
+                  "value": "reply_notification"
+                },
+                {
+                  "kind": "equal",
+                  "left": 66,
+                  "right": 67
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/delivery_kind"
+                },
+                {
+                  "kind": "literal",
+                  "value": "explicit_mention"
+                },
+                {
+                  "kind": "equal",
+                  "left": 69,
+                  "right": 70
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/post_id"
+                },
+                {
+                  "kind": "equal",
+                  "left": 72,
+                  "right": 34
+                },
+                {
+                  "kind": "all",
+                  "values": [
+                    22,
+                    33,
+                    71,
+                    73
+                  ]
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    68,
+                    74
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/record_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/record_revision"
+                },
+                {
+                  "kind": "literal",
+                  "value": "dropped"
+                },
+                {
+                  "kind": "literal",
+                  "value": "handled"
+                },
+                {
+                  "kind": "if",
+                  "condition": 68,
+                  "then_value": 78,
+                  "else_value": 79
+                },
+                {
+                  "kind": "if",
+                  "condition": 68,
+                  "then_value": 0,
+                  "else_value": 23
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/mood"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/record_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/record_revision"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/valence"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/baseline_valence"
+                },
+                {
+                  "kind": "subtract",
+                  "left": 86,
+                  "right": 85
+                },
+                {
+                  "kind": "multiply",
+                  "left": 87,
+                  "right": 5
+                },
+                {
+                  "kind": "add",
+                  "left": 85,
+                  "right": 88
+                },
+                {
+                  "kind": "literal",
+                  "value": -1
+                },
+                {
+                  "kind": "clamp",
+                  "value": 89,
+                  "minimum": 90,
+                  "maximum": 4
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/energy"
+                },
+                {
+                  "kind": "read",
+                  "source": "item",
+                  "pointer": "/fields/baseline_energy"
+                },
+                {
+                  "kind": "subtract",
+                  "left": 93,
+                  "right": 92
+                },
+                {
+                  "kind": "multiply",
+                  "left": 94,
+                  "right": 5
+                },
+                {
+                  "kind": "add",
+                  "left": 92,
+                  "right": 95
+                },
+                {
+                  "kind": "clamp",
+                  "value": 96,
+                  "minimum": 3,
+                  "maximum": 4
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/cursor/0/record_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/cursor/0/record_revision"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/round/next_cursor"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/cursor/0/fields/last_member_id"
+                },
+                {
+                  "kind": "coalesce",
+                  "values": [
+                    100,
+                    101,
+                    0
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/cursor/0/fields/turns_taken"
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/round/summary/selected"
+                },
+                {
+                  "kind": "add",
+                  "left": 103,
+                  "right": 104
+                },
+                {
+                  "kind": "present",
+                  "value": 98
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/own_recent/0/fields/created_at"
+                },
+                {
+                  "kind": "present",
+                  "value": 107
+                },
+                {
+                  "kind": "not",
+                  "value": 108
+                },
+                {
+                  "kind": "elapsed_seconds",
+                  "timestamp": 107
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/policy/0/fields/cooldown_seconds"
+                },
+                {
+                  "kind": "less_than",
+                  "left": 110,
+                  "right": 111
+                },
+                {
+                  "kind": "not",
+                  "value": 112
+                },
+                {
+                  "kind": "any",
+                  "values": [
+                    109,
+                    113
+                  ]
+                },
+                {
+                  "kind": "read",
+                  "source": "participant",
+                  "pointer": "/enabled"
+                },
+                {
+                  "kind": "equal",
+                  "left": 115,
+                  "right": 2
+                },
+                {
+                  "kind": "read",
+                  "source": "participant",
+                  "pointer": "/declares_social_persona"
+                },
+                {
+                  "kind": "equal",
+                  "left": 117,
+                  "right": 2
+                },
+                {
+                  "kind": "read",
+                  "source": "participant",
+                  "pointer": "/opted_out"
+                },
+                {
+                  "kind": "equal",
+                  "left": 119,
+                  "right": 1
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/policy/0/fields/autonomy_state"
+                },
+                {
+                  "kind": "literal",
+                  "value": "on"
+                },
+                {
+                  "kind": "equal",
+                  "left": 121,
+                  "right": 122
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/member/0/fields/enrolled"
+                },
+                {
+                  "kind": "equal",
+                  "left": 124,
+                  "right": 2
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/member/0/fields/opted_out"
+                },
+                {
+                  "kind": "equal",
+                  "left": 126,
+                  "right": 1
+                },
+                {
+                  "kind": "read",
+                  "source": "context",
+                  "pointer": "/cursor/0/fields/last_member_id"
+                },
+                {
+                  "kind": "read",
+                  "source": "participant",
+                  "pointer": "/busy"
+                },
+                {
+                  "kind": "equal",
+                  "left": 129,
+                  "right": 2
+                },
+                {
+                  "kind": "not",
+                  "value": 130
+                }
+              ]
+            },
+            "participant_id_pointer": "/agent_id",
+            "resume_after": 128,
+            "queries": [
+              {
+                "name": "policy",
+                "entity": "policy",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "policy_id",
+                    "autonomy_state",
+                    "cooldown_seconds",
+                    "max_post_chars",
+                    "max_autonomous_replies",
+                    "updated_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "policy_id",
+                        "operator": "equal",
+                        "value": "singleton"
+                      }
+                    ]
+                  }
+                },
+                "bindings": {},
+                "refresh_before_dispatch": true
+              },
+              {
+                "name": "cursor",
+                "entity": "turn_cursor",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "cursor_id",
+                    "last_member_id",
+                    "turns_taken",
+                    "updated_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "cursor_id",
+                        "operator": "equal",
+                        "value": "singleton"
+                      }
+                    ]
+                  }
+                },
+                "bindings": {}
+              },
+              {
+                "name": "members",
+                "entity": "member",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "member_id",
+                    "kind",
+                    "display_name",
+                    "introversion",
+                    "opted_out",
+                    "enrolled",
+                    "created_at",
+                    "synced_at"
+                  ],
+                  "limit": 100
+                },
+                "bindings": {}
+              },
+              {
+                "name": "feed",
+                "entity": "post",
+                "per_participant": false,
+                "parameters": {
+                  "select": [
+                    "post_id",
+                    "author_id",
+                    "surface",
+                    "group_id",
+                    "post_type",
+                    "body",
+                    "parent_id",
+                    "created_at",
+                    "synced_at"
+                  ],
+                  "limit": 16,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "surface",
+                        "operator": "equal",
+                        "value": "feed"
+                      }
+                    ]
+                  },
+                  "order": [
+                    {
+                      "field": "created_at",
+                      "direction": "descending"
+                    }
+                  ]
+                },
+                "bindings": {},
+                "refresh_before_dispatch": true
+              },
+              {
+                "name": "member",
+                "entity": "member",
+                "per_participant": true,
+                "parameters": {
+                  "select": [
+                    "member_id",
+                    "kind",
+                    "display_name",
+                    "introversion",
+                    "opted_out",
+                    "enrolled",
+                    "created_at",
+                    "synced_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "member_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 8
+                }
+              },
+              {
+                "name": "mood",
+                "entity": "self_state",
+                "per_participant": true,
+                "parameters": {
+                  "select": [
+                    "member_id",
+                    "valence",
+                    "energy",
+                    "baseline_valence",
+                    "baseline_energy",
+                    "note",
+                    "updated_at"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "member_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 8
+                }
+              },
+              {
+                "name": "own_recent",
+                "entity": "post",
+                "per_participant": true,
+                "parameters": {
+                  "select": [
+                    "post_id",
+                    "created_at",
+                    "body"
+                  ],
+                  "limit": 1,
+                  "predicate": {
+                    "root": 0,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "author_id",
+                        "operator": "equal",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "order": [
+                    {
+                      "field": "created_at",
+                      "direction": "descending"
+                    }
+                  ]
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 8
+                }
+              },
+              {
+                "name": "mentions",
+                "entity": "mention",
+                "per_participant": true,
+                "parameters": {
+                  "select": [
+                    "mention_id",
+                    "post_id",
+                    "mentioned_member_id",
+                    "delivery_kind",
+                    "status",
+                    "created_at",
+                    "handled_at",
+                    "response_post_id"
+                  ],
+                  "limit": 50,
+                  "predicate": {
+                    "root": 2,
+                    "nodes": [
+                      {
+                        "kind": "compare",
+                        "field": "mentioned_member_id",
+                        "operator": "equal",
+                        "value": null
+                      },
+                      {
+                        "kind": "compare",
+                        "field": "status",
+                        "operator": "equal",
+                        "value": "pending"
+                      },
+                      {
+                        "kind": "all",
+                        "children": [
+                          0,
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  "order": [
+                    {
+                      "field": "created_at",
+                      "direction": "ascending"
+                    }
+                  ]
+                },
+                "bindings": {
+                  "/predicate/nodes/0/value": 8
+                }
+              }
+            ],
+            "eligibility": [
+              {
+                "require": 116,
+                "reason": "agent_disabled"
+              },
+              {
+                "require": 118,
+                "reason": "persona_not_declared"
+              },
+              {
+                "require": 120,
+                "reason": "agent_opted_out"
+              },
+              {
+                "require": 123,
+                "reason": "autonomy_off"
+              },
+              {
+                "require": 125,
+                "reason": "member_not_enrolled"
+              },
+              {
+                "require": 127,
+                "reason": "member_opted_out"
+              },
+              {
+                "require": 114,
+                "reason": "cooldown"
+              },
+              {
+                "require": 131,
+                "reason": "agent_busy"
+              }
+            ],
+            "semantic_step": "compose",
+            "max_output_tokens": 1600,
+            "limits": {
+              "max_participants": 32,
+              "max_concurrent": 1,
+              "max_attempts_per_participant": 2,
+              "aggregate": {
+                "tokens": 2097152,
+                "micro_usd": 4000000
+              },
+              "per_participant": {
+                "tokens": 65536,
+                "micro_usd": 250000
+              }
+            },
+            "draft_when": 22,
+            "quiet_when": 14,
+            "quiet_reason": 15,
+            "mutations": [
+              {
+                "entity": "post",
+                "for_each": null,
+                "when": 22,
+                "semantic_result": true,
+                "change": {
+                  "kind": "create",
+                  "record_id": 23,
+                  "fields": {
+                    "post_id": 23,
+                    "author_id": 8,
+                    "surface": 48,
+                    "group_id": 0,
+                    "post_type": 47,
+                    "body": 19,
+                    "parent_id": 34,
+                    "created_at": 6,
+                    "synced_at": 6
+                  }
+                }
+              },
+              {
+                "entity": "mention",
+                "for_each": 25,
+                "when": 60,
+                "semantic_result": false,
+                "change": {
+                  "kind": "create",
+                  "record_id": 61,
+                  "fields": {
+                    "mention_id": 61,
+                    "post_id": 23,
+                    "mentioned_member_id": 49,
+                    "delivery_kind": 64,
+                    "status": 65,
+                    "created_at": 6,
+                    "handled_at": 0,
+                    "response_post_id": 0
+                  }
+                }
+              },
+              {
+                "entity": "mention",
+                "for_each": 26,
+                "when": 75,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 76,
+                  "revision": 77,
+                  "fields": {
+                    "status": 80,
+                    "handled_at": 6,
+                    "response_post_id": 81
+                  }
+                }
+              },
+              {
+                "entity": "self_state",
+                "for_each": 82,
+                "when": 2,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 83,
+                  "revision": 84,
+                  "fields": {
+                    "valence": 91,
+                    "energy": 97,
+                    "updated_at": 6
+                  }
+                }
+              }
+            ],
+            "final_mutations": [
+              {
+                "entity": "turn_cursor",
+                "for_each": null,
+                "when": 106,
+                "semantic_result": false,
+                "change": {
+                  "kind": "update",
+                  "record_id": 98,
+                  "revision": 99,
+                  "fields": {
+                    "last_member_id": 102,
+                    "turns_taken": 105,
+                    "updated_at": 6
+                  }
+                }
+              }
+            ],
+            "max_mutations_per_participant": 100,
+            "context_mode": "progressive"
+          }
+        },
+        "effect": {
+          "class": "internal_mutation",
+          "idempotency": {
+            "kind": "intrinsic"
+          },
+          "uncertainty": "receipt_bound"
+        },
+        "authority": {
+          "primitive_ref": "primitive:platform:0ea1ea5135fd33b324e06906c3c1d95252fc663f5371f52228d8ca53248aa7de",
+          "action_ref": "primitive-action:platform:e98872729b3b4128b707abf9ea0868d2ec9ed4d73a9ba2e5835c54b3aac0cb90",
+          "required_grant_refs": [
+            "grant:app-records"
+          ]
+        },
+        "resources": {
+          "max_active_millis": 600000,
+          "max_input_bytes": 4096,
+          "max_output_bytes": 131072,
+          "max_cost_microusd": 4000000,
+          "max_tool_calls": 8,
+          "max_parallelism": 1
+        },
+        "retry": {
+          "kind": "none"
+        },
+        "cancellation": {
+          "mode": "propagate",
+          "acknowledgement_timeout_millis": 30000
+        },
+        "provenance_join": "preserve"
+      }
+    },
+    "ceilings": {
+      "max_nodes": 1,
+      "max_edges": 1,
+      "max_depth": 1,
+      "max_fan_out": 1,
+      "max_parallelism": 1,
+      "max_payload_bytes": 524288,
+      "max_active_millis": 600000,
+      "max_cost_microusd": 4000000,
+      "max_tool_calls": 8
+    },
+    "evolution": {
+      "topology_revision": 1,
+      "migration": "recompile_required"
+    }
+  }
+}

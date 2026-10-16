@@ -1,0 +1,2442 @@
+{
+  "schema_version": "tool-runtime.commerce-handoff.v1",
+  "commerce_boundary_schema_version": "tool-runtime.commerce-boundary.v1",
+  "commerce_policy_schema_version": "tool-runtime.commerce-policy-fixtures.v1",
+  "summary": {
+    "integrations": 2,
+    "scenarios_per_integration": 31,
+    "fixtures": 62,
+    "terminals": {
+      "auth_binding_mismatch": 2,
+      "auth_cancelled": 2,
+      "auth_expired": 2,
+      "auth_identity_mismatch": 2,
+      "auth_interaction_required": 2,
+      "auth_issuer_changed": 2,
+      "auth_scope_upgrade_required": 2,
+      "auth_timed_out": 2,
+      "authorization_denied": 2,
+      "cancelled_before_dispatch": 2,
+      "input_required": 2,
+      "legacy_delegated": 8,
+      "policy_denied": 2,
+      "refund_migration_blocked": 2,
+      "remote_ambiguous": 10,
+      "remote_authorization_required": 2,
+      "remote_error": 2,
+      "remote_success": 8,
+      "route_unavailable": 4,
+      "task_pending": 2
+    }
+  },
+  "sdk": {
+    "crate_name": "magician-mcp-client",
+    "crate_version": "0.1.20",
+    "official_sdk_name": "rmcp",
+    "official_sdk_version": "3.1.0",
+    "preferred_protocol_version": "2026-07-28",
+    "legacy_protocol_version": "2025-11-25",
+    "transports": [
+      "stdio",
+      "streamable_http"
+    ],
+    "outcomes": [
+      "complete",
+      "input_required",
+      "task"
+    ],
+    "source_digests": [
+      {
+        "path": "Cargo.toml",
+        "sha256": "0fb9c43bebca0b87d15fc32ade517321599de8ae4fa9bdc17398ca286937d457"
+      },
+      {
+        "path": "magician-mcp-client/Cargo.toml",
+        "sha256": "24e35a87feb92ead314c319480411c6b3445902e8ff32a2c07fb1c3b2009eaf5"
+      },
+      {
+        "path": "magician-mcp-client/src/catalog_owner.rs",
+        "sha256": "a8eca0adbd0223c644ed41f7b72ead629087670cc11e0592bbccbda58548a3b6"
+      },
+      {
+        "path": "magician-mcp-client/src/catalog_projection.rs",
+        "sha256": "b98a17e330eefddb5062790b468c69c4063797e34e524b26d7bbf8fb96f3b747"
+      },
+      {
+        "path": "magician-mcp-client/src/client.rs",
+        "sha256": "96fb4f38454bc75e447614aecb51b5897fccdcc3c936f93ee7826848e3c9757b"
+      },
+      {
+        "path": "magician-mcp-client/src/config.rs",
+        "sha256": "28df588436343c97e09194ef0a71469ab0ce4e18c5a1c88b9b8324bf998307a0"
+      },
+      {
+        "path": "magician-mcp-client/src/continuation.rs",
+        "sha256": "45b6e8ddc123c2c415da58a73331c49ff878f0faac6d58ba9d0dc6715ad1c6c4"
+      },
+      {
+        "path": "magician-mcp-client/src/error.rs",
+        "sha256": "8e8b9cfad40075d000ca27579b876de962ee2bd541f6662db5d6b1fbfdcb92ce"
+      },
+      {
+        "path": "magician-mcp-client/src/http_transport.rs",
+        "sha256": "ed0e55eedfcbdc4c30e2930834fbb952b1b22d60d6edc7a43d06fa0a42930e58"
+      },
+      {
+        "path": "magician-mcp-client/src/invalidation.rs",
+        "sha256": "ad2806ebbeff87ebc3b0575be246b1c855871640374e13359715cc1cc0aba2f6"
+      },
+      {
+        "path": "magician-mcp-client/src/lib.rs",
+        "sha256": "0c4572cd0012dc688f94fdc481912a14fdc3ee7e42227680450b56569a131d55"
+      },
+      {
+        "path": "magician-mcp-client/src/model.rs",
+        "sha256": "7a2514ce1e0f79318f55946130e391114a3377f527670b85b970e9100911ce2c"
+      },
+      {
+        "path": "magician-mcp-client/src/mrtr.rs",
+        "sha256": "db08f44a43f3124c9061ea4a76ca7c49906525ed22d5bcc680abc246a0f78984"
+      },
+      {
+        "path": "magician-mcp-client/src/oauth_coordinator.rs",
+        "sha256": "10945ca801c3059ff4bb472d057fbcbeba348770edff818b13f6cc8e559f9104"
+      },
+      {
+        "path": "magician-mcp-client/src/oauth_persistence.rs",
+        "sha256": "07bc823e953a3b3e4c9fdeeb21cbdfe79b63dab4569af255309449fb60b0e15c"
+      },
+      {
+        "path": "magician-mcp-client/src/recovery.rs",
+        "sha256": "b31a23bde81e69daaa1771839c1c7583a31d2a33a861f9715b4ce2e76b292c3b"
+      },
+      {
+        "path": "magician-mcp-client/src/stdio_transport.rs",
+        "sha256": "5f2b15b429de0d9a98c1b272924e3b18c188450002a7ffe5636dd33df7ac4abe"
+      },
+      {
+        "path": "magician-mcp-client/src/task.rs",
+        "sha256": "2acac711b8c74042abb6d9f81b862cdcaf98daa80c5e8c2d656654f630b5f6f2"
+      },
+      {
+        "path": "magician-mcp-client/src/validation.rs",
+        "sha256": "bc07ddc2833ecfa0badc19d92505723a298e7c3be7419307bb5ad9609c63c772"
+      }
+    ]
+  },
+  "auth": {
+    "credential_delivery": "sealed_transport_config",
+    "policy_receipt": "non_secret_binding_receipt",
+    "authorization_independent": true,
+    "binding_dimensions": [
+      "principal",
+      "workspace",
+      "skill",
+      "profile",
+      "endpoint",
+      "issuer"
+    ],
+    "credential_values_visible_to_policy": false,
+    "global_environment_mutated": false
+  },
+  "routing": {
+    "selection_dimensions": [
+      "principal",
+      "workspace",
+      "skill",
+      "profile"
+    ],
+    "rollout_states": [
+      "legacy",
+      "compare",
+      "generic_canary",
+      "generic",
+      "rollback"
+    ],
+    "route_snapshot": "pinned_per_invocation",
+    "rollback_effect": "future_invocations_only",
+    "credential_migration": "never",
+    "compare_remote_calls": 1,
+    "automatic_fallback_after_dispatch": false,
+    "validated_legacy_contract_required": true,
+    "kill_switches": "global_and_per_skill"
+  },
+  "continuation": {
+    "input_required": "retain_until_terminal",
+    "task": "retain_until_terminal",
+    "resume_deadline": "required_bounded",
+    "fallback_while_pending": "forbidden",
+    "input_required_restart": "session_bound_fail_closed",
+    "task_restart": "durable_exact_revalidation",
+    "recovery_revision": "durable_replace_before_dispatch"
+  },
+  "refund": {
+    "current_coverage": "absent",
+    "migration_readiness": "blocked_pending_design",
+    "execution": "unsupported_fail_closed",
+    "automatic_refund": false
+  },
+  "migration": {
+    "production_routing": "disabled",
+    "contract_status": "contract_only",
+    "blockers": [
+      "auth_broker_runtime",
+      "dispatch_phase_evidence",
+      "input_required_resume",
+      "task_resume",
+      "refund_design"
+    ]
+  },
+  "integrations": [
+    {
+      "id": "swiggy-mcp",
+      "legacy_target": "legacy_wrapper",
+      "generic_target": "official_sdk",
+      "legacy_credential_owner": "legacy_skill_cache",
+      "generic_credential_owner": "auth_broker_scoped_store",
+      "commerce_policy_owner": "governed_commerce_policy"
+    },
+    {
+      "id": "zepto-mcp",
+      "legacy_target": "legacy_wrapper",
+      "generic_target": "official_sdk",
+      "legacy_credential_owner": "legacy_skill_cache",
+      "generic_credential_owner": "auth_broker_scoped_store",
+      "commerce_policy_owner": "governed_commerce_policy"
+    }
+  ],
+  "fixtures": [
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "auth-binding-mismatch",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "binding_mismatch",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_binding_mismatch",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_binding_mismatch",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "auth-cancelled",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "cancelled",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_cancelled",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_cancelled",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "auth-expired",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "expired",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_expired",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_expired",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "auth-identity-mismatch",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "identity_mismatch",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_identity_mismatch",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_identity_mismatch",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "auth-interaction-required",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "interaction_required",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_interaction_required",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_interaction_required",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "auth-issuer-changed",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "issuer_changed",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_issuer_changed",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_issuer_changed",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "auth-scope-upgrade",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "scope_upgrade_required",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_scope_upgrade_required",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_scope_upgrade_required",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "auth-timeout",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "timed_out",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_timed_out",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_timed_out",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "authorization-denied",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "denied",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "authorization_denied",
+          "credential_owner": "none",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "authorization_denied",
+        "credential_owner": "none",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "cancel-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "cancelled_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "cancel-before-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "cancelled_before_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "cancelled_before_dispatch",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "rollback",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "cancelled_before_dispatch",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "rollback",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "dropped-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "dropped_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "input-required-retain",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "input_required",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "input_required",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "retain",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "input_required",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "retain",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "malformed-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "malformed_response_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "policy-denied",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "denied",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "policy_denied",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "policy_denied",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "refund-blocked",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "refund_intent",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "refund_migration_blocked",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "refund_migration_blocked",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "remote-auth-required",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "authorization_required",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_authorization_required",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "rollback",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_authorization_required",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "rollback",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "remote-error",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_remote_error",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_error",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "rollback",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_error",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "rollback",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "remote-success-reserved",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_success",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_success",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "remote-success-unreserved",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_unreserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_success",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_success",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "route-canary-generic",
+        "rollout_state": "generic_canary",
+        "canary_selected": true,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_success",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_success",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "route-canary-legacy",
+        "rollout_state": "generic_canary",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "legacy_delegated",
+          "credential_owner": "legacy_skill_cache",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "legacy_delegated",
+        "credential_owner": "legacy_skill_cache",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "route-compare",
+        "rollout_state": "compare",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "legacy_delegated",
+          "credential_owner": "legacy_skill_cache",
+          "shadow_policy_only": true,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "legacy_delegated",
+        "credential_owner": "legacy_skill_cache",
+        "shadow_policy_only": true,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "route-generic",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_success",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_success",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "route-generic-missing",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": false,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "route_unavailable",
+          "credential_owner": "none",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "route_unavailable",
+        "credential_owner": "none",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "route-legacy",
+        "rollout_state": "legacy",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "legacy_delegated",
+          "credential_owner": "legacy_skill_cache",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "legacy_delegated",
+        "credential_owner": "legacy_skill_cache",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "route-legacy-missing",
+        "rollout_state": "legacy",
+        "canary_selected": false,
+        "legacy_contract_available": false,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "route_unavailable",
+          "credential_owner": "none",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "route_unavailable",
+        "credential_owner": "none",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "route-rollback",
+        "rollout_state": "rollback",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "legacy_delegated",
+          "credential_owner": "legacy_skill_cache",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "legacy_delegated",
+        "credential_owner": "legacy_skill_cache",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "task-accepted-retain",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "task_accepted",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "task_pending",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "retain",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "task_pending",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "retain",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "timeout-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "timeout_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "swiggy-mcp",
+      "scenario": {
+        "id": "transport-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "transport_failure_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "auth-binding-mismatch",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "binding_mismatch",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_binding_mismatch",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_binding_mismatch",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "auth-cancelled",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "cancelled",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_cancelled",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_cancelled",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "auth-expired",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "expired",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_expired",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_expired",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "auth-identity-mismatch",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "identity_mismatch",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_identity_mismatch",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_identity_mismatch",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "auth-interaction-required",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "interaction_required",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_interaction_required",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_interaction_required",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "auth-issuer-changed",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "issuer_changed",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_issuer_changed",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_issuer_changed",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "auth-scope-upgrade",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "scope_upgrade_required",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_scope_upgrade_required",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_scope_upgrade_required",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "auth-timeout",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "timed_out",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "auth_timed_out",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "auth_timed_out",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "authorization-denied",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "denied",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "authorization_denied",
+          "credential_owner": "none",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "authorization_denied",
+        "credential_owner": "none",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "cancel-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "cancelled_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "cancel-before-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "cancelled_before_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "cancelled_before_dispatch",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "rollback",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "cancelled_before_dispatch",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "rollback",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "dropped-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "dropped_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "input-required-retain",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "input_required",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "input_required",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "retain",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "input_required",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "retain",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "malformed-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "malformed_response_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "policy-denied",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "denied",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "policy_denied",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "policy_denied",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "refund-blocked",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "refund_intent",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "refund_migration_blocked",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "refund_migration_blocked",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "remote-auth-required",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "authorization_required",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_authorization_required",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "rollback",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_authorization_required",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "rollback",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "remote-error",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_remote_error",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_error",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "rollback",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_error",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "rollback",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "remote-success-reserved",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_success",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_success",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "remote-success-unreserved",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_unreserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_success",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_success",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "route-canary-generic",
+        "rollout_state": "generic_canary",
+        "canary_selected": true,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_success",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_success",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "route-canary-legacy",
+        "rollout_state": "generic_canary",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "legacy_delegated",
+          "credential_owner": "legacy_skill_cache",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "legacy_delegated",
+        "credential_owner": "legacy_skill_cache",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "route-compare",
+        "rollout_state": "compare",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "legacy_delegated",
+          "credential_owner": "legacy_skill_cache",
+          "shadow_policy_only": true,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "legacy_delegated",
+        "credential_owner": "legacy_skill_cache",
+        "shadow_policy_only": true,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "route-generic",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_success",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_success",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "route-generic-missing",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": false,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "route_unavailable",
+          "credential_owner": "none",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "route_unavailable",
+        "credential_owner": "none",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "route-legacy",
+        "rollout_state": "legacy",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "legacy_delegated",
+          "credential_owner": "legacy_skill_cache",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "legacy_delegated",
+        "credential_owner": "legacy_skill_cache",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "route-legacy-missing",
+        "rollout_state": "legacy",
+        "canary_selected": false,
+        "legacy_contract_available": false,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "route_unavailable",
+          "credential_owner": "none",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "route_unavailable",
+        "credential_owner": "none",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "route-rollback",
+        "rollout_state": "rollback",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "complete_success",
+        "expected": {
+          "target": "legacy_wrapper",
+          "terminal": "legacy_delegated",
+          "credential_owner": "legacy_skill_cache",
+          "shadow_policy_only": false,
+          "auth_broker_called": false,
+          "remote_called": false,
+          "settlement": "none",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "legacy_wrapper",
+        "terminal": "legacy_delegated",
+        "credential_owner": "legacy_skill_cache",
+        "shadow_policy_only": false,
+        "auth_broker_called": false,
+        "remote_called": false,
+        "settlement": "none",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "task-accepted-retain",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "task_accepted",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "task_pending",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "retain",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "task_pending",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "retain",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "timeout-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "timeout_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    },
+    {
+      "integration": "zepto-mcp",
+      "scenario": {
+        "id": "transport-after-send",
+        "rollout_state": "generic",
+        "canary_selected": false,
+        "legacy_contract_available": true,
+        "generic_contract_available": true,
+        "authorization": "approved",
+        "auth": "ready",
+        "policy": "ready_reserved",
+        "dispatch": "transport_failure_after_send",
+        "expected": {
+          "target": "official_sdk",
+          "terminal": "remote_ambiguous",
+          "credential_owner": "auth_broker_scoped_store",
+          "shadow_policy_only": false,
+          "auth_broker_called": true,
+          "remote_called": true,
+          "settlement": "commit",
+          "automatic_legacy_fallback": false,
+          "credential_store_mutated": false
+        }
+      },
+      "evaluation": {
+        "target": "official_sdk",
+        "terminal": "remote_ambiguous",
+        "credential_owner": "auth_broker_scoped_store",
+        "shadow_policy_only": false,
+        "auth_broker_called": true,
+        "remote_called": true,
+        "settlement": "commit",
+        "automatic_legacy_fallback": false,
+        "credential_store_mutated": false
+      }
+    }
+  ]
+}

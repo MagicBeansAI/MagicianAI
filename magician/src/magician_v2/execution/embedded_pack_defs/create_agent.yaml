@@ -1,0 +1,55 @@
+name: create_agent
+description: Propose a brand-new agent definition in the active harness scope. Approval-backed in the initial release.
+version: "1.0.0"
+guide: |
+  Tool name: `create_agent`
+
+  Use this when repeated evidence shows a durable capability gap that warrants a new agent.
+  This tool creates a structural proposal; it does not mutate the workspace immediately.
+
+  Guidelines:
+  - provide a complete `definition` object for the new agent
+  - keep the proposal summary concise and decision-ready
+  - cite concrete evidence in `evidence_refs`
+  - keep the new agent scoped to the current principal/workspace
+parameters:
+  - name: summary
+    required: true
+    param_type: string
+    description: Short rationale for why a new agent is needed.
+  - name: rationale
+    param_type: string
+    description: Optional longer explanation for the reviewer.
+  - name: evidence_refs
+    required: true
+    description: Non-empty list of evidence references backing the proposal.
+    schema:
+      type: array
+      items: { type: string }
+      minItems: 1
+
+  - name: definition
+    required: true
+    description: Full proposed agent definition object. `principal`, `workspace`, and `version` are scoped automatically.
+    schema:
+      type: object
+      additionalProperties: true
+
+  - name: payload
+    description: Optional structured metadata to persist alongside the proposal.
+    schema:
+      type: object
+      additionalProperties: true
+
+implementation:
+  type: compiled
+  provider_name: create_agent
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+    - structure
+    - approval
+  composition_category: action
+  sandbox: none

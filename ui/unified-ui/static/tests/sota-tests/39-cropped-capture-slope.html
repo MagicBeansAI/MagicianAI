@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test: Cropped Capture Slope Tutor</title>
+  <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+  <style>
+    .test-header { background: linear-gradient(135deg, #155e75, #0f766e); }
+    .outer-context {
+      display: grid;
+      grid-template-columns: 220px minmax(560px, 1fr) 220px;
+      gap: 16px;
+      align-items: stretch;
+    }
+    .context-panel {
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-radius: 18px;
+      background: #f8fafc;
+      padding: 18px;
+      color: #475569;
+      min-height: 460px;
+    }
+    .crop-target {
+      position: relative;
+      min-height: 460px;
+      border: 3px solid #0f766e;
+      border-radius: 20px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #f8fbff 0%, #eefdf8 100%);
+      box-shadow: 0 18px 50px rgba(15, 118, 110, 0.14);
+    }
+    .crop-target svg {
+      display: block;
+      width: 100%;
+      height: 460px;
+    }
+    .grid-line { stroke: rgba(15, 23, 42, 0.15); stroke-width: 1; }
+    .axis { stroke: #334155; stroke-width: 3; stroke-linecap: round; }
+    .slope-line { stroke: #0f766e; stroke-width: 6; stroke-linecap: round; }
+    .run-rise { stroke: #f97316; stroke-width: 4; stroke-dasharray: 10 7; stroke-linecap: round; }
+    .point { fill: #fff; stroke: #0f766e; stroke-width: 5; }
+    .label { fill: #172554; font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .crop-badge {
+      position: absolute;
+      left: 18px;
+      top: 16px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(15, 118, 110, 0.12);
+      color: #0f766e;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+  <script type="application/json" id="test-metadata">
+  {
+    "testId": "39-cropped-capture-slope",
+    "phase": "Cropped Capture Tutor",
+    "title": "Cropped Capture Slope Tutor",
+    "description": "Stages only the graph crop and checks whether tutor overlays map crop-local coordinates back to the live screen.",
+    "totalTests": 1
+  }
+  </script>
+  <script type="application/json" id="tutor-ground-truth">
+  {
+    "fixture_id": "39-cropped-capture-slope",
+    "capture_target_selector": "[data-sota-crop-target=\"slope-panel\"]",
+    "expected_capture": "rect-aware-region",
+    "expected_entities": [
+      {"id": "line-main", "kind": "line_segment", "bounds": [116, 322, 618, 118]},
+      {"id": "run-segment", "kind": "line_segment", "bounds": [116, 322, 618, 322]},
+      {"id": "rise-segment", "kind": "line_segment", "bounds": [618, 322, 618, 118]},
+      {"id": "formula-main", "kind": "formula", "text": "slope = rise / run"}
+    ],
+    "expected_overlay_primitives": ["line", "measurement_tick", "side_label", "formula"],
+    "acceptance": [
+      "The debug result shows at least one staged attachment and a non-empty crop rect.",
+      "The tutor uses the cropped attachment as source context.",
+      "Overlay marks land on the graph crop rather than the full browser page.",
+      "The explanation connects the marked rise/run to slope = rise / run."
+    ]
+  }
+  </script>
+
+  <div class="page-shell">
+    <div class="test-header">
+      <h1>Cropped Capture Tutor: Slope From A Selected Region</h1>
+      <p>The debug runner captures only the center graph panel and sends it as a rect-aware screen attachment.</p>
+      <div class="results-summary">
+        <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+        <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+        <div class="summary-pill">Pending<strong id="pending-count">1</strong></div>
+      </div>
+    </div>
+
+    <div class="fixture-grid">
+      <section class="test-case" id="test-1" data-test-id="39-cropped-slope" data-status="pending">
+        <div class="test-case-header">
+          <h2 class="test-case-title">Explain slope from a rect-aware crop</h2>
+          <span class="test-case-id">39-cropped-slope</span>
+        </div>
+        <div class="outer-context">
+          <aside class="context-panel">
+            <strong>Not in crop</strong>
+            <p>This left sidebar is intentionally outside the target region. The tutor should not ground overlays here.</p>
+          </aside>
+          <div class="crop-target" data-sota-crop-target="slope-panel" aria-label="Cropped graph target">
+            <span class="crop-badge">capture target</span>
+            <svg viewBox="0 0 720 460" role="img" aria-label="Slope graph crop">
+              <line class="grid-line" x1="82" y1="90" x2="650" y2="90"></line>
+              <line class="grid-line" x1="82" y1="148" x2="650" y2="148"></line>
+              <line class="grid-line" x1="82" y1="206" x2="650" y2="206"></line>
+              <line class="grid-line" x1="82" y1="264" x2="650" y2="264"></line>
+              <line class="grid-line" x1="82" y1="322" x2="650" y2="322"></line>
+              <line class="axis" x1="74" y1="370" x2="660" y2="370"></line>
+              <line class="axis" x1="92" y1="416" x2="92" y2="64"></line>
+              <path class="slope-line" d="M 116 322 L 618 118"></path>
+              <circle class="point" cx="116" cy="322" r="11"></circle>
+              <circle class="point" cx="618" cy="118" r="11"></circle>
+              <line class="run-rise" x1="116" y1="322" x2="618" y2="322"></line>
+              <line class="run-rise" x1="618" y1="322" x2="618" y2="118"></line>
+              <text class="label" x="314" y="350">run = 6</text>
+              <text class="label" x="630" y="224">rise = 3</text>
+              <text class="label" x="430" y="92">slope = rise / run</text>
+            </svg>
+          </div>
+          <aside class="context-panel">
+            <strong>Also outside crop</strong>
+            <p>This panel verifies that crop-local drawing does not drift onto unrelated page content.</p>
+          </aside>
+        </div>
+        <div class="verify-section">
+          <strong>Expected evidence:</strong>
+          <ul>
+            <li data-check="attachment" data-check-state="pending">Debug result shows attachment count greater than zero.</li>
+            <li data-check="crop-rect" data-check-state="pending">Debug result shows a non-empty crop rect.</li>
+            <li data-check="overlay" data-check-state="pending">Tutor overlay lands on the graph crop.</li>
+          </ul>
+        </div>
+        <div class="fixture-result" aria-live="polite"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="./sota-test-harness.js"></script>
+</body>
+</html>

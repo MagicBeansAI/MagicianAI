@@ -1,0 +1,45 @@
+name: refine_task
+description: Append a clarification or refinement to an existing task's description (preserves prior text, prefixes with `[refinement]`). Optionally also updates the title.
+version: "1.0.0"
+guide: |
+  Tool name: `refine_task`
+
+  Use when the user adds new context / clarification to a task you've
+  already created. The refinement is appended (not overwritten) so the
+  task's full history of intent stays readable. Existing text gets a
+  blank line then `[refinement] <your refinement>`.
+
+  Inputs:
+  - `task_id` (required) — task to refine.
+  - `refinement` (required) — non-empty refinement text to append.
+  - `title` (optional) — replacement title. Omit to keep the existing
+    title.
+
+  Returns `{task_id, title, description}` with the updated values.
+
+  Prefer `update_task` when the user wants to REPLACE the description
+  outright; this tool is additive.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: Task id to refine.
+  - name: refinement
+    required: true
+    param_type: string
+    description: Refinement / clarification text to append (non-empty).
+  - name: title
+    param_type: string
+    description: Optional replacement title. Omit to keep the existing title.
+    default: ""
+implementation:
+  type: compiled
+  provider_name: refine_task
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - tasks
+    - mutation
+  composition_category: action
+  sandbox: none

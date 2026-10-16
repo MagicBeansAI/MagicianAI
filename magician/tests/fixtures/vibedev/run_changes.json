@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "additions": 3,
+      "deletions": 0,
+      "path": "db/migrations/0042_title_trigram.sql",
+      "status": "A"
+    },
+    {
+      "additions": 5,
+      "deletions": 2,
+      "path": "src/api/search.ts",
+      "status": "M"
+    }
+  ],
+  "patch": {
+    "path": "src/api/search.ts",
+    "truncated": false,
+    "unified_diff": "diff --git a/src/api/search.ts b/src/api/search.ts\nindex 1a2b3c4..5d6e7f8 100644\n--- a/src/api/search.ts\n+++ b/src/api/search.ts\n@@ -10,4 +10,7 @@ export async function search(q: string) {\n   const term = q.trim();\n-  const rows = await db.products.scan();\n-  return rows.filter((row) => row.title.includes(term));\n+  if (!term) return cachedEmpty();\n+  return db.products.query(\n+    'SELECT * FROM products WHERE title % $1 ORDER BY similarity(title, $1) DESC',\n+    [term],\n+  );\n }\n"
+  },
+  "run_id": "task_search",
+  "source": "branch",
+  "turn": "task_search"
+}

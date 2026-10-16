@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Bounded Exa protocol adapter for the governed skill runtime."""
+
+from __future__ import annotations
+
+import datetime
+import json
+import math
+import os
+import sys
+import urllib.error
+import urllib.request
+from typing import Any, Callable
+from types import SimpleNamespace
+
+
+EXA_ENDPOINT = "https://api.exa.ai/search"
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+MAX_TEXT_CHARS = 12_000
+MAX_HIGHLIGHTS = 20
+MAX_HIGHLIGHT_CHARS = 2_000
+MAX_INPUT_BYTES = 65_536
+MAX_FAILURE_MESSAGE_CHARS = 512
+UrlOpen = Callable[..., Any]
+
+# --- Governed timeout budget -------------------------------------------------
+# INVARIANT:
+#   GOVERNED_KILL_CEILING_SECS >= INNER_WORST_CASE_SECS + GOVERNED_KILL_MARGIN_SECS
+#
+# `perform_search` issues exactly one Exa call, so the adapter's own deadline
+# budget is:
+#
+#   INNER_WORST_CASE_SECS = PROVIDER_TIMEOUT_SECS = 60
+#
+# GOVERNED_KILL_CEILING_SECS mirrors `runtime.limits.timeout_secs` in this
+# skill's SKILL.md, which is the runtime's wall-clock kill. That kill is a
+# backstop for a process that has stopped responding, not the primary provider
+# deadline. It previously equalled PROVIDER_TIMEOUT_SECS, and because the socket
+# deadline only starts after interpreter start and stdin read, the kill always
+# won that tie — the adapter's own timeout handling could never run. It must
+# stay above the budget above by at least GOVERNED_KILL_MARGIN_SECS, which
+# covers interpreter start, stdin read, and response normalization.
+#
+# The manifest is YAML this adapter must not read at execution time, so the
+# ceiling is mirrored here. Both sides are pinned together by
+# `tests/test_exa_search.py::test_governed_kill_outlasts_the_inner_provider_budget`
+# and by `tool-runtime-core/tests/phase7_migration.rs::
+# credentialed_adapter_governed_kill_outlasts_its_inner_provider_budget`.
+#
+# Adding a request or raising PROVIDER_TIMEOUT_SECS REQUIRES raising
+# `runtime.limits.timeout_secs` in SKILL.md by the same amount. Note the socket
+# deadline is per operation, not a total wall clock, so INNER_WORST_CASE_SECS is
+# a lower bound on true elapsed time; the governed kill remains the only total
+# bound, which is why it must be the outer one.
+PROVIDER_TIMEOUT_SECS = 60
+INNER_WORST_CASE_SECS = 60
+GOVERNED_KILL_MARGIN_SECS = 5
+GOVERNED_KILL_CEILING_SECS = 65
+
+
+# --- Declared parameter defaults ---------------------------------------------
+# The governed runtime materializes every parameter that declares a `default:`
+# in the manifest INTO the canonical JSON envelope, so a declared default does
+# arrive even when the caller omits it. A parameter is absent from the envelope
+# only when the caller omits it AND the manifest declares no default — which is
+# every optional parameter below carrying `None` here. Every attribute read off
+# the parsed namespace must therefore either be required or have its fallback
+# applied here, keyed by the ATTRIBUTE name (`type` is renamed to `search_type`
+# on the way in). The entries that mirror a declared manifest default are
+# defence in depth against a drifting manifest, not the delivery mechanism.
+#
+# These values mirror `metadata.magician.runtime_actions.actions.run.parameters`
+# in this skill's SKILL.md, which the adapter must not read at execution time.
+# Note the separate `metadata.magician.content_source.input.fixed_arguments`
+# block is a caller supplying explicit values, not a source of defaults.
+#
+# INVARIANT: every `args.<name>` in this file appears in REQUIRED_PARAMETERS or
+# PARAMETER_DEFAULTS. Reading an attribute absent from both raises
+# AttributeError, which the runtime surfaces as an opaque one-word error.
+REQUIRED_PARAMETERS = ("query",)
+PARAMETER_DEFAULTS: dict[str, Any] = {
+    "search_type": "auto",
+    "num_results": 5,
+    "contents": True,
+    "highlights": False,
+    "category": None,
+    "max_age_hours": None,
+    "start_published_date": None,
+    "include_domains": None,
+    "exclude_domains": None,
+}
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the fixed provider credential on its declared origin."""
+
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def open_without_redirects(request: urllib.request.Request, timeout: int) -> Any:
+    return urllib.request.build_opener(NoRedirectHandler()).open(request, timeout=timeout)
+
+
+def iso_date(value: str) -> str:
+    try:
+        return datetime.date.fromisoformat(value).isoformat()
+    except ValueError as error:
+        raise ValueError("expected YYYY-MM-DD") from error
+
+
+def parse_input(raw: bytes) -> SimpleNamespace:
+    if not raw or len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("invalid governed input envelope")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("invalid governed input envelope")
+    if value.get("start_published_date"):
+        value["start_published_date"] = iso_date(value["start_published_date"])
+    value["search_type"] = value.pop("type", PARAMETER_DEFAULTS["search_type"])
+    for name, fallback in PARAMETER_DEFAULTS.items():
+        value.setdefault(name, fallback)
+    return SimpleNamespace(**value)
+
+
+def domains(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def request_body(args: SimpleNamespace) -> dict[str, Any]:
+    search_type = "auto" if args.search_type == "neural" else args.search_type
+    body: dict[str, Any] = {
+        "query": args.query,
+        "type": search_type,
+        "numResults": args.num_results,
+    }
+    if args.max_age_hours is not None:
+        body["maxAgeHours"] = args.max_age_hours
+    if args.start_published_date:
+        body["startPublishedDate"] = args.start_published_date
+    if args.category:
+        body["category"] = args.category
+    include_domains = domains(args.include_domains)
+    if include_domains:
+        body["includeDomains"] = include_domains
+    exclude_domains = domains(args.exclude_domains)
+    if exclude_domains:
+        body["excludeDomains"] = exclude_domains
+    if args.contents or args.highlights:
+        body["contents"] = {}
+        if args.contents:
+            body["contents"]["text"] = {"maxCharacters": MAX_TEXT_CHARS}
+        if args.highlights:
+            body["contents"]["highlights"] = {"numSentences": 5}
+    return body
+
+
+def bounded_failure_message(error: BaseException, secret: str) -> str:
+    """Keep the provider's own words while guaranteeing the credential is absent.
+
+    The caller needs the real cause: a missing CA bundle only ever says
+    CERTIFICATE_VERIFY_FAILED inside the message, never in the exception class
+    name. Redaction runs before the bound so a credential can never survive as a
+    tail fragment, and the bound keeps a hostile provider message from becoming
+    an unbounded log line.
+    """
+    message = str(error)
+    if secret:
+        message = message.replace(secret, "[redacted]")
+    return message[:MAX_FAILURE_MESSAGE_CHARS]
+
+
+def bounded_text(value: Any, limit: int) -> str:
+    return value[:limit] if isinstance(value, str) else ""
+
+
+def finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def normalize_response(response: dict[str, Any], args: SimpleNamespace) -> dict[str, Any]:
+    if response.get("error"):
+        raise ValueError("Exa returned a provider error")
+    output: dict[str, Any] = {
+        "query": args.query,
+        "search_type": bounded_text(response.get("searchType"), 64)
+        or ("auto" if args.search_type == "neural" else args.search_type),
+        "results": [],
+    }
+    cost = response.get("costDollars")
+    if finite_number(cost):
+        output["cost"] = cost
+    synthesis = bounded_text(response.get("output"), MAX_TEXT_CHARS)
+    if synthesis:
+        output["synthesis"] = synthesis
+    results = response.get("results", [])
+    if not isinstance(results, list):
+        results = []
+    for result in results[: args.num_results]:
+        if not isinstance(result, dict):
+            continue
+        item: dict[str, Any] = {
+            "title": bounded_text(result.get("title"), 4_096),
+            "url": bounded_text(result.get("url"), 8_192),
+        }
+        published = bounded_text(result.get("publishedDate"), 128)
+        if published:
+            item["published_date"] = published
+        score = result.get("score")
+        if finite_number(score):
+            item["score"] = score
+        text = bounded_text(result.get("text"), MAX_TEXT_CHARS)
+        if text:
+            item["text"] = text
+        highlights = result.get("highlights")
+        if isinstance(highlights, list):
+            item["highlights"] = [
+                bounded_text(highlight, MAX_HIGHLIGHT_CHARS)
+                for highlight in highlights[:MAX_HIGHLIGHTS]
+                if isinstance(highlight, str)
+            ]
+        output["results"].append(item)
+    return output
+
+
+def perform_search(
+    api_key: str,
+    args: SimpleNamespace,
+    *,
+    opener: UrlOpen = open_without_redirects,
+) -> dict[str, Any]:
+    payload = json.dumps(request_body(args), separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        EXA_ENDPOINT,
+        data=payload,
+        headers={"Content-Type": "application/json", "x-api-key": api_key},
+        method="POST",
+    )
+    with opener(request, timeout=PROVIDER_TIMEOUT_SECS) as response:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("Exa response exceeded the configured size limit")
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("Exa returned a non-object response")
+    return normalize_response(decoded, args)
+
+
+def main(input_bytes: bytes | None = None) -> int:
+    api_key = os.environ.get("EXA_API_KEY", "")
+    if not api_key:
+        print(json.dumps({"error": "EXA_API_KEY not set"}), file=sys.stderr)
+        return 2
+    try:
+        args = parse_input(input_bytes if input_bytes is not None else sys.stdin.buffer.read(MAX_INPUT_BYTES + 1))
+        output = perform_search(api_key, args)
+    except (urllib.error.URLError, TimeoutError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as error:
+        print(
+            json.dumps(
+                {
+                    "error": {
+                        "kind": type(error).__name__,
+                        "message": bounded_failure_message(error, api_key),
+                    }
+                }
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

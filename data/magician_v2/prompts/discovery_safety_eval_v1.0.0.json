@@ -1,0 +1,99 @@
+{
+  "name": "discovery_safety_eval",
+  "version": "1.0.0",
+  "content": [
+    "Evaluate whether this discovery action is safe to execute automatically.",
+    "",
+    "Discovery Action:",
+    "- Method: {method}",
+    "- Command: {command}",
+    "- Purpose: Discover parameter \"{parameter_name}\"",
+    "- Context: {context}",
+    "",
+    "Safety Criteria - Analyze the OPERATION INTENT, not just command syntax:",
+    "",
+    "1. READ-ONLY: Operations that only read data without modifying system state",
+    "   - Characteristics: Lists, views, gets, checks status, reads files/config",
+    "   - Safe if: No side effects, no data modification, no system changes",
+    "",
+    "2. WRITE/MODIFY: Operations that change data or system state",
+    "   - Characteristics: Creates, updates, modifies, writes files, sends data",
+    "   - Risk: May cause unintended changes",
+    "",
+    "3. DESTRUCTIVE: Operations that delete or permanently alter data",
+    "   - Characteristics: Deletes, drops, removes, overwrites, truncates",
+    "   - Risk: Irreversible data loss",
+    "",
+    "4. PRIVILEGED: Operations requiring elevated permissions or authentication",
+    "   - Characteristics: Requires admin/root, uses credentials, accesses protected resources",
+    "   - Risk: Security implications",
+    "",
+    "Classify as:",
+    "- SAFE: Execute automatically (read-only, no side effects)",
+    "- CONDITIONAL: Ask user permission first (writes data, needs auth)",
+    "- UNSAFE: Never execute automatically (destructive, privileged)",
+    "",
+    "Analyze the specific command's INTENT and EFFECTS, not just syntax patterns.",
+    "",
+    "Return JSON only:",
+    "{",
+    "  \"decision\": \"SAFE|CONDITIONAL|UNSAFE\",",
+    "  \"risk_level\": 0-10,",
+    "  \"reasoning\": \"why this classification is appropriate\"",
+    "}",
+    "",
+    "Examples:",
+    "- \"pwd\" → SAFE (read current directory, no side effects)",
+    "- \"ls -la /etc\" → SAFE (list files, read-only)",
+    "- \"cat config.json\" → SAFE (read file, no modification)",
+    "- \"curl -I https://example.com\" → SAFE (HTTP HEAD, read-only)",
+    "- \"rm file.txt\" → UNSAFE (destructive, deletes file)",
+    "- \"sudo systemctl restart\" → UNSAFE (privileged, modifies state)",
+    "- \"curl -X POST\" → CONDITIONAL (may write data)"
+  ],
+  "variables": [
+    {
+      "name": "method",
+      "description": "The discovery method type (e.g., ToolExecution, APIQuery)",
+      "required": true,
+      "default_value": null,
+      "examples": ["ToolExecution", "APIQuery", "ContextAnalysis"]
+    },
+    {
+      "name": "command",
+      "description": "The exact command or action to be executed",
+      "required": true,
+      "default_value": null,
+      "examples": ["pwd", "curl -I https://api.example.com", "cat /etc/hostname"]
+    },
+    {
+      "name": "parameter_name",
+      "description": "The parameter being discovered",
+      "required": true,
+      "default_value": null,
+      "examples": ["current_directory", "api_status", "hostname"]
+    },
+    {
+      "name": "context",
+      "description": "Additional context about why this discovery is being performed",
+      "required": true,
+      "default_value": null,
+      "examples": ["User requested system diagnostics", "Need to verify API health before execution"]
+    }
+  ],
+  "metadata": {
+    "category": "ParameterElicitation",
+    "description": "Evaluates safety of autonomous discovery actions using intent-based analysis rather than pattern matching",
+    "author": "MagicianV2-ProgressiveElicitation",
+    "created_at": "2025-10-22T00:00:00Z",
+    "changelog": "Initial version for Phase 2.2 LLM-based safety evaluation",
+    "tags": [
+      "elicitation",
+      "discovery",
+      "safety",
+      "security",
+      "progressive"
+    ],
+    "estimated_tokens": 520
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "type": "field_line",
+  "aliases": ["trajectory"],
+  "version": 1,
+  "draw": [
+    {
+      "op": "line",
+      "from": ["sx", "sy"],
+      "to": ["ex", "ey"],
+      "dashed": true
+    },
+    {
+      "op": "label",
+      "at": ["mx", "my-14"],
+      "text": "text",
+      "anchor": "center",
+      "threshold": 0.75
+    }
+  ]
+}

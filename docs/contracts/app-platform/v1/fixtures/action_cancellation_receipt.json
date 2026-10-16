@@ -1,0 +1,8 @@
+{
+  "generation": 1,
+  "idempotency_key": "cancel:fixture:1",
+  "protocol_version": "1",
+  "requested_at": "2026-01-01T00:00:00Z",
+  "run_ref": "run:app-action:fixture_running",
+  "status": "cancelling"
+}

@@ -1,0 +1,11 @@
+Bundled fonts mirror the unified-ui theme table.
+
+SIL Open Font License 1.1:
+Outfit, Manrope, Geist Mono, Bricolage Grotesque, Pixelify Sans, Lilita One,
+Fira Code, Fredoka, IBM Plex Mono, Inter, JetBrains Mono, Press Start 2P,
+Quicksand, Rajdhani, Space Grotesk.
+
+Apache License 2.0:
+Permanent Marker, Special Elite.
+
+Source: Google Fonts (github.com/google/fonts).

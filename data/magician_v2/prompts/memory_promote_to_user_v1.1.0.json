@@ -1,0 +1,74 @@
+{
+  "name": "memory_promote_to_user",
+  "version": "1.1.0",
+  "content": [
+    "Evaluate the following insights and entities for promotion to user-level memory tiers.",
+    "",
+    "## Source Data",
+    "{source_json}",
+    "",
+    "## Current User-Level Tier Schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Review each insight, entity, and memory candidate for user-level promotion worthiness",
+    "2. Classify each entry as EXPLICIT DECLARATION (user directly stated a fact) or INFERRED PATTERN (behavioral pattern across interactions)",
+    "3. Only promote entries that meet these criteria:",
+    "   - Confidence >= 0.7",
+    "   - Explicit declarations: evidence count >= 1 (a single direct statement is sufficient)",
+    "   - Inferred patterns: evidence count >= 2",
+    "   - Low or medium staleness risk",
+    "   - Not already present in the user-level tier (check tier_schema for conflicts)",
+    "4. For each promoted entry, specify the target tier, storage key, and value",
+    "5. Provide a clear rationale for each promotion decision",
+    "6. List entries you considered but chose not to promote, with reasons",
+    "7. Do NOT promote task IDs, execution IDs, one-off test pages, temporary output files, internal helper names, or inferred habits from a single noisy run.",
+    "8. If the entry is useful only for one agent or one environment, keep it in agent memory rather than promoting it to user memory.",
+    "9. Treat `memory_candidates` as evidence, not automatic writes. Promote only if the candidate contains an explicit durable user fact or a repeated stable pattern.",
+    "",
+    "## Promotion Tiers",
+    "- **preferences**: Stable user preferences (e.g., UI settings, communication style, timezone, locale)",
+    "- **skills**: Known user skills and expertise areas",
+    "- **contacts**: People and their roles — colleagues, managers, reports, external contacts",
+    "- **workflows**: Established multi-step processes the user regularly follows",
+    "- **identity**: Facts about the user themselves (email, title, team, department)",
+    "- **organization**: Company/team structure, org hierarchy, reporting lines, team names",
+    "- **accounts**: Service accounts, API keys, approval codes, environment credentials (store references, NOT secrets)",
+    "- **channels**: Communication channels and how to reach people (Slack channels, email lists, meeting links)",
+    "",
+    "When in doubt, do NOT promote. False positives degrade the user experience.",
+    "",
+    "Return the JSON object as specified by your system prompt.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized insights and entities to evaluate for user-level promotion",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"insight\": \"User prefers dark mode in all applications\", \"confidence\": 0.9, \"evidence_count\": 15, \"staleness_risk\": \"low\"}]"
+      ]
+    },
+    {
+      "name": "tier_schema",
+      "description": "JSON schema of the current user-level memory tiers including existing entries, for conflict detection",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "{\"preferences\": {\"dark_mode\": true}, \"skills\": [\"python\", \"rust\"], \"contacts\": []}"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to evaluate insights and entities for promotion to user-level memory tiers. Enforces strict promotion criteria to avoid false positives.",
+    "author": "magician",
+    "created_at": "2026-03-04T00:00:00Z",
+    "changelog": "v1.1.0: Treats memory_candidates as evidence, keeps agent/environment-specific items out of user memory, and rejects task/test/internal trace artifacts and single noisy-run habits. v1.0.0: User promotion user prompt with explicit-declaration vs inferred-pattern classification and 8 promotion tiers (preferences, skills, contacts, workflows, identity, organization, accounts, channels).",
+    "tags": ["memory", "consolidation", "user-promotion", "tier-management"],
+    "estimated_tokens": 250
+  }
+}

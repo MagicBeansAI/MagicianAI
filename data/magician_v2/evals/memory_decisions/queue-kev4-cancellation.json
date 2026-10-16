@@ -1,0 +1,267 @@
+{
+  "summary": {
+    "running_cancel": {
+      "status": "failed",
+      "elapsed_ms": 212,
+      "calls": 1,
+      "queue_wait_ms": [
+        0
+      ],
+      "health": null
+    },
+    "queued_cancel": {
+      "status": "failed",
+      "elapsed_ms": 113,
+      "calls": 0,
+      "queue_wait_ms": [],
+      "health": null
+    },
+    "after_cancel": {
+      "status": "answered",
+      "elapsed_ms": 2231,
+      "calls": 1,
+      "queue_wait_ms": [
+        1664
+      ],
+      "health": {
+        "kev-4b": null
+      }
+    }
+  },
+  "rows": [
+    {
+      "name": "running_cancel",
+      "request": {
+        "contract_version": 4,
+        "operation": "memory_conflict_review",
+        "state": "",
+        "locality": "cloud",
+        "mode": "gate",
+        "request_id": "f4ee1144274940d394e28feb92dd7208",
+        "reference_version": "queue-cancel-v1",
+        "expected_policy_revision": "521a9f86031bc472350a15fac6d46237f4c4a6ed36308ba3e4c996a8a1bb1f59",
+        "projection_version": "human-review-api-v1",
+        "execution_budget_ms": 200,
+        "context": null,
+        "items": [
+          {
+            "item_id": "H09",
+            "state": {
+              "existing_item": {
+                "text": "Project Cedar backend uses Go.",
+                "verified": true
+              },
+              "incoming_item": {
+                "text": "Project Cedar mobile client uses Kotlin.",
+                "verified": true
+              }
+            }
+          }
+        ]
+      },
+      "reply": {
+        "request_id": "f4ee1144274940d394e28feb92dd7208",
+        "engine_instance": "01M3J5EE8AP3V2D6WC8669AAJF",
+        "policy_revision": "521a9f86031bc472350a15fac6d46237f4c4a6ed36308ba3e4c996a8a1bb1f59",
+        "items": [
+          {
+            "eligible_answers": {},
+            "item_id": "H09",
+            "status": "failed",
+            "response": null,
+            "thresholds": null,
+            "error": "decision request timed out",
+            "latency_ms": 197
+          }
+        ],
+        "model_calls": [
+          {
+            "batch_id": "f4ee1144274940d394e28feb92dd7208",
+            "item_ids": [
+              "H09"
+            ],
+            "call_id": "01M3J5G5M18X1GECHCXC7K1AN4",
+            "retry_group_id": "01M3J5G5M1NE2CAM3XSJW2ZF2J",
+            "attempt": 1,
+            "operation": "memory_conflict_review",
+            "adapter": "kev-mlx",
+            "provider": "decision:kev-mlx",
+            "requested_model": "kev-4b-mlx",
+            "model": "kev-4b-mlx",
+            "local": true,
+            "started_at_ms": 1790537373313,
+            "completed_at_ms": 1790537373510,
+            "latency_ms": 196,
+            "queue_wait_ms": 0,
+            "status": "failed",
+            "error_class": "structured_provider_timeout",
+            "input_tokens": null,
+            "output_tokens": null,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "failed",
+        "response": null,
+        "thresholds": null,
+        "error": null,
+        "latency_ms": 198
+      },
+      "elapsed_ms": 212
+    },
+    {
+      "name": "queued_cancel",
+      "request": {
+        "contract_version": 4,
+        "operation": "memory_attach",
+        "state": "",
+        "locality": "cloud",
+        "mode": "gate",
+        "request_id": "4c416f10ca394fac81fee5946a94f185",
+        "reference_version": "queue-cancel-v1",
+        "expected_policy_revision": "521a9f86031bc472350a15fac6d46237f4c4a6ed36308ba3e4c996a8a1bb1f59",
+        "projection_version": "human-review-api-v1",
+        "execution_budget_ms": 100,
+        "context": null,
+        "items": [
+          {
+            "item_id": "H04",
+            "state": {
+              "task": "Activity: plan a remote meeting with no travel.",
+              "memory": "for business flights over four hours choose an aisle seat."
+            }
+          }
+        ]
+      },
+      "reply": {
+        "request_id": "4c416f10ca394fac81fee5946a94f185",
+        "engine_instance": "01M3J5EE8AP3V2D6WC8669AAJF",
+        "policy_revision": "521a9f86031bc472350a15fac6d46237f4c4a6ed36308ba3e4c996a8a1bb1f59",
+        "items": [
+          {
+            "eligible_answers": {},
+            "item_id": "H04",
+            "status": "failed",
+            "response": null,
+            "thresholds": null,
+            "error": "decision model dispatch wait timed out",
+            "latency_ms": 100
+          }
+        ],
+        "contract_version": 4,
+        "status": "failed",
+        "response": null,
+        "thresholds": null,
+        "error": null,
+        "latency_ms": 100
+      },
+      "elapsed_ms": 113
+    },
+    {
+      "name": "after_cancel",
+      "request": {
+        "contract_version": 4,
+        "operation": "memory_attach",
+        "state": "",
+        "locality": "cloud",
+        "mode": "gate",
+        "request_id": "a022d049cd5545d1a9dcd9fac043b595",
+        "reference_version": "queue-cancel-v1",
+        "expected_policy_revision": "521a9f86031bc472350a15fac6d46237f4c4a6ed36308ba3e4c996a8a1bb1f59",
+        "projection_version": "human-review-api-v1",
+        "execution_budget_ms": 60000,
+        "context": null,
+        "items": [
+          {
+            "item_id": "H04",
+            "state": {
+              "task": "Activity: plan a remote meeting with no travel.",
+              "memory": "for business flights over four hours choose an aisle seat."
+            }
+          }
+        ]
+      },
+      "reply": {
+        "request_id": "a022d049cd5545d1a9dcd9fac043b595",
+        "engine_instance": "01M3J5EE8AP3V2D6WC8669AAJF",
+        "policy_revision": "521a9f86031bc472350a15fac6d46237f4c4a6ed36308ba3e4c996a8a1bb1f59",
+        "items": [
+          {
+            "eligible_answers": {
+              "applicable": "operator-enabled:ebc0efb205fd55ba36c55f141773bc0984e8656ec9758b41f22c350d4591179e",
+              "load_bearing": "operator-enabled:ebc0efb205fd55ba36c55f141773bc0984e8656ec9758b41f22c350d4591179e"
+            },
+            "item_id": "H04",
+            "status": "answered",
+            "response": {
+              "model": {
+                "adapter": "kev-mlx",
+                "model": "kev-4b-mlx"
+              },
+              "pack_id": "memory_applicability",
+              "pack_version": "1.0.0",
+              "answers": {
+                "applicable": {
+                  "type": "noul",
+                  "noul": 0.0163
+                },
+                "load_bearing": {
+                  "type": "noul",
+                  "noul": 0.0638
+                }
+              },
+              "usage": {
+                "input_tokens": 229,
+                "output_tokens": 0
+              }
+            },
+            "thresholds": {
+              "applicable": 0.75,
+              "load_bearing": 0.75
+            },
+            "error": null,
+            "latency_ms": 2218
+          }
+        ],
+        "model_health": {
+          "kev-4b": null
+        },
+        "model_calls": [
+          {
+            "batch_id": "a022d049cd5545d1a9dcd9fac043b595",
+            "item_ids": [
+              "H04"
+            ],
+            "call_id": "01M3J5G7J3CFGNRM64CT6V8CWB",
+            "retry_group_id": "01M3J5G7J3VGRE5QD70J2HZ2PH",
+            "attempt": 1,
+            "operation": "memory_attach",
+            "adapter": "kev-mlx",
+            "provider": "decision:kev-mlx",
+            "requested_model": "kev-4b-mlx",
+            "model": "kev-4b-mlx",
+            "local": true,
+            "started_at_ms": 1790537375299,
+            "completed_at_ms": 1790537375854,
+            "latency_ms": 554,
+            "queue_wait_ms": 1664,
+            "status": "succeeded",
+            "error_class": null,
+            "input_tokens": 229,
+            "output_tokens": 0,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        ],
+        "contract_version": 4,
+        "status": "answered",
+        "response": null,
+        "thresholds": null,
+        "error": null,
+        "latency_ms": 2218
+      },
+      "elapsed_ms": 2231
+    }
+  ]
+}

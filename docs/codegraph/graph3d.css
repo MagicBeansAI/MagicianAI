@@ -1,0 +1,675 @@
+/* ═══════════════════════════════════════════════════════════
+   Code Universe — 3D spatial graph  ·  dark-space theme
+   ═══════════════════════════════════════════════════════════ */
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --void: #000005;
+  --hud-bg: rgba(6, 12, 22, 0.88);
+  --hud-border: rgba(0, 190, 255, 0.12);
+  --hud-glow: rgba(0, 200, 255, 0.06);
+  --hud-shadow: rgba(0, 0, 0, 0.5);
+  --text: #d0dde8;
+  --text-dim: #5a7a94;
+  --accent: #00dcff;
+  --accent-soft: rgba(0, 220, 255, 0.25);
+  /* Top-bar gradient + accent-tinted overlays — referenced from the
+     hardcoded sites that used to bake the dark palette in. */
+  --hud-top-grad: linear-gradient(180deg, rgba(2, 6, 14, 0.94) 0%, rgba(2, 6, 14, 0.65) 75%, transparent 100%);
+  --hud-title-glow: 0 0 24px rgba(0, 220, 255, 0.35);
+  --hud-btn-hover-bg: rgba(0, 220, 255, 0.05);
+  --hud-focus-ring: rgba(0, 220, 255, 0.07);
+  --hud-focus-border: rgba(0, 220, 255, 0.45);
+  --font-display: "Orbitron", sans-serif;
+  --font-mono: "Share Tech Mono", "Menlo", monospace;
+  --radius: 5px;
+}
+
+/* Light theme — applied via `<html data-theme="light">`. Default on
+   first load (see graph3d.html). Toggle button in the HUD switches
+   between this and the dark "Code Universe" theme. */
+:root[data-theme="light"] {
+  --void: #f5f7fa;
+  --hud-bg: rgba(255, 255, 255, 0.96);
+  --hud-border: rgba(20, 60, 110, 0.18);
+  --hud-glow: rgba(0, 90, 160, 0.05);
+  --hud-shadow: rgba(20, 40, 70, 0.12);
+  --text: #1a2535;
+  --text-dim: #4a5b70;
+  --accent: #0a6cd0;
+  --accent-soft: rgba(10, 108, 208, 0.18);
+  --hud-top-grad: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.65) 75%, transparent 100%);
+  --hud-title-glow: 0 1px 2px rgba(20, 40, 70, 0.10);
+  --hud-btn-hover-bg: rgba(10, 108, 208, 0.06);
+  --hud-focus-ring: rgba(10, 108, 208, 0.10);
+  --hud-focus-border: rgba(10, 108, 208, 0.55);
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--void);
+  font-family: var(--font-mono);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 3-D canvas ────────────────────────────────────────── */
+#3d-graph {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ── Warp overlay (fly-to effect) ──────────────────────── */
+.warp-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 15%,
+    rgba(0, 160, 255, 0.035) 55%,
+    rgba(0, 120, 255, 0.07) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+.warp-overlay.active {
+  opacity: 1;
+}
+
+/* ── Shared HUD panel style ────────────────────────────── */
+.hud-panel,
+.hud-legend,
+.hud-info .info-content,
+.search-results {
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 6px 32px var(--hud-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+/* ── Top bar ───────────────────────────────────────────── */
+.hud-top {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  background: var(--hud-top-grad);
+  pointer-events: none;
+}
+.hud-top > * {
+  pointer-events: auto;
+}
+
+/* Title */
+.hud-title {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.hud-title h1 {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 5px;
+  color: var(--accent);
+  text-shadow: var(--hud-title-glow);
+}
+.hud-stats {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.8px;
+}
+
+/* Search */
+.hud-search {
+  flex: 1;
+  max-width: 480px;
+  margin: 0 auto;
+}
+.search-container {
+  position: relative;
+}
+#search-input {
+  width: 100%;
+  padding: 7px 40px 7px 14px;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+#search-input:focus {
+  border-color: var(--hud-focus-border);
+  box-shadow: 0 0 0 3px var(--hud-focus-ring), 0 0 24px var(--hud-glow);
+}
+#search-input::placeholder {
+  color: var(--text-dim);
+  opacity: 0.55;
+}
+.search-kbd {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  border: 1px solid rgba(90, 122, 148, 0.3);
+  border-radius: 3px;
+  padding: 1px 5px;
+  pointer-events: none;
+  opacity: 0.6;
+}
+#search-input:focus + .search-kbd {
+  opacity: 0;
+}
+
+/* Search dropdown */
+.search-results {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 380px;
+  overflow-y: auto;
+  z-index: 100;
+}
+.search-result-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background 0.12s;
+}
+.search-result-item:last-child {
+  border-bottom: none;
+}
+.search-result-item:hover,
+.search-result-item.active {
+  background: var(--accent-soft);
+}
+.search-result-item .kind-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.search-result-item .result-label {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.search-result-item .result-meta {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Slash-command suggestion rows: replace the kind-dot with a monospaced
+   command label and let the description flow on the right. */
+.slash-suggestion {
+  align-items: baseline;
+}
+.slash-suggestion .result-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  color: var(--accent);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.slash-suggestion .result-meta {
+  white-space: normal;
+  margin-left: 12px;
+  font-size: 11px;
+  text-align: left;
+  flex: 1 1 auto;
+}
+
+/* Action buttons */
+.hud-actions {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.hud-btn {
+  padding: 5px 11px;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+.hud-btn:hover {
+  border-color: var(--hud-focus-border);
+  background: var(--hud-btn-hover-bg);
+}
+.hud-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Fly-mode toggle wraps a checkbox. Hide the native box and use the
+   "active" border colour treatment as the on-state indicator. */
+.hud-btn-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.hud-btn-toggle input[type="checkbox"] {
+  margin: 0;
+  width: 12px;
+  height: 12px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.hud-btn-toggle:has(input:checked) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Crosshair shown in the centre of the viewport while fly mode is
+   engaged. Pointer-locked cursor isn't visible, so this gives the
+   user a aim point. */
+.fly-mode-on::after {
+  content: "";
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 30;
+  opacity: 0.7;
+}
+
+/* ── Legend ─────────────────────────────────────────────── */
+.hud-legend {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 20;
+  padding: 10px 14px;
+  min-width: 130px;
+}
+.hud-legend h3 {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 2.5px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 1.5px 0;
+  font-size: 10.5px;
+  opacity: 0.35; /* inactive look — `legend-item-active` brightens it */
+  cursor: pointer;
+  transition: opacity 0.15s;
+  user-select: none;
+}
+.legend-item:hover {
+  opacity: 1;
+}
+.legend-item-active {
+  opacity: 0.95;
+}
+.legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.legend-count {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 9.5px;
+}
+.legend-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.legend-btn {
+  padding: 4px 8px;
+  font-size: 9.5px;
+  border-radius: 6px;
+  flex: 1 1 0;
+}
+
+/* ── Keyboard hints ────────────────────────────────────── */
+.hud-keys {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 14px;
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.45;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+.hud-keys:hover {
+  opacity: 0.75;
+}
+.hud-keys kbd {
+  display: inline-block;
+  padding: 1px 4px;
+  border: 1px solid var(--hud-border);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  margin-right: 2px;
+  color: var(--text-dim);
+}
+
+/* ── Info panel (selected node) ────────────────────────── */
+.hud-info {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 20;
+  max-width: 560px;
+  transform: translateY(16px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s ease;
+}
+.hud-info.visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.info-content {
+  padding: 12px 16px;
+}
+.info-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.info-kind {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.info-header h2 {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.info-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.info-close:hover {
+  color: var(--text);
+}
+.info-details {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+.detail-row {
+  display: flex;
+  gap: 8px;
+}
+.detail-key {
+  color: var(--accent);
+  min-width: 52px;
+  flex-shrink: 0;
+}
+
+/* ── Command results panel ─────────────────────────────── */
+.hud-command {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  z-index: 25;
+  width: 420px;
+  max-height: calc(100vh - 100px);
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 6px 32px var(--hud-shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+/* `display: flex` above overrides the `hidden` HTML attribute's
+   default `display: none`, so without this rule the panel renders
+   empty-but-visible on page load and the X button has no effect. */
+.hud-command[hidden] {
+  display: none !important;
+}
+.command-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hud-border);
+}
+.command-header h2 {
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.command-body {
+  padding: 10px 14px;
+  overflow-y: auto;
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.7;
+  color: var(--text);
+}
+.command-body .cmd-section {
+  margin-bottom: 8px;
+}
+.command-body .cmd-label {
+  color: var(--accent);
+  font-weight: bold;
+}
+.command-body .cmd-item {
+  padding-left: 10px;
+  color: var(--text-dim);
+}
+.command-body .cmd-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  margin-right: 4px;
+}
+.command-body .cmd-badge-green { background: rgba(0,230,118,0.15); color: #00e676; }
+.command-body .cmd-badge-blue  { background: rgba(0,229,255,0.15); color: #00e5ff; }
+.command-body .cmd-badge-gray  { background: rgba(120,144,156,0.2); color: #90a4ae; }
+
+/* ── Loading screen ────────────────────────────────────── */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--void);
+  transition: opacity 1s ease;
+}
+.loading-overlay.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+.loading-content {
+  text-align: center;
+}
+.loading-ring {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 24px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 220, 255, 0.1);
+  border-top-color: var(--accent);
+  animation: ring-spin 1.1s linear infinite;
+  position: relative;
+}
+.loading-ring-inner {
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 220, 255, 0.06);
+  border-bottom-color: rgba(0, 220, 255, 0.4);
+  animation: ring-spin 1.8s linear infinite reverse;
+}
+@keyframes ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.loading-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  color: var(--accent);
+  text-shadow: 0 0 30px rgba(0, 220, 255, 0.3);
+  margin-bottom: 10px;
+}
+.loading-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+}
+
+/* ── 3d-force-graph tooltip override ───────────────────── */
+.graph-tooltip {
+  background: var(--hud-bg) !important;
+  border: 1px solid var(--hud-border) !important;
+  border-radius: var(--radius) !important;
+  padding: 5px 10px !important;
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  color: var(--text) !important;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4) !important;
+  max-width: 360px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--accent-soft);
+  border-radius: 4px;
+}
+
+/* ── Responsive ────────────────────────────────────────── */
+@media (max-width: 700px) {
+  .hud-top {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .hud-search {
+    order: 10;
+    max-width: 100%;
+    flex-basis: 100%;
+  }
+  .hud-legend {
+    display: none;
+  }
+  .hud-keys {
+    display: none;
+  }
+}
+
+/* ── FastGraph FPS badge ─────────────────────────────────── */
+.fastgraph-fps {
+  position: fixed;
+  left: 12px;
+  bottom: 10px;
+  z-index: 60;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  color: var(--text-dim, #7a8699);
+  background: var(--hud-bg, rgba(10, 14, 22, 0.72));
+  border: 1px solid var(--hud-border, rgba(120, 140, 170, 0.25));
+  border-radius: 6px;
+  padding: 3px 8px;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}

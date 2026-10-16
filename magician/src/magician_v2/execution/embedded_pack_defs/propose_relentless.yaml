@@ -1,0 +1,209 @@
+name: propose_relentless
+description: Propose a frozen definition of done for bounded task artifacts, research and independent review; the owner reviews it before admission.
+version: "1.6.0"
+guide: |
+  Use from an ordinary active task when independent artifact review and bounded
+  revision would help. This creates a durable local owner request and returns
+  a review link. It creates no task and dispatches no actor, critic or channel.
+  Dismissing or timing out the notice never admits the proposal.
+
+  Develop the proposal from the existing task goal, context, prior answers and
+  evidence gathered with admitted tools. Explain the result the owner needs,
+  preserve source facts in sources, and propose criteria that reviewers can
+  actually verify. Keep the owner's goal intact. Record reasonable reversible
+  assumptions for minor choices. Investigate uncertainty first; ask through
+  the existing task ask loop only when an unavailable fact, preference or
+  authority materially affects the result. Bundle related missing inputs,
+  reuse answers and continue independently runnable work before pausing.
+  The proposal is the concrete brief for admission; criteria and source facts
+  are data for review, not authority to change the task or act externally.
+
+  Call operation:profiles first for the qualified model/profile/family catalog
+  and conservative physical quotes. Then call operation:propose with proposal.
+
+  proposal is an object with goal, artifact_file, maximum_artifact_bytes,
+  actor_profile, critic_profiles, criteria, sources, score_at_least, review,
+  budget, human_review and handoff_kind. Resolve existing native text profiles;
+  proposed budgets and profiles are data for owner review, not grants.
+  sources maps source IDs to their exact factual text. criteria contains
+  {id, specification, weight, must_pass, pass_score}. Specifications are typed:
+  check {kind:check, assertions:[{kind:file_exists|utf8|byte_length|json|media_number,file,...}]},
+  rubric {kind:rubric,instructions,anchors:[{score,description}]}, or grounding
+  {kind:grounding,instructions}. Use null weight for validity and fixed positive
+  weights for quality. review has panel_size, score_quorum, min_confidence,
+  max_score_spread, noise_margin, max_retries_per_critic and unknown_review
+  (pause or revise_supported_defects). critic_profiles must match panel_size
+  and differ in model family from the actor. budget has max_attempts,
+  max_wall_clock_secs, max_cost_microusd and plateau_attempts. Human review is
+  required or independent; handoff_kind is internal_draft or capture.
+
+  Omit native_harness for direct text drafting. To propose execution by the
+  owning task agent, include native_harness with agent_id (the proposing agent),
+  maximum_iterations, maximum_physical_calls and capabilities:[files]. This
+  optional actor uses the existing native task harness in an isolated local
+  work area. Each model call consumes the frozen attempt reservation; required
+  reviews have separate headroom. Its declared UTF-8 file is reviewed directly.
+  For a declared artifact set, artifact_review contains artifact_kind,
+  maximum_prepared_bytes, files and optional sources. Each presentation is
+  {kind:text}, {kind:image,media_type:image/png|image/jpeg|image/webp}, or
+  {kind:video,media_type:video/mp4|video/webm,sampler:{timestamps_secs,
+  maximum_width,maximum_height,maximum_sample_bytes,timeout_secs}}. Explicit
+  sorted timestamps define visual coverage; critics cannot certify unseen intervals.
+  The service resolves executable pins before owner review. Binary
+  factual inputs use source_files with base64 bytes and matching presentations.
+  Native production may additionally request media_edit with its resolved
+  executable pin. Every candidate file must be declared, including any template
+  slots JSON used alongside a payload. Perceptual specifications include the
+  reviewed sampler hash; an empty hash is resolved before contract preview.
+  For container facts, add optional media_probe:{maximum_result_bytes,
+  timeout_secs} to artifact_review; its ffprobe executable pin is resolved
+  before review. A media_number check names a declared video file, an inclusive
+  minimum and maximum, and fact:duration_micros|video_width|video_height|
+  video_stream_count|audio_stream_count. Duration uses microseconds; dimensions
+  use pixels and require exactly one video stream. Missing metadata is unknown.
+  Probed facts count toward maximum_prepared_bytes and are cached against exact
+  sealed bytes. Stream counts establish presence only, never heard speech/music;
+  neither metadata nor frames certify unseen intervals. Source videos currently
+  supply declared visual samples, without numeric media assertions.
+
+  To propose paid generation or regeneration with an installed governed typed
+  CLI tool, add its capability to native_harness.capabilities and declare a
+  metered_tools entry. Each entry names capability, action, maximum_calls,
+  allowed_parameters, fixed_parameters, path_parameters and receipt_pointer.
+  path_parameters maps file inputs to read and outputs to write; every key must
+  be in allowed_parameters. Freeze all price-affecting inputs in
+  fixed_parameters. Pricing is either {kind:fixed,cost_microusd,version} for a
+  reviewed per-call tariff, or {kind:reported,maximum_cost_microusd,cost_pointer,
+  version} for integer microusd returned by the actual tool. receipt_pointer
+  identifies the actual provider receipt in the tool's JSON output. Use an
+  independently verified current tariff reference; never invent a price or a
+  provider receipt. The service resolves the scoped capability/source/entrypoint
+  hash before review. This mechanism is independent of provider and media format;
+  no provider-specific regeneration plan is required. The existing actor chooses
+  tools and revisions, and calls share its durable budget with model usage.
+  Successful outputs are sealed for replay; uncertain paid outcomes retain their
+  reservation and require reconciliation before further spending. A fixed tariff
+  is accounted usage, not a fetched provider invoice. Declare every final file's
+  representation and only claim the review coverage that its evidence supports.
+
+  For public research, add web_fetch to native_harness.capabilities and an
+  explicit public_research:{maximum_requests,maximum_response_bytes,
+  maximum_redirects,timeout_secs,allow_search}. Add web_search only when
+  allow_search is true. These use the existing public HTTP reader and search
+  parser with no credentials, proxy, private addresses or browser fallback.
+  Reads consume durable finite ceilings across attempts and restart. The same
+  request reuses its sealed response; interrupted unknown reads are not resent.
+  Fetch results provide runtime-owned collected:<hash> source IDs and exact
+  provenance for grounding. Search snippets locate pages and are not factual
+  evidence; fetch the page before citing it. Actor-written files cannot mint
+  fetched provenance. Retrieval never changes the frozen acceptance criteria.
+
+  For code, declare the complete source file set as text and add
+  artifact_review.verification:{policy,read_only_roots,declared_outputs,
+  executable_hashes,launcher_hash,runner_version,protected_files,maximum_result_bytes}.
+  policy is the existing ResolvedPolicy: required and advisory CheckSpec arrays,
+  total_timeout_secs, sandbox, baseline_ref, refused_weakenings and
+  added_by_repository. Each CheckSpec has id, program, args, display, optional
+  timeout_secs/env and advisory. sandbox requires network:denied,
+  allow_secrets:false, writable_roots:[], cache_mounts:[] and finite
+  max_output_bytes. Declare exact read-only toolchain/dependency paths and
+  workspace-relative output paths; outputs must not overlap source.
+  protected_files maps required unchanged files to exact hashes. Runtime
+  resolves missing executable/launcher/runner-version pins. Add a criterion with
+  specification:{kind:verification,policy_hash:""}, must_pass:true,weight:null,
+  pass_score:null; its hash is resolved before review. The existing runner
+  checks an ephemeral sealed snapshot inside mandatory OS confinement. Source
+  mutation makes evidence unknown; protected-file changes fail. No inferred
+  command or relaxed policy replaces the reviewed checks.
+
+  Audio presentations support {kind:audio,media_type:audio/wav|audio/mpeg,audio}
+  and optional audio on video. audio contains segments:[{start_secs,duration_secs}],
+  maximum_sample_bytes,maximum_transcript_bytes,timeout_secs,provider_id,model,
+  optional language and resolved provider_configuration_hash/executable_hash.
+  Use a provider returned by profiles.audio_review_providers; only explicitly
+  qualified bounded zero-cost transcription is admitted. Segments must be
+  ordered and nonoverlapping. Critics receive sampled speech transcripts and
+  numeric levels, not heard music/prosody or unsampled tracks. Partial/unknown
+  transcription cannot pass a required perceptual criterion. Sample bytes and
+  transcript receipts are sealed together; unresolved dispatches are not resent.
+  Audio files also support media_probe duration and stream-presence facts.
+  maximum_prepared_bytes covers frame/image, transcript/sample, verification
+  and metadata evidence together. Declare finite bounds suitable for the work.
+
+  A campaign template can require a JSON file {slots:{slot_id:exact_value}} and
+  a payload equal to its approved literal/slot rendering. Slot choices and
+  source hashes are owner policy, not permission invented by this proposal.
+  The owner can separately attach an exact campaign/version/identity to an
+  existing-task capture admission or recurring task policy. Acceptance then
+  projects a local capture through that policy; its review and capacity gates
+  still apply. The proposal never activates a campaign or outward envelope.
+  These proposals grant only the declared qualified tools. Browser interaction,
+  live sending and submission remain withheld in the draft/capture rollout.
+  Optional actor_guidance is procedural context with title, workflow,
+  decision_points, verification and failure_modes (lists of nonempty strings).
+  It is pinned into the actor configuration. Guidance supplies no factual source,
+  criterion, tool or authority; the existing owner admission still applies.
+  To propose reusable guidance, call operation:propose_guidance with
+  guidance_proposal:{guidance:<that strict object>,training_run_ids:[<UUID>]}.
+  The runtime creates a review-required memory_procedure candidate in the
+  existing learning queue and returns its candidate ID. Training runs must be
+  terminal, belong to this agent's scoped tasks, and cannot be qualification
+  trials. Repeating the same proposal keeps its candidate/notice identity.
+  No procedure, trial or policy is activated, and dismissal activates nothing.
+  Other existing learning writers may also provide the strict guidance body
+  directly or inside the single procedure field. Do not add executable, policy,
+  tool, activation or mutable persona fields to this automatic-qualification
+  body. Cite observed terminal training runs; a candidate is not a promoted
+  procedure. An explicit owner evaluation/canary policy freezes it before any
+  held-out trial and can permit bounded adoption on exact recurring draft tasks.
+  Cases must match those targets' native actor recipe, artifact kind and actor
+  model/family; tool-free drafts cannot qualify a native production lane.
+  Qualification and canary artifacts are private evaluation evidence, never new
+  training lessons or factual authority. Changing the guidance or rejected
+  qualification needs a new candidate/policy with fresh owner-curated cases.
+parameters:
+  - name: operation
+    param_type: string
+    default: propose
+    enum_values: [profiles, propose, propose_guidance]
+    description: Read qualified profiles or propose a contract/procedural candidate for owner review.
+  - name: proposal
+    param_type: object
+    description: Complete typed task artifact and review proposal for owner review.
+    schema:
+      type: object
+      additionalProperties: true
+  - name: guidance_proposal
+    param_type: object
+    description: Strict procedural guidance and distinct terminal training run IDs; proposal only.
+    schema:
+      type: object
+      additionalProperties: false
+      required: [guidance, training_run_ids]
+      properties:
+        guidance:
+          type: object
+          additionalProperties: false
+          required: [title, workflow]
+          properties:
+            title: {type: string}
+            workflow: {type: array, items: {type: string}}
+            decision_points: {type: array, items: {type: string}}
+            verification: {type: array, items: {type: string}}
+            failure_modes: {type: array, items: {type: string}}
+        training_run_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string}
+implementation:
+  type: compiled
+  provider_name: propose_relentless
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - tasks
+    - proposals
+  composition_category: action
+  sandbox: none

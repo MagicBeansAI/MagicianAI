@@ -1,0 +1,13 @@
+{
+  "execution_id": "execution_fixture_1",
+  "protocol_version": "1",
+  "result_withheld": false,
+  "run_handle": {
+    "action_id": "shorten_video",
+    "installation_id": "install_contract_fixture",
+    "protocol_version": "1",
+    "run_ref": "run:app-action:fixture_completed"
+  },
+  "status": "running",
+  "terminal": false
+}

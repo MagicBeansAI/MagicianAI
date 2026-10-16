@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""OCR helper for the Magician ocr capability.
+
+Supports three engines:
+
+- ``tesseract`` (default): fast, CPU-only, deterministic. Good for clean
+  high-DPI scans, plain text-on-white pages, and machine-printed
+  documents where layout is simple. Cannot distinguish handwriting from
+  print — it will OCR both as text.
+- ``agy``: Google Antigravity CLI. Vision-LLM
+  pass: much higher accuracy on screenshots, receipts, photos,
+  whiteboards, tables, multi-column layouts, mixed handwritten+printed
+  pages, and exam papers where we want to skip handwritten content.
+  Costs per-call and requires ``agy`` CLI on PATH.
+- ``codex``: OpenAI's vision-capable model via the ``codex`` CLI
+  (``codex exec -i FILE``). Same use cases as agy — comparable
+  accuracy on complex layouts and mixed content. Pick when you want a
+  second opinion vs agy, when your account quota favours one
+  provider, or when codex's specific model (e.g. GPT-5) yields cleaner
+  output on your input.
+
+For scanned PDFs the script rasterises each page with ``pdftoppm`` and
+then runs the chosen engine page-by-page. The vision-LLM engines
+(agy, codex) receive a prompt that emphasises printed/typed content
+and tells them to skip handwritten text, marks, and circles — useful
+for cleaning up exam papers, contracts with handwritten annotations,
+scanned forms etc.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import mimetypes
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+DEFAULT_VLM_PROMPT = (
+    "OCR the attached image. Output ONLY the extracted printed/typed "
+    "text as clean markdown — no introduction, no 'I will...', no "
+    "'Here is...', no commentary, no JSON envelope. Start the response "
+    "directly with the page content. Skip ALL handwritten content "
+    "(names, grades, written answers, marks, red circles, signatures, "
+    "margin scribbles). For figures or diagrams, emit a single "
+    "placeholder line: [FIGURE: <one-sentence description of what the "
+    "figure shows>]. Preserve the printed line structure."
+)
+# Antigravity CLI uses @filename inside the prompt for attachments.
+DEFAULT_AGY_PROMPT = DEFAULT_VLM_PROMPT.replace(
+    "the attached image", "{target}"
+)
+
+
+def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, check=True, capture_output=True, text=True)
+
+
+def is_pdf(path: Path) -> bool:
+    mime, _ = mimetypes.guess_type(path.name)
+    return path.suffix.lower() == ".pdf" or mime == "application/pdf"
+
+
+# --- Tesseract engine ---------------------------------------------------------
+
+
+def tesseract_text(path: Path, language: str) -> str:
+    proc = run(["tesseract", str(path), "stdout", "-l", language])
+    return proc.stdout
+
+
+# --- Codex engine -------------------------------------------------------------
+
+
+def codex_text(path: Path, prompt: str | None, model: str) -> str:
+    """Run OpenAI Codex CLI in headless mode against a single image file.
+
+    The codex CLI attaches images via ``-i FILE`` (repeatable) and writes
+    the final assistant message to a path via ``--output-last-message``.
+    We use that path to capture clean output without parsing JSONL.
+
+    Like the agy engine, the subprocess CWD is set to ``/tmp`` so the
+    CLI does not auto-discover project-level config (codex reads
+    ``~/.codex/config.toml`` plus any project overrides) and to keep
+    OCR calls isolated from the magician project context.
+    """
+    prompt_text = prompt or DEFAULT_VLM_PROMPT
+    with tempfile.NamedTemporaryFile(
+        mode="r", prefix="magician-ocr-codex-", suffix=".txt", delete=False
+    ) as f:
+        out_path = Path(f.name)
+    try:
+        argv = ["codex", "exec", "-i", str(path), "--output-last-message", str(out_path)]
+        if model:
+            argv.extend(["-m", model])
+        argv.append(prompt_text)
+        subprocess.run(argv, check=True, capture_output=True, text=True, cwd="/tmp")
+        return out_path.read_text(encoding="utf-8").strip()
+    finally:
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+
+
+# --- Antigravity engine -------------------------------------------------------
+
+
+def agy_text(path: Path, prompt: str | None, model: str) -> str:
+    """Run agy CLI in headless mode against a single image/PDF file.
+
+    The agy CLI reads attachments via the ``@filename`` syntax inside
+    the prompt. We pass the absolute path so the CLI doesn't have to
+    guess at the CWD.
+
+    We force the subprocess CWD to a neutral system temp dir so the
+    agy CLI does not auto-discover project-level context. User creds,
+    oauth, and history from the normal Antigravity setup are still
+    picked up as usual. Absolute paths to the image still resolve
+    correctly because they don't depend on CWD.
+    """
+    prompt_text = (prompt or DEFAULT_AGY_PROMPT).format(target=f"@{path}")
+    # cwd is /tmp (not tempfile.gettempdir() — that returns
+    # /var/folders/.../T on macOS which may not be in agy's trusted-folder
+    # list by default). /tmp is the canonical neutral system dir and has
+    # no project-level Antigravity config. We also pass
+    # --dangerously-skip-permissions so the call works headlessly.
+    argv = ["agy", "--dangerously-skip-permissions", "--print", prompt_text]
+    if model:
+        argv.extend(["--model", model])
+    proc = subprocess.run(argv, check=True, capture_output=True, text=True, cwd="/tmp")
+    return proc.stdout.strip()
+
+
+# --- PDF handling -------------------------------------------------------------
+
+
+def ocr_pdf(
+    path: Path,
+    *,
+    engine: str,
+    language: str,
+    first_page: int | None,
+    last_page: int | None,
+    vlm_prompt: str | None,
+    agy_model: str,
+    codex_model: str,
+    concurrency: int,
+) -> tuple[str, int]:
+    with tempfile.TemporaryDirectory(prefix="magician-ocr-") as tmp:
+        prefix = Path(tmp) / "page"
+        cmd = ["pdftoppm"]
+        if first_page is not None:
+            cmd.extend(["-f", str(first_page)])
+        if last_page is not None:
+            cmd.extend(["-l", str(last_page)])
+        cmd.extend(["-png", "-r", "300", str(path), str(prefix)])
+        run(cmd)
+
+        pages = sorted(Path(tmp).glob("page-*.png"))
+        # Tesseract is CPU-bound and cheap to spawn — sequential is fine.
+        # VLM engines (agy, codex) are network-bound with 1–5s API
+        # latency per page, so a small thread pool dramatically cuts wall
+        # time on multi-page PDFs (22 pages drops from ~15min to ~2min at
+        # concurrency=4). Per-provider rate limits cap useful concurrency
+        # around 4–8.
+        def one_page(page: Path) -> str:
+            if engine == "agy":
+                return agy_text(page, vlm_prompt, agy_model)
+            if engine == "codex":
+                return codex_text(page, vlm_prompt, codex_model)
+            return tesseract_text(page, language)
+
+        if engine in ("agy", "codex") and concurrency > 1:
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                chunks = list(pool.map(one_page, pages))
+        else:
+            chunks = [one_page(page) for page in pages]
+        return "\n\n".join(chunk.strip() for chunk in chunks if chunk.strip()), len(pages)
+
+
+# --- CLI ----------------------------------------------------------------------
+
+
+def extract(args: argparse.Namespace) -> int:
+    input_path = Path(args.input_file).expanduser().resolve()
+    if not input_path.exists():
+        raise FileNotFoundError(f"input file does not exist: {input_path}")
+
+    if args.engine == "agy" and not _binary_available("agy"):
+        raise RuntimeError(
+            "engine=agy requires the `agy` CLI on PATH. "
+            "Install/configure Antigravity, then run `agy install` if the shell shim "
+            "is not on PATH."
+        )
+    if args.engine == "codex" and not _binary_available("codex"):
+        raise RuntimeError(
+            "engine=codex requires the `codex` CLI on PATH. "
+            "Install via `npm i -g @openai/codex` and run "
+            "`codex login` to set up credentials."
+        )
+
+    if is_pdf(input_path):
+        text, pages = ocr_pdf(
+            input_path,
+            engine=args.engine,
+            language=args.language,
+            first_page=args.first_page,
+            last_page=args.last_page,
+            vlm_prompt=args.vlm_prompt,
+            agy_model=args.agy_model,
+            codex_model=args.codex_model,
+            concurrency=args.concurrency,
+        )
+        method = f"pdf_to_image_ocr:{args.engine}"
+    else:
+        if args.engine == "agy":
+            text = agy_text(input_path, args.vlm_prompt, args.agy_model)
+        elif args.engine == "codex":
+            text = codex_text(input_path, args.vlm_prompt, args.codex_model)
+        else:
+            text = tesseract_text(input_path, args.language).strip()
+        pages = 1
+        method = f"direct_ocr:{args.engine}"
+
+    payload: dict[str, object] = {
+        "method": method,
+        "engine": args.engine,
+        "pages": pages,
+        "chars": len(text),
+        "content": text,
+    }
+
+    if args.output_file:
+        output_path = Path(args.output_file).expanduser()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text, encoding="utf-8")
+        payload["output_path"] = str(output_path)
+
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+def _binary_available(name: str) -> bool:
+    proc = subprocess.run(["which", name], capture_output=True, text=True)
+    return proc.returncode == 0 and proc.stdout.strip() != ""
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ocr.py")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    extract_parser = sub.add_parser("extract", help="extract text from an image or scanned PDF")
+    extract_parser.add_argument("--input-file", required=True)
+    extract_parser.add_argument(
+        "--engine",
+        choices=["tesseract", "agy", "codex"],
+        default="tesseract",
+        help=(
+            "OCR engine. tesseract (default): fast CPU, clean printed "
+            "pages. agy: vision-LLM via Antigravity CLI. codex: vision-LLM "
+            "via codex CLI (OpenAI). Pick agy or codex for "
+            "screenshots, receipts, photos, whiteboards, tables, "
+            "multi-column docs, or pages with mixed printed+handwritten "
+            "content where we want to skip the handwriting."
+        ),
+    )
+    extract_parser.add_argument(
+        "--language",
+        default="eng",
+        help="Tesseract language code (eng default). Ignored for VLM engines.",
+    )
+    extract_parser.add_argument(
+        "--vlm-prompt",
+        default=None,
+        help=(
+            "Override the default skip-handwriting prompt sent to the "
+            "VLM engines (agy, codex). For agy, the literal token "
+            "`{target}` in the prompt is replaced with the @-attached "
+            "file reference; codex uses -i FILE so no substitution is "
+            "needed. Default: skip handwriting, preserve printed text, "
+            "mark figures with [FIGURE: ...] placeholders."
+        ),
+    )
+    extract_parser.add_argument(
+        "--agy-model",
+        default="gemini-2.5-flash",
+        help="Antigravity model name (default: gemini-2.5-flash).",
+    )
+    extract_parser.add_argument(
+        "--codex-model",
+        default="",
+        help=(
+            "Codex model name. Empty (default) lets codex pick from its "
+            "config.toml (typically gpt-5 / gpt-4o). Override if you want "
+            "a specific revision."
+        ),
+    )
+    extract_parser.add_argument("--first-page", type=int)
+    extract_parser.add_argument("--last-page", type=int)
+    extract_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help=(
+            "Parallel page workers for VLM engines (agy, codex) on "
+            "PDFs. Default 4; rate-limit ceiling depends on provider tier "
+            "(~8 for gemini-2.5-flash free, similar for codex). "
+            "Set to 1 to force sequential."
+        ),
+    )
+    extract_parser.add_argument("--output-file")
+    extract_parser.set_defaults(func=extract)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(1)

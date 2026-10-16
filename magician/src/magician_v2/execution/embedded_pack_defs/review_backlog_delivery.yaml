@@ -1,0 +1,48 @@
+name: review_backlog_delivery
+description: Review the terminal task produced by a promoted company-backlog item and either accept its delivered outcome or return the item for rework.
+version: "1.0.0"
+guide: |
+  Tool name: `review_backlog_delivery`
+
+  Close the feedback loop after a promoted backlog task reaches a terminal
+  state. Inspect the task's actual outputs before calling this tool.
+
+  Guidelines:
+  - call `inspect_backlog_delivery` first and compare the requested outcome with
+    real output previews and material artifact records
+  - use `disposition=accepted` only when the requested outcome is materially
+    present, the linked task is completed, and persisted material evidence exists
+  - use `disposition=rework` when the task failed, stopped, or completed without
+    delivering the requested outcome; the item returns to the open backlog
+  - summarize concrete evidence from the task, not its self-reported intent
+  - include `revised_description` when the next attempt needs clearer scope or
+    acceptance criteria
+parameters:
+  - name: backlog_item_id
+    required: true
+    param_type: string
+    description: The promoted backlog item to review.
+  - name: disposition
+    required: true
+    param_type: string
+    enum_values:
+      - accepted
+      - rework
+    description: Accept the delivered outcome or return the item to the open backlog for rework.
+  - name: summary
+    required: true
+    param_type: string
+    description: Evidence-based review of what the linked task actually delivered or failed to deliver.
+  - name: revised_description
+    param_type: string
+    description: Optional corrected scope or acceptance criteria for a rework attempt.
+implementation:
+  type: compiled
+  provider_name: review_backlog_delivery
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - harness
+  composition_category: action
+  sandbox: none

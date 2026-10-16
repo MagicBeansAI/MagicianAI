@@ -1,0 +1,45 @@
+name: activate_skill
+description: Load a procedure playbook into your prompt and keep it active across turns. Exactly one playbook can be active at a time per agent; calling `activate_skill` with a different name replaces the previous one. While active, the playbook body is re-injected into your system prompt every turn so its guidance stays in your context. Call `deactivate_skill` when the task that needed the playbook is done. Procedure playbooks only — personality presets (witty, brutal, …) belong to `switch_personality`.
+version: "1.0.0"
+guide: |
+  Tool name: `activate_skill`
+
+  Loads a procedure-skill playbook for the current agent and persists it
+  as the active skill on the agent-scope `active_procedure_skill` memory
+  tier. The body is re-resolved at prompt-build time from the on-disk
+  skill, so edits propagate without re-activation.
+
+  Inputs:
+  - `name` (required) — procedure-skill slug (AgentSkills v1; lowercase +
+    hyphens). Must be one of the playbooks in the agent's `tools:`
+    allowlist.
+
+  Output:
+  - `{status: "ok", skill, outcome, message, ephemeral_tools,
+    path_additions, previous_active}` on success. `outcome` ∈ {`first`,
+    `replaced`, `idempotent`}; `previous_active` is `null` for `first`.
+  - `{status: "error", reason, available_procedures?,
+    allowed_procedure_skills?}` on lookup / allowlist failure.
+
+  Side effects:
+  - Writes `{name, activated_at}` to the agent-scope
+    `active_procedure_skill` memory tier (principal + workspace +
+    agent_id keyed). Subsequent prompt builds — chat or autonomous —
+    read the tier and re-inject the playbook body.
+parameters:
+  - name: name
+    required: true
+    param_type: string
+    description: Procedure-skill slug to activate. Must be in the agent's `tools:` allowlist.
+implementation:
+  type: compiled
+  provider_name: activate_skill
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - skills
+    - playbook
+    - write
+  composition_category: action
+  sandbox: none

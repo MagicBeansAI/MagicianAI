@@ -1,0 +1,59 @@
+{
+  "name": "memory_summarize_activity",
+  "version": "1.0.0",
+  "content": [
+    "Summarize the following recent activity from episodic memory.",
+    "",
+    "## Source Activity ({episode_count} episodes, {tier_count} tiers)",
+    "{source_text}",
+    "",
+    "## Instructions",
+    "1. Read through all episodes and identify the major activities performed",
+    "2. Group related episodes into coherent activity blocks",
+    "3. Determine the overall outcome status of the session",
+    "4. Extract the tools that were used and the topics that were covered",
+    "5. When an episode includes an `artifact_output`, reference the artifact in your summary as it represents a concrete deliverable or result",
+    "6. Write a concise 2-4 sentence summary focusing on what the user accomplished",
+    "",
+    "Focus on user-visible outcomes, not internal system details.",
+    "Preserve the chronological order of key events.",
+    "",
+    "Return the JSON object as specified by your system prompt.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_text",
+      "description": "Text representation of recent episodic memory entries to summarize",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Episode 1 (10:00): User requested calendar invite for team standup\nEpisode 2 (10:05): Calendar tool created event successfully"
+      ]
+    },
+    {
+      "name": "episode_count",
+      "description": "Number of episodes in the source data",
+      "required": true,
+      "default_value": "0",
+      "examples": ["5", "20", "50"]
+    },
+    {
+      "name": "tier_count",
+      "description": "Number of memory tiers currently active",
+      "required": true,
+      "default_value": "0",
+      "examples": ["3", "5"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to summarize recent user activity from episodic memory entries. Produces structured session summaries for archival and review.",
+    "author": "magician",
+    "created_at": "2026-03-04T00:00:00Z",
+    "changelog": "v1.0.0: Initial activity summarization user prompt for memory consolidation pipeline.",
+    "tags": ["memory", "consolidation", "activity-summary"],
+    "estimated_tokens": 180
+  }
+}

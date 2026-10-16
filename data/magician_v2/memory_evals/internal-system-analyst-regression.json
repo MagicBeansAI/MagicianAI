@@ -1,0 +1,46 @@
+{
+  "suite_id": "internal-system-analyst-regression",
+  "enabled": true,
+  "cases": [
+    {
+      "case_id": "output-publication-contract",
+      "agent_id": "internal-system-analyst",
+      "query": "How should I debug a task output that exists on disk but does not render in the UI?",
+      "scopes": ["agent"],
+      "expected_substrings": ["task wrapper", "output_id"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "publication-metadata-signals",
+      "agent_id": "internal-system-analyst",
+      "query": "Which publication metadata identifiers help trace a rendered surface back to its source output?",
+      "scopes": ["agent"],
+      "expected_substrings": ["output_id", "artifact_output"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "execution-outputs-layout",
+      "agent_id": "internal-system-analyst",
+      "query": "Where are execution outputs stored on disk and what publication mistakes happen with them?",
+      "scopes": ["agent"],
+      "expected_substrings": ["executions/", "per-execution"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "diagnostic-query-playbook",
+      "agent_id": "internal-system-analyst",
+      "query": "Which diagnostic queries should I run first when a published surface shows the wrong content?",
+      "scopes": ["agent"],
+      "expected_substrings": ["effective_diagnostic_queries"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 7000
+    }
+  ]
+}

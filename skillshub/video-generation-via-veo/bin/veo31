@@ -1,0 +1,419 @@
+#!/usr/bin/env python3
+"""Google Gemini video generation router for Veo 3.1 and Veo 3.1 Fast."""
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import time
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
+
+
+QUALITY_TIER_MODEL_MAP = {
+    "fast": "veo-3.1-fast-generate-preview",
+    "balanced": "veo-3.1-generate-preview",
+}
+MAX_INPUT_BYTES = 128 * 1024
+def _resolve_allowed_output_dirs():
+    """Build the allowed-output-dir allowlist with macOS-friendly aliases.
+
+    On macOS, `/tmp` is a symlink to `/private/tmp` and `tempfile.gettempdir()`
+    returns the per-user temp dir under `/var/folders/.../T/` — neither of which
+    matches a caller-supplied `/tmp/...` path after `Path.resolve()`. So we
+    explicitly add `/tmp` and `/private/tmp` whenever they exist, alongside
+    the per-user temp and cwd. Path resolution still happens later in
+    `validate_output_path`; this list is the set of roots a resolved path
+    must fall under.
+    """
+    candidates = [
+        pathlib.Path(tempfile.gettempdir()),
+        pathlib.Path("/tmp"),
+        pathlib.Path("/private/tmp"),
+        pathlib.Path.cwd(),
+    ]
+    seen = set()
+    resolved = []
+    for c in candidates:
+        try:
+            r = c.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if r in seen:
+            continue
+        seen.add(r)
+        resolved.append(r)
+    return resolved
+
+
+ALLOWED_OUTPUT_DIRS = _resolve_allowed_output_dirs()
+POLL_INTERVAL_SECS = 15
+ALLOWED_DURATIONS = {4, 6, 8}
+ALLOWED_ASPECT_RATIOS = {"16:9", "9:16"}
+ALLOWED_RESOLUTIONS = {"720p", "1080p"}
+
+
+def log_event(message):
+    print(f"[VEO31] {message}", file=sys.stderr, flush=True)
+
+
+def report_request_error(error, api_key, phase, operation_name):
+    """Keep the provider diagnostic after progress logs, without leaking keys."""
+    def safe_text(value):
+        text = str(value or "")
+        if api_key:
+            text = text.replace(api_key, "[REDACTED]")
+        return text[:4096]
+
+    payload = {
+        "error": safe_text(getattr(error, "message", None) or str(error)),
+        "error_type": type(error).__name__,
+        "phase": phase,
+        "operation_name": safe_text(operation_name) or None,
+    }
+    code = getattr(error, "code", None)
+    if isinstance(code, int):
+        payload["http_status"] = code
+    status = getattr(error, "status", None)
+    if status:
+        payload["provider_status"] = safe_text(status)
+    serialized = json.dumps(payload, ensure_ascii=False)
+    # Governed failure diagnostics prefer stderr. Reporting only on stdout
+    # left the last progress line as the entire retained failure reason.
+    print(serialized, file=sys.stderr, flush=True)
+    print(serialized, flush=True)
+
+
+def read_runtime_input():
+    raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("input exceeds adapter limit")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("input must be a JSON object")
+    return value
+
+
+def normalize_optional_text(value):
+    return (value or "").strip()
+
+
+def normalize_quality_tier(value):
+    tier = normalize_optional_text(value).lower()
+    if tier in ("", "none"):
+        return "auto"
+    return tier
+
+
+def parse_optional_int(value, name):
+    normalized = normalize_optional_text(value)
+    if normalized.lower() in ("", "none"):
+        return None
+    try:
+        return int(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def parse_bool_env(value, default=False):
+    normalized = normalize_optional_text(value).lower()
+    if normalized in ("", "none"):
+        return default
+    return normalized in ("true", "1", "yes", "on")
+
+
+def validate_choice(name, value, allowed_values):
+    if value not in allowed_values:
+        allowed = ", ".join(sorted(allowed_values))
+        raise ValueError(f"{name} must be one of: {allowed}")
+    return value
+
+
+def resolve_model(model_override, quality_tier):
+    override = normalize_optional_text(model_override)
+    if override and override.lower() != "none":
+        return override, "manual"
+
+    normalized_tier = normalize_quality_tier(quality_tier)
+    if normalized_tier == "auto":
+        normalized_tier = "balanced"
+
+    resolved_model = QUALITY_TIER_MODEL_MAP.get(normalized_tier)
+    if not resolved_model:
+        allowed = ", ".join(["auto"] + list(QUALITY_TIER_MODEL_MAP.keys()))
+        raise ValueError(f"quality_tier must be one of: {allowed}")
+
+    return resolved_model, normalized_tier
+
+
+def validate_output_path(path_str):
+    resolved = pathlib.Path(path_str).resolve()
+    for allowed in ALLOWED_OUTPUT_DIRS:
+        try:
+            resolved.relative_to(allowed)
+            return str(resolved)
+        except ValueError:
+            continue
+    print(
+        json.dumps(
+            {"error": f"output_path must be within {ALLOWED_OUTPUT_DIRS[0]} or current working directory"}
+        )
+    )
+    sys.exit(1)
+
+
+def build_output_path(output_path, index):
+    if output_path and output_path not in ("None", ""):
+        base_path = validate_output_path(output_path)
+        if index == 0:
+            return base_path
+        stem, ext = os.path.splitext(base_path)
+        ext = ext or ".mp4"
+        return f"{stem}_{index}{ext}"
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", prefix="veo31_", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    if index == 0:
+        return tmp_path
+    stem, ext = os.path.splitext(tmp_path)
+    return f"{stem}_{index}{ext}"
+
+
+def load_optional_image(value, label):
+    location = normalize_optional_text(value)
+    if location.lower() in ("", "none"):
+        return None
+
+    if not location.startswith("gs://") and not os.path.isfile(location):
+        raise ValueError(f"{label} not found: {location}")
+
+    return types.Image.from_file(location=location)
+
+
+def resolve_api_key():
+    return (
+        os.environ.get("VEO31_API_KEY", "")
+        or os.environ.get("GEMINI_API_KEY", "")
+    )
+
+
+def main():
+    if genai is None or types is None:
+        print(json.dumps({"error": "google-genai package not installed. Run: pip install google-genai"}))
+        sys.exit(1)
+
+    api_key = resolve_api_key()
+    if not api_key:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "VEO31_API_KEY not set (also accepted: GEMINI_API_KEY). "
+                        "Add it to <repo>/.env.copy.development at the repo root, "
+                        "then run `make -C skillshub setup-env` to populate the "
+                        "scope-layer skill env file."
+                    )
+                }
+            )
+        )
+        sys.exit(1)
+
+    try:
+        params = read_runtime_input()
+    except (ValueError, json.JSONDecodeError):
+        print(json.dumps({"error": "invalid governed video input"}))
+        sys.exit(1)
+
+    prompt = params.get("prompt", "")
+    if not prompt:
+        print(json.dumps({"error": "prompt is required"}))
+        sys.exit(1)
+
+    unsupported = [name for name in ("generate_audio", "seed", "enhance_prompt") if name in params]
+    if unsupported:
+        print(json.dumps({"error": (
+            "Unsupported Gemini Developer API SDK controls: " + ", ".join(unsupported)
+            + ". Veo 3.1 native audio and prompt rewriting are provider-controlled; "
+            "use media_edit mute_video for silence."
+        )}))
+        sys.exit(1)
+
+    model_override = params.get("model", "")
+    input_image = params.get("input_image", "")
+    last_frame_image = params.get("last_frame_image", "")
+    output_path = params.get("output_path", "")
+    aspect_ratio = normalize_optional_text(params.get("aspect_ratio", "16:9")) or "16:9"
+    resolution = normalize_optional_text(params.get("resolution", "720p")) or "720p"
+    quality_tier = params.get("quality_tier", "auto")
+    negative_prompt = params.get("negative_prompt", "")
+    duration_seconds = params.get("duration_seconds", 8)
+    number_of_videos = params.get("number_of_videos", 1)
+    api_timeout_secs = 1170
+
+    if duration_seconds is None:
+        duration_seconds = 8
+    if number_of_videos is None:
+        number_of_videos = 1
+
+    try:
+        validate_choice("duration_seconds", duration_seconds, ALLOWED_DURATIONS)
+        validate_choice("aspect_ratio", aspect_ratio, ALLOWED_ASPECT_RATIOS)
+        validate_choice("resolution", resolution, ALLOWED_RESOLUTIONS)
+        if number_of_videos != 1:
+            raise ValueError("Veo 3.1 supports one video per request")
+        if resolution == "1080p" and duration_seconds != 8:
+            raise ValueError("1080p requires an 8-second duration")
+    except ValueError as error:
+        print(json.dumps({"error": str(error)}))
+        sys.exit(1)
+
+    requested_quality_tier = normalize_quality_tier(quality_tier)
+    model, resolved_quality_tier = resolve_model(model_override=model_override, quality_tier=quality_tier)
+
+    phase = "validation"
+    operation_name = ""
+    try:
+        source_image = load_optional_image(input_image, "input_image")
+        last_frame = load_optional_image(last_frame_image, "last_frame_image")
+        if output_path and output_path not in ("None", ""):
+            validate_output_path(output_path)
+
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=api_timeout_secs * 1000,
+                # A transient submission failure may already have incurred a
+                # charge. Only the metered owner may authorize another call.
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
+
+        config_kwargs = {
+            "aspect_ratio": aspect_ratio,
+            "duration_seconds": duration_seconds,
+            "number_of_videos": number_of_videos,
+            "resolution": resolution,
+        }
+        if negative_prompt and negative_prompt not in ("None", ""):
+            config_kwargs["negative_prompt"] = negative_prompt
+        if last_frame is not None:
+            config_kwargs["last_frame"] = last_frame
+
+        source = types.GenerateVideosSource(prompt=prompt, image=source_image)
+
+        request_started_at = time.perf_counter()
+        log_event(
+            f"generate_videos started model={model} requested_quality_tier={requested_quality_tier} "
+            f"resolved_quality_tier={resolved_quality_tier} duration_seconds={duration_seconds} "
+            f"aspect_ratio={aspect_ratio} resolution={resolution} number_of_videos={number_of_videos} "
+            f"prompt_rewriting=provider_default audio=provider_native "
+            f"input_image={'yes' if source_image else 'no'} last_frame={'yes' if last_frame else 'no'} "
+            f"api_timeout_secs={api_timeout_secs}"
+        )
+
+        phase = "submission"
+        operation = client.models.generate_videos(
+            model=model,
+            source=source,
+            config=types.GenerateVideosConfig(**config_kwargs),
+        )
+        operation_name = operation.name or ""
+        log_event(f"generate_videos submitted operation={operation_name or 'unknown'}")
+
+        while not operation.done:
+            phase = "polling"
+            elapsed_secs = time.perf_counter() - request_started_at
+            if elapsed_secs >= api_timeout_secs:
+                raise TimeoutError(
+                    f"generate_videos timed out after {api_timeout_secs} seconds waiting for completion"
+                )
+            sleep_secs = min(POLL_INTERVAL_SECS, max(1, api_timeout_secs - int(elapsed_secs)))
+            time.sleep(sleep_secs)
+            poll_started_at = time.perf_counter()
+            operation = client.operations.get(operation)
+            poll_elapsed_ms = round((time.perf_counter() - poll_started_at) * 1000)
+            log_event(
+                f"generate_videos poll operation={operation.name or operation_name or 'unknown'} "
+                f"done={operation.done} elapsed_ms={poll_elapsed_ms}"
+            )
+
+        request_elapsed_ms = round((time.perf_counter() - request_started_at) * 1000)
+        log_event(
+            f"generate_videos completed operation={operation.name or operation_name or 'unknown'} "
+            f"elapsed_ms={request_elapsed_ms}"
+        )
+
+        phase = "result"
+        response = operation.result
+        result = {
+            "prompt": prompt,
+            "requested_quality_tier": requested_quality_tier,
+            "resolved_quality_tier": resolved_quality_tier,
+            "model": model,
+            "operation_name": operation.name or operation_name,
+            "videos": [],
+            "text": "",
+        }
+
+        if response and response.rai_media_filtered_count is not None:
+            result["rai_media_filtered_count"] = response.rai_media_filtered_count
+        if response and response.rai_media_filtered_reasons:
+            result["rai_media_filtered_reasons"] = response.rai_media_filtered_reasons
+
+        generated_videos = response.generated_videos if response else None
+        for index, generated_video in enumerate(generated_videos or []):
+            if not generated_video.video:
+                continue
+
+            out_file = build_output_path(output_path, index)
+            phase = "download"
+            download_started_at = time.perf_counter()
+            log_event(
+                f"downloading video index={index} uri={generated_video.video.uri or 'inline'} path={out_file}"
+            )
+            if not generated_video.video.video_bytes:
+                client.files.download(file=generated_video)
+            generated_video.video.save(out_file)
+            download_elapsed_ms = round((time.perf_counter() - download_started_at) * 1000)
+            size_bytes = os.path.getsize(out_file)
+            mime_type = generated_video.video.mime_type or "video/mp4"
+            log_event(
+                f"saved video index={index} path={out_file} size_bytes={size_bytes} "
+                f"mime_type={mime_type} elapsed_ms={download_elapsed_ms}"
+            )
+            result["videos"].append(
+                {
+                    "path": out_file,
+                    "size_bytes": size_bytes,
+                    "mime_type": mime_type,
+                    "uri": generated_video.video.uri or "",
+                }
+            )
+
+        if result["videos"]:
+            result["text"] = (
+                f"Generated {len(result['videos'])} video"
+                f"{'' if len(result['videos']) == 1 else 's'} with {model}."
+            )
+        else:
+            result["warning"] = "No videos returned - model may have declined or filtered the request"
+            log_event("completed without video output")
+
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    except (ValueError, TimeoutError, genai.errors.APIError) as e:
+        report_request_error(e, api_key, phase, operation_name)
+        sys.exit(1)
+    except Exception as e:
+        report_request_error(e, api_key, phase, operation_name)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

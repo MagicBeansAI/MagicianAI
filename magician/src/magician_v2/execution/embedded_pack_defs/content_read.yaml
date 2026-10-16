@@ -1,0 +1,206 @@
+name: content_read
+description: Read one or several independent candidates or URLs through the backend-managed cache, static, verified-replay, and isolated rendered-reading ladder. One request runs directly; several use bounded provider-aware concurrency while Lightpanda sessions remain serialized.
+version: "2.0.0"
+result_projection:
+  contract_id: content_read_evidence_v2
+  records_paths:
+    - /evidence
+    - /candidates
+  excerpt_paths:
+    - /document/text
+  priority_fields:
+    - status
+    # Boundary B's routing decision, index and search guidance. First after
+    # status because a read the router has narrowed is useless to the model
+    # unless it also learns why and what to do instead.
+    - working_set
+    - evidence
+    - branch_id
+    - result_status
+    - fetch_status
+    - evidence_role
+    - claim_eligible
+    - requested_url
+    - final_url
+    - redirected
+    - document
+    - title
+    - canonical_url
+    - url
+    - excerpt
+    - text
+    - source
+    - candidates
+    - results
+  atomic_field_groups:
+    - [fetch_status, evidence_role, claim_eligible]
+guide: |
+  Use `content_read` after `content_search`, or with an explicit user-provided public URL. A URL
+  surfaced in bounded `content_search` evidence can be passed directly; no `read_result` recovery
+  call is needed. For one page, pass `candidate` or `url`. For several independent
+  pages, make one call with `requests`; different cache/static/provider work can overlap, while
+  the single-session Lightpanda engine is serialized inside the runtime. Put shared
+  settings such as `depth: gist` in `common`. Canonical vector shape:
+  `{"common":{"depth":"gist"},"requests":[{"id":"a","candidate":<complete returned candidate>,"selection_receipt":"<returned receipt>"},{"id":"b","url":"https://example.test/public"}]}`.
+  With `requests`, never put `candidate` or `url` at the top level. The runtime defensively folds
+  recognized shared scalar options such as `fresh` or `depth` into `common`, including an
+  action-level `timeout_secs` injected by the pack executor after model generation, but emit the
+  canonical shape above. For a discovered bounded-evidence result, pass its `url`; if the full raw
+  result is already available, its complete `candidate` plus `selection_receipt` is also valid.
+  Choose `gist` or `full_text`. `fetch_status: complete` means the fetch completed, not that the
+  page supports the question. Compare `requested_url`, `final_url`, `redirected`, title, and excerpt.
+  If the page redirected somewhere irrelevant or the excerpt lacks the requested facts, discard it
+  and try another candidate or one focused search refinement. Never fill a gap from a search snippet.
+  Inline candidate text is only a selection aid. The runtime may reuse it for a gist when the
+  complete candidate matches its scoped server-issued selection receipt, but such a result remains
+  `discovery_only` and `claim_eligible: false` until the URL is fetched. Direct URLs always use the
+  reader ladder; there is no caller-supplied inline evidence argument.
+  Known-URL JavaScript pages may render in a
+  fresh isolated headless session. Navigation and visible/authenticated work return typed
+  handoffs; CDP reading additionally requires a process-issued scope/domain/action grant. To
+  continue a handoff, pass its `browser_session_id` as `retrieval_session_id`, its `action_id` as
+  `retrieval_action_id`, and the exact returned connection mode to every browser
+  call. Never invent or reuse a handoff ID; terminal/cancel cleanup owns the session.
+parameters:
+  - name: requests
+    required: false
+    param_type: array
+    description: 1-6 independent read requests. Use this instead of top-level candidate/url when pages can start together.
+    schema:
+      type: array
+      minItems: 1
+      maxItems: 6
+      items:
+        type: object
+        properties:
+          id: {type: string, maxLength: 128}
+          candidate: {type: object}
+          selection_receipt: {type: string}
+          url: {type: string}
+          title: {type: string}
+          depth: {type: string, enum: [gist, full_text]}
+          output_kind: {type: string, enum: [gist, full_text, structured]}
+          fresh: {type: boolean}
+          required_metadata: {type: array, items: {type: string}}
+          min_chars: {type: integer, minimum: 1}
+          allowed_actions: {type: array, items: {type: string}}
+          maximum_authority: {type: string, enum: [public_remote_read, public_browser_read, public_browser_interact, authenticated_read, authenticated_interact]}
+          authority_grant_id: {type: string}
+          deadline_ms: {type: integer, minimum: 1}
+          max_attempts: {type: integer, minimum: 1}
+          cost_budget_microunits:
+            type: object
+            additionalProperties: {type: integer, minimum: 1}
+        additionalProperties: false
+  - name: common
+    required: false
+    param_type: object
+    description: Shared read arguments applied to every item in requests; candidate, URL, receipts, id, and authority grants remain per request.
+    schema:
+      type: object
+      properties:
+        depth: {type: string, enum: [gist, full_text]}
+        output_kind: {type: string, enum: [gist, full_text, structured]}
+        fresh: {type: boolean}
+        required_metadata: {type: array, items: {type: string}}
+        min_chars: {type: integer, minimum: 1}
+        allowed_actions: {type: array, items: {type: string}}
+        maximum_authority: {type: string, enum: [public_remote_read, public_browser_read, public_browser_interact, authenticated_read, authenticated_interact]}
+        deadline_ms: {type: integer, minimum: 1}
+        max_attempts: {type: integer, minimum: 1}
+        cost_budget_microunits:
+          type: object
+          additionalProperties: {type: integer, minimum: 1}
+      additionalProperties: false
+  - name: max_concurrency
+    required: false
+    param_type: integer
+    description: Vector form only. Positive branch concurrency that can only narrow the configured retrieval-policy cap (hard ceiling 5).
+  - name: per_host_concurrency
+    required: false
+    param_type: integer
+    description: Vector form only. Positive per-host cap, default 1 and hard ceiling 2.
+  - name: minimum_successes
+    required: false
+    param_type: integer
+    description: Vector form only. Complete branches required before interchangeable unfinished siblings may be cancelled; defaults to all requests.
+  - name: candidate
+    required: false
+    param_type: object
+    description: Full normalized candidate returned by content_search.
+  - name: selection_receipt
+    required: false
+    param_type: string
+    description: Scoped expiring receipt returned with a discovered candidate.
+  - name: url
+    required: false
+    param_type: string
+    description: Public URL supplied by the user or surfaced in content_search evidence.
+  - name: title
+    required: false
+    param_type: string
+    description: Optional title for a direct URL.
+  - name: working_set_title
+    required: false
+    param_type: string
+    description: >-
+      Optional title for a durable, scoped research-evidence snapshot. The server captures only
+      claim-eligible documents after retrieval; it never accepts model-supplied text.
+  - name: depth
+    required: false
+    param_type: string
+    description: gist or full_text.
+  - name: output_kind
+    required: false
+    param_type: string
+    description: >-
+      Optional required output contract: gist, full_text, or structured. Structured defaults to
+      gist depth and selects only schema-capable readers.
+  - name: fresh
+    required: false
+    param_type: boolean
+    description: Require origin revalidation instead of accepting fresh scoped cache.
+  - name: required_metadata
+    required: false
+    param_type: array
+    description: Metadata keys required for structural completion.
+  - name: min_chars
+    required: false
+    param_type: integer
+    description: Optional minimum useful character count for this read.
+  - name: allowed_actions
+    required: false
+    param_type: array
+    description: Optional exact action allow-list that narrows the configured read ladder.
+  - name: maximum_authority
+    required: false
+    param_type: string
+    description: >-
+      Optional ceiling: public_remote_read, public_browser_read (default),
+      public_browser_interact, authenticated_read, or authenticated_interact. Raising the ceiling
+      does not grant authenticated access.
+  - name: authority_grant_id
+    required: false
+    param_type: string
+    description: Opaque scoped approval receipt issued by the runtime for one authenticated browser action.
+  - name: deadline_ms
+    required: false
+    param_type: integer
+    description: Optional deadline narrowed beneath the configured controller maximum.
+  - name: max_attempts
+    required: false
+    param_type: integer
+    description: Optional attempt bound narrowed beneath the configured controller maximum.
+  - name: cost_budget_microunits
+    required: false
+    param_type: object
+    description: Optional positive per-commodity spend limits that can only narrow configured budgets.
+implementation:
+  type: compiled
+  provider_name: content_read
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 25
+  categories: [web, read, research]
+  composition_category: action
+  sandbox: none

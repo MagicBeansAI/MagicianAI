@@ -1,0 +1,58 @@
+name: contribute_to_project
+description: Publish a clean artifact (PRD, spec, design note/mockup) into a VibeDev project so a later Pi coding run can see it. Copies a named output into the project repo's docs/, specs/, or design/ area.
+version: "1.0.0"
+guide: |
+  Tool name: `contribute_to_project`
+
+  Use this to PUBLISH a finished, clean artifact into a VibeDev project so the
+  engineering (Pi) loop can use it — e.g. a PRD, a spec, or a design note/mockup.
+  This is a deliberate promote step: only call it on a FINAL artifact, never
+  work-in-progress. Your iterations and failures stay in your own task outputs;
+  only what you contribute here lands in the project.
+
+  The target project is resolved AUTOMATICALLY from your task when you were
+  delegated as part of a project's work — omit `project_id` and it uses the
+  project of the current task. When invoked from OUTSIDE that context, pass an
+  explicit `project_id`.
+
+  Provide the artifact via `content` (inline text, e.g. a PRD in markdown) OR
+  `source_path` (a file you already produced in this task's outputs, copied
+  verbatim). `dest_path` is where it lands in the project and MUST be under
+  `docs/`, `specs/`, or `design/` — you cannot contribute source code (that goes
+  through the engineering loop with review).
+
+  Returns `status: ok` with the project id and destination, or (when the operator
+  has set `coding.contribute_direct = false`) a `pending_approval` diff-approval
+  envelope.
+parameters:
+  - name: dest_path
+    required: true
+    param_type: string
+    description: Destination within the project repo. Must be under docs/, specs/, or design/ (e.g. "docs/PRD.md", "design/home-mockup.md").
+  - name: content
+    required: false
+    param_type: string
+    description: Inline artifact content (e.g. a PRD/spec in markdown). Provide this OR source_path.
+  - name: source_path
+    required: false
+    param_type: string
+    description: Relative path to a file you already produced in THIS task's outputs, copied verbatim into the project. Provide this OR content.
+  - name: project_id
+    required: false
+    param_type: string
+    description: Target VibeDev project id. Omit to use the project of the current task (auto-resolved). Required when invoked outside a project task.
+  - name: summary
+    required: false
+    param_type: string
+    description: One-line summary of what this contribution is (shown in the diff-approval UI; echoed in the result).
+implementation:
+  type: compiled
+  provider_name: contribute_to_project
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 60
+  categories:
+    - filesystem
+    - write
+  composition_category: action
+  sandbox: none

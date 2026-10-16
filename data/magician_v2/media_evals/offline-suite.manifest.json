@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "suite_id": "magician-offline-audio-model-eval-v1",
+  "description": "Provider-direct offline evaluation cases for VAD, STT, TTS, and diarization. The suite never starts Magician or its supervisor.",
+  "fixture_manifest": "fixtures.manifest.json",
+  "canonical_stream_format": {
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "sample_format": "pcm_s16_le",
+    "chunk_ms": 160
+  },
+  "stages": {
+    "vad": {
+      "provider_catalog": "media.vad.providers",
+      "session_config_profile": "media.surface_profiles.profiles.meeting-vad-gated-v1.vad",
+      "cases": [
+        {
+          "fixture_id": "control-silence-5s",
+          "expected_speech_regions_ms": []
+        },
+        {
+          "fixture_id": "control-room-noise-5s",
+          "expected_speech_regions_ms": []
+        },
+        {
+          "fixture_id": "synthetic-clean-en",
+          "leading_silence_ms": 800,
+          "trailing_silence_ms": 1000,
+          "expected_region": "padded_fixture_body"
+        }
+      ],
+      "thresholds": {
+        "minimum_f1": 0.8,
+        "maximum_false_positive_rate": 0.05,
+        "maximum_miss_rate": 0.2,
+        "maximum_boundary_mean_absolute_error_ms": 700
+      }
+    },
+    "stt": {
+      "recording_provider_catalog": "media.recording_stt.providers",
+      "streaming_provider_catalog": "media.streaming_stt.providers",
+      "streaming_session_config": {
+        "eou_debounce_ms": 1280
+      },
+      "recording_cases": [
+        { "fixture_id": "control-silence-5s" },
+        { "fixture_id": "control-room-noise-5s" },
+        { "fixture_id": "synthetic-clean-en" },
+        { "fixture_id": "synthetic-indian-en" },
+        { "fixture_id": "synthetic-hinglish-names-numbers" }
+      ],
+      "streaming_cases": [
+        { "fixture_id": "synthetic-clean-en", "language": "en" }
+      ],
+      "thresholds": {
+        "maximum_word_error_rate": 0.35,
+        "maximum_character_error_rate": 0.25,
+        "non_speech_must_be_empty": true
+      }
+    },
+    "tts": {
+      "provider_catalog": "media.tts.providers",
+      "roundtrip_stt_provider": "fluid-qwen3-asr-f32",
+      "cases": [
+        {
+          "fixture_id": "tts-short-command-en",
+          "text": "Set a reminder for Tuesday at ten thirty in the morning.",
+          "language": "en"
+        },
+        {
+          "fixture_id": "tts-names-numbers-en",
+          "text": "Riya, invoice seven four two one is due on July twenty third for twelve thousand five hundred rupees.",
+          "language": "en"
+        },
+        {
+          "fixture_id": "tts-punctuation-en",
+          "text": "The review is complete. Please send the agenda, notes, and revised timeline.",
+          "language": "en"
+        }
+      ],
+      "thresholds": {
+        "minimum_duration_ms": 250,
+        "maximum_clipping_ratio": 0.001,
+        "maximum_roundtrip_word_error_rate": 0.4,
+        "maximum_leading_silence_ms": 600,
+        "maximum_trailing_silence_ms": 800
+      }
+    },
+    "diarization": {
+      "provider_catalog": "media.diarization.providers",
+      "cases": [
+        {
+          "fixture_id": "synthetic-two-speaker-dialogue",
+          "annotation_path": "local/synthetic-two-speaker-dialogue.json",
+          "expected_speakers": 2
+        },
+        {
+          "fixture_id": "meeting-two-speakers-overlap",
+          "annotation_path": "local/meeting-two-speakers-overlap.json",
+          "expected_speakers": 2,
+          "optional": true
+        }
+      ],
+      "thresholds": {
+        "maximum_diarization_error_rate": 0.4,
+        "maximum_speaker_count_error": 0
+      }
+    }
+  }
+}

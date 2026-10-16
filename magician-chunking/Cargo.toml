@@ -1,0 +1,28 @@
+[package]
+name = "magician-chunking"
+version = "0.1.1"
+edition = "2021"
+authors = ["MagicBeansAI"]
+description = "The logical-chunking domain adapters and shadow evaluation — extracted from the magician monolith"
+license = "MIT OR Apache-2.0"
+
+[features]
+test-fixtures = ["dep:tempfile", "magician/test-fixtures"]
+
+[dependencies]
+magician = { path = "../magician" }
+tempfile = { version = "3.8", optional = true }
+
+async-trait = { workspace = true }
+chrono = { workspace = true }
+magicllm = { path = "../magicllm" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+magician = { path = "../magician", features = ["test-fixtures"] }
+tempfile = "3.8"

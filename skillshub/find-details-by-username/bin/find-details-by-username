@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Structured artifact adapter around the Maigret CLI."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+
+URL_RE = re.compile(r"https?://[^\s)<>\]\"']+", re.IGNORECASE)
+REQUEST: dict[str, Any] = {}
+
+
+def env(name: str, default: str = "") -> str:
+    if name.startswith("_FD_"):
+        value = REQUEST.get(name[4:].lower(), default)
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value).strip()
+    return os.environ.get(name, default).strip()
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = env(name)
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "y", "on"}
+
+
+def env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = env(name)
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def tail(text: str, limit: int = 12000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def preview(text: str, limit: int) -> tuple[str, bool]:
+    if len(text) <= limit:
+        return text, False
+    return text[:limit] + "\n\n[truncated]", True
+
+
+def slug(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
+    return cleaned[:80] or "query"
+
+
+def workspace_root() -> Path:
+    """Return the runtime-authorized workspace without ambient skill paths."""
+
+    return Path.cwd().resolve(strict=True)
+
+
+def ensure_workspace_directory(root: Path, relative: Path) -> Path:
+    if relative.is_absolute() or not relative.parts or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise ValueError("output_folder must be a nonempty workspace-relative path")
+    candidate = root.joinpath(*relative.parts)
+    candidate.mkdir(parents=True, exist_ok=True)
+    resolved = candidate.resolve(strict=True)
+    if resolved == root or root not in resolved.parents or not resolved.is_dir():
+        raise ValueError("output_folder must resolve to a directory inside the workspace")
+    return resolved
+
+
+def safe_output_dir(raw: str, query_label: str) -> Path:
+    root = workspace_root()
+    if raw:
+        return ensure_workspace_directory(root, Path(raw))
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return ensure_workspace_directory(
+        root,
+        Path("workdirs")
+        / "find-details-by-username"
+        / f"{slug(query_label)}-{stamp}",
+    )
+
+
+def maigret_binary() -> str | None:
+    return shutil.which("maigret")
+
+
+def emit(payload: dict[str, Any], exit_code: int = 0) -> int:
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return exit_code
+
+
+def report_paths(output_dir: Path) -> dict[str, str]:
+    reports: dict[str, str] = {}
+    for path in sorted(output_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        if ".maigret-home" in path.relative_to(output_dir).parts:
+            continue
+        suffix = path.suffix.lower().lstrip(".")
+        key = {
+            "md": "markdown",
+            "html": "html",
+            "json": "json",
+            "csv": "csv",
+            "txt": "text",
+            "xmind": "xmind",
+        }.get(suffix, suffix or "file")
+        if key in reports:
+            key = f"{key}_{len(reports) + 1}"
+        reports[key] = str(path)
+    return reports
+
+
+def read_markdown_report(reports: dict[str, str]) -> str:
+    md_path = reports.get("markdown")
+    if not md_path:
+        return ""
+    try:
+        return Path(md_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def accounts_section(markdown: str) -> str:
+    marker = "## Accounts found"
+    start = markdown.find(marker)
+    if start < 0:
+        return ""
+    rest = markdown[start + len(marker) :]
+    next_section = re.search(r"(?m)^##\s+", rest)
+    if next_section:
+        return rest[: next_section.start()]
+    return rest
+
+
+def extract_profile_urls(markdown: str, max_urls: int) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    text = accounts_section(markdown)
+    for match in URL_RE.finditer(text):
+        url = match.group(0).rstrip(".,;:")
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append({"url": url, "source_hint": "accounts_found"})
+        if len(out) >= max_urls:
+            return out
+    return out
+
+
+def build_common_args(output_dir: Path) -> list[str]:
+    args = [
+        "--json",
+        "ndjson",
+        "--md",
+        "--html",
+        "--folderoutput",
+        str(output_dir),
+        "--timeout",
+        str(env_int("_FD_TIMEOUT_SECS", 30, minimum=1, maximum=300)),
+        "--max-connections",
+        str(env_int("_FD_MAX_CONNECTIONS", 50, minimum=1, maximum=200)),
+    ]
+
+    if env_bool("_FD_ALL_SITES", False):
+        args.append("--all-sites")
+    else:
+        args.extend(["--top-sites", str(env_int("_FD_TOP_SITES", 500, minimum=1, maximum=5000))])
+
+    tags = env("_FD_TAGS")
+    if tags:
+        args.extend(["--tags", tags])
+
+    exclude_tags = env("_FD_EXCLUDE_TAGS")
+    if exclude_tags:
+        args.extend(["--exclude-tags", exclude_tags])
+
+    if not env_bool("_FD_RECURSIVE", False):
+        args.append("--no-recursion")
+
+    if not env_bool("_FD_AUTO_UPDATE", True):
+        args.append("--no-autoupdate")
+
+    proxy = env("_FD_PROXY")
+    if proxy:
+        args.extend(["--proxy", proxy])
+
+    if env_bool("_FD_PRINT_ERRORS", False):
+        args.append("--print-errors")
+
+    return args
+
+
+def run_maigret(action: str) -> int:
+    binary = maigret_binary()
+    if not binary:
+        return emit(
+            {
+                "status": "failed",
+                "reason": "maigret_not_installed",
+                "tool": "findDetailsByUsername",
+                "message": "Maigret is not on PATH. Run `make -C skillshub setup-python`.",
+            },
+            2,
+        )
+
+    if action == "search":
+        username = env("_FD_USERNAME")
+        if not username:
+            return emit(
+                {
+                    "status": "failed",
+                    "reason": "missing_username",
+                    "tool": "findDetailsByUsername",
+                },
+                2,
+            )
+        query: dict[str, Any] = {"username": username}
+        query_label = username
+    elif action == "parse_url":
+        url = env("_FD_URL")
+        if not url:
+            return emit(
+                {
+                    "status": "failed",
+                    "reason": "missing_url",
+                    "tool": "findDetailsByUsername",
+                },
+                2,
+            )
+        query = {"url": url}
+        query_label = url
+    else:
+        return emit(
+            {
+                "status": "failed",
+                "reason": f"unsupported_action:{action}",
+                "tool": "findDetailsByUsername",
+            },
+            2,
+        )
+
+    try:
+        output_dir = safe_output_dir(env("_FD_OUTPUT_FOLDER"), query_label)
+    except (OSError, ValueError) as error:
+        return emit(
+            {
+                "status": "failed",
+                "reason": "invalid_output_folder",
+                "message": str(error),
+                "tool": "findDetailsByUsername",
+            },
+            2,
+        )
+    started = time.time()
+
+    if action == "search":
+        cmd = [binary, query["username"], *build_common_args(output_dir)]
+    else:
+        cmd = [binary, "--parse", query["url"], *build_common_args(output_dir)]
+
+    timeout = env_int("_FD_ADAPTER_TIMEOUT_SECS", 900, minimum=30, maximum=7200)
+    child_env = os.environ.copy()
+    home_dir = output_dir / ".maigret-home"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    child_env["HOME"] = str(home_dir)
+
+    proc = subprocess.run(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=child_env,
+        timeout=timeout,
+        check=False,
+    )
+    elapsed_ms = int((time.time() - started) * 1000)
+    reports = report_paths(output_dir)
+    markdown = read_markdown_report(reports)
+    preview_chars = env_int("_FD_PREVIEW_CHARS", 16000, minimum=1000, maximum=80000)
+    markdown_preview, markdown_truncated = preview(markdown, preview_chars)
+    max_profile_urls = env_int("_FD_MAX_PROFILE_URLS", 50, minimum=1, maximum=500)
+    profile_urls = extract_profile_urls(markdown, max_profile_urls)
+
+    return emit(
+        {
+            "status": "ok" if proc.returncode == 0 else "failed",
+            "reason": None if proc.returncode == 0 else f"maigret_exit_{proc.returncode}",
+            "source": "maigret",
+            "tool": "findDetailsByUsername",
+            "query": query,
+            "output_dir": str(output_dir),
+            "reports": reports,
+            "profile_urls": profile_urls,
+            "profile_url_count": len(profile_urls),
+            "markdown_preview": markdown_preview,
+            "markdown_truncated": markdown_truncated,
+            "stdout_tail": tail(proc.stdout),
+            "stderr_tail": tail(proc.stderr),
+            "elapsed_ms": elapsed_ms,
+            "command": {
+                "program": "maigret",
+                "args": ["--parse", "<url>", *cmd[3:]]
+                if action == "parse_url"
+                else ["<username>", *cmd[2:]],
+            },
+        },
+        0 if proc.returncode == 0 else 1,
+    )
+
+
+def show_help(args: list[str]) -> int:
+    binary = maigret_binary()
+    if args and args[0] == "maigret":
+        if not binary:
+            return emit(
+                {
+                    "status": "failed",
+                    "reason": "maigret_not_installed",
+                    "tool": "findDetailsByUsername",
+                },
+                2,
+            )
+        proc = subprocess.run([binary, "--help"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        return emit(
+            {
+                "status": "ok" if proc.returncode == 0 else "failed",
+                "tool": "findDetailsByUsername",
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            },
+            0 if proc.returncode == 0 else 1,
+        )
+    return emit(
+        {
+            "status": "ok",
+            "tool": "findDetailsByUsername",
+            "usage": {
+                "search": {"required": ["username"], "example": {"username": "alice", "top_sites": 500}},
+                "parse_url": {"required": ["url"], "example": {"url": "https://github.com/alice"}},
+                "help": {"args": ["maigret"]},
+                "version": {},
+            },
+        },
+    )
+
+
+def show_version() -> int:
+    binary = maigret_binary()
+    if not binary:
+        return emit(
+            {
+                "status": "failed",
+                "reason": "maigret_not_installed",
+                "tool": "findDetailsByUsername",
+            },
+            2,
+        )
+    proc = subprocess.run([binary, "--version"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    return emit(
+        {
+            "status": "ok" if proc.returncode == 0 else "failed",
+            "tool": "findDetailsByUsername",
+            "stdout": proc.stdout.strip(),
+            "stderr": proc.stderr.strip(),
+        },
+        0 if proc.returncode == 0 else 1,
+    )
+
+
+def main() -> int:
+    global REQUEST
+    REQUEST = json.load(sys.stdin)
+    action = sys.argv[1] if len(sys.argv) == 2 else ""
+    if action == "search":
+        return run_maigret("search")
+    if action == "parse_url":
+        return run_maigret("parse_url")
+    if action == "version":
+        return show_version()
+    if action == "help":
+        args = REQUEST.get("args", [])
+        return show_help([str(value) for value in args] if isinstance(args, list) else [])
+    return emit({"status": "failed", "reason": "unsupported_action"}, 2)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

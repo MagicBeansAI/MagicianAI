@@ -1,0 +1,50 @@
+name: edit_file
+description: "Exact string replacement in a file. Reads the file, replaces `old_string` with `new_string` in memory (one occurrence by default; all occurrences when `replace_all: true`), then stages the diff for operator approval. Fails if `old_string` is missing, ambiguous, or equal to `new_string`."
+version: "1.0.0"
+guide: |
+  Tool name: `edit_file`
+
+  Performs an exact string replacement on a file and stages the diff
+  as a `diff_approval` HITL request. Safer than shelling out to
+  `sed`/`awk` because the match is literal — no regex interpretation,
+  no escape gotchas, and no disk mutation happens until the operator
+  chooses Apply.
+
+  Disambiguation rule: if `old_string` occurs more than once in the
+  file and `replace_all` is not set, the call fails with an
+  `ambiguous_match` error. Either widen the snippet to include
+  surrounding context (making it unique) or pass `replace_all: true`
+  for a rename-style operation.
+
+  Returns `status: pending_approval` with the staged transaction id and
+  diff payload. Use `read_file` beforehand if you need to see what's
+  there.
+parameters:
+  - name: file_path
+    required: true
+    param_type: string
+    description: Absolute path to the file.
+  - name: old_string
+    required: true
+    param_type: string
+    description: "Exact string to replace. Must appear at least once. Must be unique unless `replace_all: true`."
+  - name: new_string
+    required: true
+    param_type: string
+    description: Replacement string. Must differ from `old_string`.
+  - name: replace_all
+    required: false
+    param_type: boolean
+    description: Replace every occurrence of `old_string`. Default false.
+    default: false
+implementation:
+  type: compiled
+  provider_name: edit_file
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - filesystem
+    - write
+  composition_category: action
+  sandbox: none

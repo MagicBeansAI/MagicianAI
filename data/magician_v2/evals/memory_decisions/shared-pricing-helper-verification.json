@@ -1,0 +1,130 @@
+{
+  "matched_real_receipts": 8,
+  "canonical_pricing_exact_match": true,
+  "unknown_model_unpriced": true,
+  "missing_usage_unpriced": true,
+  "facts": [
+    {
+      "call_id": "01M3J9DKWCGN2J9SVTPC0VDZPE",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "computed",
+        "cost_usd": 2.8392000000000002e-05,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+        "reasoning_cost_usd": null
+      }
+    },
+    {
+      "call_id": "01M3J9DPBXJD8FPQWWX136MXWM",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "computed",
+        "cost_usd": 5.8044e-05,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+        "reasoning_cost_usd": null
+      }
+    },
+    {
+      "call_id": "01M3J9DTJCMMAYP0XVAV15ST4E",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "computed",
+        "cost_usd": 3.0114e-05,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+        "reasoning_cost_usd": null
+      }
+    },
+    {
+      "call_id": "01M3J9DYNWBC2821WHGX28XH3Z",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "computed",
+        "cost_usd": 2.8854000000000002e-05,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+        "reasoning_cost_usd": null
+      }
+    },
+    {
+      "call_id": "01M3J9E3BD75JDXHB9WD39DNBW",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "computed",
+        "cost_usd": 3.3558e-05,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+        "reasoning_cost_usd": null
+      }
+    },
+    {
+      "call_id": "01M3J9E6DH9JYSFGKXRQR3NSJ5",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "computed",
+        "cost_usd": 3.670800000000001e-05,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+        "reasoning_cost_usd": null
+      }
+    },
+    {
+      "call_id": "01M3J9E6TKKY5HXHMH3JTT64TG",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "local",
+        "cost_usd": 0.0,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+        "reasoning_cost_usd": null
+      }
+    },
+    {
+      "call_id": "01M3J9ECSA9TSBF6WQ791ZM93Q",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "computed",
+        "cost_usd": 2.541e-05,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+        "reasoning_cost_usd": null
+      }
+    }
+  ],
+  "synthetic_negative_cases": [
+    {
+      "call_id": "fixture-unknown-model",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "unknown",
+        "cost_usd": null,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "decision-pricing-unavailable",
+        "reasoning_cost_usd": null
+      }
+    },
+    {
+      "call_id": "fixture-missing-usage",
+      "pricing": {
+        "cache_cost_usd": null,
+        "cost_source": "unknown",
+        "cost_usd": null,
+        "input_cost_usd": null,
+        "output_cost_usd": null,
+        "pricing_version": "pricing-row-v1:d74804ee3c6b3411b7a4217c56bc9687fd70f05aa6a4aac1c24303fd48a23e19",
+        "reasoning_cost_usd": null
+      }
+    }
+  ]
+}

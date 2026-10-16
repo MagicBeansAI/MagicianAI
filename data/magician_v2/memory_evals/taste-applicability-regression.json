@@ -1,0 +1,79 @@
+{
+  "suite_id": "taste-applicability-regression",
+  "enabled": true,
+  "_doc": [
+    "Slice 3's frozen gate: preferences must be selected by APPLICABILITY, not",
+    "cosine similarity to the goal.",
+    "",
+    "HOW THIS ENCODES 'MUST BEAT THE COSINE BASELINE'. The chassis asserts only",
+    "that a substring is PRESENT — it has no way to assert absence. A precision",
+    "test therefore comes from the budget, not the assertion: every case sets a",
+    "deliberately tight `max_entries`, so the expected preference can only",
+    "appear if the selector ranked it ABOVE the higher-similarity distractors",
+    "already in the corpus. A selector that ranks by similarity fills those few",
+    "slots with the distractors and the case fails. Loosening `max_entries`",
+    "would let everything through and quietly turn these into no-ops — if you",
+    "find yourself raising it to make a case pass, the selector regressed.",
+    "",
+    "`skip_if_absent` is set on every case: a deployment whose tiers do not",
+    "hold these preferences reports skipped rather than failed, while a",
+    "deployment that HAS them and fails to retrieve them still fails. That is",
+    "the real regression and it must stay loud.",
+    "",
+    "The canonical hard case is `analyst-delivery-style-governs-research`, from",
+    "the attention design: a delivery-style preference completely governs a",
+    "research task while sitting nowhere near it in embedding space. It shares",
+    "no vocabulary with the query on purpose. If only one case in this suite is",
+    "ever kept, keep that one — it is the whole category error in a single row."
+  ],
+  "cases": [
+    {
+      "case_id": "analyst-delivery-style-governs-research",
+      "kind": "retrieval",
+      "agent_id": "simple-data-analyst",
+      "query": "Investigate why weekly active users dipped in the EU region last quarter",
+      "scopes": ["user"],
+      "expected_substrings": ["delivery"],
+      "min_selected_count": 1,
+      "max_entries": 2,
+      "max_chars": 1200,
+      "skip_if_absent": true
+    },
+    {
+      "case_id": "universal-preference-reaches-an-unrelated-task",
+      "kind": "retrieval",
+      "agent_id": "simple-data-analyst",
+      "query": "Set up a recurring export of the billing table to the finance drive",
+      "scopes": ["user"],
+      "expected_substrings": ["short"],
+      "min_selected_count": 1,
+      "max_entries": 2,
+      "max_chars": 1200,
+      "skip_if_absent": true
+    },
+    {
+      "case_id": "on-topic-preference-still-wins-its-own-topic",
+      "kind": "retrieval",
+      "agent_id": "web-researcher",
+      "query": "Research the competitive landscape for observability vendors",
+      "scopes": ["user"],
+      "expected_substrings": ["interview"],
+      "min_selected_count": 1,
+      "max_entries": 2,
+      "max_chars": 1200,
+      "skip_if_absent": true
+    },
+    {
+      "case_id": "untagged-corpus-still-retrieves-by-relevance",
+      "kind": "retrieval",
+      "agent_id": "personal-assistant",
+      "query": "How should I format the weekly summary email?",
+      "scopes": ["user"],
+      "expected_substrings": ["summary"],
+      "min_selected_count": 1,
+      "max_entries": 4,
+      "max_chars": 2000,
+      "skip_if_absent": true
+    }
+  ]
+}

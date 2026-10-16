@@ -1,0 +1,14 @@
+[
+  {
+    "task_title": "Inspect one compaction fixture",
+    "description": "Read only magician/tests/fixtures/agentic_compaction/golden/empty_patch.json. Report its name, char_budget, item count, and newest item id. Do not inspect other files or delegate.",
+    "agent_id": "internal-system-analyst",
+    "max_minutes": 5
+  },
+  {
+    "task_title": "Count compaction semantic probes",
+    "description": "Read only magician/tests/fixtures/agentic_compaction/semantic_retention_v1.json. Report schema_version, fixture count, and total fact count. Do not inspect other files or delegate.",
+    "agent_id": "internal-system-analyst",
+    "max_minutes": 5
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "type": "curve",
+  "version": 1,
+  "draw": [
+    {
+      "op": "bezier",
+      "from": ["sx", "sy"],
+      "to": ["ex", "ey"],
+      "c1": ["c1x", "c1y"],
+      "c2": ["c2x", "c2y"]
+    }
+  ]
+}

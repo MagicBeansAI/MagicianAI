@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Map Pan And Zoom Canvas</title>
+    <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+    <style>
+        .test-header {
+            background: linear-gradient(135deg, #0f7a70, #0d3b8f);
+        }
+
+        .map-viewport {
+            position: relative;
+            height: 340px;
+            border-radius: 20px;
+            overflow: hidden;
+            background: linear-gradient(180deg, #d7efff 0%, #e9f5ff 44%, #d8ebd7 44%, #bfd8b7 100%);
+            cursor: grab;
+            touch-action: none;
+        }
+
+        .map-viewport.dragging {
+            cursor: grabbing;
+        }
+
+        .map-world {
+            position: absolute;
+            inset: 0 auto auto 0;
+            width: 1080px;
+            height: 680px;
+            transform-origin: 0 0;
+        }
+
+        .district {
+            position: absolute;
+            border-radius: 999px;
+            background: rgba(43, 122, 75, 0.18);
+            border: 1px solid rgba(44, 95, 62, 0.16);
+        }
+
+        .district-label {
+            position: absolute;
+            font-size: 13px;
+            color: #214466;
+            font-weight: 600;
+        }
+
+        .route-line {
+            position: absolute;
+            height: 10px;
+            border-radius: 999px;
+            background: rgba(18, 78, 165, 0.22);
+            transform-origin: left center;
+        }
+
+        .map-marker {
+            position: absolute;
+            width: 24px;
+            height: 24px;
+            border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg);
+            background: #e95454;
+            box-shadow: 0 10px 20px rgba(44, 60, 103, 0.18);
+            cursor: pointer;
+        }
+
+        .map-marker::after {
+            content: "";
+            position: absolute;
+            inset: 6px;
+            border-radius: 50%;
+            background: #ffffff;
+        }
+
+        .map-marker .marker-label {
+            position: absolute;
+            left: 24px;
+            top: -6px;
+            transform: rotate(45deg);
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #21314d;
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .focus-ring {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 86px;
+            height: 86px;
+            margin-left: -43px;
+            margin-top: -43px;
+            border-radius: 50%;
+            border: 3px dashed rgba(16, 89, 214, 0.6);
+            background: rgba(255, 255, 255, 0.12);
+            pointer-events: none;
+        }
+
+        .map-callout {
+            position: absolute;
+            right: 18px;
+            bottom: 18px;
+            padding: 12px 14px;
+            border-radius: 16px;
+            background: rgba(12, 35, 72, 0.9);
+            color: #ffffff;
+            max-width: 260px;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .map-callout.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .zoom-readout {
+            min-width: 78px;
+            text-align: center;
+            font-weight: 700;
+            color: #24405e;
+        }
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "27-map-pan-zoom-canvas",
+        "phase": "Phase 4",
+        "title": "Map Pan and Zoom Canvas",
+        "description": "Spatial viewport fixtures for pan-to-center and zoom-before-select map workflows.",
+        "totalTests": 2
+    }
+    </script>
+
+    <div class="page-shell">
+        <div class="test-header">
+            <h1>Map Pan and Zoom Canvas</h1>
+            <p>These fixtures exercise viewport-relative spatial reasoning: panning a large world until a marker reaches the center reticle, then zooming far enough to select a detail marker without misclicking the map.</p>
+            <div class="results-summary">
+                <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+                <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+                <div class="summary-pill">Pending<strong id="pending-count">2</strong></div>
+            </div>
+        </div>
+
+        <div class="fixture-grid">
+            <section class="test-case" id="test-1" data-test-id="27-pan-to-center" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">1. Pan the Transit Hub marker into the focus ring</h2>
+                    <span class="test-case-id">27-pan-to-center</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Drag the map until the <span class="kbd">Transit Hub</span> marker lands inside the center focus ring.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Logistics Overview</h3>
+                            <p class="caption">The target marker starts off-center and must be panned into the reticle.</p>
+                        </div>
+                        <button class="surface-btn" type="button" id="pan-reset">Reset surface</button>
+                    </div>
+                    <div class="workspace-surface">
+                        <div class="map-viewport" id="pan-viewport">
+                            <span class="surface-label">Spatial Viewport</span>
+                            <div class="map-world" id="pan-world">
+                                <div class="district" style="left: 60px; top: 90px; width: 280px; height: 180px;"></div>
+                                <div class="district" style="left: 420px; top: 110px; width: 320px; height: 200px;"></div>
+                                <div class="district" style="left: 760px; top: 220px; width: 220px; height: 170px;"></div>
+                                <div class="route-line" style="left: 120px; top: 220px; width: 360px; transform: rotate(12deg);"></div>
+                                <div class="route-line" style="left: 430px; top: 330px; width: 280px; transform: rotate(-16deg);"></div>
+                                <div class="district-label" style="left: 110px; top: 126px;">North Terminal</div>
+                                <div class="district-label" style="left: 520px; top: 162px;">River Exchange</div>
+                                <div class="district-label" style="left: 812px; top: 262px;">Harbor Edge</div>
+                                <div class="map-marker" id="transit-hub-marker" style="left: 694px; top: 268px;">
+                                    <span class="marker-label">Transit Hub</span>
+                                </div>
+                            </div>
+                            <div class="focus-ring"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="map-panned">The map should be moved from its starting position.</li>
+                        <li data-check="target-centered">The Transit Hub marker should finish inside the center focus ring.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" id="pan-reset-status" data-status-reset="test-1">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-2" data-test-id="27-zoom-and-select" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">2. Zoom in and open the Harbor Depot callout</h2>
+                    <span class="test-case-id">27-zoom-and-select</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Zoom in until the readout reaches at least <span class="kbd">160%</span>, then click the <span class="kbd">Harbor Depot</span> marker to open its callout.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Route Detail Map</h3>
+                            <p class="caption">The surface supports drag-to-pan, but marker clicks should count only after zooming in far enough.</p>
+                        </div>
+                        <div class="control-cluster">
+                            <button class="zoom-button" type="button" id="zoom-out">-</button>
+                            <div class="zoom-readout" id="zoom-readout">100%</div>
+                            <button class="zoom-button" type="button" id="zoom-in">+</button>
+                            <button class="surface-btn" type="button" id="zoom-reset">Reset surface</button>
+                        </div>
+                    </div>
+                    <div class="workspace-surface">
+                        <div class="map-viewport" id="zoom-viewport">
+                            <span class="surface-label">Pan + Zoom Surface</span>
+                            <div class="map-world" id="zoom-world">
+                                <div class="district" style="left: 90px; top: 80px; width: 280px; height: 180px;"></div>
+                                <div class="district" style="left: 380px; top: 220px; width: 280px; height: 190px;"></div>
+                                <div class="district" style="left: 720px; top: 170px; width: 260px; height: 210px;"></div>
+                                <div class="route-line" style="left: 180px; top: 320px; width: 330px; transform: rotate(-9deg);"></div>
+                                <div class="route-line" style="left: 520px; top: 250px; width: 240px; transform: rotate(20deg);"></div>
+                                <div class="district-label" style="left: 148px; top: 120px;">Warehouse Belt</div>
+                                <div class="district-label" style="left: 456px; top: 266px;">Central Grid</div>
+                                <div class="district-label" style="left: 782px; top: 214px;">Harbor Depot</div>
+                                <div class="map-marker" id="harbor-marker" style="left: 808px; top: 256px;">
+                                    <span class="marker-label">Harbor Depot</span>
+                                </div>
+                            </div>
+                            <div class="map-callout" id="harbor-callout">Harbor Depot selected. Loading cranes are available on Dock 3.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="zoom-level-reached">The zoom readout should reach at least 160%.</li>
+                        <li data-check="callout-opened">The Harbor Depot callout should become visible after clicking the marker.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" id="zoom-reset-status" data-status-reset="test-2">Reset</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        (function () {
+            const panViewport = document.getElementById("pan-viewport");
+            const panWorld = document.getElementById("pan-world");
+            const transitHubMarker = document.getElementById("transit-hub-marker");
+            const zoomViewport = document.getElementById("zoom-viewport");
+            const zoomWorld = document.getElementById("zoom-world");
+            const harborMarker = document.getElementById("harbor-marker");
+            const harborCallout = document.getElementById("harbor-callout");
+            const zoomReadout = document.getElementById("zoom-readout");
+
+            const panState = { x: -210, y: -120, startX: -210, startY: -120, pointerId: null, originClientX: 0, originClientY: 0 };
+            const zoomState = {
+                x: -180,
+                y: -90,
+                scale: 1,
+                pointerId: null,
+                originClientX: 0,
+                originClientY: 0,
+                startX: -180,
+                startY: -90,
+                didDrag: false,
+                suppressMarkerClickUntil: 0
+            };
+
+            function applyTransform(element, state) {
+                const scale = state.scale || 1;
+                element.style.transform = "translate(" + state.x + "px, " + state.y + "px) scale(" + scale + ")";
+            }
+
+            function centerDistance(marker, viewport) {
+                const markerRect = marker.getBoundingClientRect();
+                const viewportRect = viewport.getBoundingClientRect();
+                const markerX = markerRect.left + markerRect.width / 2;
+                const markerY = markerRect.top + markerRect.height / 2;
+                const centerX = viewportRect.left + viewportRect.width / 2;
+                const centerY = viewportRect.top + viewportRect.height / 2;
+                return Math.hypot(markerX - centerX, markerY - centerY);
+            }
+
+            function updatePanChecks() {
+                const moved = panState.x !== panState.startX || panState.y !== panState.startY;
+                const centered = centerDistance(transitHubMarker, panViewport) <= 42;
+                setCheckState("test-1", "map-panned", moved ? "pass" : "pending");
+                setCheckState("test-1", "target-centered", centered ? "pass" : "pending");
+                setResult(
+                    "test-1",
+                    centered ? "Transit Hub is inside the focus ring." : "Drag the map until Transit Hub sits inside the center ring.",
+                    centered ? "success" : "info"
+                );
+                if (moved && centered) {
+                    setTestStatus("test-1", "pass");
+                }
+            }
+
+            function resetPanSurface() {
+                panState.x = panState.startX;
+                panState.y = panState.startY;
+                panState.pointerId = null;
+                applyTransform(panWorld, panState);
+                panViewport.classList.remove("dragging");
+                setTestStatus("test-1", null);
+                setCheckState("test-1", "map-panned", "pending");
+                setCheckState("test-1", "target-centered", "pending");
+                setResult("test-1", "Drag the map until Transit Hub sits inside the center ring.", "info");
+                updatePanChecks();
+            }
+
+            function updateZoomChecks() {
+                const zoomReached = zoomState.scale >= 1.6;
+                setCheckState("test-2", "zoom-level-reached", zoomReached ? "pass" : "pending");
+                setCheckState("test-2", "callout-opened", harborCallout.classList.contains("visible") ? "pass" : "pending");
+                const statusText = harborCallout.classList.contains("visible")
+                    ? "Harbor Depot callout is open."
+                    : "Zoom to at least 160%, then click Harbor Depot.";
+                setResult("test-2", statusText, harborCallout.classList.contains("visible") ? "success" : "info");
+                if (zoomReached && harborCallout.classList.contains("visible")) {
+                    setTestStatus("test-2", "pass");
+                }
+            }
+
+            function resetZoomSurface() {
+                zoomState.x = -180;
+                zoomState.y = -90;
+                zoomState.scale = 1;
+                zoomState.pointerId = null;
+                zoomState.originClientX = 0;
+                zoomState.originClientY = 0;
+                zoomState.startX = -180;
+                zoomState.startY = -90;
+                zoomState.didDrag = false;
+                zoomState.suppressMarkerClickUntil = 0;
+                applyTransform(zoomWorld, zoomState);
+                zoomViewport.classList.remove("dragging");
+                zoomReadout.textContent = "100%";
+                harborCallout.classList.remove("visible");
+                setTestStatus("test-2", null);
+                setCheckState("test-2", "zoom-level-reached", "pending");
+                setCheckState("test-2", "callout-opened", "pending");
+                setResult("test-2", "Zoom to at least 160%, then click Harbor Depot.", "info");
+            }
+
+            panViewport.addEventListener("pointerdown", (event) => {
+                panState.pointerId = event.pointerId;
+                panState.originClientX = event.clientX - panState.x;
+                panState.originClientY = event.clientY - panState.y;
+                panViewport.classList.add("dragging");
+                panViewport.setPointerCapture(event.pointerId);
+            });
+
+            panViewport.addEventListener("pointermove", (event) => {
+                if (panState.pointerId !== event.pointerId) return;
+                panState.x = event.clientX - panState.originClientX;
+                panState.y = event.clientY - panState.originClientY;
+                applyTransform(panWorld, panState);
+            });
+
+            panViewport.addEventListener("pointerup", (event) => {
+                if (panState.pointerId !== event.pointerId) return;
+                panViewport.releasePointerCapture(event.pointerId);
+                panState.pointerId = null;
+                panViewport.classList.remove("dragging");
+                updatePanChecks();
+            });
+
+            function changeZoom(delta) {
+                zoomState.scale = Math.max(0.8, Math.min(2.2, zoomState.scale + delta));
+                zoomReadout.textContent = Math.round(zoomState.scale * 100) + "%";
+                applyTransform(zoomWorld, zoomState);
+                if (zoomState.scale < 1.6) {
+                    harborCallout.classList.remove("visible");
+                }
+                updateZoomChecks();
+            }
+
+            document.getElementById("zoom-in").addEventListener("click", () => changeZoom(0.2));
+            document.getElementById("zoom-out").addEventListener("click", () => changeZoom(-0.2));
+            zoomViewport.addEventListener("wheel", (event) => {
+                event.preventDefault();
+                changeZoom(event.deltaY < 0 ? 0.2 : -0.2);
+            }, { passive: false });
+
+            zoomViewport.addEventListener("pointerdown", (event) => {
+                zoomState.pointerId = event.pointerId;
+                zoomState.originClientX = event.clientX - zoomState.x;
+                zoomState.originClientY = event.clientY - zoomState.y;
+                zoomState.startX = zoomState.x;
+                zoomState.startY = zoomState.y;
+                zoomState.didDrag = false;
+                zoomViewport.classList.add("dragging");
+                zoomViewport.setPointerCapture(event.pointerId);
+            });
+
+            zoomViewport.addEventListener("pointermove", (event) => {
+                if (zoomState.pointerId !== event.pointerId) return;
+                zoomState.x = event.clientX - zoomState.originClientX;
+                zoomState.y = event.clientY - zoomState.originClientY;
+                if (Math.hypot(zoomState.x - zoomState.startX, zoomState.y - zoomState.startY) > 4) {
+                    zoomState.didDrag = true;
+                }
+                applyTransform(zoomWorld, zoomState);
+            });
+
+            function finishZoomPan(event) {
+                if (zoomState.pointerId !== event.pointerId) return;
+                zoomViewport.releasePointerCapture(event.pointerId);
+                zoomState.pointerId = null;
+                zoomViewport.classList.remove("dragging");
+                if (zoomState.didDrag) {
+                    zoomState.suppressMarkerClickUntil = Date.now() + 250;
+                }
+            }
+
+            zoomViewport.addEventListener("pointerup", finishZoomPan);
+            zoomViewport.addEventListener("pointercancel", finishZoomPan);
+
+            harborMarker.addEventListener("click", () => {
+                if (Date.now() < zoomState.suppressMarkerClickUntil) {
+                    return;
+                }
+                if (zoomState.scale >= 1.6) {
+                    harborCallout.classList.add("visible");
+                }
+                updateZoomChecks();
+            });
+
+            document.getElementById("pan-reset").addEventListener("click", resetPanSurface);
+            document.getElementById("pan-reset-status").addEventListener("click", resetPanSurface);
+            document.getElementById("zoom-reset").addEventListener("click", resetZoomSurface);
+            document.getElementById("zoom-reset-status").addEventListener("click", resetZoomSurface);
+
+            resetPanSurface();
+            resetZoomSurface();
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+# The storage partition ships unformatted; format it on first mount.
+CONFIG_BSP_SPIFFS_FORMAT_ON_MOUNT_FAIL=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_FONT_MONTSERRAT_40=y
+
+# --- TLS on 512KB with no PSRAM ---
+# mbedtls_ssl_setup was returning ALLOC_FAILED: the default 16KB in + 16KB out
+# record buffers, held for the life of the connection, do not fit alongside
+# LVGL, wifi and the audio path. Dynamic buffers allocate only what a handshake
+# actually needs and release it between records; the asymmetric split keeps a
+# full-size input buffer (servers may send 16KB records) while shrinking the
+# output side, which only ever carries our own requests.
+# Dynamic buffers were added when boot heap was 91KB and the handshake could
+# not allocate. Reclaiming 60KB from the LVGL buffer removed that pressure, and
+# they actively hurt a 1MB streamed download: the TLS buffer is freed and
+# reallocated per record, so a long reply asks for a 16KB contiguous block
+# dozens of times and eventually does not get one, ending the read part-way.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=n
+CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# LVGL partial buffer: 368 px wide x N rows x 2 bytes. The default height cost
+# ~33KB of heap, which is the difference between a TLS handshake succeeding and
+# returning ALLOC_FAILED on this part. 40 rows is ~29KB back.
+CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=28
+
+# Wifi buffer pools, trimmed for a single low-rate client. The defaults are
+# sized for throughput this device will never need, and the memory is worth
+# more as contiguous space for a TLS session.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+
+# ── WebSocket handshake buffer (realtime, step 1) ────────────────────────
+# CONFIG_WS_BUFFER_SIZE is a COMPILE-TIME constant inside ESP-IDF's
+# transport_ws.c; the esp_websocket_client `buffer_size` field does not touch
+# it. At the 1024-byte default the upgrade failed with "Header size exceeded
+# buffer size" while the TLS handshake had plainly succeeded
+# (tls_error_code=0) -- a reply through Cloudflare Access carries far more
+# header than a bare origin does, so this only shows up against the real
+# endpoint.
+CONFIG_WS_BUFFER_SIZE=3072
+
+# ── The BSP must return errors, not abort the device ─────────────────────
+# With CONFIG_BSP_ERROR_CHECK=y (the default) the BSP defines
+# BSP_ERROR_CHECK_RETURN_ERR(x) as ESP_ERROR_CHECK(x) -- so ANY failure inside
+# bring-up aborts and reboots. Measured: with a realtime socket open the I2S
+# DMA allocation fails with ESP_ERR_NO_MEM, and instead of "no audio" the whole
+# device restarted mid-call.
+#
+# This is the same root as the touch abort patched by hand in the vendored BSP:
+# upstream treats every error as fatal. Turning it off makes the call sites
+# return, which is what the "-- running display-only" and "speaker %s" fallback
+# paths in this firmware were already written to expect.
+CONFIG_BSP_ERROR_CHECK=n

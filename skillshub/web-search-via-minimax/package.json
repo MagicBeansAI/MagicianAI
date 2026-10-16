@@ -1,0 +1,8 @@
+{
+  "name": "@magician/skill-web-search-via-minimax",
+  "private": true,
+  "description": "MiniMax CLI (mmx) wrapper — web search via `mmx search query`. Bundles `mmx-cli` so the `mmx` bin lands in skillshub/node_modules/.bin/ for the dispatcher's PATH prepend.",
+  "dependencies": {
+    "mmx-cli": "^1.0.0"
+  }
+}

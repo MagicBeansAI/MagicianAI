@@ -1,0 +1,88 @@
+name: create_monitor
+description: Activate a previewed, user-confirmed monitor. Requires the preview_fingerprint from preview_monitor; refuses unreviewed contracts.
+version: "1.0.0"
+guide: |
+  Tool name: `create_monitor`
+
+  Activates a recurring monitor the user has ALREADY reviewed and confirmed.
+  Call this ONLY after:
+  1. `preview_monitor` returned the interpreted contract, AND
+  2. you showed that contract to the user as a review card, AND
+  3. the user explicitly confirmed it.
+
+  Pass the SAME arguments you previewed plus the returned
+  `preview_fingerprint`. The backend recomputes the fingerprint from your
+  arguments and refuses when it is missing (`monitor_preview_required`) or
+  when any argument drifted since the preview (`monitor_preview_stale`) —
+  in both cases go back to `preview_monitor`, re-render the card, and
+  re-confirm. Never fabricate a fingerprint.
+
+  On success the monitor is a canonical persistent task (managed under
+  /tasks?type=monitors and by the scheduler): the response carries
+  `task_id`, the server-owned `monitor_revision` (1), the schedule state,
+  and the cadence summary — relay those to the user. The first scheduled
+  run records a quiet baseline unless the user opted into
+  `notify_initial_baseline`.
+
+  Do NOT pair this with `create_task`, `run_task`, or `delegate_to_agent`
+  for the same ask — one monitoring request maps to exactly one
+  preview → confirm → create_monitor flow. Generic (non-monitoring) durable
+  work still uses `create_task`, whose behavior is unchanged.
+parameters:
+  - name: objective
+    required: true
+    param_type: string
+    description: Same objective that was previewed.
+  - name: preview_fingerprint
+    required: true
+    param_type: string
+    description: The `preview_fingerprint` returned by preview_monitor for EXACTLY these arguments.
+  - name: urls
+    param_type: array
+    description: Same urls that were previewed.
+  - name: domains
+    param_type: array
+    description: Same domains that were previewed.
+  - name: authenticated_sources
+    param_type: array
+    description: Same authenticated source names that were previewed.
+  - name: query_seeds
+    param_type: array
+    description: Same query seeds that were previewed.
+  - name: include_rules
+    param_type: array
+    description: Same include rules that were previewed.
+  - name: exclude_rules
+    param_type: array
+    description: Same exclude rules that were previewed.
+  - name: match_mode
+    param_type: string
+    description: Same match mode that was previewed.
+    enum_values: [strict, balanced, broad]
+    default: "balanced"
+  - name: notification_policy
+    param_type: string
+    description: Same notification policy that was previewed.
+    enum_values: [material_changes, every_run, never]
+    default: "material_changes"
+  - name: notify_initial_baseline
+    param_type: boolean
+    description: Same baseline opt-in that was previewed.
+    default: false
+  - name: schedule
+    param_type: object
+    description: Same TaskSchedule object that was previewed.
+  - name: title
+    param_type: string
+    description: Same optional title that was previewed.
+implementation:
+  type: compiled
+  provider_name: create_monitor
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - tasks
+    - monitors
+  composition_category: action
+  sandbox: none

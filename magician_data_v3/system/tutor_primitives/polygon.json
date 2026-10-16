@@ -1,0 +1,10 @@
+{
+  "type": "polygon",
+  "version": 1,
+  "draw": [
+    {
+      "op": "polygon",
+      "points": "points|d"
+    }
+  ]
+}

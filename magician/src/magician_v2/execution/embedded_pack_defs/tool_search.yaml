@@ -1,0 +1,38 @@
+name: tool_search
+description: Fetch full schema definitions for deferred tools so they can be called. Deferred tools appear in the catalog by name only — until fetched, no parameter schema is known and the tool cannot be invoked. This tool takes a query, matches it against the deferred-tool catalog, and returns the matched tools' JSON schemas so they become callable on subsequent turns.
+version: "1.0.0"
+guide: |
+  Tool name: `tool_search`
+
+  Schema fetcher for the flat-loop catalog (Phase 1 of the flatten
+  plan). Not active today — execution is in inner-loop mode where
+  every tool the agent has access to is already loaded eagerly with
+  its full schema, so the LLM should pick directly from the tools
+  it can see.
+
+  Query forms:
+  - `select:Tool1,Tool2,...` — direct multi-fetch by exact name
+  - keyword query (optionally with `+term` to require a term) —
+    regex-weighted scoring across name parts, descriptions, and
+    per-tool search hints
+parameters:
+  - name: query
+    required: true
+    param_type: string
+    description: Query to find deferred tools. Use `select:Tool1,Tool2,...` for direct fetch by exact name. Use plain keywords for ranked search across tool names, descriptions, and search hints. Prefix a term with `+` (e.g. `+slack send`) to require it in the result.
+  - name: max_results
+    required: false
+    param_type: integer
+    description: "Maximum number of results to return (default: 5)"
+    default: 5
+implementation:
+  type: compiled
+  provider_name: tool_search
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 5
+  categories:
+    - meta
+    - introspection
+  composition_category: action
+  sandbox: none

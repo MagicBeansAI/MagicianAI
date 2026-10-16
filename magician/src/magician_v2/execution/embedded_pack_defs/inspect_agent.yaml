@@ -1,0 +1,29 @@
+name: inspect_agent
+description: Inspect one agent in the active harness scope, including its definition, YAML, recent tasks, and recent episodes.
+version: "1.0.0"
+guide: |
+  Tool name: `inspect_agent`
+
+  Use this after `list_agents` when you need the full definition and current operating context
+  for one subordinate agent.
+parameters:
+  - name: agent_id
+    required: true
+    param_type: string
+    description: Agent id inside the active harness scope.
+  - name: recent_episode_limit
+    param_type: integer
+    description: Maximum number of recent episode summaries to include. Defaults to 10.
+    default: "10"
+implementation:
+  type: compiled
+  provider_name: inspect_agent
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - diagnostics
+    - agents
+  composition_category: observation
+  sandbox: none

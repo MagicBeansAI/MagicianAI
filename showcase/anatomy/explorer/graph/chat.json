@@ -1,0 +1,705 @@
+{
+ "part": "chat",
+ "title": "Chat",
+ "nodes": [
+  {
+   "id": "chat.start",
+   "kind": "choice",
+   "level": "core",
+   "chapter": "Arrival",
+   "title": "Where messages come from",
+   "say": "A chat message can arrive from the web or mobile app, or from a channel bot such as Telegram, WhatsApp or Gmail. Pick the one to follow.",
+   "decidedBy": "the client: the web UI (chatStore.ts) and the iOS/Android apps POST to /chat/sessions/{id}/messages/stream; the bot SDK's sendMessage POSTs to the plain /chat/sessions/{id}/messages route",
+   "evidence": "magician-bin/src/main.rs:13208, 13293; ui/unified-ui/src/lib/stores/chatStore.ts:2404; skillshub/bots/sdk/src/magician-client.ts:376",
+   "options": [
+    {
+     "label": "Web or mobile app",
+     "say": "The app opens a streaming request so the reply can appear token by token as it is written.",
+     "default": true,
+     "next": "chat.entry.stream"
+    },
+    {
+     "label": "Channel bot",
+     "say": "A Telegram, WhatsApp or Gmail bot relays a message from its channel and waits for the whole reply.",
+     "next": "chat.entry.bot"
+    }
+   ]
+  },
+  {
+   "id": "chat.entry.stream",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Arrival",
+   "process": "magician",
+   "file": "magician-api/src/chat_api.rs",
+   "type": "SendMessageRequest",
+   "fn": "send_message_stream_handler",
+   "line": 5079,
+   "carries": "SendMessageRequest",
+   "title": "Streaming route opens",
+   "say": "The streaming chat route checks the request, then starts the turn in the background and turns its token channel into a live event stream.",
+   "evidence": "magician-bin/src/main.rs:13293; magician-api/src/chat_api.rs:5070, 5300, 5328, 5379",
+   "next": "chat.entry.scope"
+  },
+  {
+   "id": "chat.entry.bot",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Arrival",
+   "process": "magician",
+   "file": "magician-learning/src/bots/mod.rs",
+   "type": "BotManager",
+   "fn": "start_enabled",
+   "line": 280,
+   "carries": "BotProcessConfig",
+   "title": "Bot manager runs the channel bot",
+   "say": "The bot manager starts each enabled channel bot as a supervised child process; the bot hears a channel message and posts it to Magician's plain chat route.",
+   "evidence": "magician-learning/src/bots/scoped_runtime.rs:116; magician-learning/src/bots/mod.rs:244, 280, 1295; skillshub/bots/sdk/src/magician-client.ts:369, 376",
+   "next": "chat.entry.sync"
+  },
+  {
+   "id": "chat.entry.sync",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Arrival",
+   "process": "magician",
+   "file": "magician-api/src/chat_api.rs",
+   "type": "SendMessageRequest",
+   "fn": "send_message_handler",
+   "line": 4900,
+   "carries": "SendMessageRequest",
+   "title": "Plain message route",
+   "say": "The plain message route checks the request the same way, then waits for the whole turn and answers with one complete reply.",
+   "evidence": "magician-bin/src/main.rs:13208; magician-api/src/chat_api.rs:4891, 4986, 5018",
+   "next": "chat.entry.scope"
+  },
+  {
+   "id": "chat.entry.scope",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Arrival",
+   "process": "magician",
+   "file": "magician-api/src/chat_api.rs",
+   "type": "ChatApi",
+   "fn": "resolve_principal",
+   "line": 1098,
+   "carries": "principal + workspace",
+   "title": "Who is speaking, and where",
+   "say": "Both routes resolve the workspace and the speaker, including a bot's channel address, and refuse sessions that belong to someone else or are archived.",
+   "evidence": "magician-api/src/chat_api.rs:1089, 4903, 4904, 4940; magician-api/src/chat_api.rs:5082, 5119",
+   "next": "chat.admit"
+  },
+  {
+   "id": "chat.admit",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Admission",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "process_message_inner",
+   "line": 28452,
+   "carries": "session id + text",
+   "title": "Admit the turn",
+   "say": "The chat service takes the session's admission lock and tries to claim its single active-run slot, so only one turn runs per conversation.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:28218, 28232, 28297, 8181; streaming twin: 28804, 28849, 28850",
+   "next": "chat.queue"
+  },
+  {
+   "id": "chat.queue",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Admission",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "enqueue_chat_message",
+   "line": 11298,
+   "carries": "queued message receipt",
+   "title": "Queue if busy",
+   "say": "If a turn is already running or a task is being watched, the message waits in a small queue, and a drain replays it once the session frees up.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:28249, 28300, 11298, 11465, 11489; magician-api/src/chat_api.rs:5016, 5359",
+   "next": "chat.persist.user"
+  },
+  {
+   "id": "chat.persist.user",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Admission",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "persist_user_turn",
+   "line": 27546,
+   "carries": "PreparedUserTurn",
+   "title": "Save the user's turn",
+   "say": "Under the session's turn lock, the service checks the session is writable and saves the user's words and attachments before any thinking starts.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:28369, 28380, 28525, 27314; streaming twin: 28909, 29088; branch at magician/src/magician_v2/chat/service.rs:27314",
+   "next": "chat.engine"
+  },
+  {
+   "id": "chat.engine",
+   "kind": "choice",
+   "level": "core",
+   "chapter": "Turn",
+   "title": "Who runs the turn",
+   "say": "Magician can think the turn with its own model loop, or hand it to an outside coding agent like Claude Code or Codex. Choose which to follow.",
+   "decidedBy": "chat.harness_engine in magician-config.yaml (seed and live default: magician), overridden per turn by the composer's harness_engine field, which chat_api encodes into the profile override; a harness that is not installed, a protected conversation, or a meeting, tutor, app-copilot or public-envoy surface falls back to Magician",
+   "evidence": "magician-config.yaml:2210; magician/src/config.rs:2433, 9598; magician-api/src/chat_api.rs:1245; magician/src/magician_v2/chat/service.rs:12005, 13549, 14053, 14152; magician/src/magician_v2/execution/plane/chat_turn.rs:544, 682, 692, 706, 736; magician/src/magician_v2/execution/plane/turn_engine.rs:104",
+   "options": [
+    {
+     "label": "Magician's own loop",
+     "say": "Magician builds the prompt, calls its own routed model, and runs the tools itself.",
+     "default": true,
+     "next": "chat.native.prompt"
+    },
+    {
+     "label": "An outside harness",
+     "say": "An installed agent CLI thinks the turn, and reaches back into Magician for every tool it uses.",
+     "next": "chat.harness.grant"
+    }
+   ]
+  },
+  {
+   "id": "chat.native.prompt",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Turn",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "process_chat_inline_turn_inner",
+   "line": 12109,
+   "carries": "system prompt + history + tool specs",
+   "title": "Build the turn",
+   "say": "The inline turn builds the system prompt, the conversation history and the allowed tools, then loops: decide, call the model, run tools, repeat.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:11989, 12107, 13463, 13484, 13497; branch at magician/src/magician_v2/chat/service.rs:12107",
+   "next": "chat.native.rail"
+  },
+  {
+   "id": "chat.native.rail",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Decide",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/decision_rail.rs",
+   "type": "ChatDecisionRail",
+   "fn": "prepare",
+   "line": 139,
+   "carries": "goal + history + tool specs",
+   "title": "Chat decision rail",
+   "say": "Each loop iteration, the chat decision rail packages the goal, history and tools as an action request for the Decision Engine.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:13463, 13555, 13566; magician/src/magician_v2/chat/decision_rail.rs:31, 41, 136, 159; branch at magician/src/magician_v2/chat/decision_rail.rs:136",
+   "next": "chat.native.decide"
+  },
+  {
+   "id": "chat.native.decide",
+   "kind": "call",
+   "target": "decision.start",
+   "next": "chat.native.verdict"
+  },
+  {
+   "id": "chat.native.verdict",
+   "kind": "choice",
+   "level": "core",
+   "chapter": "Decide",
+   "title": "The engine's say in chat",
+   "say": "The engine can step aside, ask the model for a planner pass, or pick the next tool call itself. Pick an outcome.",
+   "decidedBy": "the ChatDecision the rail returns: Bypass (engine off, guarded turn, or no opinion), Planner { system, prompt }, or Execute(ToolCall)",
+   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:41; magician/src/magician_v2/chat/service.rs:13584, 13595, 14422; magician/src/magician_v2/chat/decision_rail.rs:368",
+   "options": [
+    {
+     "label": "Steps aside",
+     "say": "The engine is off or has no opinion, so the chat model decides on its own.",
+     "default": true,
+     "next": "chat.native.llm"
+    },
+    {
+     "label": "Asks for a planner pass",
+     "say": "The engine hands the model a planner prompt so its answer is a proposal the engine will check.",
+     "next": "chat.native.llm"
+    },
+    {
+     "label": "Picks the tool call",
+     "say": "The engine selects the tool call itself, so this iteration skips the model and goes straight to dispatch.",
+     "next": "chat.tools"
+    }
+   ]
+  },
+  {
+   "id": "chat.native.llm",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Model",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/llm_service.rs",
+   "type": "ChatLlmService",
+   "fn": "generate_response_with_tools_streaming",
+   "line": 2674,
+   "carries": "ChatLlmResponse",
+   "title": "Frame the model request",
+   "say": "The chat model service turns the transcript and tool specs into a provider request for the chat profile, and streams the completion back.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:14431; magician/src/magician_v2/chat/llm_service.rs:446, 2364, 2674",
+   "next": "chat.native.repair"
+  },
+  {
+   "id": "chat.native.repair",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Model",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/llm_service.rs",
+   "type": "ChatLlmService",
+   "fn": "generate_response_streaming_with_repair_state",
+   "line": 2290,
+   "carries": "repair checkpoint",
+   "title": "Repair the tool protocol",
+   "say": "Before sending, the service repairs any broken tool-call pairing in the history and marks a checkpoint, so a provider never rejects a malformed transcript.",
+   "evidence": "magician/src/magician_v2/chat/llm_service.rs:2290, 2337, 2348, 2708, 2745, 1276",
+   "next": "chat.native.model"
+  },
+  {
+   "id": "chat.native.model",
+   "kind": "call",
+   "target": "llm.start",
+   "next": "chat.native.stream"
+  },
+  {
+   "id": "chat.native.stream",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Model",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "process_chat_inline_turn_inner",
+   "line": 12109,
+   "carries": "StreamDelta::Token",
+   "title": "Stream tokens out",
+   "say": "As text arrives, a delta callback forwards each token into the streaming channel, which the route writes out as server-sent token events.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:13836, 13847; magician-api/src/chat_api.rs:5379, 5382, 5384; branch at magician/src/magician_v2/chat/service.rs:12107",
+   "next": "chat.native.answer"
+  },
+  {
+   "id": "chat.native.answer",
+   "kind": "choice",
+   "level": "core",
+   "chapter": "Model",
+   "title": "The model's reply",
+   "say": "The model either answers in plain text, or asks to call one or more tools first. Choose which to follow.",
+   "decidedBy": "response.tool_calls.is_empty() after the rail's resolve_native check",
+   "evidence": "magician/src/magician_v2/chat/service.rs:15048, 15060, 15999; magician/src/magician_v2/chat/decision_rail.rs:273",
+   "options": [
+    {
+     "label": "Calls tools",
+     "say": "The model wants to look something up or act, so its tool calls go to the dispatcher.",
+     "default": true,
+     "next": "chat.tools"
+    },
+    {
+     "label": "Answers in text",
+     "say": "The model is done, so its text becomes the reply.",
+     "next": "chat.reply.persist"
+    }
+   ]
+  },
+  {
+   "id": "chat.harness.grant",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/plane/chat_turn.rs",
+   "type": "ChatHarnessTurnRequest",
+   "fn": "maybe_harness_chat_turn",
+   "line": 682,
+   "carries": "PlaneGrant -> plt_ token",
+   "title": "Mint a plane grant",
+   "say": "Magician builds a grant listing exactly which tools this turn may use, bridges its own chat tools onto it, and mints an opaque plt token for the harness.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:14079, 14152; magician/src/magician_v2/execution/plane/chat_turn.rs:682, 706, 798, 816, 837, 856; magician/src/magician_v2/execution/plane/grant.rs:3, 1113",
+   "next": "chat.harness.which"
+  },
+  {
+   "id": "chat.harness.which",
+   "kind": "choice",
+   "level": "core",
+   "chapter": "Harness",
+   "title": "Outside harnesses",
+   "say": "Six outside agents can sit in Magician's chair for a chat. Pick one to see how it plugs in.",
+   "decidedBy": "the engine name from chat.harness_engine or the composer's pick, built by harness_engine_for: claude_code, codex, codex_app_server, grok, agy or pi",
+   "evidence": "magician/src/magician_v2/execution/plane/engines/mod.rs:25; magician/src/magician_v2/execution/plane/turn_engine.rs:104; magician/src/magician_v2/execution/plane/chat_turn.rs:752, 908",
+   "options": [
+    {
+     "label": "Claude Code",
+     "say": "The Claude CLI runs headless with its own tools stripped and only Magician's plane as its MCP server.",
+     "next": "chat.harness.claude"
+    },
+    {
+     "label": "Codex exec",
+     "say": "One codex exec process per turn, resuming the conversation's thread from its private home.",
+     "next": "chat.harness.codex"
+    },
+    {
+     "label": "Codex app-server",
+     "say": "Codex speaks its app-server protocol, streaming text while it works.",
+     "default": true,
+     "next": "chat.harness.codexapp"
+    },
+    {
+     "label": "Grok",
+     "say": "The Grok CLI streams JSON lines, with the plane registered in an isolated config.",
+     "next": "chat.harness.grok"
+    },
+    {
+     "label": "Antigravity (agy)",
+     "say": "Antigravity runs in a private workspace with its own MCP registration for the plane.",
+     "next": "chat.harness.agy"
+    },
+    {
+     "label": "Pi",
+     "say": "Pi's RPC driver owns the process, with one extension that shows the grant's plane tools.",
+     "next": "chat.harness.pi"
+    }
+   ]
+  },
+  {
+   "id": "chat.harness.claude",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/plane/engines/claude_code.rs",
+   "type": "ClaudeCodeEngine",
+   "fn": "start",
+   "line": 160,
+   "carries": "HarnessSessionRequest",
+   "title": "Start Claude Code",
+   "say": "Magician writes a private MCP config pointing at its plane with the grant as bearer, then launches Claude in stream-json mode with strict MCP config.",
+   "evidence": "magician/src/magician_v2/execution/plane/engines/claude_code.rs:32, 61, 72, 74, 160, 216; magician/src/magician_v2/execution/plane/engine.rs:321",
+   "next": "chat.harness.door"
+  },
+  {
+   "id": "chat.harness.codex",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/plane/engines/codex.rs",
+   "type": "CodexExecEngine",
+   "fn": "start",
+   "line": 175,
+   "carries": "HarnessSessionRequest",
+   "title": "Start Codex exec",
+   "say": "Magician gives Codex an isolated home whose config names the plane as an MCP server, passes the grant through an environment variable, and runs codex exec.",
+   "evidence": "magician/src/magician_v2/execution/plane/engines/codex.rs:1, 51, 127, 142, 175",
+   "next": "chat.harness.door"
+  },
+  {
+   "id": "chat.harness.codexapp",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/plane/engines/codex_app_server.rs",
+   "type": "CodexAppServerEngine",
+   "fn": "start",
+   "line": 108,
+   "carries": "HarnessSessionRequest",
+   "title": "Start Codex app-server",
+   "say": "Magician spawns codex app-server under the coding sandbox, starts or resumes the conversation's thread, and taps each text delta into the chat stream.",
+   "evidence": "magician/src/magician_v2/execution/plane/engines/codex_app_server.rs:1, 15, 23, 54, 108",
+   "next": "chat.harness.door"
+  },
+  {
+   "id": "chat.harness.grok",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/plane/engines/grok.rs",
+   "type": "GrokEngine",
+   "fn": "start",
+   "line": 185,
+   "carries": "HarnessSessionRequest",
+   "title": "Start Grok",
+   "say": "Magician registers the plane in an isolated Grok config and runs grok headless, reading its streamed JSON lines as the reply.",
+   "evidence": "magician/src/magician_v2/execution/plane/engines/grok.rs:1, 48, 139, 153, 185",
+   "next": "chat.harness.door"
+  },
+  {
+   "id": "chat.harness.agy",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/plane/engines/agy.rs",
+   "type": "AgyEngine",
+   "fn": "start",
+   "line": 138,
+   "carries": "HarnessSessionRequest",
+   "title": "Start Antigravity",
+   "say": "Magician gives Antigravity a private workspace with its own MCP registration for the plane, leaving the operator's global config untouched.",
+   "evidence": "magician/src/magician_v2/execution/plane/engines/agy.rs:1, 27, 97, 126, 158; branch at magician/src/magician_v2/execution/plane/engines/agy.rs:158",
+   "next": "chat.harness.door"
+  },
+  {
+   "id": "chat.harness.pi",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/plane/engines/pi.rs",
+   "type": "PiPlaneEngine",
+   "fn": "start",
+   "line": 58,
+   "carries": "HarnessSessionRequest",
+   "title": "Start Pi",
+   "say": "Magician installs a temporary Pi home and runs Pi's RPC driver, with a single extension presenting the grant's plane tools and nothing else.",
+   "evidence": "magician/src/magician_v2/execution/plane/engines/pi.rs:1, 31, 58, 117",
+   "next": "chat.harness.door"
+  },
+  {
+   "id": "chat.harness.door",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician-api/src/plane_api.rs",
+   "type": null,
+   "fn": "plane_mcp_handler",
+   "line": 1241,
+   "carries": "JSON-RPC tools/call + plt_ bearer",
+   "title": "Hands knock on the plane door",
+   "say": "When the harness wants a tool, it calls Magician's plane MCP endpoint with its grant; the door resolves the grant and runs tools list or tools call.",
+   "evidence": "magician-bin/src/main.rs:11835, 13135; magician-api/src/plane_api.rs:1241, 1499, 580, 609, 613",
+   "next": "chat.harness.bridge"
+  },
+  {
+   "id": "chat.harness.bridge",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Harness",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/plane/dispatch.rs",
+   "type": null,
+   "fn": "bridged_dispatch",
+   "line": 709,
+   "carries": "bridged tool call",
+   "title": "Bridge back to chat tools",
+   "say": "A tool that belongs to the chat crosses the mouth bridge into the same chat dispatcher Magician's own loop uses, with the turn's context.",
+   "evidence": "magician/src/magician_v2/execution/plane/dispatch.rs:64, 210, 542, 547; magician/src/magician_v2/chat/service.rs:14079, 19199, 19225; branch at magician/src/magician_v2/execution/plane/dispatch.rs:542",
+   "next": "chat.tools"
+  },
+  {
+   "id": "chat.tools",
+   "kind": "choice",
+   "level": "core",
+   "chapter": "Tools",
+   "title": "Kinds of tools",
+   "say": "The chat dispatcher matches the tool name, checks approval and outward rules, then hands it to one of six kinds of tool. Pick the kind to follow.",
+   "decidedBy": "dispatch_chat_tool_call: built-in names (delegate_to_agent, handover_to_agent, spawn_sub_goal, …) match first, then chat runtime tools; a Compiled pack takes the in-process fast path unless an approval rule, an outward act, or executor policy forces the task-backed pack run, which is also where MCP and browser skills run",
+   "evidence": "magician/src/magician_v2/chat/service.rs:19275, 19469, 19470, 19483, 19495, 19579, 19643, 19673, 19738, 19762",
+   "options": [
+    {
+     "label": "Compiled skill, fast path",
+     "say": "An in-process Rust skill, such as memory search, runs directly without spinning up a task.",
+     "default": true,
+     "next": "chat.tool.compiled"
+    },
+    {
+     "label": "Built-in chat tool",
+     "say": "A chat-native tool, such as switching threads or reading a result, runs inside the chat service.",
+     "next": "chat.tool.builtin"
+    },
+    {
+     "label": "Skill run as a task",
+     "say": "A heavier or gated skill runs as a short internal task the chat waits on.",
+     "next": "chat.tool.pack"
+    },
+    {
+     "label": "MCP server tool",
+     "say": "A skill backed by an MCP server is called through Magician's governed MCP client.",
+     "next": "chat.tool.mcp"
+    },
+    {
+     "label": "Browser action",
+     "say": "A browser skill drives a real browser window tied to this chat thread.",
+     "next": "chat.tool.browse"
+    },
+    {
+     "label": "Delegate or hand over",
+     "say": "The chat hands work to another agent, or spawns a sub-goal, as its own task.",
+     "next": "chat.tool.delegate"
+    }
+   ]
+  },
+  {
+   "id": "chat.tool.compiled",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Tools",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/compiled_dispatch.rs",
+   "type": "CompiledProviderDispatch",
+   "fn": "try_dispatch_compiled_pack_with_guard",
+   "line": 503,
+   "carries": "ActionResult",
+   "title": "Compiled pack fast path",
+   "say": "If the pack is compiled Rust, its provider executes in process straight away; anything else returns nothing here and falls through to the task path.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:19738, 19869, 19961; magician/src/magician_v2/execution/compiled_dispatch.rs:495, 503, 512",
+   "next": "chat.tool.results"
+  },
+  {
+   "id": "chat.tool.builtin",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Tools",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "dispatch_chat_runtime_tool",
+   "line": 20192,
+   "carries": "tool result JSON",
+   "title": "Built-in chat tool",
+   "say": "Chat-native tools, like reading a stored result, switching threads or changing personality, run right inside the chat service against this session.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:19579, 19598, 20089; magician/src/magician_v2/chat/tools_runtime.rs:104, 187, 1612, 2076; branch at magician/src/magician_v2/chat/service.rs:20089",
+   "next": "chat.tool.results"
+  },
+  {
+   "id": "chat.tool.pack",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Tools",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "dispatch_capability_pack",
+   "line": 20390,
+   "carries": "internal V3 task (sync_mode Await)",
+   "title": "Skill runs as a task",
+   "say": "The chat creates a short internal task for the skill, waits on it, and shows its progress in the chat's activity card.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:19762, 20287, 20405, 20409, 20707; magician/src/magician_v2/chat/pack_direct.rs:1; branch at magician/src/magician_v2/chat/service.rs:20287",
+   "next": "chat.tool.pack.run"
+  },
+  {
+   "id": "chat.tool.mcp",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Tools",
+   "process": "magician",
+   "file": "magician/src/magician_v2/execution/primitive_dispatch/governed_mcp.rs",
+   "type": null,
+   "fn": "dispatch_governed_mcp",
+   "line": 52,
+   "carries": "MCP call_tool",
+   "title": "Call an MCP server",
+   "say": "For a skill backed by an MCP server, the governed runtime admits the call and the MCP client forwards it to the server's matching tool.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:19762; magician/src/magician_v2/execution/primitive_dispatch/capability_invoker.rs:467; magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs:151; magician/src/magician_v2/execution/primitive_dispatch/governed_mcp.rs:52, 409",
+   "next": "chat.tool.results"
+  },
+  {
+   "id": "chat.tool.browse",
+   "kind": "call",
+   "target": "browser.start",
+   "next": "chat.tool.results"
+  },
+  {
+   "id": "chat.tool.delegate",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Tools",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "dispatch_delegate_to_agent",
+   "line": 24062,
+   "carries": "delegated task",
+   "title": "Delegate to another agent",
+   "say": "Delegate, hand over and spawn sub-goal each launch a real task for another agent, whose progress streams back into this chat.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:19470, 19483, 19495, 23933, 24238, 24714, 25087; branch at magician/src/magician_v2/chat/service.rs:23933",
+   "next": "chat.tool.delegate.run"
+  },
+  {
+   "id": "chat.tool.results",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Tools",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "process_chat_inline_turn_inner",
+   "line": 12109,
+   "carries": "ChatLlmTranscriptEntry::ToolResult",
+   "title": "Results go back to the thinker",
+   "say": "Each result is appended to the history and handed back to whoever is thinking, which keeps calling tools until it answers in plain text.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:15999, 16343, 16356, 14388; magician/src/magician_v2/execution/plane/dispatch.rs:210; branch at magician/src/magician_v2/chat/service.rs:16356; branch at magician/src/magician_v2/chat/service.rs:12107",
+   "next": "chat.reply.persist"
+  },
+  {
+   "id": "chat.reply.persist",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Reply",
+   "process": "magician",
+   "file": "magician/src/magician_v2/chat/service.rs",
+   "type": "ChatService",
+   "fn": "persist_display_message",
+   "line": 26558,
+   "carries": "ChatMessageReceived",
+   "title": "Save and announce the reply",
+   "say": "The final reply is saved to the session and announced as a chat message received event on Magician's transport bus.",
+   "evidence": "magician/src/magician_v2/chat/service.rs:17037, 26326, 26365, 26366; magician/src/magician_v2/realtime_events.rs:301, 1100, 7202; branch at magician/src/magician_v2/chat/service.rs:26326",
+   "next": "chat.reply.ws"
+  },
+  {
+   "id": "chat.reply.ws",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Reply",
+   "process": "magician",
+   "file": "magician-api/src/websocket_handler.rs",
+   "type": "V2WebSocketSession",
+   "fn": "forward_hub_events",
+   "line": 497,
+   "carries": "SequencedTransportEvent",
+   "title": "Fan out over websockets",
+   "say": "Every open websocket for that scope receives the event, so other tabs and devices show the new message at once.",
+   "evidence": "magician-api/src/websocket_handler.rs:27, 401, 497, 824",
+   "next": "chat.reply.http"
+  },
+  {
+   "id": "chat.reply.http",
+   "kind": "step",
+   "level": "core",
+   "chapter": "Reply",
+   "process": "magician",
+   "file": "magician-api/src/chat_api.rs",
+   "type": "ChatApi",
+   "fn": "send_message_handler",
+   "line": 4900,
+   "carries": "ChatResponse",
+   "title": "Answer the request",
+   "say": "The streaming route closes with a done event carrying the full response; the plain route returns it as JSON, which the bot sends to its channel.",
+   "evidence": "magician-api/src/chat_api.rs:5018, 5443, 5455; skillshub/bots/sdk/src/magician-client.ts:369; branch at magician-api/src/chat_api.rs:4891",
+   "next": "chat.done"
+  },
+  {
+   "id": "chat.done",
+   "kind": "end",
+   "title": "Reply delivered",
+   "say": "One message: admitted, thought through by Magician or a harness, tools run, and the reply delivered to every listener."
+  },
+  {
+   "id": "chat.tool.pack.run",
+   "kind": "call",
+   "target": "task.start",
+   "next": "chat.tool.results"
+  },
+  {
+   "id": "chat.tool.delegate.run",
+   "kind": "call",
+   "target": "task.start",
+   "next": "chat.tool.results"
+  }
+ ]
+}

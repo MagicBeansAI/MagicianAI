@@ -1,0 +1,148 @@
+name: search_memory
+description: Hybrid (BM25 + vector) semantic search across eligible scoped tiers and native episodes, including ordinary conversations. Returns ranked source passages with speaker, date, revision and bounded adjacent context. Unindexed entries use keyword fallback; backend and source-read status distinguish degraded retrieval from an empty successful search. Use the evidence and its context when answering; a failed or degraded search cannot prove the user never supplied a fact.
+version: "1.6.0"
+result_projection:
+  contract_id: ranked_records_v1
+  records_paths:
+    - /matches
+  priority_fields:
+    - id
+    - key
+    - relationship
+    - value
+    - context
+    - passage
+    - status
+    - source
+    - confidence
+    - score
+  spoken_fields:
+    - speech_live
+    - voice_summary
+    - answer
+    - summary
+  atomic_field_groups:
+    - [relationship, value]
+guide: |
+  Tool name: `search_memory`
+
+  Use when you want to retrieve previously-stored memory items relevant to
+  a query — past preferences, environment knowledge, distilled insights, or
+  any item-level memory candidate the agent has accumulated.
+
+  ## Coverage
+
+  Searches every memory surface the agent has access to:
+
+  - **User-scope tiers** (per-principal, survive across all agents +
+    sessions): the `user_knowledge.json` blob covering preferences,
+    profile, skills, contacts, organization, accounts, channels,
+    routines, identity, workflows, research_findings — plus any
+    custom user-scope tier defined on the agent.
+  - **Agent-scope tiers** (per-(principal, agent_id)): `entities`,
+    `insights`, `archive`, `environment_knowledge`,
+    `personality_profile` (when seeded from the agent template),
+    plus any custom agent-scope tier.
+  - **Agent-goal-scope tiers** (per-(principal, agent_id, goal_id)):
+    `task_progress`, `recent_activity`, plus any custom goal-scoped
+    tier — across every goal that has saved entries for that tier.
+  - **Native episodes** (per-agent execution traces under
+    `memory/agents/<agent_id>/episodes/<id>.json`): one searchable
+    candidate per episode. Conversational episodes use complete sanitized
+    user and assistant sources with speaker labels. Legacy episodes retain
+    their available excerpts and a fidelity marker. Non-conversational
+    episodes retain outcome, task, strategy, context and observation fields.
+    Episodes match with `kind: "episode"` and
+    `semantic_memory_type: "episode"` plus a usually-cold
+    `temperature_tier` in the response; their `metadata` carries
+    `episode_id`, `goal_key`, `trigger_seq`, `outcome_kind`,
+    `task_title`, `completed_at`.
+
+  Tier candidates rank via the lancedb hybrid backend (BM25 + vector)
+  when the derived index is fresh — same backend the system prompt's
+  auto-injected `memory_tiers_block` uses, so explicit
+  `search_memory` calls match the automatic context the LLM already
+  sees every turn. Native episodes use the same hybrid index. Dense
+  embeddings represent source passages; exact lexical search also retains
+  identifiers. Unindexed candidates use keyword fallback over their
+  canonical text. Episode results return the matching passage, rather than
+  the head of the whole episode, plus bounded adjacent source passages and
+  genuine same-session turns. Other selected episodes are not duplicated
+  as context. Preserve speaker and correction context when interpreting
+  statements; an assistant suggestion is not a user assertion.
+
+  ### Filtering by surface
+
+  - `tier: "episodes"` → search only episodes.
+  - `tier: "<tier_name>"` (e.g. `"preferences"`, `"insights"`,
+    `"task_progress"`) → search only that tier.
+  - `tier: "user.<tier>"` → search only that user-scope tier.
+  - No `tier` → search everything (default).
+
+  ## Inputs
+
+  - `query` (required) — free-form search string. Semantic ranking
+    runs against every tier listed above.
+  - `tier` (optional) — restrict search to a single tier name (e.g.
+    `preferences`, `insights`, `environment_knowledge`,
+    `personality_profile`, `task_progress`). Defaults to all tiers.
+    `user.<name>` selects a user-scope tier explicitly.
+  - `limit` (optional) — max results, clamped to [1, 50]. Defaults
+    to 10.
+
+  Output:
+  - `status: "ok"`, `"partial"` or `"error"`, plus `query`, `count`,
+    `matches[]`, `backend` and `source_read_failed`. Partial results remain
+    usable, but source-read failures must be disclosed when relevant.
+  - `backend`: `"lancedb_hybrid"` when ranking came from the fused
+    BM25 + vector index; `"direct_keyword"` when the index was stale
+    or unavailable and keyword fallback ran. When `direct_keyword`, a
+    `fallback_reason` field on the response names the cause.
+  - Each match carries the originating tier, `semantic_memory_type`,
+    `temperature_tier`, the candidate's id / fields, a `score`
+    (float), and `score_backend` (`"lancedb_hybrid"` or `"keyword"`)
+    so the caller can tell which signal ranked this particular entry —
+    different entries in the same response may use different backends
+    when only some are indexed.
+  - Episode matches include passage character offsets, bounded `context`,
+    source identity/revision and capture time. Dates stated inside the source
+    describe events; capture time alone does not establish an event date.
+
+  Notes:
+  - Ranking is hybrid by default (same backend the system prompt's
+    `memory_tiers_block` uses), so explicit searches match the
+    automatic context the LLM already sees on every turn.
+  - Keyword fallback fires per-candidate: a newly-saved entry that
+    hasn't been indexed yet still surfaces if it matches the query
+    tokens.
+  - If memory resolver isn't configured for the scope, returns
+    `status: "error"` instead of silently dropping the call.
+  - An empty result under a failed or degraded backend does not establish
+    that the user never provided the information. Report the limitation or
+    retry retrieval instead of turning it into a confident negative claim.
+parameters:
+  - name: query
+    required: true
+    param_type: string
+    description: Free-form search string.
+  - name: tier
+    param_type: string
+    description: Optional tier name to restrict the search. Accepts `user.<name>` for explicit user-scope tier selection.
+    default: ""
+  - name: limit
+    param_type: integer
+    description: Maximum number of matches to return. Clamped to [1, 50]. Defaults to 10.
+    default: "10"
+implementation:
+  type: compiled
+  provider_name: search_memory
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - memory
+    - search
+    - retrieval
+    - introspection
+  composition_category: action
+  sandbox: none

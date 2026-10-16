@@ -1,0 +1,306 @@
+{
+  "fixture_id": "attention-cross-lane-identity-frozen-v1",
+  "schema_version": 1,
+  "contract": {
+    "identity_kind": "communication_thread",
+    "match_operator": "exact_typed_tuple_equality",
+    "typed_components": ["provider", "account_alias", "thread_id"],
+    "worth_source_kind": "comm",
+    "worth_ref_contract": "provider/account_alias/thread_id/message_id@occurred_at_ms",
+    "normalization": "validated_percent_decode_only",
+    "owner_on_exact_active_match": "follow_up",
+    "alias_origin": "worth_a_look",
+    "forbidden_match_signals": [
+      "title",
+      "summary",
+      "subject",
+      "sender",
+      "participants",
+      "message_text",
+      "embedding",
+      "semantic_similarity",
+      "llm_judgment"
+    ],
+    "malformed_ref_behavior": "reconciliation_unavailable_and_not_published",
+    "inactive_follow_up_behavior": "worth_a_look_reappears",
+    "alias_pipeline_admission": {
+      "ranked": false,
+      "grouped": false,
+      "routed": false,
+      "materialized": false
+    },
+    "alias_evidence": {
+      "durable": true,
+      "follow_up_owns_visible_card_and_actions": true,
+      "worth_origin_evidence_preserved": true,
+      "worth_feedback_history_preserved": true,
+      "worth_source_lifecycle_unchanged": true
+    }
+  },
+  "privacy_contract": {
+    "public_diagnostic_fields": [
+      "status",
+      "reason",
+      "raw_source_total",
+      "unique_source_total",
+      "duplicate_hidden_total",
+      "reconciliation_digest",
+      "duplicate_aliases"
+    ],
+    "public_aliases": {
+      "max_items": 100,
+      "identity": "canonical_origin_ids",
+      "item_fields": ["owner_canonical_id", "duplicate_canonical_id", "reason"],
+      "raw_identity_disclosed": false
+    },
+    "forbidden_public_identity_fields": [
+      "provider",
+      "account_alias",
+      "thread_id",
+      "message_id",
+      "source_ref",
+      "typed_identity",
+      "raw_identity"
+    ],
+    "durable_alias_identity": "persisted_canonical_projection_binding",
+    "raw_identity_in_logs": false
+  },
+  "accounting_contract": {
+    "equations": [
+      "raw_total=follow_up_raw_total+worth_a_look_raw_total",
+      "duplicate_hidden_total=worth_alias_total",
+      "reconciled_total=raw_total",
+      "raw_total=materialized_total+duplicate_hidden_total",
+      "raw_total=grouped_member_total+duplicate_hidden_total",
+      "grouped_representative_total+grouped_duplicate_member_total=grouped_member_total",
+      "lane_total=follow_up_lane_total+worth_a_look_lane_total+non_surfaced_total",
+      "lane_total=grouped_representative_total",
+      "duplicate_exposure_total=0"
+    ],
+    "alias_is_not_group_duplicate": true,
+    "alias_counted_once_in_raw_total": true,
+    "alias_excluded_before_rank_group_route": true
+  },
+  "scenarios": [
+    {
+      "case": "two_worth_messages_alias_one_active_follow_up_thread",
+      "reconciliation_status": "succeeded",
+      "follow_up": [
+        {
+          "id": "follow_up:fu-a",
+          "active": true,
+          "source_revision": "distill:11",
+          "typed_thread": {"provider": "gmail", "account_alias": "business", "thread_id": "thread-a"}
+        },
+        {
+          "id": "follow_up:fu-b",
+          "active": true,
+          "source_revision": "distill:7",
+          "typed_thread": {"provider": "gmail", "account_alias": "business", "thread_id": "thread-b"}
+        }
+      ],
+      "worth_a_look": [
+        {
+          "id": "worth_a_look:wa-a1",
+          "source_kind": "comm",
+          "source_revision": "content:a1",
+          "source_ref": "gmail/business/thread-a/message-1@1785200000000",
+          "expected": "alias"
+        },
+        {
+          "id": "worth_a_look:wa-a2",
+          "source_kind": "comm",
+          "source_revision": "content:a2",
+          "source_ref": "gmail/business/thread-a/message-2@1785201000000",
+          "expected": "alias"
+        },
+        {
+          "id": "worth_a_look:wa-c",
+          "source_kind": "comm",
+          "source_revision": "content:c1",
+          "source_ref": "gmail/business/thread-c/message-3@1785202000000",
+          "expected": "owner"
+        },
+        {
+          "id": "worth_a_look:wa-doc",
+          "source_kind": "document",
+          "source_revision": "content:d1",
+          "source_ref": "doc-77",
+          "expected": "owner"
+        }
+      ],
+      "durable_aliases": [
+        {"owner_canonical_id": "follow_up:fu-a", "duplicate_canonical_id": "worth_a_look:wa-a1", "reason": "exact_source_identity"},
+        {"owner_canonical_id": "follow_up:fu-a", "duplicate_canonical_id": "worth_a_look:wa-a2", "reason": "exact_source_identity"}
+      ],
+      "counts": {
+        "follow_up_raw_total": 2,
+        "worth_a_look_raw_total": 4,
+        "raw_total": 6,
+        "worth_alias_total": 2,
+        "duplicate_hidden_total": 2,
+        "reconciled_total": 6,
+        "materialized_total": 4,
+        "grouped_member_total": 4,
+        "grouped_representative_total": 4,
+        "grouped_duplicate_member_total": 0,
+        "follow_up_lane_total": 2,
+        "worth_a_look_lane_total": 2,
+        "non_surfaced_total": 0,
+        "lane_total": 4,
+        "duplicate_exposure_total": 0
+      },
+      "ranked_grouped_routed_materialized_ids": [
+        "follow_up:fu-a",
+        "follow_up:fu-b",
+        "worth_a_look:wa-c",
+        "worth_a_look:wa-doc"
+      ],
+      "universe_digest": "5ab92fe9cb31a36bb90461f64fc27da9dd364bf6968d3f5a780498e51dbd6231"
+    },
+    {
+      "case": "similar_content_different_thread_is_not_collapsed",
+      "reconciliation_status": "succeeded",
+      "same_title": true,
+      "same_summary": true,
+      "embedding_cosine_similarity": 0.999,
+      "follow_up_thread": {"provider": "gmail", "account_alias": "business", "thread_id": "thread-invoice-41"},
+      "worth_thread": {"provider": "gmail", "account_alias": "business", "thread_id": "thread-invoice-42"},
+      "expected_alias": false,
+      "counts": {
+        "follow_up_raw_total": 1,
+        "worth_a_look_raw_total": 1,
+        "raw_total": 2,
+        "worth_alias_total": 0,
+        "duplicate_hidden_total": 0,
+        "reconciled_total": 2,
+        "materialized_total": 2,
+        "grouped_member_total": 2,
+        "grouped_representative_total": 2,
+        "grouped_duplicate_member_total": 0,
+        "follow_up_lane_total": 1,
+        "worth_a_look_lane_total": 1,
+        "non_surfaced_total": 0,
+        "lane_total": 2,
+        "duplicate_exposure_total": 0
+      },
+      "universe_digest": "1554ae11e65d6f7c981e20403ad9c4c7585e7bef897701724a5158ac52174c8b"
+    },
+    {
+      "case": "worth_alias_reappears_after_follow_up_inactive",
+      "reconciliation_status": "succeeded",
+      "durable_alias_id": "alias-digest-a1",
+      "follow_up_active": false,
+      "worth_source_active": true,
+      "expected_alias": false,
+      "worth_materialized": true,
+      "worth_reappeared": true,
+      "counts": {
+        "follow_up_raw_total": 0,
+        "worth_a_look_raw_total": 1,
+        "raw_total": 1,
+        "worth_alias_total": 0,
+        "duplicate_hidden_total": 0,
+        "reconciled_total": 1,
+        "materialized_total": 1,
+        "grouped_member_total": 1,
+        "grouped_representative_total": 1,
+        "grouped_duplicate_member_total": 0,
+        "follow_up_lane_total": 0,
+        "worth_a_look_lane_total": 1,
+        "non_surfaced_total": 0,
+        "lane_total": 1,
+        "duplicate_exposure_total": 0
+      },
+      "universe_digest": "d894b68aed2fa1922f087990c92672678e5717e67a6ef5acdde47b848cce7879"
+    },
+    {
+      "case": "malformed_comm_ref_never_collapses",
+      "reconciliation_status": "unavailable",
+      "reason": "malformed_worth_comm_source_ref",
+      "refs": [
+        "gmail/business/thread-a",
+        "gmail//thread-a/message@1785200000000",
+        "gmail/business/%ZZ/message@1785200000000",
+        "gmail/business/thread-a/message@not-a-timestamp"
+      ],
+      "parsed_identity_count": 0,
+      "expected_alias_count": 0,
+      "malformed_diagnostic_count": 4,
+      "malformed_identity_disclosed": false,
+      "canonical_projection_published": false,
+      "partial_projection_published": false,
+      "legacy_worth_guard": {
+        "state": "unavailable",
+        "enforced_server_side": true,
+        "http_status": 503,
+        "cards_returned": 0,
+        "comm_candidates_admitted": 0,
+        "non_comm_candidates_admitted": 0
+      },
+      "universe_digest": "6bb5f395fe263cbf6a98483fc7e0413d9e11615e3e410c57cd9eb1a153cebd43"
+    },
+    {
+      "case": "typed_identity_or_revision_change_changes_digest",
+      "reconciliation_status": "succeeded",
+      "base_digest": "d790788e203b757ba7d3a52a29a2f0905b82d4a7e2280093f3ec12b13ce41e43",
+      "alias_added_digest": "cb4ec5d4c307888d7345b32d14dd434ca44ae4ba476b5a17a6bc0126c6bd5f1c",
+      "owner_revision_changed_digest": "885ee5e43b01f6e3e21f15cd0059b65baa9c7013a21a337c0c378561fe54b2a9",
+      "origin_revision_changed_digest": "3905f74eb5541570f4bfcc5bb2147160eb987bb6988b1ecc210fdcf8f52499c3",
+      "all_digests_distinct": true
+    },
+    {
+      "case": "reconciliation_unavailable_fails_closed",
+      "reconciliation_status": "unavailable",
+      "reason": "follow_up_load_unavailable",
+      "canonical_projection_published": false,
+      "partial_projection_published": false,
+      "visible_diagnostic": true,
+      "public_raw_identity_disclosed": false,
+      "legacy_worth_guard": {
+        "enforced_server_side": true,
+        "http_status": 503,
+        "cards_returned": 0,
+        "comm_candidates_admitted": 0,
+        "non_comm_candidates_admitted": 0,
+        "guard_reason": "follow_up_load_unavailable"
+      },
+      "paging": {
+        "page_size": 1,
+        "page_ids": [],
+        "displayed_ids_exact_once": true,
+        "duplicate_exposure_total": 0
+      }
+    }
+  ],
+  "paging_contract": {
+    "reconcile_before_pagination": true,
+    "canonical_aliases_never_enter_cursor_order": true,
+    "legacy_raw_cursor_advances_across_aliases": true,
+    "legacy_hidden_aliases_consume_visible_slot": false,
+    "legacy_response_total_uses_reconciled_visible_total": true,
+    "stable_retry_no_skip_or_duplicate": true,
+    "displayed_ids_exact_once_across_pages": true,
+    "server_legacy_worth_guard_required": true,
+    "client_dedupe_is_not_authoritative": true
+  },
+  "legacy_health_contract": {
+    "global_fields": [
+      "raw_source_total",
+      "visible_source_total",
+      "duplicate_hidden_total"
+    ],
+    "page_fields": [
+      "raw_scanned_total",
+      "visible_page_total",
+      "duplicate_hidden_page_total"
+    ],
+    "equations": [
+      "raw_source_total=visible_source_total+duplicate_hidden_total",
+      "raw_scanned_total=visible_page_total+duplicate_hidden_page_total",
+      "visible_page_total=returned_card_total",
+      "response_total=visible_source_total"
+    ],
+    "unavailable_counts": "null"
+  }
+}

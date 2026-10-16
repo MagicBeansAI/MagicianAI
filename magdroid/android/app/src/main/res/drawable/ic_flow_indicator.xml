@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+
+    <!-- Data flow indicator with wave pattern -->
+    <!-- Outer wave ring -->
+    <path
+        android:fillAlpha="0.2"
+        android:strokeColor="@color/primary"
+        android:strokeWidth="2"
+        android:pathData="M16,4 Q20,8 16,12 Q12,16 16,20 Q20,24 16,28"
+        android:strokeLineCap="round" />
+
+    <!-- Middle wave -->
+    <path
+        android:fillAlpha="0.4"
+        android:strokeColor="@color/primary"
+        android:strokeWidth="2"
+        android:pathData="M16,8 Q18,12 16,16 Q14,20 16,24"
+        android:strokeLineCap="round" />
+
+    <!-- Center pulse -->
+    <path
+        android:fillColor="@color/accent"
+        android:pathData="M16,14 Q17,15 16,16 Q15,17 16,18 Q17,19 16,20 Q15,21 16,22 L16,14 Z" />
+
+    <!-- Connection dots -->
+    <circle
+        android:fillColor="@color/primary"
+        cx="16"
+        cy="12"
+        r="2" />
+
+    <circle
+        android:fillColor="@color/accent"
+        cx="16"
+        cy="20"
+        r="2" />
+
+    <!-- Flow arrows -->
+    <path
+        android:strokeColor="@color/primary"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M13,10 L16,7 L19,10" />
+
+    <path
+        android:strokeColor="@color/accent"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M19,22 L16,25 L13,22" />
+</vector>

@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "one_pending_claim",
+      "entity": "claim_summary",
+      "value": {
+        "claim_id": "claim_01",
+        "status": "pending",
+        "claim_text": "We will send the revised proposal on Friday.",
+        "speaker_name": "Owner",
+        "audience_kind": "engagement",
+        "audience_id": "room_acme_review",
+        "context_excerpt": null,
+        "expected_revision": 3,
+        "created_at": "2026-08-29T09:00:00Z",
+        "synced_at": "2026-08-29T09:05:00Z"
+      }
+    },
+    {
+      "name": "one_claim_detail",
+      "entity": "claim_detail",
+      "value": {
+        "claim_id": "claim_01",
+        "transcript_id": "transcript_01",
+        "utterance_id": "utterance_12",
+        "speaker_id": "owner",
+        "speaker_name": "Owner",
+        "claim_text": "We will send the revised proposal on Friday.",
+        "prior_context": null,
+        "following_context": null,
+        "audience_kind": "engagement",
+        "audience_id": "room_acme_review",
+        "extractor_id": "claims-extractor-v1",
+        "expected_revision": 3,
+        "created_at": "2026-08-29T09:00:00Z",
+        "synced_at": "2026-08-29T09:05:00Z"
+      }
+    },
+    {
+      "name": "one_unconfirmed_commitment",
+      "entity": "commitment",
+      "value": {
+        "term_id": "term_01",
+        "status": "unconfirmed",
+        "direction": "stated_by_us",
+        "term_text": "Send the revised proposal on Friday.",
+        "audience_kind": "engagement",
+        "audience_id": "room_acme_review",
+        "named_person": null,
+        "source_claim_id": null,
+        "expected_revision": 1,
+        "created_at": "2026-08-29T09:10:00Z",
+        "synced_at": "2026-08-29T09:12:00Z"
+      }
+    },
+    {
+      "name": "one_evidence_record",
+      "entity": "evidence_record",
+      "value": {
+        "record_id": "evidence_01",
+        "state": "corrected",
+        "summary": "The delivery date was corrected from Thursday to Friday.",
+        "created_at": "2026-08-29T09:20:00Z",
+        "synced_at": "2026-08-29T09:21:00Z"
+      }
+    },
+    {
+      "name": "one_evidence_entity",
+      "entity": "evidence_entity",
+      "value": {
+        "entity_key": "organization:acme",
+        "entity_kind": "organization",
+        "label": "Acme",
+        "synced_at": "2026-08-29T09:21:00Z"
+      }
+    },
+    {
+      "name": "one_recorded_decision",
+      "entity": "review_decision",
+      "value": {
+        "request_id": "claims-review-intent:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "decision_id": null,
+        "target_kind": "claim",
+        "target_id": "claim_01",
+        "decision": "confirm_claim",
+        "expected_revision": 3,
+        "actor_ref": null,
+        "reason": "The transcript context and audience are correct.",
+        "payload_json": "{\"claim_id\":\"claim_01\",\"expected_revision\":3,\"reason\":\"The transcript context and audience are correct.\",\"request_id\":\"claims-review-intent:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}",
+        "apply_state": "recorded",
+        "decided_at": "2026-08-29T09:25:00Z"
+      }
+    },
+    {
+      "name": "one_signed_receipt",
+      "entity": "review_receipt",
+      "value": {
+        "receipt_id": "receipt_01",
+        "decision_id": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "target_kind": "claim",
+        "target_id": "claim_01",
+        "outcome": "applied",
+        "actor_ref": "actor:owner-fingerprint",
+        "destination_revision": 4,
+        "error_code": null,
+        "applied_at": "2026-08-29T09:25:01Z"
+      }
+    },
+    {
+      "name": "one_structured_ingest",
+      "entity": "ingest_request",
+      "value": {
+        "ingest_id": "ingest_01",
+        "transcript_text": "[owner] We will send the revised proposal on Friday.\n[client] That works for us.",
+        "speaker_mapping_json": "{\"speakers\":{\"owner\":\"Owner\",\"client\":\"Priya\"},\"utterances\":[{\"speaker\":\"owner\",\"text\":\"We will send the revised proposal on Friday.\"},{\"speaker\":\"client\",\"text\":\"That works for us.\"}]}",
+        "audience_kind": "engagement",
+        "audience_id": "room_acme_review",
+        "outwardness_reason": "This was a client-facing proposal review.",
+        "actor_ref": "person:owner",
+        "apply_state": "applied",
+        "act_ref": "act:transcript-ingest:01",
+        "submitted_at": "2026-08-29T08:55:00Z"
+      }
+    },
+    {
+      "name": "current_claim_page",
+      "entity": "claim_sync_page",
+      "value": {
+        "page_id": "current",
+        "after_claim_id": null,
+        "next_cursor": "claim_01",
+        "claim_ids_json": "[\"claim_01\"]",
+        "synced_at": "2026-09-27T10:00:00Z"
+      }
+    }
+  ],
+  "workflows": [],
+  "views": [
+    {
+      "name": "pending_claims_with_record",
+      "view": "pending_claims",
+      "minimum_records": 1
+    },
+    {
+      "name": "claim_context_with_record",
+      "view": "claim_context",
+      "minimum_records": 1
+    },
+    {
+      "name": "commitments_with_record",
+      "view": "commitments",
+      "minimum_records": 1
+    },
+    {
+      "name": "evidence_history_with_record",
+      "view": "evidence_history",
+      "minimum_records": 1
+    },
+    {
+      "name": "entity_context_with_record",
+      "view": "entity_context",
+      "minimum_records": 1
+    },
+    {
+      "name": "decisions_with_record",
+      "view": "decisions",
+      "minimum_records": 1
+    },
+    {
+      "name": "receipts_with_record",
+      "view": "receipts",
+      "minimum_records": 1
+    },
+    {
+      "name": "ingests_with_record",
+      "view": "ingests",
+      "minimum_records": 1
+    },
+    {
+      "name": "sync_status_with_record",
+      "view": "sync_status",
+      "minimum_records": 1
+    }
+  ]
+}

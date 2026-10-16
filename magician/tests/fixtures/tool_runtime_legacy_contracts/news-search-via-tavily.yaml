@@ -1,0 +1,166 @@
+name: news-search-via-tavily
+version: 0.1.0
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: Search query
+- name: search_depth
+  param_type: string
+  description: ultra-fast (lowest latency), fast (quick, multi-snippet), basic (balanced, default), advanced (highest relevance, 2 credits)
+  default: basic
+- name: topic
+  param_type: string
+  description: general, news, or finance
+  default: general
+- name: time_range
+  param_type: string
+  description: 'Recency filter: day, week, month, or year'
+- name: start_date
+  param_type: string
+  description: Only results after this date (YYYY-MM-DD) — for precise date ranges
+- name: end_date
+  param_type: string
+  description: Only results before this date (YYYY-MM-DD)
+- name: max_results
+  param_type: integer
+  description: Maximum number of results to return (1-20)
+  default: '5'
+- name: include_raw_content
+  param_type: string
+  description: 'Include full page content per result: false, true, markdown, or text'
+  default: 'false'
+- name: include_answer
+  param_type: string
+  description: 'Generate LLM answer summary: false, true/basic (quick), or advanced (detailed)'
+  default: 'false'
+- name: chunks_per_source
+  param_type: integer
+  description: 'For advanced search only: number of content chunks to return per source'
+- name: auto_parameters
+  param_type: boolean
+  description: Allow Tavily to tune retrieval parameters automatically
+  default: 'false'
+- name: exact_match
+  param_type: boolean
+  description: Highly restrictive exact-match retrieval. Use only after broad discovery confirms the exact entity/title.
+  default: 'false'
+- name: include_domains
+  param_type: string
+  description: Comma-separated list of domains to restrict search to
+- name: exclude_domains
+  param_type: string
+  description: Comma-separated list of domains to exclude
+- name: timeout_secs
+  param_type: integer
+  description: Request timeout in seconds
+  default: '35'
+native_action_schemas:
+  run:
+    description: Run the tavily_search capability with the arguments selected from this capability guide. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after the requested result is present.
+    parameters:
+    - query
+    - search_depth
+    - topic
+    - time_range
+    - start_date
+    - end_date
+    - max_results
+    - include_raw_content
+    - include_answer
+    - chunks_per_source
+    - auto_parameters
+    - exact_match
+    - include_domains
+    - exclude_domains
+    - timeout_secs
+    required:
+    - query
+    parameter_overrides:
+      query:
+        type: string
+        description: Search query
+      search_depth:
+        type: string
+        description: ultra-fast (lowest latency), fast (quick, multi-snippet), basic (balanced, default), advanced (highest relevance, 2 credits)
+        default: basic
+      topic:
+        type: string
+        description: general, news, or finance
+        default: general
+      time_range:
+        type: string
+        description: 'Recency filter: day, week, month, or year'
+      start_date:
+        type: string
+        description: Only results after this date (YYYY-MM-DD) — for precise date ranges
+      end_date:
+        type: string
+        description: Only results before this date (YYYY-MM-DD)
+      max_results:
+        type: integer
+        description: Maximum number of results to return (1-20)
+        default: '5'
+      include_raw_content:
+        type: string
+        description: 'Include full page content per result: false, true, markdown, or text'
+        default: 'false'
+      include_answer:
+        type: string
+        description: 'Generate LLM answer summary: false, true/basic (quick), or advanced (detailed)'
+        default: 'false'
+      chunks_per_source:
+        type: integer
+        description: 'For advanced search only: number of content chunks to return per source'
+      auto_parameters:
+        type: boolean
+        description: Allow Tavily to tune retrieval parameters automatically
+        default: 'false'
+      exact_match:
+        type: boolean
+        description: Highly restrictive exact-match retrieval. Use only after broad discovery confirms the exact entity/title.
+        default: 'false'
+      include_domains:
+        type: string
+        description: Comma-separated list of domains to restrict search to
+      exclude_domains:
+        type: string
+        description: Comma-separated list of domains to exclude
+      timeout_secs:
+        type: integer
+        description: Request timeout in seconds
+        default: '35'
+    skip_tool_name: true
+    timeout_secs: 35
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_QUERY: '{query}'
+    _TOOL_SEARCH_DEPTH: '{search_depth}'
+    _TOOL_TOPIC: '{topic}'
+    _TOOL_MAX_RESULTS: '{max_results}'
+    _TOOL_INCLUDE_RAW_CONTENT: '{include_raw_content}'
+    _TOOL_INCLUDE_ANSWER: '{include_answer}'
+    _TOOL_CHUNKS_PER_SOURCE: '{chunks_per_source}'
+    _TOOL_AUTO_PARAMETERS: '{auto_parameters}'
+    _TOOL_EXACT_MATCH: '{exact_match}'
+    _TOOL_TIME_RANGE: '{time_range}'
+    _TOOL_START_DATE: '{start_date}'
+    _TOOL_END_DATE: '{end_date}'
+    _TOOL_INCLUDE_DOMAINS: '{include_domains}'
+    _TOOL_EXCLUDE_DOMAINS: '{exclude_domains}'
+    _TOOL_TIMEOUT_SECS: '{timeout_secs}'
+  timeout_secs: 35
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 35
+  categories:
+  - web
+  - search
+  - research
+  - news
+  composition_category: web_operations
+  sandbox: shell

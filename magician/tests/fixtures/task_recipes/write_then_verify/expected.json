@@ -1,0 +1,1 @@
+{"compile":"ok","steps":2,"inputs":["sku"],"data_flows":1,"write_steps":1,"verify_with_steps":1,"answer_fields":["total"],"template":"add {sku} to my cart","replay":{"inputs":{"sku":"sku-1000"},"answer":{"total":"40.00"},"grant_writes":true},"must_not_contain":[],"known_failing":null}

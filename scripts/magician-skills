@@ -1,0 +1,117 @@
+#!/bin/sh
+# magician-skills — thin CLI wrapper around skillshub Makefile + introspector.
+#
+# Subcommands:
+#   list                       Show installed system skills.
+#   list --scope <id>          Include workspace-layer skills for a scope.
+#   list --source              Show source skills under skillshub/ (preview).
+#   list --json                Emit machine-readable JSON.
+#   validate                   Validate every SKILL.md frontmatter.
+#   install                    Install all skillshub/ skills to anonymous/default.
+#   install --scope <id>       Install to a specific live workspace.
+#   help                       Show this message.
+#
+# Always runs against the magician repo root containing skillshub/. Find
+# the repo root by walking up from this script.
+
+set -e
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+SKILLSHUB="$REPO_ROOT/skillshub"
+DATA_ROOT=${MAGICIAN_ROOT_DIR:-${MAGICIAN_STORAGE_PATH:-$HOME/MagicianNotes}}
+
+if [ ! -d "$SKILLSHUB" ]; then
+    echo "magician-skills: $SKILLSHUB not found — run from the magician monorepo" >&2
+    exit 2
+fi
+
+usage() {
+    cat <<'EOF'
+magician-skills — thin CLI wrapper around skillshub Makefile + introspector.
+
+Subcommands:
+  list                       Show installed system skills.
+  list --scope <id>          Include workspace-layer skills for a scope.
+  list --source              Show source skills under skillshub/ (preview).
+  list --json                Emit machine-readable JSON.
+  validate                   Validate every SKILL.md frontmatter.
+  install                    Install all skillshub/ skills to anonymous/default.
+  install --scope <id>       Install to a specific live workspace (e.g. anonymous/default).
+  help                       Show this message.
+EOF
+}
+
+cmd=${1:-help}
+shift || true
+
+case "$cmd" in
+    list)
+        scope=""
+        source_only=""
+        json_flag=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --scope)
+                    scope=$2
+                    shift 2 || break
+                    ;;
+                --source)
+                    source_only="--source-only"
+                    shift
+                    ;;
+                --json)
+                    json_flag="--json"
+                    shift
+                    ;;
+                *)
+                    echo "magician-skills list: unknown flag '$1'" >&2
+                    exit 2
+                    ;;
+            esac
+        done
+        if [ -n "$source_only" ]; then
+            python3 "$SKILLSHUB/scripts/list_skills.py" --data-root "$DATA_ROOT" $source_only $json_flag
+        elif [ -n "$scope" ]; then
+            python3 "$SKILLSHUB/scripts/list_skills.py" --data-root "$DATA_ROOT" --scope "$scope" $json_flag
+        else
+            python3 "$SKILLSHUB/scripts/list_skills.py" --data-root "$DATA_ROOT" $json_flag
+        fi
+        ;;
+
+    validate)
+        make -C "$SKILLSHUB" validate
+        ;;
+
+    install)
+        scope=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --scope)
+                    scope=$2
+                    shift 2 || break
+                    ;;
+                *)
+                    echo "magician-skills install: unknown flag '$1'" >&2
+                    exit 2
+                    ;;
+            esac
+        done
+        if [ -n "$scope" ]; then
+            make -C "$SKILLSHUB" install-scope SCOPE="$scope" DATA_ROOT="$DATA_ROOT"
+        else
+            make -C "$SKILLSHUB" install-scope SCOPE="anonymous/default" DATA_ROOT="$DATA_ROOT"
+        fi
+        ;;
+
+    help|--help|-h)
+        usage
+        ;;
+
+    *)
+        echo "magician-skills: unknown subcommand '$cmd'" >&2
+        echo "" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

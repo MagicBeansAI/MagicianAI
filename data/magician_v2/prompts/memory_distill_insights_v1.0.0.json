@@ -1,0 +1,69 @@
+{
+  "name": "memory_distill_insights",
+  "version": "1.0.0",
+  "content": [
+    "Consolidate and deduplicate the following collection of raw insights.",
+    "",
+    "## Source Insights ({tier_count} tiers)",
+    "{source_json}",
+    "",
+    "## Target Tier Schema",
+    "{tier_schema}",
+    "",
+    "## Instructions",
+    "1. Identify insights that describe the same or overlapping patterns",
+    "2. Merge overlapping insights into a single refined version",
+    "3. When merging, keep the more specific and higher-confidence formulation",
+    "4. Sum evidence counts from merged insights",
+    "5. Detect conflicting insights and list them separately",
+    "6. Drop insights that fall below 0.3 confidence after merge",
+    "7. When newer evidence explicitly supersedes an older value, keep only the current value in the active insight; do not repeat the obsolete value in parentheses or explanatory history",
+    "8. Conform the output to the target tier schema provided above",
+    "",
+    "## Merge Strategy",
+    "- Two insights overlap if they describe the same entity preference or behavioral pattern",
+    "- Prefer specificity: \"prefers VS Code for Python\" beats \"prefers VS Code\"",
+    "- Resolve temporal conflicts by preferring the more recent evidence",
+    "- If two insights genuinely contradict, do not merge — list as conflict",
+    "",
+    "Return the JSON object as specified by your system prompt.",
+    "",
+    "Respond with ONLY valid JSON. No markdown, no code blocks, no prose."
+  ],
+  "variables": [
+    {
+      "name": "source_json",
+      "description": "JSON-serialized array of raw insights to consolidate and deduplicate",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "[{\"insight\": \"User prefers dark mode\", \"confidence\": 0.8, \"evidence_count\": 5}, {\"insight\": \"User always enables dark theme\", \"confidence\": 0.7, \"evidence_count\": 3}]"
+      ]
+    },
+    {
+      "name": "tier_schema",
+      "description": "JSON schema describing the target tier structure for distilled insights",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "{\"insights\": {\"type\": \"collection\", \"item_schema\": {\"pattern\": {\"type\": \"text\"}, \"confidence\": {\"type\": \"text\"}}}}"
+      ]
+    },
+    {
+      "name": "tier_count",
+      "description": "Number of memory tiers the insights were collected from",
+      "required": true,
+      "default_value": "0",
+      "examples": ["2", "5"]
+    }
+  ],
+  "metadata": {
+    "category": "MemoryConsolidation",
+    "description": "User prompt instructing the LLM to consolidate and deduplicate raw insights. Merges overlapping patterns, detects conflicts, and produces a refined insight set.",
+    "author": "magician",
+    "created_at": "2026-03-04T00:00:00Z",
+    "changelog": "v1.0.0: Initial insight distillation user prompt for memory consolidation pipeline.",
+    "tags": ["memory", "consolidation", "insight-distillation", "deduplication"],
+    "estimated_tokens": 230
+  }
+}

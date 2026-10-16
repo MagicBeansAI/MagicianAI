@@ -1,0 +1,92 @@
+name: memory_data
+description: Read-only, owner-granted access to the owner's memory from inside an app, limited to what the owner allowed for this run.
+version: "1.0.0"
+guide: |-
+  Tool name: `memory_data`
+
+  This is the read-only host binder an app uses to read the owner's memory.
+  It works only inside an app's own workflow, and it returns only what the
+  owner granted this app for the current run: named user tiers (facts about
+  the owner, such as preferences or contacts) and named agents' learned
+  memory, plus memory this app itself contributed. What the app may read
+  while the owner is using it and what its background behaviors may read are
+  granted separately; background access is empty unless the owner allowed it.
+  The owner can narrow or revoke the grant at any time, and the next read
+  obeys it.
+
+  It never returns engagement- or meeting-bound memory, never another app's
+  memory, and never file paths or raw metadata. It cannot write memory.
+
+  Actions (exactly two):
+
+  - `search_memory {query, limit?}` returns the best keyword matches among the
+    memory this app may read. Each match has an opaque `key`, its scope
+    (`user`, `agent`, `agent_goal`), tier, agent (for agent memory), value,
+    last-updated time, and origin (`granted` or `own_app`).
+  - `read_entry {key}` returns one entry a search returned, or
+    `present: false` when it is gone or no longer granted.
+
+  Queries need at least two characters, results are capped at 50, values are
+  bounded, serialized results fail closed above 512 KiB, and every call has a
+  30-second timeout.
+parameters:
+  - name: action
+    param_type: string
+    description: Optional direct action name. Inner-loop calls set this automatically.
+    enum_values:
+      - search_memory
+      - read_entry
+  - name: principal
+    param_type: string
+    description: Optional assertion that must match the runtime-injected principal.
+  - name: workspace
+    param_type: string
+    description: Optional assertion that must match the runtime-injected workspace.
+  - name: query
+    param_type: string
+    description: Words to search the granted memory for (at least two characters).
+  - name: limit
+    param_type: integer
+    description: Maximum matches, default 10 and capped at 50.
+  - name: key
+    param_type: string
+    description: A key returned by search_memory, for read_entry.
+native_action_schemas:
+  search_memory:
+    description: Search the owner memory this app may read.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - query
+      - limit
+    required:
+      - query
+    parameter_overrides:
+      query: {type: string, minLength: 2, maxLength: 256}
+      limit: {type: integer, minimum: 1, maximum: 50, default: 10}
+    timeout_secs: 30
+  read_entry:
+    description: Read one memory entry a search returned, or learn it is not readable.
+    reliability:
+      read_only: true
+      idempotent: true
+    parameters:
+      - key
+    required:
+      - key
+    parameter_overrides:
+      key: {type: string, minLength: 1, maxLength: 2048}
+    timeout_secs: 30
+implementation:
+  type: primitive
+  provider_name: memory_data
+  timeout_secs: 30
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+    - memory
+    - host_read
+  composition_category: observation
+  sandbox: none

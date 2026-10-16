@@ -1,0 +1,399 @@
+{
+  "fixture_id": "attention-multi-page-delivery-frozen-v1",
+  "schema_version": 1,
+  "api_contract": {
+    "method": "GET",
+    "path": "/api/magician/v2/channel-assist/attention-learning/canonical-deliveries/{lane}",
+    "lanes": ["follow_up", "worth_a_look"],
+    "first_page_query": ["principal", "workspace", "page_size"],
+    "later_page_query": ["principal", "workspace", "cursor"],
+    "success_status": 200,
+    "refresh_required_status": 409,
+    "impression_path": "/api/magician/v2/channel-assist/attention-learning/impressions"
+  },
+  "defaults": {
+    "bandit_mode": "disabled",
+    "bandit_snapshot_id": null,
+    "bandit_canary_fraction": 0.0,
+    "delivery_default_page_size": 50,
+    "delivery_max_page_size": 200,
+    "delivery_ttl_secs": 900,
+    "delivery_retention_days": 30,
+    "min_visible_ms": 1000,
+    "visibility_rule_version": "attention-visible-dwell-v1"
+  },
+  "canonical_binding": {
+    "principal": "owner",
+    "workspace": "default",
+    "projection_id": "projection-delivery-fixture-v1",
+    "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111",
+    "policy_snapshot_id": "bandit-delivery-fixture-v1",
+    "policy_model_version": "bayesian-linear-delivery-fixture-v1",
+    "posterior_version": 17,
+    "seed_identity": "delivery-fixture-seed-v1",
+    "created_at": 1785300000000,
+    "expires_at": 1785300900000
+  },
+  "follow_up_delivery": {
+    "sampler_invocations": 1,
+    "root_candidate_revisions": [
+      {"position": 1, "candidate_id": "follow_up:f1", "source_revision": "distill:101", "root_policy_propensity": 0.42},
+      {"position": 2, "candidate_id": "worth_a_look:w1", "source_revision": "content:201", "root_policy_propensity": 0.31},
+      {"position": 3, "candidate_id": "follow_up:f2", "source_revision": "distill:102", "root_policy_propensity": 0.57},
+      {"position": 4, "candidate_id": "follow_up:f3", "source_revision": "distill:103", "root_policy_propensity": 0.63},
+      {"position": 5, "candidate_id": "worth_a_look:w2", "source_revision": "content:202", "root_policy_propensity": 1.0}
+    ],
+    "pages": [
+      {
+        "schema_version": 1,
+        "status": "succeeded",
+        "fallback_reason": null,
+        "root_decision": {
+          "decision_id": "delivery-decision-follow-up-v1",
+          "lane": "follow_up",
+          "projection_id": "projection-delivery-fixture-v1",
+          "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111",
+          "policy_snapshot_id": "bandit-delivery-fixture-v1",
+          "policy_model_version": "bayesian-linear-delivery-fixture-v1",
+          "posterior_version": 17,
+          "seed_identity": "delivery-fixture-seed-v1",
+          "universe_size": 5,
+          "created_at": 1785300000000,
+          "expires_at": 1785300900000
+        },
+        "page": {
+          "delivery_id": "delivery-follow-up-page-0-v1",
+          "page_index": 0,
+          "page_start": 0,
+          "page_size": 2,
+          "cursor": null,
+          "next_cursor": "attention-delivery-cursor-follow-up-2-v1",
+          "has_more": true,
+          "expires_at": 1785300900000
+        },
+        "impression_policy": {
+          "min_visible_ms": 1000,
+          "visibility_rule_version": "attention-visible-dwell-v1"
+        },
+        "items": [
+          {
+            "position": 1,
+            "candidate_id": "follow_up:f1",
+            "source_revision": "distill:101",
+            "root_policy_propensity": 0.42,
+            "conditional_delivery_propensity": 1.0,
+            "exposure_token": "attention-exposure-follow-up-0-1-v1",
+            "item": {
+              "canonical_id": "follow_up:f1",
+              "source_revision": "distill:101",
+              "origin_lane": "follow_up",
+              "served_lane": "follow_up",
+              "learned_lane": "follow_up",
+              "route_reason": "learned_route_matches_baseline",
+              "route_applied": false,
+              "origin": {"kind": "follow_up", "annotation_id": "f1", "provider": "gmail", "account_alias": "fixture", "thread_id": "thread-f1"},
+              "group": {"cluster_id": "cluster-f1", "representative_id": "follow_up:f1", "member_ids": ["follow_up:f1"], "member_count": 1},
+              "actions": [{"id": "open_source", "kind": "open_source", "label": "Open", "method": "get", "href": "https://mail.example/f1", "requires_confirmation": false}],
+              "payload": {"kind": "follow_up", "annotation_id": "f1", "subject": "Fixture follow-up 1", "sender": "sender@example.test", "summary": "Safe fixture summary.", "label": "needs_reply", "reason": "direct_request", "received_at": 1785299000000, "open_url": "https://mail.example/f1"}
+            }
+          },
+          {
+            "position": 2,
+            "candidate_id": "worth_a_look:w1",
+            "source_revision": "content:201",
+            "root_policy_propensity": 0.31,
+            "conditional_delivery_propensity": 1.0,
+            "exposure_token": "attention-exposure-follow-up-0-2-v1",
+            "item": {
+              "canonical_id": "worth_a_look:w1",
+              "source_revision": "content:201",
+              "origin_lane": "worth_a_look",
+              "served_lane": "follow_up",
+              "learned_lane": "follow_up",
+              "route_reason": "high_owner_action_probability",
+              "route_applied": true,
+              "origin": {"kind": "worth_a_look", "candidate_id": "w1", "source_kind": "task_episode", "source_ref": "task:w1"},
+              "group": {"cluster_id": "cluster-w1", "representative_id": "worth_a_look:w1", "member_ids": ["worth_a_look:w1"], "member_count": 1},
+              "actions": [{"id": "useful", "kind": "useful", "label": "Useful", "method": "post", "href": "/api/magician/v2/channel-assist/resurfacing/w1/action", "requires_confirmation": false}],
+              "payload": {"kind": "worth_a_look", "candidate_id": "w1", "line": "Fixture worth item 1", "why_now": "Synthetic direct obligation.", "summary": "Safe fixture summary.", "source_title": "Fixture task", "source_kind": "task_episode", "source_ref": "task:w1", "open_url": null, "temporal_anchor_at": 1785298000000, "brief": null}
+            }
+          }
+        ],
+        "health": {"bandit_mode": "canary", "canary_assigned": true, "applied": true, "baseline_preserved": false, "complete_universe_recorded": true, "propensity_coverage": 1.0, "degradation_reason": null, "root_sample_count": 1, "delivered_count": 2, "remaining_count": 3, "exact_revision_match": true, "replay": false}
+      },
+      {
+        "schema_version": 1,
+        "status": "succeeded",
+        "fallback_reason": null,
+        "root_decision": {
+          "decision_id": "delivery-decision-follow-up-v1",
+          "lane": "follow_up",
+          "projection_id": "projection-delivery-fixture-v1",
+          "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111",
+          "policy_snapshot_id": "bandit-delivery-fixture-v1",
+          "policy_model_version": "bayesian-linear-delivery-fixture-v1",
+          "posterior_version": 17,
+          "seed_identity": "delivery-fixture-seed-v1",
+          "universe_size": 5,
+          "created_at": 1785300000000,
+          "expires_at": 1785300900000
+        },
+        "page": {
+          "delivery_id": "delivery-follow-up-page-1-v1",
+          "page_index": 1,
+          "page_start": 2,
+          "page_size": 2,
+          "cursor": "attention-delivery-cursor-follow-up-2-v1",
+          "next_cursor": "attention-delivery-cursor-follow-up-4-v1",
+          "has_more": true,
+          "expires_at": 1785300900000
+        },
+        "impression_policy": {"min_visible_ms": 1000, "visibility_rule_version": "attention-visible-dwell-v1"},
+        "items": [
+          {
+            "position": 3,
+            "candidate_id": "follow_up:f2",
+            "source_revision": "distill:102",
+            "root_policy_propensity": 0.57,
+            "conditional_delivery_propensity": 1.0,
+            "exposure_token": "attention-exposure-follow-up-1-3-v1",
+            "item": {
+              "canonical_id": "follow_up:f2", "source_revision": "distill:102", "origin_lane": "follow_up", "served_lane": "follow_up", "learned_lane": "follow_up", "route_reason": "learned_route_matches_baseline", "route_applied": false,
+              "origin": {"kind": "follow_up", "annotation_id": "f2", "provider": "gmail", "account_alias": "fixture", "thread_id": "thread-f2"},
+              "group": {"cluster_id": "cluster-f2", "representative_id": "follow_up:f2", "member_ids": ["follow_up:f2"], "member_count": 1},
+              "actions": [{"id": "open_source", "kind": "open_source", "label": "Open", "method": "get", "href": "https://mail.example/f2", "requires_confirmation": false}],
+              "payload": {"kind": "follow_up", "annotation_id": "f2", "subject": "Fixture follow-up 2", "sender": "sender@example.test", "summary": "Safe fixture summary.", "label": "needs_reply", "reason": "direct_request", "received_at": 1785297000000, "open_url": "https://mail.example/f2"}
+            }
+          },
+          {
+            "position": 4,
+            "candidate_id": "follow_up:f3",
+            "source_revision": "distill:103",
+            "root_policy_propensity": 0.63,
+            "conditional_delivery_propensity": 1.0,
+            "exposure_token": "attention-exposure-follow-up-1-4-v1",
+            "item": {
+              "canonical_id": "follow_up:f3", "source_revision": "distill:103", "origin_lane": "follow_up", "served_lane": "follow_up", "learned_lane": "follow_up", "route_reason": "learned_route_matches_baseline", "route_applied": false,
+              "origin": {"kind": "follow_up", "annotation_id": "f3", "provider": "gmail", "account_alias": "fixture", "thread_id": "thread-f3"},
+              "group": {"cluster_id": "cluster-f3", "representative_id": "follow_up:f3", "member_ids": ["follow_up:f3"], "member_count": 1},
+              "actions": [{"id": "open_source", "kind": "open_source", "label": "Open", "method": "get", "href": "https://mail.example/f3", "requires_confirmation": false}],
+              "payload": {"kind": "follow_up", "annotation_id": "f3", "subject": "Fixture follow-up 3", "sender": "sender@example.test", "summary": "Safe fixture summary.", "label": "needs_reply", "reason": "direct_request", "received_at": 1785296000000, "open_url": "https://mail.example/f3"}
+            }
+          }
+        ],
+        "health": {"bandit_mode": "canary", "canary_assigned": true, "applied": true, "baseline_preserved": false, "complete_universe_recorded": true, "propensity_coverage": 1.0, "degradation_reason": null, "root_sample_count": 1, "delivered_count": 4, "remaining_count": 1, "exact_revision_match": true, "replay": true}
+      },
+      {
+        "schema_version": 1,
+        "status": "succeeded",
+        "fallback_reason": null,
+        "root_decision": {
+          "decision_id": "delivery-decision-follow-up-v1", "lane": "follow_up", "projection_id": "projection-delivery-fixture-v1", "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111", "policy_snapshot_id": "bandit-delivery-fixture-v1", "policy_model_version": "bayesian-linear-delivery-fixture-v1", "posterior_version": 17, "seed_identity": "delivery-fixture-seed-v1", "universe_size": 5, "created_at": 1785300000000, "expires_at": 1785300900000
+        },
+        "page": {"delivery_id": "delivery-follow-up-page-2-v1", "page_index": 2, "page_start": 4, "page_size": 2, "cursor": "attention-delivery-cursor-follow-up-4-v1", "next_cursor": null, "has_more": false, "expires_at": 1785300900000},
+        "impression_policy": {"min_visible_ms": 1000, "visibility_rule_version": "attention-visible-dwell-v1"},
+        "items": [
+          {
+            "position": 5,
+            "candidate_id": "worth_a_look:w2",
+            "source_revision": "content:202",
+            "root_policy_propensity": 1.0,
+            "conditional_delivery_propensity": 1.0,
+            "exposure_token": "attention-exposure-follow-up-2-5-v1",
+            "item": {
+              "canonical_id": "worth_a_look:w2", "source_revision": "content:202", "origin_lane": "worth_a_look", "served_lane": "follow_up", "learned_lane": "follow_up", "route_reason": "high_owner_action_probability", "route_applied": true,
+              "origin": {"kind": "worth_a_look", "candidate_id": "w2", "source_kind": "memory", "source_ref": "memory:w2"},
+              "group": {"cluster_id": "cluster-w2", "representative_id": "worth_a_look:w2", "member_ids": ["worth_a_look:w2"], "member_count": 1},
+              "actions": [{"id": "useful", "kind": "useful", "label": "Useful", "method": "post", "href": "/api/magician/v2/channel-assist/resurfacing/w2/action", "requires_confirmation": false}],
+              "payload": {"kind": "worth_a_look", "candidate_id": "w2", "line": "Fixture worth item 2", "why_now": "Synthetic obligation.", "summary": "Safe fixture summary.", "source_title": "Fixture memory", "source_kind": "memory", "source_ref": "memory:w2", "open_url": null, "temporal_anchor_at": 1785295000000, "brief": null}
+            }
+          }
+        ],
+        "health": {"bandit_mode": "canary", "canary_assigned": true, "applied": true, "baseline_preserved": false, "complete_universe_recorded": true, "propensity_coverage": 1.0, "degradation_reason": null, "root_sample_count": 1, "delivered_count": 5, "remaining_count": 0, "exact_revision_match": true, "replay": true}
+      }
+    ],
+    "cursor_replay": [
+      {"request_id": "follow-up-page-1-first", "cursor": "attention-delivery-cursor-follow-up-2-v1", "expected_page_index": 1, "expected_delivery_id": "delivery-follow-up-page-1-v1", "expected_response_digest": "cab8807047d41833d656f924577d49c0795f04c9095a5b14ad2e5a7f10ab2a91"},
+      {"request_id": "follow-up-page-1-retry", "cursor": "attention-delivery-cursor-follow-up-2-v1", "expected_page_index": 1, "expected_delivery_id": "delivery-follow-up-page-1-v1", "expected_response_digest": "cab8807047d41833d656f924577d49c0795f04c9095a5b14ad2e5a7f10ab2a91"}
+    ]
+  },
+  "worth_a_look_delivery": {
+    "sampler_invocations": 1,
+    "root_candidate_revisions": [
+      {"position": 1, "candidate_id": "worth_a_look:w3", "source_revision": "content:203", "root_policy_propensity": 0.48},
+      {"position": 2, "candidate_id": "follow_up:f4", "source_revision": "distill:104", "root_policy_propensity": 0.36},
+      {"position": 3, "candidate_id": "worth_a_look:w4", "source_revision": "content:204", "root_policy_propensity": 1.0}
+    ],
+    "pages": [
+      {
+        "schema_version": 1,
+        "status": "succeeded",
+        "fallback_reason": null,
+        "root_decision": {"decision_id": "delivery-decision-worth-v1", "lane": "worth_a_look", "projection_id": "projection-delivery-fixture-v1", "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111", "policy_snapshot_id": "bandit-delivery-fixture-v1", "policy_model_version": "bayesian-linear-delivery-fixture-v1", "posterior_version": 17, "seed_identity": "delivery-fixture-seed-v1", "universe_size": 3, "created_at": 1785300000000, "expires_at": 1785300900000},
+        "page": {"delivery_id": "delivery-worth-page-0-v1", "page_index": 0, "page_start": 0, "page_size": 2, "cursor": null, "next_cursor": "attention-delivery-cursor-worth-2-v1", "has_more": true, "expires_at": 1785300900000},
+        "impression_policy": {"min_visible_ms": 1000, "visibility_rule_version": "attention-visible-dwell-v1"},
+        "items": [
+          {
+            "position": 1, "candidate_id": "worth_a_look:w3", "source_revision": "content:203", "root_policy_propensity": 0.48, "conditional_delivery_propensity": 1.0, "exposure_token": "attention-exposure-worth-0-1-v1",
+            "item": {
+              "canonical_id": "worth_a_look:w3", "source_revision": "content:203", "origin_lane": "worth_a_look", "served_lane": "worth_a_look", "learned_lane": "worth_a_look", "route_reason": "learned_route_matches_baseline", "route_applied": false,
+              "origin": {"kind": "worth_a_look", "candidate_id": "w3", "source_kind": "memory", "source_ref": "memory:w3"},
+              "group": {"cluster_id": "cluster-w3", "representative_id": "worth_a_look:w3", "member_ids": ["worth_a_look:w3"], "member_count": 1},
+              "actions": [{"id": "useful", "kind": "useful", "label": "Useful", "method": "post", "href": "/api/magician/v2/channel-assist/resurfacing/w3/action", "requires_confirmation": false}],
+              "payload": {"kind": "worth_a_look", "candidate_id": "w3", "line": "Fixture worth item 3", "why_now": "Synthetic information value.", "summary": "Safe fixture summary.", "source_title": "Fixture memory", "source_kind": "memory", "source_ref": "memory:w3", "open_url": null, "temporal_anchor_at": 1785294000000, "brief": null}
+            }
+          },
+          {
+            "position": 2, "candidate_id": "follow_up:f4", "source_revision": "distill:104", "root_policy_propensity": 0.36, "conditional_delivery_propensity": 1.0, "exposure_token": "attention-exposure-worth-0-2-v1",
+            "item": {
+              "canonical_id": "follow_up:f4", "source_revision": "distill:104", "origin_lane": "follow_up", "served_lane": "worth_a_look", "learned_lane": "worth_a_look", "route_reason": "high_information_value", "route_applied": true,
+              "origin": {"kind": "follow_up", "annotation_id": "f4", "provider": "gmail", "account_alias": "fixture", "thread_id": "thread-f4"},
+              "group": {"cluster_id": "cluster-f4", "representative_id": "follow_up:f4", "member_ids": ["follow_up:f4"], "member_count": 1},
+              "actions": [{"id": "open_source", "kind": "open_source", "label": "Open", "method": "get", "href": "https://mail.example/f4", "requires_confirmation": false}],
+              "payload": {"kind": "follow_up", "annotation_id": "f4", "subject": "Fixture follow-up 4", "sender": "sender@example.test", "summary": "Safe fixture summary.", "label": "fyi", "reason": "broadcast_information", "received_at": 1785293000000, "open_url": "https://mail.example/f4"}
+            }
+          }
+        ],
+        "health": {"bandit_mode": "canary", "canary_assigned": true, "applied": true, "baseline_preserved": false, "complete_universe_recorded": true, "propensity_coverage": 1.0, "degradation_reason": null, "root_sample_count": 1, "delivered_count": 2, "remaining_count": 1, "exact_revision_match": true, "replay": false}
+      },
+      {
+        "schema_version": 1,
+        "status": "succeeded",
+        "fallback_reason": null,
+        "root_decision": {"decision_id": "delivery-decision-worth-v1", "lane": "worth_a_look", "projection_id": "projection-delivery-fixture-v1", "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111", "policy_snapshot_id": "bandit-delivery-fixture-v1", "policy_model_version": "bayesian-linear-delivery-fixture-v1", "posterior_version": 17, "seed_identity": "delivery-fixture-seed-v1", "universe_size": 3, "created_at": 1785300000000, "expires_at": 1785300900000},
+        "page": {"delivery_id": "delivery-worth-page-1-v1", "page_index": 1, "page_start": 2, "page_size": 2, "cursor": "attention-delivery-cursor-worth-2-v1", "next_cursor": null, "has_more": false, "expires_at": 1785300900000},
+        "impression_policy": {"min_visible_ms": 1000, "visibility_rule_version": "attention-visible-dwell-v1"},
+        "items": [
+          {
+            "position": 3, "candidate_id": "worth_a_look:w4", "source_revision": "content:204", "root_policy_propensity": 1.0, "conditional_delivery_propensity": 1.0, "exposure_token": "attention-exposure-worth-1-3-v1",
+            "item": {
+              "canonical_id": "worth_a_look:w4", "source_revision": "content:204", "origin_lane": "worth_a_look", "served_lane": "worth_a_look", "learned_lane": "worth_a_look", "route_reason": "learned_route_matches_baseline", "route_applied": false,
+              "origin": {"kind": "worth_a_look", "candidate_id": "w4", "source_kind": "task_episode", "source_ref": "task:w4"},
+              "group": {"cluster_id": "cluster-w4", "representative_id": "worth_a_look:w4", "member_ids": ["worth_a_look:w4"], "member_count": 1},
+              "actions": [{"id": "useful", "kind": "useful", "label": "Useful", "method": "post", "href": "/api/magician/v2/channel-assist/resurfacing/w4/action", "requires_confirmation": false}],
+              "payload": {"kind": "worth_a_look", "candidate_id": "w4", "line": "Fixture worth item 4", "why_now": "Synthetic information value.", "summary": "Safe fixture summary.", "source_title": "Fixture task", "source_kind": "task_episode", "source_ref": "task:w4", "open_url": null, "temporal_anchor_at": 1785292000000, "brief": null}
+            }
+          }
+        ],
+        "health": {"bandit_mode": "canary", "canary_assigned": true, "applied": true, "baseline_preserved": false, "complete_universe_recorded": true, "propensity_coverage": 1.0, "degradation_reason": null, "root_sample_count": 1, "delivered_count": 3, "remaining_count": 0, "exact_revision_match": true, "replay": true}
+      }
+    ]
+  },
+  "exposure_token_bindings": [
+    {"token": "attention-exposure-follow-up-0-1-v1", "principal": "owner", "workspace": "default", "lane": "follow_up", "decision_id": "delivery-decision-follow-up-v1", "delivery_id": "delivery-follow-up-page-0-v1", "page_index": 0, "position": 1, "candidate_id": "follow_up:f1", "source_revision": "distill:101", "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111", "root_policy_propensity": 0.42, "conditional_delivery_propensity": 1.0, "expires_at": 1785300900000},
+    {"token": "attention-exposure-follow-up-1-3-v1", "principal": "owner", "workspace": "default", "lane": "follow_up", "decision_id": "delivery-decision-follow-up-v1", "delivery_id": "delivery-follow-up-page-1-v1", "page_index": 1, "position": 3, "candidate_id": "follow_up:f2", "source_revision": "distill:102", "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111", "root_policy_propensity": 0.57, "conditional_delivery_propensity": 1.0, "expires_at": 1785300900000},
+    {"token": "attention-exposure-worth-0-1-v1", "principal": "owner", "workspace": "default", "lane": "worth_a_look", "decision_id": "delivery-decision-worth-v1", "delivery_id": "delivery-worth-page-0-v1", "page_index": 0, "position": 1, "candidate_id": "worth_a_look:w3", "source_revision": "content:203", "universe_digest": "0c68b8c86aa018eeade2a8c49a37582831e658a54a1b7e1bfe5d4df18842a111", "root_policy_propensity": 0.48, "conditional_delivery_propensity": 1.0, "expires_at": 1785300900000}
+  ],
+  "impression_contract": {
+    "accepted_request": {
+      "event_id": "visibility-event-follow-up-f2-v1",
+      "decision_id": "delivery-decision-follow-up-v1",
+      "delivery_id": "delivery-follow-up-page-1-v1",
+      "page_index": 1,
+      "position": 3,
+      "candidate_id": "follow_up:f2",
+      "source_revision": "distill:102",
+      "surface": "follow_up",
+      "visible_ms": 1000,
+      "visibility_rule_version": "attention-visible-dwell-v1",
+      "client_type": "web",
+      "client_version": "fixture-v1",
+      "viewport_class": "desktop",
+      "exposure_token": "attention-exposure-follow-up-1-3-v1"
+    },
+    "expected_receipt": {
+      "impression_id": "impression-follow-up-f2-v1",
+      "event_id": "visibility-event-follow-up-f2-v1",
+      "decision_id": "delivery-decision-follow-up-v1",
+      "delivery_id": "delivery-follow-up-page-1-v1",
+      "page_index": 1,
+      "position": 3,
+      "candidate_id": "follow_up:f2",
+      "source_revision": "distill:102",
+      "surface": "follow_up",
+      "accumulated_visible_ms": 1000,
+      "min_visible_ms": 1000,
+      "visibility_rule_version": "attention-visible-dwell-v1",
+      "verified": true,
+      "deduplicated": false,
+      "exposure_token": "attention-exposure-follow-up-1-3-v1",
+      "root_policy_propensity": 0.57,
+      "conditional_delivery_propensity": 1.0
+    },
+    "idempotent_retry": {
+      "same_event_id": true,
+      "same_binding": true,
+      "same_impression_id": "impression-follow-up-f2-v1",
+      "verified": true,
+      "deduplicated": true,
+      "posterior_exposure_count": 1
+    },
+    "rejected_cases": [
+      {"case": "below_dwell", "visible_ms": 999, "verified": false, "posterior_exposure_count": 0},
+      {"case": "wrong_candidate", "error": "delivery_item_mismatch", "verified": false, "posterior_exposure_count": 0},
+      {"case": "wrong_revision", "error": "delivery_revision_mismatch", "verified": false, "posterior_exposure_count": 0},
+      {"case": "wrong_position", "error": "delivery_position_mismatch", "verified": false, "posterior_exposure_count": 0},
+      {"case": "wrong_exposure_token", "error": "exposure_token_invalid", "verified": false, "posterior_exposure_count": 0},
+      {"case": "expired_exposure_token", "error": "exposure_token_expired", "verified": false, "posterior_exposure_count": 0}
+    ]
+  },
+  "outcome_attribution_contract": {
+    "attribution": {
+      "decision_id": "delivery-decision-follow-up-v1",
+      "candidate_id": "follow_up:f2",
+      "source_revision": "distill:102",
+      "impression_id": "impression-follow-up-f2-v1"
+    },
+    "resolved_projection_decision_id": "projection-delivery-fixture-v1",
+    "policy_snapshot_id": "bandit-delivery-fixture-v1",
+    "policy_model_version": "bayesian-linear-delivery-fixture-v1",
+    "posterior_version_at_decision": 17,
+    "root_position": 3,
+    "root_policy_propensity": 0.57,
+    "verified_impression_required": true,
+    "expected_attribution_quality": "verified_impression",
+    "expected_posterior_update_count": 1,
+    "idempotent_outcome_replay_update_count": 1
+  },
+  "refresh_required_cases": [
+    {"case": "expired", "expected_http_status": 409, "response": {"schema_version": 1, "status": "refresh_required", "error": "attention_delivery_refresh_required", "reason": "expired", "lane": "follow_up", "refresh_href": "/api/magician/v2/channel-assist/attention-learning/canonical-deliveries/follow_up"}},
+    {"case": "projection_digest_changed", "expected_http_status": 409, "response": {"schema_version": 1, "status": "refresh_required", "error": "attention_delivery_refresh_required", "reason": "projection_drift", "lane": "follow_up", "refresh_href": "/api/magician/v2/channel-assist/attention-learning/canonical-deliveries/follow_up"}},
+    {"case": "candidate_revision_changed", "expected_http_status": 409, "response": {"schema_version": 1, "status": "refresh_required", "error": "attention_delivery_refresh_required", "reason": "revision_drift", "lane": "follow_up", "refresh_href": "/api/magician/v2/channel-assist/attention-learning/canonical-deliveries/follow_up"}},
+    {"case": "scope_changed", "expected_http_status": 409, "response": {"schema_version": 1, "status": "refresh_required", "error": "attention_delivery_refresh_required", "reason": "scope_mismatch", "lane": "follow_up", "refresh_href": "/api/magician/v2/channel-assist/attention-learning/canonical-deliveries/follow_up"}},
+    {"case": "lane_or_root_binding_changed", "expected_http_status": 409, "response": {"schema_version": 1, "status": "refresh_required", "error": "attention_delivery_refresh_required", "reason": "binding_mismatch", "lane": "follow_up", "refresh_href": "/api/magician/v2/channel-assist/attention-learning/canonical-deliveries/follow_up"}},
+    {"case": "unknown_cursor", "expected_http_status": 409, "response": {"schema_version": 1, "status": "refresh_required", "error": "attention_delivery_refresh_required", "reason": "cursor_not_found", "lane": "follow_up", "refresh_href": "/api/magician/v2/channel-assist/attention-learning/canonical-deliveries/follow_up"}}
+  ],
+  "disabled_fallback": {
+    "schema_version": 1,
+    "status": "baseline_fallback",
+    "fallback_reason": "bandit_disabled",
+    "root_decision": {"decision_id": "delivery-decision-baseline-v1", "lane": "follow_up", "projection_id": "projection-baseline-fixture-v1", "universe_digest": "b97d754bd50e85486f1b42e46f771c0222049c3478558e64f77de6f35ecc1221", "policy_snapshot_id": null, "policy_model_version": null, "posterior_version": 0, "seed_identity": "baseline", "universe_size": 1, "created_at": 1785300000000, "expires_at": 1785300900000},
+    "page": {"delivery_id": "delivery-baseline-page-0-v1", "page_index": 0, "page_start": 0, "page_size": 1, "cursor": null, "next_cursor": null, "has_more": false, "expires_at": 1785300900000},
+    "impression_policy": {"min_visible_ms": 1000, "visibility_rule_version": "attention-visible-dwell-v1"},
+    "items": [
+      {
+        "position": 1, "candidate_id": "follow_up:baseline-1", "source_revision": "distill:1", "root_policy_propensity": 1.0, "conditional_delivery_propensity": 1.0, "exposure_token": "attention-exposure-baseline-0-1-v1",
+        "item": {
+          "canonical_id": "follow_up:baseline-1", "source_revision": "distill:1", "origin_lane": "follow_up", "served_lane": "follow_up", "learned_lane": "follow_up", "route_reason": "baseline", "route_applied": false,
+          "origin": {"kind": "follow_up", "annotation_id": "baseline-1", "provider": "gmail", "account_alias": "fixture", "thread_id": "thread-baseline-1"},
+          "group": {"cluster_id": "cluster-baseline-1", "representative_id": "follow_up:baseline-1", "member_ids": ["follow_up:baseline-1"], "member_count": 1},
+          "actions": [{"id": "open_source", "kind": "open_source", "label": "Open", "method": "get", "href": "https://mail.example/baseline-1", "requires_confirmation": false}],
+          "payload": {"kind": "follow_up", "annotation_id": "baseline-1", "subject": "Baseline fixture", "sender": "sender@example.test", "summary": "Safe fixture summary.", "label": "needs_reply", "reason": "baseline", "received_at": 1785291000000, "open_url": "https://mail.example/baseline-1"}
+        }
+      }
+    ],
+    "health": {"bandit_mode": "disabled", "canary_assigned": false, "applied": false, "baseline_preserved": true, "complete_universe_recorded": true, "propensity_coverage": 1.0, "degradation_reason": "bandit_disabled", "root_sample_count": 0, "delivered_count": 1, "remaining_count": 0, "exact_revision_match": true, "replay": false}
+  },
+  "fallback_reason_codes": ["bandit_disabled", "canonical_projection_baseline_fallback", "snapshot_missing_or_invalid", "feature_contract_mismatch", "posterior_unavailable", "policy_scope_not_canary", "policy_shadow_only"],
+  "retention_contract": {
+    "tables": ["attention_delivery_decisions", "attention_delivery_decision_items", "attention_delivery_pages", "attention_delivery_page_items", "attention_delivery_cursors"],
+    "retention_scope": {"principal": "owner", "workspace": "default"},
+    "expired_root_ids_removed": ["expired-follow-up-root"],
+    "unexpired_root_ids_preserved": ["delivery-decision-follow-up-v1", "delivery-decision-worth-v1"],
+    "other_scope_root_ids_preserved": ["other-owner-root"],
+    "manual_cascade_in_one_transaction": true,
+    "impressions_retain_copied_delivery_binding_and_propensities": true,
+    "scoped_deletion_removes_all_five_delivery_tables": true,
+    "global_policy_snapshots_preserved": true
+  }
+}

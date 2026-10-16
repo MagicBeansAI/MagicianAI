@@ -1,0 +1,128 @@
+#!/bin/bash
+# Supervisor Control Script - Send commands to running supervisor on port 8081
+
+SUPERVISOR_PORT="${SUPERVISOR_PORT:-8081}"
+SUPERVISOR_HOST="${SUPERVISOR_HOST:-localhost}"
+SUPERVISOR_CTL_QUIET="${SUPERVISOR_CTL_QUIET:-0}"
+# A restart can spend ten seconds waiting for graceful child shutdown. Keep
+# the control connection open through that window so it receives the result.
+SUPERVISOR_CTL_TIMEOUT="${SUPERVISOR_CTL_TIMEOUT:-30}"
+
+usage() {
+    cat << EOF
+Usage: $0 <command>
+
+Commands:
+  restart-magician       - Restart Magician backend
+  restart-magicutor      - Restart Magicutor backend
+  restart-decision-engine - Restart the decision engine
+  stop-magician          - Stop Magician backend
+  stop-magicutor         - Stop Magicutor backend
+  stop-decision-engine   - Stop the decision engine
+  status                 - Get status snapshot
+  status-magician        - Get Magician status
+  status-magicutor       - Get Magicutor status
+  status-decision-engine - Get decision engine status
+  host-status            - Get host gateway status
+  host-presence-start    - Start macOS presence host through host gateway
+  host-presence-stop     - Stop macOS presence host through host gateway
+  host-presence-restart  - Restart macOS presence host through host gateway
+  health                 - Health check
+  shutdown               - Shutdown supervisor
+
+Examples:
+  $0 restart-magician
+  $0 status
+  $0 shutdown --yes
+
+EOF
+    exit 1
+}
+
+send_command() {
+    local cmd="$1"
+    local is_struct="$2"
+    if [ "$SUPERVISOR_CTL_QUIET" != "1" ]; then
+        echo "Sending command: $cmd to supervisor at $SUPERVISOR_HOST:$SUPERVISOR_PORT"
+    fi
+    if [ "$is_struct" = "true" ]; then
+        echo "{\"$cmd\":{}}" | nc -w "$SUPERVISOR_CTL_TIMEOUT" "$SUPERVISOR_HOST" "$SUPERVISOR_PORT" 2>&1
+    else
+        echo "\"$cmd\"" | nc -w "$SUPERVISOR_CTL_TIMEOUT" "$SUPERVISOR_HOST" "$SUPERVISOR_PORT" 2>&1
+    fi
+}
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+case "$1" in
+    restart-magician)
+        send_command "RestartMagician" "true"
+        ;;
+    restart-magicutor)
+        send_command "RestartMagicutor" "true"
+        ;;
+    restart-decision-engine)
+        send_command "RestartDecisionEngine" "true"
+        ;;
+    stop-magician)
+        send_command "StopMagician" "false"
+        ;;
+    stop-magicutor)
+        send_command "StopMagicutor" "false"
+        ;;
+    stop-decision-engine)
+        send_command "StopDecisionEngine" "false"
+        ;;
+    status)
+        send_command "Status" "false"
+        ;;
+    status-magician)
+        send_command "Status" "false" | jq '.data.magician' 2>/dev/null || send_command "Status" "false"
+        ;;
+    status-magicutor)
+        send_command "Status" "false" | jq '.data.magicutor' 2>/dev/null || send_command "Status" "false"
+        ;;
+    status-decision-engine)
+        send_command "Status" "false" | jq '.data.decision_engine' 2>/dev/null || send_command "Status" "false"
+        ;;
+    host-status)
+        send_command "HostGatewayStatus" "false"
+        ;;
+    host-presence-start)
+        send_command "StartHostPresence" "false"
+        ;;
+    host-presence-stop)
+        send_command "StopHostPresence" "false"
+        ;;
+    host-presence-restart)
+        send_command "RestartHostPresence" "false"
+        ;;
+    health)
+        send_command "HealthCheck" "false"
+        ;;
+    shutdown)
+        if [ "${2:-}" = "--yes" ] || [ "${SUPERVISOR_CTL_ASSUME_YES:-0}" = "1" ]; then
+            send_command "Shutdown" "false"
+        else
+            echo "⚠️  This will shutdown the entire supervisor and all services!"
+            read -p "Are you sure? (y/N) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                send_command "Shutdown" "false"
+            else
+                echo "Cancelled."
+                exit 0
+            fi
+        fi
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Error: Unknown command '$1'"
+        echo ""
+        usage
+        ;;
+esac

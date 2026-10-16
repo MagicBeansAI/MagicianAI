@@ -1,0 +1,28 @@
+registry:
+  type: file
+  # Extra "system-root" directories scanned at startup for additional skills
+  # and agent personality templates. Each entry is a directory expected to
+  # contain `skills/<skill>/tool_schema.yaml` and/or
+  # `agent_templates/agents/<id>/definition.agent.yaml` — mirroring the
+  # layout of <storage_root>/system/.
+  #
+  # The system-shared skills tier was retired (v0.6.572) — skills are
+  # workspace-scoped only; extras here are the per-deployment overlay.
+  # Agent personality templates still load from <storage_root>/system/
+  # /agent_templates/ as the primary; extras overlay on top.
+  #
+  # Collision precedence within extras: first-listed wins (matches
+  # PATH / XDG_DATA_DIRS). Put your highest-priority extras first.
+  # Per-scope content always wins over extras.
+  #
+  # Supports leading `~/` and `$VAR` / `${VAR}` expansion. Relative paths
+  # resolve against this file's directory.
+  paths: []
+  validation:
+    strict: true
+    allow_unknown_fields: false
+
+semantic_search:
+  enabled: true
+  similarity_threshold: 0.0
+  max_results: 25

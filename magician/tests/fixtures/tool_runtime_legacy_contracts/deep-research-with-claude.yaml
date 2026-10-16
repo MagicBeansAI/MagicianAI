@@ -1,0 +1,97 @@
+name: deep-research-with-claude
+version: 0.1.0
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: Research query (natural language, can be complex)
+- name: model
+  param_type: string
+  description: Claude model to use
+  default: claude-sonnet-4-6
+- name: max_searches
+  param_type: integer
+  description: Max web searches Claude can make
+  default: '5'
+- name: max_fetches
+  param_type: integer
+  description: Max full page fetches Claude can make
+  default: '3'
+- name: thinking_budget
+  param_type: integer
+  description: Extended thinking token budget (5000=quick, 15000=thorough, 30000=deep)
+  default: '5000'
+- name: allowed_domains
+  param_type: string
+  description: Comma-separated list of domains to restrict search to
+- name: timeout_secs
+  param_type: integer
+  description: Request timeout in seconds (deep research can take a while)
+  default: '120'
+native_action_schemas:
+  run:
+    description: Run the claude_deep_research capability with the arguments selected from this capability guide. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after the requested result is present.
+    parameters:
+    - query
+    - model
+    - max_searches
+    - max_fetches
+    - thinking_budget
+    - allowed_domains
+    - timeout_secs
+    required:
+    - query
+    parameter_overrides:
+      query:
+        type: string
+        description: Research query (natural language, can be complex)
+      model:
+        type: string
+        description: Claude model to use
+        default: claude-sonnet-4-6
+      max_searches:
+        type: integer
+        description: Max web searches Claude can make
+        default: '5'
+      max_fetches:
+        type: integer
+        description: Max full page fetches Claude can make
+        default: '3'
+      thinking_budget:
+        type: integer
+        description: Extended thinking token budget (5000=quick, 15000=thorough, 30000=deep)
+        default: '5000'
+      allowed_domains:
+        type: string
+        description: Comma-separated list of domains to restrict search to
+      timeout_secs:
+        type: integer
+        description: Request timeout in seconds (deep research can take a while)
+        default: '120'
+    skip_tool_name: true
+    timeout_secs: 120
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_QUERY: '{query}'
+    _TOOL_MODEL: '{model}'
+    _TOOL_MAX_SEARCHES: '{max_searches}'
+    _TOOL_MAX_FETCHES: '{max_fetches}'
+    _TOOL_THINKING_BUDGET: '{thinking_budget}'
+    _TOOL_ALLOWED_DOMAINS: '{allowed_domains}'
+    _TOOL_TIMEOUT_SECS: '{timeout_secs}'
+  timeout_secs: 120
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 120
+  categories:
+  - web
+  - search
+  - research
+  - llm
+  - deep_research
+  composition_category: web_operations
+  sandbox: shell

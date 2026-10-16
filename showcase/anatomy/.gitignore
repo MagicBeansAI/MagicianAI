@@ -1,0 +1,3 @@
+# build output of explorer/site.mjs
+/dist/
+/.cache/

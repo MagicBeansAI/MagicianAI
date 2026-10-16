@@ -1,0 +1,30 @@
+{
+  "name": "voice_diff_approval_waiting",
+  "version": "1.0.0",
+  "content": [
+    "The build on \"{title}\" is waiting on you. It staged a diff over {file_phrase} and nothing gets applied until you approve it."
+  ],
+  "variables": [
+    {
+      "name": "title",
+      "description": "The task's title. The task id is deliberately NOT offered as a fallback here: this sentence is read aloud, and 'task_' plus thirty-two hex characters is the rough edge the started reply already has.",
+      "required": true,
+      "examples": ["Fix the footer spacing"]
+    },
+    {
+      "name": "file_phrase",
+      "description": "Pre-formatted count of changed files, singular or plural ('one file', 'three files'). Formatted server-side so the template carries no pluralisation logic.",
+      "required": true,
+      "examples": ["one file", "three files"]
+    }
+  ],
+  "metadata": {
+    "category": "Conversational",
+    "description": "Short system message injected into a live voice session when a run this call started has staged a code diff and is waiting for approval. Spoken at most once per proposal, ever — the state is derived from the proposal store on every poll and deduped against a durable log, so this template must read as a one-time nudge rather than as a reminder that will come again.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial pending diff-approval announcement.",
+    "tags": ["voice", "realtime-voice", "hitl", "diff-approval", "vibedev"],
+    "estimated_tokens": 30
+  }
+}

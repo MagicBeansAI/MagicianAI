@@ -1,0 +1,56 @@
+{
+  "suite_id": "personal-assistant-regression",
+  "enabled": true,
+  "cases": [
+    {
+      "case_id": "sota-test-runner-api",
+      "agent_id": "personal-assistant",
+      "query": "How should I execute local browser SOTA test cases and verify the final pass fail count?",
+      "scopes": ["user", "agent"],
+      "expected_substrings": ["window.testRunner", "getResults"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 6000
+    },
+    {
+      "case_id": "browser-evaluate-state-inspection",
+      "agent_id": "personal-assistant",
+      "query": "What browser primitive should I use to inspect page state or page APIs before acting?",
+      "scopes": ["user", "agent"],
+      "expected_substrings": ["browser:evaluate"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 6000
+    },
+    {
+      "case_id": "cross-origin-iframe-automation",
+      "agent_id": "personal-assistant",
+      "query": "What should I remember when automating tests that include cross-origin iframes?",
+      "scopes": ["user", "agent"],
+      "expected_substrings": ["cross-origin", "postMessage"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 6000
+    },
+    {
+      "case_id": "local-vite-sota-url",
+      "agent_id": "personal-assistant",
+      "query": "Where do the local SOTA browser test pages usually run?",
+      "scopes": ["user", "agent"],
+      "expected_substrings": ["localhost:5173"],
+      "min_selected_count": 1,
+      "max_entries": 10,
+      "max_chars": 6000
+    },
+    {
+      "case_id": "user-output-format",
+      "agent_id": "personal-assistant",
+      "query": "What media type and preferred format should execution output and user-facing output use?",
+      "scopes": ["user"],
+      "expected_substrings": ["markdown"],
+      "min_selected_count": 1,
+      "max_entries": 12,
+      "max_chars": 7000
+    }
+  ]
+}

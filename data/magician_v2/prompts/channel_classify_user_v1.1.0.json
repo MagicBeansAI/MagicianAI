@@ -1,0 +1,52 @@
+{
+  "name": "channel_classify_user",
+  "version": "1.1.0",
+  "content": [
+    "Classify this {channel} thread ({lane} mailbox). Respond with ONLY the JSON object.",
+    "",
+    "Subject: {subject}",
+    "From: {sender}",
+    "Recipient domains: {recipient_domains}",
+    "Labels: {label_ids}",
+    "Messages in thread: {message_count}",
+    "Last activity: {age}",
+    "Latest distilled message: {latest_message_id} ({latest_message_age})",
+    "Latest direction: {latest_direction}",
+    "Distilled intent: {latest_intent}",
+    "Needs reply hint: {needs_reply_hint}",
+    "Follow-up hint: {follow_up_hint}",
+    "Safe information brief: {safe_brief}",
+    "Recent handled follow-ups: {recent_handled_followups}",
+    "",
+    "Local summary:",
+    "{summary}"
+  ],
+  "variables": [
+    {"name":"channel","description":"Generic channel label.","required":true,"default_value":"message","examples":["email"]},
+    {"name":"lane","description":"Whose mailbox this is.","required":true,"default_value":"the owner's","examples":["the owner's"]},
+    {"name":"subject","description":"Thread subject metadata.","required":true,"default_value":"(none)","examples":["Re: update"]},
+    {"name":"sender","description":"Latest sender metadata.","required":true,"default_value":"(unknown)","examples":["Sender <sender@example.com>"]},
+    {"name":"recipient_domains","description":"Recipient domains only.","required":false,"default_value":"(none)","examples":["example.org"]},
+    {"name":"label_ids","description":"Provider labels.","required":false,"default_value":"(none)","examples":["inbox"]},
+    {"name":"message_count","description":"Thread message count.","required":true,"default_value":"1","examples":["3"]},
+    {"name":"age","description":"Age of last activity.","required":false,"default_value":"unknown","examples":["2 days ago"]},
+    {"name":"latest_message_id","description":"Newest distilled message id.","required":true,"default_value":"unknown","examples":["msg_123"]},
+    {"name":"latest_message_age","description":"Age of newest distilled message.","required":true,"default_value":"unknown","examples":["today"]},
+    {"name":"latest_direction","description":"Inbound/outbound/unknown.","required":true,"default_value":"unknown","examples":["inbound"]},
+    {"name":"latest_intent","description":"Local distilled intent.","required":true,"default_value":"unknown","examples":["action_request"]},
+    {"name":"needs_reply_hint","description":"Local reply hint.","required":true,"default_value":"false","examples":["true"]},
+    {"name":"follow_up_hint","description":"Local compact follow-up hint.","required":true,"default_value":"none","examples":["{\"kind\":\"needs_reply\"}"]},
+    {"name":"safe_brief","description":"Locally-derived V2 information brief, never raw content.","required":false,"default_value":"none","examples":["{\"information_type\":\"request\"}"]},
+    {"name":"recent_handled_followups","description":"Bounded same-thread handled context.","required":false,"default_value":"none","examples":["none"]},
+    {"name":"summary","description":"Locally-derived safe summary, never a raw body.","required":true,"default_value":"","examples":["Sender asked for a response."]}
+  ],
+  "metadata": {
+    "category": "ChannelAssist",
+    "description": "Body-blind classifier input with the existing safe signals plus the V2 local brief.",
+    "author": "magician",
+    "created_at": "2026-07-29T00:00:00Z",
+    "changelog": "v1.1.0: Added safe_brief for semantic extraction in the existing call.",
+    "tags": ["channel-assist", "classification", "attention-learning"],
+    "estimated_tokens": 260
+  }
+}

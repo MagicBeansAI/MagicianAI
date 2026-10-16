@@ -1,0 +1,128 @@
+name: semantic-websearch-via-exa
+version: 0.1.0
+parameters:
+- name: query
+  required: true
+  param_type: string
+  description: Search query (natural language works best for auto/deep search)
+- name: type
+  param_type: string
+  description: fast (~450ms), auto (highest-quality default), instant (very fast discovery), deep (5-60s, comprehensive research). Legacy neural is treated as auto.
+  default: auto
+- name: num_results
+  param_type: integer
+  description: Number of results to return (1-100)
+  default: '5'
+- name: contents
+  param_type: boolean
+  description: Include extracted full text content in results
+  default: 'true'
+- name: highlights
+  param_type: boolean
+  description: Include condensed relevant passages (more token-efficient than full text)
+  default: 'false'
+- name: category
+  param_type: string
+  description: 'Filter by content type: news, research paper, company, personal site, financial report, people'
+- name: max_age_hours
+  param_type: integer
+  description: Only consider pages discovered or refreshed within this many hours
+- name: start_published_date
+  param_type: string
+  description: Only results published after this date (YYYY-MM-DD)
+- name: include_domains
+  param_type: string
+  description: Comma-separated list of domains to restrict search to
+- name: exclude_domains
+  param_type: string
+  description: Comma-separated list of domains to exclude from results
+- name: timeout_secs
+  param_type: integer
+  description: Request timeout in seconds (increase for deep searches)
+  default: '65'
+native_action_schemas:
+  run:
+    description: Run the exa_search capability with the arguments selected from this capability guide. Inspect stdout/stderr, update the runtime ledger when useful, and call goal_reached only after the requested result is present.
+    parameters:
+    - query
+    - type
+    - num_results
+    - contents
+    - highlights
+    - category
+    - max_age_hours
+    - start_published_date
+    - include_domains
+    - exclude_domains
+    - timeout_secs
+    required:
+    - query
+    parameter_overrides:
+      query:
+        type: string
+        description: Search query (natural language works best for auto/deep search)
+      type:
+        type: string
+        description: fast (~450ms), auto (highest-quality default), instant (very fast discovery), deep (5-60s, comprehensive research). Legacy neural is treated as auto.
+        default: auto
+      num_results:
+        type: integer
+        description: Number of results to return (1-100)
+        default: '5'
+      contents:
+        type: boolean
+        description: Include extracted full text content in results
+        default: 'true'
+      highlights:
+        type: boolean
+        description: Include condensed relevant passages (more token-efficient than full text)
+        default: 'false'
+      category:
+        type: string
+        description: 'Filter by content type: news, research paper, company, personal site, financial report, people'
+      max_age_hours:
+        type: integer
+        description: Only consider pages discovered or refreshed within this many hours
+      start_published_date:
+        type: string
+        description: Only results published after this date (YYYY-MM-DD)
+      include_domains:
+        type: string
+        description: Comma-separated list of domains to restrict search to
+      exclude_domains:
+        type: string
+        description: Comma-separated list of domains to exclude from results
+      timeout_secs:
+        type: integer
+        description: Request timeout in seconds (increase for deep searches)
+        default: '65'
+    skip_tool_name: true
+    timeout_secs: 65
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  env:
+    _TOOL_QUERY: '{query}'
+    _TOOL_TYPE: '{type}'
+    _TOOL_NUM_RESULTS: '{num_results}'
+    _TOOL_CONTENTS: '{contents}'
+    _TOOL_HIGHLIGHTS: '{highlights}'
+    _TOOL_CATEGORY: '{category}'
+    _TOOL_MAX_AGE_HOURS: '{max_age_hours}'
+    _TOOL_START_PUBLISHED_DATE: '{start_published_date}'
+    _TOOL_INCLUDE_DOMAINS: '{include_domains}'
+    _TOOL_EXCLUDE_DOMAINS: '{exclude_domains}'
+    _TOOL_TIMEOUT_SECS: '{timeout_secs}'
+  timeout_secs: 65
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 65
+  categories:
+  - web
+  - search
+  - research
+  - semantic
+  composition_category: web_operations
+  sandbox: shell

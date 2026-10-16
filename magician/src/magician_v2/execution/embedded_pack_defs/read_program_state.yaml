@@ -1,0 +1,26 @@
+name: read_program_state
+description: Read the active harness program's mutable runtime state alongside its durable program.md spec reference.
+version: "1.0.0"
+guide: |
+  Tool name: `read_program_state`
+
+  Use this when deciding what an autonomous harness program should do next.
+  `program.md` is the durable specification; this runtime state is the mutable
+  ledger of current phase, current step, open loops, stop conditions, last run
+  summary, next-action hints, recent learning candidates, and the latest
+  meta-harness verdict.
+
+  Read this before advancing a long-running program so you do not infer state
+  only from the latest task or episode.
+implementation:
+  type: compiled
+  provider_name: read_program_state
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - harness
+    - programs
+    - state
+  composition_category: read
+  sandbox: none

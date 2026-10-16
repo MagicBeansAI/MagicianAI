@@ -1,0 +1,14 @@
+{
+  "version": "1.1.26",
+  "repository": "higgsfield-ai/cli",
+  "assets": {
+    "arm64": {
+      "name": "hf_1.1.26_linux_arm64.tar.gz",
+      "sha256": "d73f3a4adf66a39b392ff31a1f94e0cb8971e9688f24c4248fe55cefb9c69485"
+    },
+    "amd64": {
+      "name": "hf_1.1.26_linux_amd64.tar.gz",
+      "sha256": "5d666fae70c99b7388690191a649d1487962250ed50820e079edfd1ffac7bf5b"
+    }
+  }
+}

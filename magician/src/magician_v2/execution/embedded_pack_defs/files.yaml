@@ -1,0 +1,63 @@
+name: files
+description: Structured file operations with explicit action dispatch (read/write/list/copy/move/delete/mkdir)
+guide: |-
+  Tool name: `files`
+  Primary parameter: `action`
+  Actions: read (path), write (path, content), append (path, content), delete (path, optional recursive), copy (source, destination), move (source, destination), exists (path), list (path, optional pattern), mkdir (path)
+  Examples:
+  - {"action":"read","path":"README.md"}
+  - {"action":"write","path":"notes/output.txt","content":"done","create_dirs":true}
+  - {"action":"copy","source":"a.txt","destination":"backup/a.txt"}
+parameters:
+- name: action
+  required: true
+  param_type: string
+  description: File action (read, write, append, delete, copy, move, exists, list, mkdir)
+  enum_values:
+  - read
+  - write
+  - append
+  - delete
+  - copy
+  - move
+  - exists
+  - list
+  - mkdir
+- name: path
+  param_type: string
+  description: Primary path for read/write/append/delete/exists/list/mkdir
+- name: source
+  param_type: string
+  description: Source path for copy/move
+- name: destination
+  param_type: string
+  description: Destination path for copy/move
+- name: content
+  param_type: string
+  description: Content for write/append
+- name: pattern
+  param_type: string
+  description: Optional glob-like pattern for list action
+- name: recursive
+  param_type: boolean
+  description: Recursive delete for directories
+  default: 'false'
+- name: create_dirs
+  param_type: boolean
+  description: Create parent directories on write
+  default: 'true'
+- name: encoding
+  param_type: string
+  description: Optional encoding hint for read
+implementation:
+  type: compiled
+  provider_name: files
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 30
+  categories:
+  - files
+  - filesystem
+  - workspace
+  composition_category: file_operations
+  sandbox: file

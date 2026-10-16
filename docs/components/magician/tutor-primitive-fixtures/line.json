@@ -1,0 +1,23 @@
+{
+  "name": "line — single segment (label omitted from the geometry seam)",
+  "recipe": {
+    "type": "line",
+    "aliases": ["axis", "side_label", "measurement_tick"],
+    "draw": [
+      { "op": "line", "from": ["sx", "sy"], "to": ["ex", "ey"] },
+      { "op": "label", "at": ["mx", "my-14"], "text": "text", "anchor": "center", "threshold": 0.75 }
+    ]
+  },
+  "shape": { "type": "line", "x1": 10, "y1": 20, "x2": 210, "y2": 220 },
+  "space": { "width": 2048, "height": 1152 },
+  "expected": [
+    {
+      "op": "line",
+      "closed": false,
+      "points": [
+        [10, 20],
+        [210, 220]
+      ]
+    }
+  ]
+}

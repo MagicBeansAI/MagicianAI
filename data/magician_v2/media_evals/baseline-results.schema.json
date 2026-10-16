@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magician.local/schemas/media-audio-baseline-results-v1.json",
+  "title": "Magician audio baseline results",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "captured_at",
+    "host",
+    "git_revision",
+    "config_fingerprint",
+    "fixture_manifest",
+    "measurements"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "os_version", "architecture", "hardware", "memory_gb"],
+      "properties": {
+        "os": { "type": "string" },
+        "os_version": { "type": "string" },
+        "architecture": { "type": "string" },
+        "hardware": { "type": "string" },
+        "memory_gb": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "git_revision": { "type": "string", "minLength": 1 },
+    "config_fingerprint": {
+      "type": "string",
+      "description": "Hash of a redacted effective media configuration."
+    },
+    "fixture_manifest": { "type": "string", "minLength": 1 },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "idle_observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider_id",
+          "wait_secs",
+          "process_running",
+          "process_rss_mb",
+          "model_state",
+          "resident",
+          "passed"
+        ],
+        "properties": {
+          "provider_id": { "type": "string", "minLength": 1 },
+          "wait_secs": { "type": "number", "minimum": 0 },
+          "process_running": { "type": "boolean" },
+          "process_rss_mb": { "type": "number", "minimum": 0 },
+          "model_state": { "type": "string", "minLength": 1 },
+          "resident": { "type": "boolean" },
+          "passed": { "type": "boolean" }
+        }
+      }
+    },
+    "measurements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "surface",
+          "provider_id",
+          "model",
+          "fixture_id",
+          "run_kind",
+          "status"
+        ],
+        "properties": {
+          "surface": {
+            "enum": ["dictation", "meeting", "listening", "realtime", "hands_free"]
+          },
+          "provider_id": { "type": "string", "minLength": 1 },
+          "model": { "type": "string" },
+          "fixture_id": { "type": "string", "minLength": 1 },
+          "run_kind": { "enum": ["cold", "warm"] },
+          "status": {
+            "enum": ["passed", "failed", "skipped", "not_run_by_request"]
+          },
+          "skip_reason": { "type": "string" },
+          "first_partial_ms": { "type": ["number", "null"], "minimum": 0 },
+          "final_result_ms": { "type": ["number", "null"], "minimum": 0 },
+          "turn_commit_ms": { "type": ["number", "null"], "minimum": 0 },
+          "wall_time_ms": { "type": ["number", "null"], "minimum": 0 },
+          "word_error_rate": { "type": ["number", "null"], "minimum": 0 },
+          "character_error_rate": { "type": ["number", "null"], "minimum": 0 },
+          "entity_exact_match": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "speaker_attribution_error_rate": { "type": ["number", "null"], "minimum": 0 },
+          "process_rss_baseline_mb": { "type": ["number", "null"], "minimum": 0 },
+          "process_rss_peak_mb": { "type": ["number", "null"], "minimum": 0 },
+          "process_rss_after_idle_mb": { "type": ["number", "null"], "minimum": 0 },
+          "process_cpu_mean_percent": { "type": ["number", "null"], "minimum": 0 },
+          "process_cpu_peak_percent": { "type": ["number", "null"], "minimum": 0 },
+          "transcript": { "type": ["string", "null"] },
+          "error": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

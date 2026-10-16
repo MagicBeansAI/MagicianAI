@@ -1,0 +1,149 @@
+schema_version: ollama_logical_chunk_activation.v1
+status: phase7_live_eval_passed_canary_pending
+approved: false
+activation_phase: 7
+production_behavior_changed_by_this_manifest: true
+
+target:
+  provider: ollama
+  model: qwen3.8-ud2-mtp
+  api_base_url: http://localhost:11434/api/generate
+  physical_context_tokens: 32768
+  logical_context_tokens: 262144
+  target_payload_tokens: 24576
+  static_overhead_reserve_tokens: 2048
+  output_reserve_tokens: 4096
+  safety_margin_tokens: 2048
+  fallback_policy: same_provider_only
+  reasoning: "off"
+  structured_output: json
+
+evidence:
+  phase0_routing: data/magician_v2/llm_chunking_evals/phase0-routing-baseline-v1.json
+  phase0_telemetry: data/magician_v2/llm_chunking_evals/phase0-telemetry-baseline-v1.json
+  deterministic_report: coverage/evals/ollama-logical-chunking/readiness/report.html
+  five_repeat_shadow_report: coverage/evals/ollama-logical-chunking/qualification/report.html
+  initial_five_repeat_report: coverage/evals/ollama-logical-chunking/five-repeat/report.html
+  evidence_headroom_rerun_report: coverage/evals/ollama-logical-chunking/five-repeat-evidence-1024/report.html
+  docs_guard_report: null
+  config_dry_run_report: coverage/evals/ollama-logical-chunking/readiness/report.html
+
+canary:
+  scopes: []
+  note: Provider-free readiness and five-repeat synthetic local/cloud qualification passed; no canary observation, queue-impact window, or durable-write verification has been run.
+  durable_chunked_writes_allowed: false
+  configured_durable_chunked_writes_possible: true
+
+operations:
+  - order: 1
+    operation: memory_temperature_utility_review
+    adapter: memory_utility_review_v1
+    baseline_profile: op-memory-episode-quality-standard
+    candidate_profile: op-memory-utility-review-local-chunked
+    configured_profile: op-memory-utility-review-local-chunked
+    rollback_profile: op-memory-episode-quality-standard
+    configured_state: enforced_shadow_verified_canary_pending
+  - order: 2
+    operation: memory_episode_quality_classification
+    adapter: memory_episode_quality_v1
+    baseline_profile: op-memory-episode-quality-standard
+    candidate_profile: op-memory-episode-quality-local-chunked
+    configured_profile: op-memory-episode-quality-local-chunked
+    rollback_profile: op-memory-episode-quality-standard
+    configured_state: enforced_shadow_verified_canary_pending
+  - order: 3
+    operation: memory_entity_extraction
+    adapter: memory_entities_v1
+    baseline_profile: op-memory-entity-extraction-fast
+    candidate_profile: op-memory-entity-extraction-local-chunked
+    configured_profile: op-memory-entity-extraction-local-chunked
+    rollback_profile: op-memory-entity-extraction-fast
+    configured_state: enforced_shadow_verified_canary_pending
+  - order: 4
+    operation: distill_evidence
+    adapter: evidence_distill_v1
+    baseline_profile: op-memory-evidence-distillation-fast
+    candidate_profile: op-memory-evidence-distillation-local-chunked
+    configured_profile: op-memory-evidence-distillation-local-chunked
+    rollback_profile: op-memory-evidence-distillation-fast
+    configured_state: enforced_shadow_verified_canary_pending
+  - order: 5
+    operation: memory_environment_knowledge_extraction
+    adapter: memory_environment_v1
+    baseline_profile: op-memory-environment-extraction-fast
+    candidate_profile: op-memory-environment-extraction-local-chunked
+    configured_profile: op-memory-environment-extraction-local-chunked
+    rollback_profile: op-memory-environment-extraction-fast
+    configured_state: enforced_shadow_verified_canary_pending
+  - order: 6
+    operation: memory_archive_summary
+    adapter: memory_archive_v1
+    baseline_profile: op-memory-archive-summary-fast
+    candidate_profile: op-memory-archive-summary-local-chunked
+    configured_profile: op-memory-archive-summary-local-chunked
+    rollback_profile: op-memory-archive-summary-fast
+    configured_state: enforced_shadow_verified_canary_pending
+
+production_slos:
+  logical_success_rate_min: 0.99
+  final_schema_validity_rate: 1.0
+  golden_shape_validity_rate: 1.0
+  local_repair_rate_max: 0.02
+  fallback_call_rate_max: 0.0
+  truncated_response_rate_max: 0.0
+  source_coverage_rate: 1.0
+  duplicate_source_rate_max: 0.0
+  logical_latency_p90:
+    policy: max_of_phase0_cloud_p90_times_3_or_180_seconds
+  interactive_queue_impact:
+    high_priority_wait_p90_regression_ms_max: 100
+    high_priority_wait_p99_regression_ms_max: 250
+  local_saturation:
+    ollama_oom_count_max: 0
+    provider_deadline_rate_max: 0.01
+
+monitoring:
+  events:
+    - llm_context_preflight
+    - llm_context_estimator_observation
+    - logical_chunk_physical_completed
+    - logical_chunk_logical_completed
+    - logical_chunk_logical_failed
+  report: coverage/evals/live-suite/latest.html
+  diagnostics_endpoint: /api/magician/v2/llm/chunking/adapters
+  inspect_fields:
+    - operation
+    - adapter
+    - profile
+    - validation_ok
+    - local_repairs
+    - fallback_calls
+    - total_duration_ms
+    - queue_wait_ms
+    - provider_execution_ms
+
+activation_procedure:
+  - Retain the attached provider-free readiness, initial five-repeat, corrected evidence rerun, and composite qualification reports.
+  - Revert the configured cutover to the baseline mappings before a measured canary if any gate fails.
+  - Add one explicit non-production canary scope and approve this exact manifest.
+  - Change only the selected operation mapping to its candidate profile during the measured rollout.
+  - Set only that candidate profile chunking.enabled to true on all config surfaces during the measured rollout.
+  - Reload and verify diagnostics, schema, latency, fallback, and queue SLOs.
+  - Permit durable writes only for the approved canary scope.
+  - Complete the observation window before moving to the next operation.
+
+rollback:
+  trigger: Any SLO breach, validation ambiguity, partial result, saturation, or queue regression.
+  actions:
+    - Restore the operation mapping to rollback_profile.
+    - Set the candidate profile chunking.enabled to false.
+    - Reload config and verify the authoritative profile is the baseline.
+    - Reject any incomplete logical result; never persist intermediate map/reduction values.
+    - Retain physical-call telemetry and the failed logical correlation record.
+  independence: Each operation rolls back without changing the other five mappings.
+
+approvals:
+  implementation_owner: null
+  quality_reviewer: null
+  operations_reviewer: null
+  approved_at: null

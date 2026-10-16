@@ -1,0 +1,29 @@
+{
+  "id": "test_judge",
+  "version": "1.0.0",
+  "description": "Fixture pack for magician-decision tests: a browser-step-shaped trio with one dynamic Choice (empty criteria until candidates are injected).",
+  "questions": [
+    {
+      "id": "page_settled",
+      "kind": "noul",
+      "instructions": "The page has finished loading relative to the last action (no pending spinner or mid-navigation state)"
+    },
+    {
+      "id": "next_element",
+      "kind": "choice",
+      "instructions": "Which candidate element best advances the goal now",
+      "criteria": {}
+    },
+    {
+      "id": "next_verb",
+      "kind": "choice",
+      "instructions": "Which mechanical verb applies to the chosen element",
+      "criteria": {
+        "click": "A plain click activates the element",
+        "select": "The element is an option to select",
+        "scroll": "More of the page must be revealed before acting",
+        "none_of_these": "The step needs typing, navigation, or a plan change"
+      }
+    }
+  ]
+}

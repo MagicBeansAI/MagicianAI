@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "package_root": "app",
+  "semantic_version": "0.1.0",
+  "actions": ["accept_plan"],
+  "composition_input_fields": ["source_plan_id"],
+  "composition_output_fields": ["forward_plan_id", "accepted"],
+  "forbidden_interfaces": [
+    "private_http_routes",
+    "generic_request_helpers",
+    "source_run_payload_access",
+    "cross_installation_authority"
+  ]
+}

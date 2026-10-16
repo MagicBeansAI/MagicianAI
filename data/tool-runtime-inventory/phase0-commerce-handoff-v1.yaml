@@ -1,0 +1,331 @@
+schema_version: tool-runtime.commerce-handoff-manifest.v1
+commerce_boundary_schema_version: tool-runtime.commerce-boundary.v1
+commerce_policy_schema_version: tool-runtime.commerce-policy-fixtures.v1
+
+sdk:
+  crate_name: magician-mcp-client
+  crate_version: 0.1.20
+  official_sdk_name: rmcp
+  official_sdk_version: 3.1.0
+  preferred_protocol_version: 2026-07-28
+  legacy_protocol_version: 2025-11-25
+  transports: [stdio, streamable_http]
+  outcomes: [complete, input_required, task]
+  source_digests:
+    - { path: Cargo.toml, sha256: 0fb9c43bebca0b87d15fc32ade517321599de8ae4fa9bdc17398ca286937d457 }
+    - { path: magician-mcp-client/Cargo.toml, sha256: 24e35a87feb92ead314c319480411c6b3445902e8ff32a2c07fb1c3b2009eaf5 }
+    - { path: magician-mcp-client/src/catalog_owner.rs, sha256: a8eca0adbd0223c644ed41f7b72ead629087670cc11e0592bbccbda58548a3b6 }
+    - { path: magician-mcp-client/src/catalog_projection.rs, sha256: b98a17e330eefddb5062790b468c69c4063797e34e524b26d7bbf8fb96f3b747 }
+    - { path: magician-mcp-client/src/client.rs, sha256: 96fb4f38454bc75e447614aecb51b5897fccdcc3c936f93ee7826848e3c9757b }
+    - { path: magician-mcp-client/src/config.rs, sha256: 28df588436343c97e09194ef0a71469ab0ce4e18c5a1c88b9b8324bf998307a0 }
+    - { path: magician-mcp-client/src/continuation.rs, sha256: 45b6e8ddc123c2c415da58a73331c49ff878f0faac6d58ba9d0dc6715ad1c6c4 }
+    - { path: magician-mcp-client/src/error.rs, sha256: 8e8b9cfad40075d000ca27579b876de962ee2bd541f6662db5d6b1fbfdcb92ce }
+    - { path: magician-mcp-client/src/http_transport.rs, sha256: ed0e55eedfcbdc4c30e2930834fbb952b1b22d60d6edc7a43d06fa0a42930e58 }
+    - { path: magician-mcp-client/src/invalidation.rs, sha256: ad2806ebbeff87ebc3b0575be246b1c855871640374e13359715cc1cc0aba2f6 }
+    - { path: magician-mcp-client/src/lib.rs, sha256: 0c4572cd0012dc688f94fdc481912a14fdc3ee7e42227680450b56569a131d55 }
+    - { path: magician-mcp-client/src/model.rs, sha256: 7a2514ce1e0f79318f55946130e391114a3377f527670b85b970e9100911ce2c }
+    - { path: magician-mcp-client/src/mrtr.rs, sha256: db08f44a43f3124c9061ea4a76ca7c49906525ed22d5bcc680abc246a0f78984 }
+    - { path: magician-mcp-client/src/oauth_coordinator.rs, sha256: 10945ca801c3059ff4bb472d057fbcbeba348770edff818b13f6cc8e559f9104 }
+    - { path: magician-mcp-client/src/oauth_persistence.rs, sha256: 07bc823e953a3b3e4c9fdeeb21cbdfe79b63dab4569af255309449fb60b0e15c }
+    - { path: magician-mcp-client/src/recovery.rs, sha256: b31a23bde81e69daaa1771839c1c7583a31d2a33a861f9715b4ce2e76b292c3b }
+    - { path: magician-mcp-client/src/stdio_transport.rs, sha256: 5f2b15b429de0d9a98c1b272924e3b18c188450002a7ffe5636dd33df7ac4abe }
+    - { path: magician-mcp-client/src/task.rs, sha256: 2acac711b8c74042abb6d9f81b862cdcaf98daa80c5e8c2d656654f630b5f6f2 }
+    - { path: magician-mcp-client/src/validation.rs, sha256: bc07ddc2833ecfa0badc19d92505723a298e7c3be7419307bb5ad9609c63c772 }
+
+auth:
+  credential_delivery: sealed_transport_config
+  policy_receipt: non_secret_binding_receipt
+  authorization_independent: true
+  binding_dimensions: [principal, workspace, skill, profile, endpoint, issuer]
+  credential_values_visible_to_policy: false
+  global_environment_mutated: false
+
+routing:
+  selection_dimensions: [principal, workspace, skill, profile]
+  rollout_states: [legacy, compare, generic_canary, generic, rollback]
+  route_snapshot: pinned_per_invocation
+  rollback_effect: future_invocations_only
+  credential_migration: never
+  compare_remote_calls: 1
+  automatic_fallback_after_dispatch: false
+  validated_legacy_contract_required: true
+  kill_switches: global_and_per_skill
+
+continuation:
+  input_required: retain_until_terminal
+  task: retain_until_terminal
+  resume_deadline: required_bounded
+  fallback_while_pending: forbidden
+  input_required_restart: session_bound_fail_closed
+  task_restart: durable_exact_revalidation
+  recovery_revision: durable_replace_before_dispatch
+
+refund:
+  current_coverage: absent
+  migration_readiness: blocked_pending_design
+  execution: unsupported_fail_closed
+  automatic_refund: false
+
+migration:
+  production_routing: disabled
+  contract_status: contract_only
+  blockers:
+    - auth_broker_runtime
+    - dispatch_phase_evidence
+    - input_required_resume
+    - task_resume
+    - refund_design
+
+integrations:
+  - id: swiggy-mcp
+    legacy_target: legacy_wrapper
+    generic_target: official_sdk
+    legacy_credential_owner: legacy_skill_cache
+    generic_credential_owner: auth_broker_scoped_store
+    commerce_policy_owner: governed_commerce_policy
+  - id: zepto-mcp
+    legacy_target: legacy_wrapper
+    generic_target: official_sdk
+    legacy_credential_owner: legacy_skill_cache
+    generic_credential_owner: auth_broker_scoped_store
+    commerce_policy_owner: governed_commerce_policy
+
+scenarios:
+  - id: auth-binding-mismatch
+    auth: binding_mismatch
+    expected:
+      target: official_sdk
+      terminal: auth_binding_mismatch
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: auth-cancelled
+    auth: cancelled
+    expected:
+      target: official_sdk
+      terminal: auth_cancelled
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: auth-expired
+    auth: expired
+    expected:
+      target: official_sdk
+      terminal: auth_expired
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: auth-identity-mismatch
+    auth: identity_mismatch
+    expected:
+      target: official_sdk
+      terminal: auth_identity_mismatch
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: auth-interaction-required
+    auth: interaction_required
+    expected:
+      target: official_sdk
+      terminal: auth_interaction_required
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: auth-issuer-changed
+    auth: issuer_changed
+    expected:
+      target: official_sdk
+      terminal: auth_issuer_changed
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: auth-scope-upgrade
+    auth: scope_upgrade_required
+    expected:
+      target: official_sdk
+      terminal: auth_scope_upgrade_required
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: auth-timeout
+    auth: timed_out
+    expected:
+      target: official_sdk
+      terminal: auth_timed_out
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: authorization-denied
+    authorization: denied
+    expected:
+      target: official_sdk
+      terminal: authorization_denied
+  - id: cancel-after-send
+    dispatch: cancelled_after_send
+    expected:
+      target: official_sdk
+      terminal: remote_ambiguous
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: commit
+  - id: cancel-before-send
+    dispatch: cancelled_before_send
+    expected:
+      target: official_sdk
+      terminal: cancelled_before_dispatch
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      settlement: rollback
+  - id: dropped-after-send
+    dispatch: dropped_after_send
+    expected:
+      target: official_sdk
+      terminal: remote_ambiguous
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: commit
+  - id: input-required-retain
+    dispatch: input_required
+    expected:
+      target: official_sdk
+      terminal: input_required
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: retain
+  - id: malformed-after-send
+    dispatch: malformed_response_after_send
+    expected:
+      target: official_sdk
+      terminal: remote_ambiguous
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: commit
+  - id: policy-denied
+    policy: denied
+    expected:
+      target: official_sdk
+      terminal: policy_denied
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: refund-blocked
+    policy: refund_intent
+    expected:
+      target: official_sdk
+      terminal: refund_migration_blocked
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+  - id: remote-auth-required
+    dispatch: authorization_required
+    expected:
+      target: official_sdk
+      terminal: remote_authorization_required
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: rollback
+  - id: remote-error
+    dispatch: complete_remote_error
+    expected:
+      target: official_sdk
+      terminal: remote_error
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: rollback
+  - id: remote-success-reserved
+    dispatch: complete_success
+    expected:
+      target: official_sdk
+      terminal: remote_success
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: commit
+  - id: remote-success-unreserved
+    policy: ready_unreserved
+    dispatch: complete_success
+    expected:
+      target: official_sdk
+      terminal: remote_success
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+  - id: route-canary-generic
+    rollout_state: generic_canary
+    canary_selected: true
+    expected:
+      target: official_sdk
+      terminal: remote_success
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: commit
+  - id: route-canary-legacy
+    rollout_state: generic_canary
+    expected:
+      target: legacy_wrapper
+      terminal: legacy_delegated
+      credential_owner: legacy_skill_cache
+  - id: route-compare
+    rollout_state: compare
+    expected:
+      target: legacy_wrapper
+      terminal: legacy_delegated
+      credential_owner: legacy_skill_cache
+      shadow_policy_only: true
+  - id: route-generic
+    rollout_state: generic
+    expected:
+      target: official_sdk
+      terminal: remote_success
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: commit
+  - id: route-generic-missing
+    rollout_state: generic
+    generic_contract_available: false
+    expected:
+      target: official_sdk
+      terminal: route_unavailable
+  - id: route-legacy
+    rollout_state: legacy
+    expected:
+      target: legacy_wrapper
+      terminal: legacy_delegated
+      credential_owner: legacy_skill_cache
+  - id: route-legacy-missing
+    rollout_state: legacy
+    legacy_contract_available: false
+    expected:
+      target: legacy_wrapper
+      terminal: route_unavailable
+  - id: route-rollback
+    rollout_state: rollback
+    expected:
+      target: legacy_wrapper
+      terminal: legacy_delegated
+      credential_owner: legacy_skill_cache
+  - id: task-accepted-retain
+    dispatch: task_accepted
+    expected:
+      target: official_sdk
+      terminal: task_pending
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: retain
+  - id: timeout-after-send
+    dispatch: timeout_after_send
+    expected:
+      target: official_sdk
+      terminal: remote_ambiguous
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: commit
+  - id: transport-after-send
+    dispatch: transport_failure_after_send
+    expected:
+      target: official_sdk
+      terminal: remote_ambiguous
+      credential_owner: auth_broker_scoped_store
+      auth_broker_called: true
+      remote_called: true
+      settlement: commit

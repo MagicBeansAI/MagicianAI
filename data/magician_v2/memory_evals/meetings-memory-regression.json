@@ -1,0 +1,26 @@
+{
+  "suite_id": "meetings-memory-regression",
+  "enabled": false,
+  "cases": [
+    {
+      "case_id": "meeting-takeaways-recall",
+      "agent_id": "personal-assistant",
+      "query": "What were the takeaways, decisions, and action items from my recent meetings?",
+      "scopes": ["user"],
+      "expected_substrings": ["meeting:"],
+      "min_selected_count": 1,
+      "max_entries": 12,
+      "max_chars": 7000
+    },
+    {
+      "case_id": "meeting-provenance-fields",
+      "agent_id": "personal-assistant",
+      "query": "Which meeting did my latest captured meeting summary come from and on what date?",
+      "scopes": ["user"],
+      "expected_substrings": ["thread_id", "meeting_capture"],
+      "min_selected_count": 1,
+      "max_entries": 12,
+      "max_chars": 7000
+    }
+  ]
+}

@@ -1,0 +1,458 @@
+schema_version: tool-runtime.commerce-policy-fixtures-manifest.v1
+commerce_boundary_schema_version: tool-runtime.commerce-boundary.v1
+cases:
+  - integration: swiggy-mcp
+    id: amount-required
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: missing_declared_amount }
+  - integration: swiggy-mcp
+    id: budget-ceiling
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    reservation: ceiling_exceeded
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: budget_ceiling_exceeded, verified_amount_paise: 10000 }
+  - integration: swiggy-mcp
+    id: budget-missing
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    reservation: budget_not_configured
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: budget_not_configured, verified_amount_paise: 10000 }
+  - integration: swiggy-mcp
+    id: budget-unavailable-allowed
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    gate_fail_open: true
+    reservation: unavailable
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, remote_called: true }
+  - integration: swiggy-mcp
+    id: budget-unavailable-blocked
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    reservation: unavailable
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: budget_unavailable, verified_amount_paise: 10000 }
+  - integration: swiggy-mcp
+    id: cart-mismatch-fail-closed
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 200, unit: rupees }
+    gate_fail_open: true
+    allow_unverified_cart: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: cart_mismatch }
+  - integration: swiggy-mcp
+    id: cart-paise-success
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 10000, unit: paise }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: cart-rupees-success
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: cartless-allowed
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: unavailable, reason: no_cart_tool }
+    gate_fail_open: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: cartless-blocked
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: unavailable, reason: no_cart_tool }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: cart_unavailable }
+  - integration: swiggy-mcp
+    id: confirmation-complete
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    wrapper_confirmation_required: true
+    confirmed: true
+    intent_summary_trimmed_chars: 12
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: confirmation-missing
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    wrapper_confirmation_required: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: confirmation_missing }
+  - integration: swiggy-mcp
+    id: confirmation-off
+    tool_name: place_food_order
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: declared-preflight-cap
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 20000
+    per_order_ceiling_paise: 10000
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: declared_ceiling_exceeded }
+  - integration: swiggy-mcp
+    id: gate-disabled
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    gate_disabled: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, remote_called: true }
+  - integration: swiggy-mcp
+    id: intent-too-short
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    wrapper_confirmation_required: true
+    confirmed: true
+    intent_summary_trimmed_chars: 11
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: confirmation_intent_too_short }
+  - integration: swiggy-mcp
+    id: percent-tolerance-boundary
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 105000
+    cart: { kind: verified, raw_amount: 1000, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 100000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: provider-final
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: provider-nonfinal
+    tool_name: add_item_to_cart
+    provided_risk: cart_mutation
+    expected: { inferred_risk: cart_mutation, effective_risk: cart_mutation, terminal: remote_success, remote_called: true }
+  - integration: swiggy-mcp
+    id: provided-checkout-promotes-read
+    tool_name: search_items
+    provided_risk: checkout_or_payment
+    gate_disabled: true
+    expected: { inferred_risk: read, effective_risk: checkout_or_payment, terminal: remote_success, remote_called: true }
+  - integration: swiggy-mcp
+    id: read-precedence
+    tool_name: get_payment_status
+    expected: { inferred_risk: read, effective_risk: read, terminal: remote_success, remote_called: true }
+  - integration: swiggy-mcp
+    id: read-prefix
+    tool_name: search_items
+    expected: { inferred_risk: read, effective_risk: read, terminal: remote_success, remote_called: true }
+  - integration: swiggy-mcp
+    id: remote-ambiguous-commit
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    remote: ambiguous_failure
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_ambiguous, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: remote-error-rollback
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    remote: definite_error
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_error, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: rollback }
+  - integration: swiggy-mcp
+    id: remote-timeout-commit
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    remote: timeout
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_ambiguous, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: risk-mismatch
+    tool_name: place_food_order
+    wrapper_confirmation_required: true
+    confirmed: true
+    intent_summary_trimmed_chars: 20
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: confirmation_risk_mismatch }
+  - integration: swiggy-mcp
+    id: tolerance-boundary
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 12500
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: unreadable-cart-allowed
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: unavailable, reason: read_failed }
+    allow_unverified_cart: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: swiggy-mcp
+    id: unreadable-cart-blocked
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: unavailable, reason: parse_failed }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: cart_unavailable }
+  - integration: swiggy-mcp
+    id: verified-cap
+    tool_name: place_food_order
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    per_order_ceiling_paise: 11000
+    cart: { kind: verified, raw_amount: 130, unit: rupees }
+    absolute_tolerance_paise: 3000
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: verified_ceiling_exceeded, verified_amount_paise: 13000 }
+
+  - integration: zepto-mcp
+    id: amount-required
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: missing_declared_amount }
+  - integration: zepto-mcp
+    id: budget-ceiling
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    reservation: ceiling_exceeded
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: budget_ceiling_exceeded, verified_amount_paise: 10000 }
+  - integration: zepto-mcp
+    id: budget-missing
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    reservation: budget_not_configured
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: budget_not_configured, verified_amount_paise: 10000 }
+  - integration: zepto-mcp
+    id: budget-unavailable-allowed
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    gate_fail_open: true
+    reservation: unavailable
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, remote_called: true }
+  - integration: zepto-mcp
+    id: budget-unavailable-blocked
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    reservation: unavailable
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: budget_unavailable, verified_amount_paise: 10000 }
+  - integration: zepto-mcp
+    id: cart-mismatch-fail-closed
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 200, unit: rupees }
+    gate_fail_open: true
+    allow_unverified_cart: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: cart_mismatch }
+  - integration: zepto-mcp
+    id: cart-paise-success
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 10000, unit: paise }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: cart-rupees-success
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: cartless-allowed
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: unavailable, reason: no_cart_tool }
+    gate_fail_open: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: cartless-blocked
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: unavailable, reason: no_cart_tool }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: cart_unavailable }
+  - integration: zepto-mcp
+    id: confirmation-complete
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    wrapper_confirmation_required: true
+    confirmed: true
+    intent_summary_trimmed_chars: 12
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: confirmation-missing
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    wrapper_confirmation_required: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: confirmation_missing }
+  - integration: zepto-mcp
+    id: confirmation-off
+    tool_name: create_order
+    confirm_order_argument: true
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: declared-preflight-cap
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 20000
+    per_order_ceiling_paise: 10000
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: declared_ceiling_exceeded }
+  - integration: zepto-mcp
+    id: gate-disabled
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    gate_disabled: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, remote_called: true }
+  - integration: zepto-mcp
+    id: intent-too-short
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    wrapper_confirmation_required: true
+    confirmed: true
+    intent_summary_trimmed_chars: 11
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: confirmation_intent_too_short }
+  - integration: zepto-mcp
+    id: percent-tolerance-boundary
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 105000
+    cart: { kind: verified, raw_amount: 1000, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 100000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: provider-final
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: provider-nonfinal
+    tool_name: create_order
+    provided_risk: cart_mutation
+    expected: { inferred_risk: cart_mutation, effective_risk: cart_mutation, terminal: remote_success, remote_called: true }
+  - integration: zepto-mcp
+    id: provided-checkout-promotes-read
+    tool_name: search_items
+    provided_risk: checkout_or_payment
+    gate_disabled: true
+    expected: { inferred_risk: read, effective_risk: checkout_or_payment, terminal: remote_success, remote_called: true }
+  - integration: zepto-mcp
+    id: read-precedence
+    tool_name: get_payment_status
+    expected: { inferred_risk: read, effective_risk: read, terminal: remote_success, remote_called: true }
+  - integration: zepto-mcp
+    id: read-prefix
+    tool_name: search_items
+    expected: { inferred_risk: read, effective_risk: read, terminal: remote_success, remote_called: true }
+  - integration: zepto-mcp
+    id: remote-ambiguous-commit
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    remote: ambiguous_failure
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_ambiguous, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: remote-error-rollback
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    remote: definite_error
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_error, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: rollback }
+  - integration: zepto-mcp
+    id: remote-timeout-commit
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    remote: timeout
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_ambiguous, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: risk-mismatch
+    tool_name: create_order
+    confirm_order_argument: true
+    wrapper_confirmation_required: true
+    confirmed: true
+    intent_summary_trimmed_chars: 20
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: confirmation_risk_mismatch }
+  - integration: zepto-mcp
+    id: tolerance-boundary
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 12500
+    cart: { kind: verified, raw_amount: 100, unit: rupees }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: unreadable-cart-allowed
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: unavailable, reason: read_failed }
+    allow_unverified_cart: true
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: remote_success, verified_amount_paise: 10000, reservation_acquired: true, remote_called: true, settlement: commit }
+  - integration: zepto-mcp
+    id: unreadable-cart-blocked
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    cart: { kind: unavailable, reason: parse_failed }
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: cart_unavailable }
+  - integration: zepto-mcp
+    id: verified-cap
+    tool_name: create_order
+    confirm_order_argument: true
+    provided_risk: checkout_or_payment
+    declared_amount_paise: 10000
+    per_order_ceiling_paise: 11000
+    cart: { kind: verified, raw_amount: 130, unit: rupees }
+    absolute_tolerance_paise: 3000
+    expected: { inferred_risk: checkout_or_payment, effective_risk: checkout_or_payment, terminal: verified_ceiling_exceeded, verified_amount_paise: 13000 }

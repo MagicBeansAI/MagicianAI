@@ -1,0 +1,402 @@
+{
+  "$defs": {
+    "AppActionCompositionChainProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "active_destination_action_id": {
+          "$ref": "#/$defs/AppName"
+        },
+        "active_destination_installation_id": {
+          "$ref": "#/$defs/AppInstallationId"
+        },
+        "active_source_run_ref": {
+          "$ref": "#/$defs/AppReference"
+        },
+        "hop_count": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hop_index": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "origin_source_run_ref": {
+          "$ref": "#/$defs/AppReference"
+        }
+      },
+      "required": [
+        "origin_source_run_ref",
+        "active_source_run_ref",
+        "active_destination_installation_id",
+        "active_destination_action_id",
+        "hop_index",
+        "hop_count"
+      ],
+      "type": "object"
+    },
+    "AppActionCompositionErrorCode": {
+      "enum": [
+        "outcome_unavailable",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "AppActionCompositionSubscriptionPage": {
+      "additionalProperties": false,
+      "properties": {
+        "after_sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "current_sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "next_cursor": {
+          "$ref": "#/$defs/AppReference"
+        },
+        "reset_required": {
+          "type": "boolean"
+        },
+        "through_sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updates": {
+          "items": {
+            "$ref": "#/$defs/AppActionCompositionUpdate"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "after_sequence",
+        "through_sequence",
+        "current_sequence",
+        "updates",
+        "has_more",
+        "reset_required",
+        "next_cursor",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "AppActionCompositionUpdate": {
+      "additionalProperties": false,
+      "properties": {
+        "destination_action_id": {
+          "$ref": "#/$defs/AppName"
+        },
+        "destination_installation_id": {
+          "$ref": "#/$defs/AppInstallationId"
+        },
+        "destination_run_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_run_ref": {
+          "$ref": "#/$defs/AppReference"
+        },
+        "status": {
+          "$ref": "#/$defs/AppActionCompositionUpdateStatus"
+        }
+      },
+      "required": [
+        "sequence",
+        "source_run_ref",
+        "destination_installation_id",
+        "destination_action_id",
+        "status",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "AppActionCompositionUpdateStatus": {
+      "enum": [
+        "waiting",
+        "launched",
+        "source_terminal",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "AppActionStatus": {
+      "enum": [
+        "completed",
+        "waiting",
+        "failed",
+        "uncertain"
+      ],
+      "type": "string"
+    },
+    "AppCompositionRetryClass": {
+      "enum": [
+        "permanent",
+        "transient",
+        "effect_uncertain",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "AppCompositionWorkflowLaunch": {
+      "additionalProperties": false,
+      "description": "Model-facing launch projection. Canonical workflow results keep their full\nlabeled envelope and provenance in the task sidecars; composition returns\nonly stable control identity and the eligible typed value.",
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppModelActionResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_handle": {
+          "$ref": "#/$defs/AppRunHandle"
+        }
+      },
+      "required": [
+        "run_handle"
+      ],
+      "type": "object"
+    },
+    "AppInstallationId": {
+      "type": "string"
+    },
+    "AppModelActionResult": {
+      "additionalProperties": false,
+      "description": "Model-facing projection of a canonical app result.\n\nThe durable [`AppActionResult`] deliberately retains complete provenance,\nsource references, handling labels and effect receipts for replay and audit.\nA composition tool must not serialize that internal envelope merely because\nthe result value itself is eligible for the calling model. This projection\ncarries only the typed value and stable lifecycle identity; the canonical\nresult remains available through the policy-aware app-run owner.",
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/AppName"
+        },
+        "effect_committed": {
+          "description": "Content-free signal that the canonical result sealed at least one\nmutation or external-effect receipt. Receipt identities stay internal.",
+          "type": "boolean"
+        },
+        "output": true,
+        "protocol_version": {
+          "$ref": "#/$defs/AppProtocolVersion"
+        },
+        "run_ref": {
+          "$ref": "#/$defs/AppReference"
+        },
+        "status": {
+          "$ref": "#/$defs/AppActionStatus"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "action_id",
+        "run_ref",
+        "status",
+        "effect_committed"
+      ],
+      "type": "object"
+    },
+    "AppName": {
+      "type": "string"
+    },
+    "AppProtocolVersion": {
+      "description": "Version of the canonical app data plane, independent of HTTP and SDKs.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    },
+    "AppReference": {
+      "type": "string"
+    },
+    "AppRunHandle": {
+      "additionalProperties": false,
+      "description": "Stable server-owned identity for one logical app action run.\n\nThe handle contains no authority: every consumer must authenticate its\nscope and reopen the durable workflow binding for status/control. Returning\nresult bytes additionally requires current installation/grant/schema and\nsource-policy revalidation. `run_ref` remains stable when the runtime\ncreates a replacement or delegated execution for the same idempotent action.",
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/AppName"
+        },
+        "installation_id": {
+          "$ref": "#/$defs/AppInstallationId"
+        },
+        "protocol_version": {
+          "$ref": "#/$defs/AppProtocolVersion"
+        },
+        "run_ref": {
+          "$ref": "#/$defs/AppReference"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "run_ref",
+        "installation_id",
+        "action_id"
+      ],
+      "type": "object"
+    },
+    "AppRunStatus": {
+      "description": "Stable public lifecycle for one logical app run.\n\nArtifact V2 owns a richer internal execution state machine. This smaller\nenum is the app protocol projection: clients never infer terminality from\nan HTTP status code or from an open-ended internal status string.",
+      "enum": [
+        "queued",
+        "planning",
+        "running",
+        "paused",
+        "deferred",
+        "waiting",
+        "blocked",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+        "archived",
+        "uncertain"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://magican.ai/contracts/apps/v1/app-action-result-composition.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Wire response for the existing compose operation. Flattening preserves the\nstable status-tagged response while adding chain correlation and an\noptional payload-free subscription page.",
+  "oneOf": [
+    {
+      "properties": {
+        "source_run": {
+          "$ref": "#/$defs/AppRunHandle"
+        },
+        "status": {
+          "const": "waiting",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "source_run"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "launch": {
+          "$ref": "#/$defs/AppCompositionWorkflowLaunch"
+        },
+        "result_withheld_by_policy": {
+          "type": "boolean"
+        },
+        "source_run": {
+          "$ref": "#/$defs/AppRunHandle"
+        },
+        "status": {
+          "const": "launched",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "source_run",
+        "launch",
+        "result_withheld_by_policy"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "source_run": {
+          "$ref": "#/$defs/AppRunHandle"
+        },
+        "source_status": {
+          "$ref": "#/$defs/AppRunStatus"
+        },
+        "status": {
+          "const": "source_terminal",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "source_run",
+        "source_status"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "effect_uncertain": {
+          "type": "boolean"
+        },
+        "error_code": {
+          "$ref": "#/$defs/AppActionCompositionErrorCode"
+        },
+        "retry_class": {
+          "$ref": "#/$defs/AppCompositionRetryClass"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "source_run": {
+          "$ref": "#/$defs/AppRunHandle"
+        },
+        "status": {
+          "const": "unavailable",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "source_run",
+        "error_code",
+        "retry_class",
+        "retryable",
+        "effect_uncertain"
+      ],
+      "type": "object"
+    }
+  ],
+  "properties": {
+    "chain": {
+      "$ref": "#/$defs/AppActionCompositionChainProgress"
+    },
+    "subscription": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AppActionCompositionSubscriptionPage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "chain"
+  ],
+  "title": "AppActionCompositionResponse",
+  "type": "object"
+}

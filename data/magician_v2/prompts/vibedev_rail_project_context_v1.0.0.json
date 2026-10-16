@@ -1,0 +1,23 @@
+{
+  "name": "vibedev_rail_project_context",
+  "version": "1.0.0",
+  "content": [
+    "- Pass this repo_path to run_coding_task so the coding engine starts in the selected project directory inside the shadow workspace.",
+    "- Do not use delegation_files as the implementation working-directory mechanism; run_coding_task owns the repo cwd.",
+    "- Build runs must invoke run_coding_task before any shell/file pre-inspection. Pass the original VibeDev user prompt, repo_path, project context and constraints into run_coding_task; the coding engine owns repo inspection inside its shadow workspace.",
+    "- Use delegation_shell/delegation_files after the first run_coding_task call only for verification, git/build checks, or when run_coding_task reports missing context.",
+    "- Verify file changes against the `real_working_dir` returned in the run_coding_task result — NOT your own shell/repo root. delegation_shell/delegation_files are rooted at the service repository and will NOT see the project working directory, so a file run_coding_task wrote can look \"missing\" if you check there.",
+    "- Keep new runs and follow-ups scoped to this VibeDev project unless the user explicitly switches projects.",
+    "- This run was started with `@vibedev` from an ordinary chat turn, not from the VibeDev cockpit: there is no live preview pane or diff viewer attached to the conversation, so state your outcome explicitly in the run result."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Prose half of the `@vibedev` chat rail's VibeDev project-context block. The machine-read lines of that block (`VibeDev project:`, `run_coding_task repo_path:`) are assembled in Rust and deliberately NOT stored here, because `agents/runtime.rs` string-matches them back out and a prompt-store edit must not be able to break that contract silently. Mirrors the prose of the cockpit's client-side projectContextBlock (ui/unified-ui/src/lib/shell/vibe/conversation/submit.ts).",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev` rail project-context prose, lifted from the cockpit composer so convergence later is a deletion rather than a merge.",
+    "tags": ["vibedev", "coding", "vibedev-rail", "project-context"],
+    "estimated_tokens": 240
+  }
+}

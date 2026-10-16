@@ -1,0 +1,30 @@
+{
+  "version": "v1",
+  "root": 0,
+  "handling_floor": { "classification": "personal", "model_processing": "remote_allowed" },
+  "nodes": [
+    { "kind": "record", "fields": {
+      "receipt_ref": { "value_type": 1, "required": true },
+      "committed_record_revisions": { "value_type": 3, "required": true },
+      "change_sequence": { "value_type": 7, "required": true },
+      "summary": { "value_type": 9, "required": true }
+    } },
+    { "kind": "nullable", "value_type": 2 },
+    { "kind": "text", "max_bytes": 255 },
+    { "kind": "array", "items": 4, "min_items": 0, "max_items": 256 },
+    { "kind": "record", "fields": {
+      "entity": { "value_type": 5, "required": true },
+      "record_id": { "value_type": 2, "required": true },
+      "revision": { "value_type": 6, "required": true }
+    } },
+    { "kind": "text", "max_bytes": 128 },
+    { "kind": "integer" },
+    { "kind": "nullable", "value_type": 8 },
+    { "kind": "record", "fields": {
+      "first": { "value_type": 6, "required": true },
+      "last": { "value_type": 6, "required": true }
+    } },
+    { "kind": "nullable", "value_type": 10 },
+    { "kind": "text", "max_bytes": 4096 }
+  ]
+}

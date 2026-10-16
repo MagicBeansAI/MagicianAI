@@ -1,0 +1,159 @@
+[
+  {
+    "principal": "memory-owner-eval",
+    "record": {
+      "accounting_complete": true,
+      "application_cache_hit": false,
+      "behavior_fingerprint": "ec7cd7ebded871a30f80512d11a77ad1e4d7d0815904eab04b19dc5a937fe98d",
+      "calls": [
+        {
+          "adapter": "typesafe",
+          "attempt": 1,
+          "batch_id": "01M3J9XXS3WGTYF7Y2WR5TZNTS",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9XXSFQB2PA69HQP71CCNW",
+          "completed_at_ms": 1790542018352,
+          "error_class": "structured_provider_unavailable",
+          "input_tokens": null,
+          "item_ids": [
+            "0"
+          ],
+          "latency_ms": 0,
+          "local": false,
+          "model": "jev-1.13.0",
+          "operation": "memory_conflict_review",
+          "output_tokens": null,
+          "provider": "decision:systemone:typesafe",
+          "queue_wait_ms": 0,
+          "requested_model": "jev-1.13.0",
+          "retry_group_id": "01M3J9XXSESBMK8T1V02DYEG3V",
+          "started_at_ms": 1790542018351,
+          "status": "failed"
+        },
+        {
+          "adapter": "kev-mlx",
+          "attempt": 1,
+          "batch_id": "01M3J9XXS3WGTYF7Y2WR5TZNTS",
+          "cache_read_tokens": null,
+          "cache_write_tokens": null,
+          "call_id": "01M3J9XXSKVCDEV8N54TKQJXW1",
+          "completed_at_ms": 1790542022334,
+          "error_class": null,
+          "input_tokens": 265,
+          "item_ids": [
+            "0"
+          ],
+          "latency_ms": 3979,
+          "local": true,
+          "model": "kev-4b-mlx",
+          "operation": "memory_conflict_review",
+          "output_tokens": 0,
+          "provider": "decision:kev-mlx",
+          "queue_wait_ms": 0,
+          "requested_model": "kev-4b-mlx",
+          "retry_group_id": "01M3J9XXSKCQ7FXR1965SKHS5N",
+          "started_at_ms": 1790542018355,
+          "status": "succeeded"
+        }
+      ],
+      "case_id": "f39a3239fd76e17123f94d494e18f6a68a5d5503fae162ff2ef11e89249ece80",
+      "comparison_id": "01M3J9Y1P3H1XQDJK3XCAXWT08",
+      "discovery_latency_ms": 0,
+      "engine_instance": "01M3J8MQAFRQ65TQGHCB5BACQR",
+      "engine_latency_ms": 3989,
+      "foreground_latency_ms": 4000,
+      "items": [
+        {
+          "eligible_answers": {},
+          "error": null,
+          "item_id": "0",
+          "latency_ms": 3986,
+          "response": {
+            "answers": {
+              "resolution": {
+                "choice": "keep_both",
+                "confidence": 0.6781,
+                "probabilities": {
+                  "keep_both": 0.7854,
+                  "keep_existing": 0.1737,
+                  "replace_existing": 0.0409
+                },
+                "type": "choice"
+              }
+            },
+            "model": {
+              "adapter": "kev-mlx",
+              "model": "kev-4b-mlx"
+            },
+            "pack_id": "memory_conflict_review",
+            "pack_version": "1.0.0",
+            "usage": {
+              "input_tokens": 265,
+              "output_tokens": 0
+            }
+          },
+          "status": "answered",
+          "thresholds": {
+            "resolution": 0.75
+          }
+        }
+      ],
+      "mode": "gate",
+      "offered": 1,
+      "offered_item_ids": [
+        "0"
+      ],
+      "operation": "memory_conflict_review",
+      "policy_revision": "fbfe3459525aa5c9f9b636757490c19197223cd3704c4334a8b023bfb3fdcd0e",
+      "pricing": {
+        "01M3J9XXSFQB2PA69HQP71CCNW": {
+          "cache_cost_usd": null,
+          "cost_source": "unknown",
+          "cost_usd": null,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "decision-pricing-unavailable",
+          "reasoning_cost_usd": null
+        },
+        "01M3J9XXSKVCDEV8N54TKQJXW1": {
+          "cache_cost_usd": null,
+          "cost_source": "local",
+          "cost_usd": 0.0,
+          "input_cost_usd": null,
+          "output_cost_usd": null,
+          "pricing_version": "pricing-row-v1:160b95536df612988e7bd863af2f27fb5781c43e36e305ebc77513d355c5eead",
+          "reasoning_cost_usd": null
+        }
+      },
+      "projection_version": "memory_conflict_pair_v1",
+      "reference": null,
+      "reference_attempted": false,
+      "reference_version": "9f12757df37767f3772f31af8fd129cd738117147585ae60ca991b6fda30a69f",
+      "required_questions": [
+        "resolution"
+      ],
+      "requires_completion": false,
+      "schema_version": 1,
+      "scope": {
+        "call_role": "judge",
+        "execution_id": "memory_conflict_review-exec",
+        "llm_call_id": "01M3J9XXS3E6QF3MVXXMADWPMM",
+        "root_execution_id": "memory_conflict_review-exec",
+        "scope": {
+          "principal": "memory-owner-eval",
+          "workspace": "01M3J9XXATEJF4XA0P18QE5RJA"
+        },
+        "scope_resolution": "explicit",
+        "task_id": "memory_conflict_review",
+        "trace_id": "memory_conflict_review-exec",
+        "workload_class": "ambient"
+      },
+      "threshold_fingerprints": {
+        "0": "6c229ae9a101e1aeedb3c534e74c854579278a9f20f5532e9285a163c01f1f8a"
+      },
+      "wall_latency_ms": 4000
+    },
+    "workspace": "01M3J9XXATEJF4XA0P18QE5RJA"
+  }
+]

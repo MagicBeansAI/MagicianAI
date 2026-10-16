@@ -1,0 +1,43 @@
+name: open_pr
+description: Open a GitHub Pull Request for the current working tree.
+version: "1.0.0"
+guide: |
+  Tool name: `open_pr`
+
+  Ship the current project state by opening a GitHub Pull Request. This pushes the 
+  current real working tree to a new branch and creates a PR.
+
+  You MUST ensure you have already called `apply_code_proposal` before calling this 
+  tool, otherwise the PR will not contain your changes.
+
+  Leave `destination_repo` and `base_branch` null to use the repository's 
+  standard defaults, unless the user explicitly told you to target a different branch 
+  or fork.
+parameters:
+  - name: title
+    required: true
+    param_type: string
+    description: The title of the Pull Request.
+  - name: body
+    required: true
+    param_type: string
+    description: The description body of the Pull Request.
+  - name: destination_repo
+    required: false
+    param_type: string
+    description: The git remote URL or name to push to. Leave null to use the default origin.
+  - name: base_branch
+    required: false
+    param_type: string
+    description: The base branch for the PR. Leave null to use the repository's default branch.
+implementation:
+  type: compiled
+  provider_name: open_pr
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 120
+  categories:
+    - coding
+    - deployment
+  composition_category: action
+  sandbox: none

@@ -1,0 +1,4 @@
+# Python dependencies of docs/codegraph/mcp_server.py, installed into the
+# managed venv by mcp_env.py (`make setup-codegraph-mcp`). Editing this file
+# changes the venv stamp, so every client rebuilds it on next launch.
+mcp>=1.10,<3

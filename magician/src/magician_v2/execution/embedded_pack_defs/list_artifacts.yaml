@@ -1,0 +1,36 @@
+name: list_artifacts
+description: List artifacts produced by a task's execution — `artifact_id`, `artifact_type`, `content_type`, `produced_at`. Resolves to the task's active or latest execution if `execution_id` is omitted.
+version: "1.0.0"
+guide: |
+  Tool name: `list_artifacts`
+
+  Inputs:
+  - `task_id` (required) — the task whose artifacts to enumerate.
+  - `execution_id` (optional) — specific execution to read from.
+    Defaults to the task's active root execution; falls back to the
+    latest completed execution. If the task has no executions yet,
+    returns an empty list with a clarifying note.
+
+  Returns: `[{artifact_id, artifact_type, content_type, produced_at}]`.
+  Pair with the task tools to fetch artifact contents by id.
+parameters:
+  - name: task_id
+    required: true
+    param_type: string
+    description: Task whose artifacts should be listed.
+  - name: execution_id
+    param_type: string
+    description: Specific execution id to scope the listing to. Defaults to the task's active / latest execution.
+    default: ""
+implementation:
+  type: compiled
+  provider_name: list_artifacts
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 10
+  categories:
+    - artifacts
+    - introspection
+    - tasks
+  composition_category: action
+  sandbox: none

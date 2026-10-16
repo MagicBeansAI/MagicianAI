@@ -1,0 +1,30 @@
+{
+  "type": "arrow",
+  "aliases": [
+    "vector_arrow",
+    "force_arrow",
+    "component_vector",
+    "pointer_arrow",
+    "flow_edge"
+  ],
+  "version": 1,
+  "draw": [
+    {
+      "op": "line",
+      "from": ["sx", "sy"],
+      "to": ["ex", "ey"]
+    },
+    {
+      "op": "arrowhead",
+      "from": ["sx", "sy"],
+      "to": ["ex", "ey"]
+    },
+    {
+      "op": "label",
+      "at": ["mx", "my-14"],
+      "text": "text",
+      "anchor": "center",
+      "threshold": 0.75
+    }
+  ]
+}

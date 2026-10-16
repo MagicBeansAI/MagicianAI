@@ -1,0 +1,797 @@
+# decision-engine.yaml — the decision engine's settings (structured-decision
+# plan Part IV). Lives at <runtime root>/decision-engine.yaml and is read only
+# by the `decision-engine` process; Magician's config keeps just how to reach
+# it (`decision: { mode, socket, timeout_ms }`).
+#
+# Typed Choice/Score/Noul judgments (TypeSafe Jev, laya, Kev): a different
+# model class from llm.router — never an LLM profile, never in llm-router.yaml
+# operation_mapping. Disabled/unbound/key-missing/pack-missing all mean fully
+# OFF; operations bind explicitly. Shadow logs content-free comparisons only;
+# gate lets the model answer steps directly. Hosted keys (api_key_env) are
+# read from <runtime root>/.env.development and .env at engine start.
+# Edits apply live (checked every 2 s, no restart): newly routed local models
+# load in the background, models no longer routed unload, and an edit that
+# does not parse is logged and ignored.
+# See docs/components/magician/structured-decision.md.
+enabled: true
+# Models that run inside the engine (laya-onnx/mlx, kev-onnx/mlx) bind only on
+# machines with at least this much memory (GB; a container's limit counts);
+# below it they stay idle and routes fall through, e.g. to Jev. An entry's
+# `min_memory_gb` replaces it for that model.
+local_min_memory_gb: 16
+# Where local model folders live (an entry's relative `model_dir` is a folder
+# here; an absolute one is used as is) and where ONNX Runtime is — absolute,
+# `~/…`, or relative to the runtime root. The defaults are where
+# `make setup-decision-models` installs; DECISION_MODELS_DIR / DECISION_ORT_DIR
+# install elsewhere, e.g. an external disk.
+# models_dir: models/decision
+# onnxruntime_path: lib/onnxruntime
+models:
+  jev:
+    queue_capacity: 64
+    queue_max_bytes: 4194304
+    adapter: typesafe
+    model: jev-1.13.0
+    endpoint: https://api.typesafe.ai/v1/systemone
+    api_key_env: TYPESAFE_API_KEY
+    timeout_ms: 15000
+    max_retries: 2
+    max_in_flight: 6
+  # Local MLX profiles; install with make setup-decision-models. Unrouted models
+  # stay unloaded. Memory fallback uses Kev-4B; empirical qualification remains incomplete.
+  laya:
+    queue_capacity: 64
+    queue_max_bytes: 4194304
+    max_in_flight: 1
+    adapter: laya-mlx
+    model: laya-multilingual-mlx
+    model_dir: laya-multilingual-mlx
+  laya-english:
+    queue_capacity: 64
+    queue_max_bytes: 4194304
+    max_in_flight: 1
+    adapter: laya-mlx
+    model: laya-english-mlx
+    model_dir: laya-english-mlx
+  laya-onnx:
+    queue_capacity: 64
+    queue_max_bytes: 4194304
+    max_in_flight: 1
+    adapter: laya-onnx
+    model: laya-multilingual-int8
+    model_dir: laya-multilingual
+  kev-0.8b:
+    queue_capacity: 64
+    queue_max_bytes: 4194304
+    max_in_flight: 1
+    adapter: kev-mlx
+    model: kev-0.8b-mlx
+    model_dir: kev-0.8b-mlx
+    quantize: true
+    state_chunk: 512
+  kev-4b:
+    queue_capacity: 64
+    queue_max_bytes: 4194304
+    max_in_flight: 1
+    adapter: kev-mlx
+    model: kev-4b-mlx
+    model_dir: kev-4b-mlx
+    quantize: true
+    state_chunk: 512
+    min_memory_gb: 24
+  # A self-hosted Jev-style model on the same /v1/systemone wire (laya,
+  # Kev). No key unless api_key_env is named; a loopback endpoint is local,
+  # so it may serve body-seeing ops in local mode. Nothing is claimed about
+  # calibration or limits unless declared under capabilities.
+  # laya:
+  #   adapter: systemone
+  #   model: laya-typed-decisions
+  #   endpoint: http://127.0.0.1:8090/v1/systemone
+  #   timeout_ms: 2000
+  #   capabilities:
+  #     max_state_tokens: 512
+  #     max_choice_options: 77
+  #     supports_score: false
+  # laya on ONNX, inside this process (`make setup-decision-models` fetches
+  # it): local, ~20 ms for a short question; a full step judge takes
+  # 1.3 s p50 / 2.5 s p95 on an M4 Pro CPU (peak 1.6 GB). 1,024 tokens of
+  # state. A relative model_dir is under the runtime root.
+  # laya:
+  #   adapter: laya-onnx
+  #   model: laya-multilingual-int8
+  #   model_dir: laya-multilingual
+  # laya on the GPU (Apple Silicon; a decision engine built with
+  # `make build-decision-engine-mlx-release`): step judging p50 0.29 s /
+  # p95 0.46 s vs laya-onnx 1.3 s / 2.5 s, peak 1.9 GB.
+  # `make setup-decision-models MODELS="laya-multilingual-mlx"` installs it.
+  # laya:
+  #   adapter: laya-mlx
+  #   model: laya-multilingual-mlx
+  #   model_dir: laya-multilingual-mlx
+  # English-only laya (calibrated, 512-token context, ~2.5x slower per
+  # token): MODELS="laya-english-mlx", model: laya-english-mlx,
+  # model_dir: laya-english-mlx.
+  # Kev (Qwen3.5 + pointer head) on ONNX, also local: reads long states
+  # (8,192 tokens) and up to 255 options. Kev-0.8B judges a step in
+  # 2.2 s p50 / 4.4 s p95 on an M4 Pro CPU (peak 2.3 GB); Kev-4B takes
+  # 11.6 s / 23 s (peak 6.9 GB) — too slow for step judging on CPU.
+  # `make setup-decision-models MODELS="onnxruntime kev-0.8b"` (or kev-4b,
+  # ~4.7 GB) installs it and the ONNX Runtime 1.30 it needs.
+  # kev:
+  #   adapter: kev-onnx
+  #   model: kev-0.8b-q8f32
+  #   model_dir: kev-0.8b
+  # Kev on the GPU (Apple Silicon; a decision engine built with
+  # `make build-decision-engine-mlx-release`): step judging p50 0.81 s /
+  # p95 2.5 s on an M4 Pro vs kev-onnx 2.2 s / 4.4 s (kev-4b-mlx: 3.8 s / 6 s).
+  # `make setup-decision-models MODELS="kev-0.8b-mlx"` installs it.
+  # Weights are 8-bit by default (Kev-0.8B 0.8 GiB, Kev-4B 4.4 GiB);
+  # `quantize: false` loads bf16. A new state runs in `state_chunk` tokens
+  # per pass (default 512).
+  # kev:
+  #   adapter: kev-mlx
+  #   model: kev-0.8b-mlx
+  #   model_dir: kev-0.8b-mlx
+  #   # quantize: true
+  #   # state_chunk: 512
+  # Kev-4B peaks near 9 GB with everything else resident:
+  #   min_memory_gb: 24
+# Tiers route an operation by fit instead of pinning one model: set
+# `tier: small` (small, then large) or `tier: large` on the operation in
+# place of `model:`, and key its thresholds per model under
+# `thresholds_by_model` — a model without its own set never gates.
+tiers:
+  small: [laya]
+  large: [kev-4b, jev]
+operations:
+  # Owner-approved Jev classification at 0.7; unresolved threads use the LLM.
+  # Qualification remains explicitly overridden; background comparisons monitor agreement.
+  channel_classify:
+    pack: channel_classify
+    pack_version: 1.1.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: channel_classify
+    gate:
+      enabled: true
+    # Owner-approved rollout (2026-09-30); qualification remains failed.
+    allow_unqualified_gate: true
+    # Read-only background LLM comparisons; accepted Jev answers still apply.
+    observation:
+      gate_sample_rate: 0.1
+    thresholds_by_model:
+      jev:
+        lane: 0.7
+        follow_up_kind: 0.7
+        action_owner: 0.7
+        urgency: 0.7
+        repeat_of_recently_handled: 0.7
+
+    classification:
+      # Any unresolved required head keeps the ordinary classify LLM fallback.
+      max_items: 4
+      chunk_size: 4
+      item_concurrency: 1
+      max_context_bytes: 8192
+      max_item_bytes: 8192
+      max_request_bytes: 131072
+      shadow_budget_ms: 30000
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+    routing:
+      local: {primary: jev}
+      cloud: {primary: jev}
+  # Shared action selection for every tool and selected agentic harness.
+  tool_action_judge:
+    model: jev
+    pack: tool_action_judge
+    pack_version: "1.0.0"
+    sees_body: true
+    shadow:
+      enabled: false
+    gate:
+      enabled: true
+      max_consecutive_steps: 3
+    thresholds:
+      next_action_confidence: 0.7
+      evidence_sufficient: 0.7
+      action_applicable: 0.7
+  # Operator-enabled memory decisions: routine heads 0.7, stored-memory-changing heads 0.8.
+  # Observation sampling stays off; uncertain decisions preserve/defer locally.
+  # No LLM classification fallback.
+  # Contract v5: deploy the host and engine together before mirroring to live.
+  memory_applicability:
+    pack: memory_applicability
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: memory_applicability_judge
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        applicable: 0.7
+        load_bearing: 0.7
+      jev:
+        applicable: 0.7
+        load_bearing: 0.7
+    classification:
+      max_items: 64
+      chunk_size: 12
+      item_concurrency: 6
+      max_context_bytes: 8192
+      max_item_bytes: 2048
+      max_request_bytes: 65536
+      shadow_budget_ms: 3000
+      decision_budget_ms: 3000
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  memory_attach:
+    pack: memory_applicability
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: memory_attach_stage2
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        applicable: 0.7
+        load_bearing: 0.7
+      jev:
+        applicable: 0.7
+        load_bearing: 0.7
+    classification:
+      item_concurrency: 1
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  memory_utility_review:
+    pack: memory_utility_review
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: memory_temperature_utility_review
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        utility: 0.8
+      jev:
+        utility: 0.8
+    classification:
+      item_concurrency: 1
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+      max_context_bytes: 32768
+      max_item_bytes: 8192
+      max_request_bytes: 131072
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  memory_episode_quality:
+    pack: memory_episode_quality
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: memory_episode_quality_classification
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        classification: 0.7
+        priority: 0.7
+        score: 0.7
+      jev:
+        classification: 0.7
+        priority: 0.7
+        score: 0.7
+    classification:
+      item_concurrency: 1
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+      max_item_bytes: 16384
+      max_request_bytes: 262144
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  memory_conflict_review:
+    pack: memory_conflict_review
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: memory_conflict_review
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        resolution: 0.8
+      jev:
+        resolution: 0.8
+    classification:
+      item_concurrency: 1
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+      max_item_bytes: 16384
+      max_request_bytes: 262144
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  evidence_promote:
+    pack: evidence_promote
+    pack_version: 1.1.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: evidence_producer_profile
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        promote: 0.7
+        importance: 0.7
+      jev:
+        promote: 0.7
+        importance: 0.7
+    classification:
+      item_concurrency: 1
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+      max_item_bytes: 16384
+      max_request_bytes: 65536
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  memory_lifecycle_relation:
+    pack: memory_lifecycle_relation
+    pack_version: 1.1.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: incumbent_operation_profile
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        kind: 0.7
+        relation: 0.8
+        incoming_coverage: 0.7
+        same_subject_and_aspect: 0.7
+        same_context: 0.7
+        explicit_correction: 0.7
+      jev:
+        kind: 0.7
+        relation: 0.8
+        incoming_coverage: 0.7
+        same_subject_and_aspect: 0.7
+        same_context: 0.7
+        explicit_correction: 0.7
+    classification:
+      item_concurrency: 1
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+      max_context_bytes: 32768
+      max_item_bytes: 16384
+      max_request_bytes: 262144
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  procedure_feedback:
+    pack: procedure_feedback
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: incumbent_operation_profile
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        verdict: 0.7
+        deprecation_recommended: 0.8
+      jev:
+        verdict: 0.7
+        deprecation_recommended: 0.8
+    classification:
+      item_concurrency: 1
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+      max_context_bytes: 32768
+      max_item_bytes: 16384
+      max_request_bytes: 262144
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  memory_connection_gate:
+    pack: memory_connection_gate
+    pack_version: 1.1.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: incumbent_operation_profile
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        worth_surfacing: 0.7
+        surface: 0.7
+      jev:
+        worth_surfacing: 0.7
+        surface: 0.7
+    classification:
+      item_concurrency: 1
+      decision_budget_ms: 30000
+      queue_budget_ms: 30000
+      max_context_bytes: 32768
+      max_item_bytes: 16384
+      max_request_bytes: 262144
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  # Planner parameter priority (strategy/parameter_priority_decisions.rs). The
+  # planner LLM stays the reference in shadow and covers unresolved items when
+  # gated; short budgets keep the plan's first-response path bounded.
+  plan_parameter_priority:
+    pack: plan_parameter_priority
+    pack_version: 1.1.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: true
+      compare_against: parameter_extraction
+    # Operator-enabled 2026-10-01: Jev decides answers at or above the
+    # per-model thresholds; the planner LLM still covers unresolved items.
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        priority: 0.8
+      jev:
+        priority: 0.8
+    classification:
+      max_items: 32
+      item_concurrency: 4
+      shadow_budget_ms: 30000
+      decision_budget_ms: 8000
+      queue_budget_ms: 2000
+      max_context_bytes: 16384
+      max_item_bytes: 4096
+      max_request_bytes: 131072
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  # Per-turn intent, task clarity and complexity bucket
+  # (query_analysis/intent_decisions.rs). The unified query-analysis LLM stays
+  # the shadow reference; when gated it still runs concurrently for extraction.
+  query_intent:
+    pack: query_intent
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: true
+      compare_against: query_analysis
+    # Operator-enabled 2026-10-01: Jev decides answers at or above the
+    # per-model thresholds; the planner LLM still covers unresolved items.
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        intent: 0.8
+        task_clarity: 0.8
+        complexity: 0.8
+      jev:
+        intent: 0.8
+        task_clarity: 0.8
+        complexity: 0.8
+    classification:
+      max_items: 1
+      chunk_size: 1
+      item_concurrency: 1
+      shadow_budget_ms: 30000
+      decision_budget_ms: 8000
+      queue_budget_ms: 2000
+      max_context_bytes: 4096
+      max_item_bytes: 16384
+      max_request_bytes: 65536
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  # Planning-decisions Phase D (docs/plans/2026-09-30-planning-decisions-on-
+  # decision-engine.md). Each starts in shadow: the incumbent LLM decides and
+  # the engine's answer is recorded beside it. Gate stays off until the owner
+  # enables it; when gated, unresolved items fall back to the same LLM call.
+  #
+  # Clarification-answer type and replan signal
+  # (ask_loop/answer_interpretation_decisions.rs). A gated correction still
+  # needs the LLM for the corrected value.
+  answer_interpretation:
+    pack: answer_interpretation
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: true
+      compare_against: answer_interpretation
+    # Owner decision 2026-10-02: gated without a recorded qualification.
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        answer_type: 0.8
+        requires_replan: 0.85
+      jev:
+        answer_type: 0.8
+        requires_replan: 0.85
+    classification:
+      max_items: 1
+      chunk_size: 1
+      item_concurrency: 1
+      shadow_budget_ms: 30000
+      decision_budget_ms: 8000
+      queue_budget_ms: 2000
+      max_context_bytes: 4096
+      max_item_bytes: 16384
+      max_request_bytes: 65536
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  # Adversarial progress reviewer's next step for a read-only overrun
+  # (execution/agentic/progress_review_decisions.rs). A gated continue or
+  # redirect still needs the LLM for its steer text.
+  progress_review:
+    pack: progress_review
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: true
+      compare_against: progress_review
+    gate:
+      enabled: false
+    allow_unqualified_gate: false
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        decision: 0.8
+      jev:
+        decision: 0.8
+    classification:
+      max_items: 1
+      chunk_size: 1
+      item_concurrency: 1
+      shadow_budget_ms: 30000
+      decision_budget_ms: 8000
+      queue_budget_ms: 2000
+      max_context_bytes: 4096
+      max_item_bytes: 16384
+      max_request_bytes: 65536
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  # Task Recipe fuzzy match: which of up to three candidate recipes (or none)
+  # is the task's shape (api_mining/recipe_match_decisions.rs). A gated match
+  # still needs the LLM for the recipe inputs; only a confident "none" skips it.
+  recipe_match:
+    pack: recipe_match
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: true
+      compare_against: recipe_match
+    # Owner decision 2026-10-02: gated without a recorded qualification.
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        recipe: 0.8
+      jev:
+        recipe: 0.8
+    classification:
+      max_items: 1
+      chunk_size: 1
+      item_concurrency: 1
+      shadow_budget_ms: 30000
+      decision_budget_ms: 8000
+      queue_budget_ms: 2000
+      max_context_bytes: 4096
+      max_item_bytes: 16384
+      max_request_bytes: 65536
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  # Chat-reply claim check (artifact_v2/claim_support_decisions.rs): is each
+  # claim of a tool-backed chat reply backed by that turn's tool results.
+  # The figure checks run in code first; the engine replaces the LLM claim
+  # judge there, so it has no incumbent to shadow. An unresolved claim keeps
+  # the figures-only rule (only a figure no tool result holds counts).
+  # Owner decision 2026-10-04: gated without a recorded qualification.
+  claim_support:
+    pack: claim_support
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: evidence_precision_judge
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        verdict: 0.85
+        core: 0.8
+      jev:
+        verdict: 0.85
+        core: 0.8
+    classification:
+      max_items: 32
+      chunk_size: 8
+      item_concurrency: 4
+      shadow_budget_ms: 30000
+      decision_budget_ms: 4000
+      queue_budget_ms: 1000
+      max_context_bytes: 4096
+      max_item_bytes: 12288
+      max_request_bytes: 262144
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b
+  # Preference alignment (docs/components/magician/preference-alignment.md):
+  # whether a proposed outward or commitment act fits the owner's intentions.
+  # Pack 1.3.0 asks once per offered intention (one item each), with the
+  # owner's other offered statements in context when more than one is
+  # offered; the host composes the whole
+  # decision from those answers against the owner's bars
+  # (preference_alignment.composer) and validates it like any judge's answer.
+  # Owner-approved switch (2026-10-11): the gate decides, with the generative
+  # `action_alignment_judge` as the host's fallback when the typed path is
+  # unresolved. Every answer is made eligible (relation 0, nouls 0.5, which
+  # every noul meets): uncertainty is the host composer's to judge, and an
+  # unresolved check is held, never permitted. Jev only, no backup: Kev-4B
+  # measured 0.35 accuracy and 20/85 missed explicit conflicts on this task
+  # (corpus README), so an unanswered item goes to the generative fallback or
+  # holds rather than to a model that lets conflicts through.
+  action_alignment:
+    pack: action_alignment
+    pack_version: 1.3.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: action_alignment_judge
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      jev:
+        relation: 0.0
+        owner_cancels: 0.5
+        owner_specified: 0.5
+        firm_limit: 0.5
+        same_subject: 0.5
+        muted: 0.5
+        owner_decides: 0.5
+    classification:
+      # One item per offered intention (max_standing_batch), asked in parallel.
+      max_items: 24
+      chunk_size: 1
+      item_concurrency: 6
+      shadow_budget_ms: 30000
+      decision_budget_ms: 4000
+      max_context_bytes: 16384
+      max_item_bytes: 16384
+      max_request_bytes: 65536
+    routing:
+      local:
+        primary: jev
+      cloud:
+        primary: jev

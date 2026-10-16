@@ -1,0 +1,8 @@
+{
+  "name": "@magician/skill-dugite",
+  "private": true,
+  "description": "Bundled git binary via dugite — for environments where the host doesn't have git on PATH. `make setup-skill-bins` symlinks the binary into bin/.",
+  "dependencies": {
+    "dugite": "^3.0.0"
+  }
+}

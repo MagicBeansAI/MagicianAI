@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""hackernews_search — Algolia search-by-date for HN, keyless.
+
+Self-contained: stdlib only. The governed SKILL.md action contract owns the input shape.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+USER_AGENT = "magician/hackernews_search/0.1"
+ENDPOINT = "https://hn.algolia.com/api/v1/search_by_date"
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
+def _read_json_response(response):
+    raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("provider response exceeds local size limit")
+    return json.loads(raw)
+
+
+def _to_iso(ts: int | float | None) -> str | None:
+    if ts is None:
+        return None
+    return (
+        datetime.fromtimestamp(ts, tz=timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def fetch(query: str, days: int, limit: int) -> list[dict]:
+    today = datetime.now(timezone.utc).date()
+    from_date = today - timedelta(days=max(1, days))
+    from_unix = int(datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc).timestamp())
+    to_unix = int(datetime.combine(today, datetime.max.time(), tzinfo=timezone.utc).timestamp())
+
+    params = {
+        "query": query,
+        "hitsPerPage": min(limit, 100),
+        "numericFilters": f"created_at_i>={from_unix},created_at_i<={to_unix}",
+    }
+    url = f"{ENDPOINT}?{urllib.parse.urlencode(params, doseq=True)}"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        payload = _read_json_response(resp)
+    hits = (payload or {}).get("hits") or []
+
+    out: list[dict] = []
+    for hit in hits[:limit]:
+        created_at_i = hit.get("created_at_i")
+        url = hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID')}"
+        snippet = " ".join(p for p in (hit.get("story_text"), hit.get("comment_text")) if p).strip()
+        out.append({
+            "title": hit.get("title") or hit.get("story_title") or "",
+            "url": url,
+            "snippet": snippet,
+            "published_at": _to_iso(created_at_i) or hit.get("created_at"),
+            "source": "hackernews",
+            "source_native_id": str(hit.get("objectID") or ""),
+            "engagement": {
+                "points": int(hit.get("points") or 0),
+                "comments": int(hit.get("num_comments") or 0),
+            },
+            "author": hit.get("author") or None,
+            "container": None,
+        })
+    return out
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    query = str(request["query"])
+    days = int(request.get("days", 3))
+    limit = int(request.get("limit", 10))
+
+    today = datetime.now(timezone.utc).date()
+    from_date = today - timedelta(days=max(1, days))
+
+    started = time.monotonic()
+    try:
+        items = fetch(query, days, limit)
+        status, reason = "ok", None
+    except urllib.error.HTTPError as exc:
+        items, status, reason = [], "failed", f"HTTP {exc.code}: {exc.reason}"
+    except urllib.error.URLError as exc:
+        items, status, reason = [], "failed", f"network: {exc.reason}"
+    except Exception as exc:  # noqa: BLE001
+        items, status, reason = [], "failed", f"{type(exc).__name__}: {exc}"
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    parts = ["[hackernews_search]", f"status={status}", f"count={len(items)}", f"duration_ms={duration_ms}"]
+    if reason:
+        parts.append(f'reason="{reason}"')
+    sys.stderr.write(" ".join(parts) + "\n")
+    sys.stderr.flush()
+
+    envelope = {
+        "query": query, "source": "hackernews",
+        "from_date": from_date.isoformat(), "to_date": today.isoformat(),
+        "items": items, "count": len(items),
+        "status": status, "reason": reason, "duration_ms": duration_ms,
+    }
+    print(json.dumps(envelope, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

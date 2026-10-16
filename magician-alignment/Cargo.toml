@@ -1,0 +1,31 @@
+[package]
+name = "magician-alignment"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Preference-alignment core: intention and decision contracts, the host validator, the composer for typed decision models, the portable eval-case adapter and an offline replay tool."
+
+[features]
+default = []
+# The live engine judgment lane (`alignment-engine-lane`): the engine client
+# and an async runtime. Off by default so the core stays serde-only.
+engine-lane = ["decision-engine-contract/client", "dep:tokio", "dep:futures-util", "dep:uuid"]
+
+[dependencies]
+decision-engine-contract = { path = "../decision-engine-contract" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"], optional = true }
+futures-util = { workspace = true, optional = true }
+uuid = { workspace = true, features = ["v4"], optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+[[bin]]
+name = "alignment-replay"
+path = "src/bin/alignment-replay.rs"
+
+[[bin]]
+name = "alignment-engine-lane"
+path = "src/bin/alignment-engine-lane.rs"
+required-features = ["engine-lane"]

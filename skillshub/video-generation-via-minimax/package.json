@@ -1,0 +1,8 @@
+{
+  "name": "@magician/skill-video-generation-via-minimax",
+  "private": true,
+  "description": "MiniMax CLI (mmx) wrapper — text/image-to-video via Hailuo. Bundles `mmx-cli` so the `mmx` bin lands in skillshub/node_modules/.bin/.",
+  "dependencies": {
+    "mmx-cli": "^1.0.0"
+  }
+}

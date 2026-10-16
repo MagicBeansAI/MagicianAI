@@ -1,0 +1,171 @@
+name: content_search
+description: Discover one or several independent public-information needs through the configured, policy-bound retrieval ladder. One request runs directly; several requests use bounded provider-aware concurrency and return stable per-request results. Use this instead of selecting Exa, Tavily, Reddit, RSS, or DuckDuckGo manually.
+version: "2.0.0"
+result_projection:
+  contract_id: content_search_evidence_v2
+  records_paths:
+    - /evidence
+    - /candidates
+  priority_fields:
+    - status
+    - evidence
+    - branch_id
+    - result_status
+    - evidence_role
+    - claim_eligible
+    - candidate
+    - title
+    - canonical_url
+    - url
+    - selection_receipt
+    - selection_receipt_expires_at_ms
+    - snippet
+    - cheap_text
+    - source
+    - candidates
+    - results
+guide: |
+  Use `content_search` for all ordinary public research discovery. For one need, pass `query`.
+  Keep each query short and natural: normally 2-6 essential words. Add a domain restriction only
+  when the task already requires that exact source; do not turn the question into a search-engine
+  prompt full of instructions.
+  For two or more independent entities or subquestions, make one call with `requests`; the
+  runtime runs safe providers concurrently; later reads serialize Lightpanda sessions at the
+  engine boundary. Never issue serial content_search calls for independent branches.
+  Put shared quality/policy fields in `common` and branch-specific query/targets in each request.
+  Canonical scalar example: `{"query":"current Rust release official","fresh":true,"limit":5}`.
+  Canonical vector example:
+  `{"common":{"fresh":true,"limit":5},"requests":[{"id":"rust","query":"current Rust release official"},{"id":"python","query":"current Python release official"}]}`.
+  With `requests`, never put `query` at the top level. The runtime defensively folds recognized
+  shared scalar options such as `fresh` into `common`, including an action-level `timeout_secs`
+  injected by the pack executor after model generation, but emit the canonical shape above.
+  The configured ladder controls transports and fallback. Use `allowed_actions` only to narrow
+  to a known source. Search snippets are discovery leads (`evidence_role: discovery_only`,
+  `claim_eligible: false`), never final support for factual claims. Read a selected bounded-evidence
+  result by passing its returned `url` directly to `content_read`; do not call `read_result` merely
+  to reconstruct a candidate envelope. The full candidate plus receipt remains valid when the raw
+  scalar result is already present. A browser
+  handoff transfers navigation to the existing flat browser agent; the retrieval tool itself
+  never creates a nested browser loop. Continue it with the exact returned browser session and
+  action/mode fields on every browser call; terminal/cancel cleanup owns that transferred session.
+parameters:
+  - name: requests
+    required: false
+    param_type: array
+    description: 1-8 independent discovery requests. Use this instead of query when several branches can start together.
+    schema:
+      type: array
+      minItems: 1
+      maxItems: 8
+      items:
+        type: object
+        properties:
+          id: {type: string, maxLength: 128}
+          query: {type: string, minLength: 1}
+          intent: {type: string}
+          limit: {type: integer, minimum: 1, maximum: 50}
+          min_candidates: {type: integer, minimum: 1}
+          min_sources: {type: integer, minimum: 1}
+          targets: {type: array, items: {type: string}}
+          allowed_actions: {type: array, items: {type: string}}
+          options: {type: object}
+          fresh: {type: boolean}
+          relevance_threshold: {type: number, minimum: 0, maximum: 1}
+          deadline_ms: {type: integer, minimum: 1}
+          max_attempts: {type: integer, minimum: 1}
+          cost_budget_microunits:
+            type: object
+            additionalProperties: {type: integer, minimum: 1}
+        required: [query]
+        additionalProperties: false
+  - name: common
+    required: false
+    param_type: object
+    description: Shared discovery arguments applied to every item in requests; query and id remain per request.
+    schema:
+      type: object
+      properties:
+        intent: {type: string}
+        limit: {type: integer, minimum: 1, maximum: 50}
+        min_candidates: {type: integer, minimum: 1}
+        min_sources: {type: integer, minimum: 1}
+        targets: {type: array, items: {type: string}}
+        allowed_actions: {type: array, items: {type: string}}
+        options: {type: object}
+        fresh: {type: boolean}
+        relevance_threshold: {type: number, minimum: 0, maximum: 1}
+        deadline_ms: {type: integer, minimum: 1}
+        max_attempts: {type: integer, minimum: 1}
+        cost_budget_microunits:
+          type: object
+          additionalProperties: {type: integer, minimum: 1}
+      additionalProperties: false
+  - name: max_concurrency
+    required: false
+    param_type: integer
+    description: Vector form only. Positive branch concurrency that can only narrow the configured retrieval-policy cap (hard ceiling 4).
+  - name: minimum_successes
+    required: false
+    param_type: integer
+    description: Vector form only. Complete branches required before interchangeable unfinished siblings may be cancelled; defaults to all requests.
+  - name: query
+    required: false
+    param_type: string
+    description: One public-information need. Use either query or requests, never both.
+  - name: intent
+    required: false
+    param_type: string
+    description: Optional selection intent distinct from the literal query.
+  - name: limit
+    required: false
+    param_type: integer
+    description: Maximum normalized candidates (1-50).
+  - name: min_candidates
+    required: false
+    param_type: integer
+    description: Minimum relevant candidates required before stopping.
+  - name: min_sources
+    required: false
+    param_type: integer
+    description: Minimum independent source hosts required before stopping.
+  - name: targets
+    required: false
+    param_type: array
+    description: Explicit source targets, such as RSS URLs.
+  - name: allowed_actions
+    required: false
+    param_type: array
+    description: Optional exact action allow-list that narrows the configured ladder.
+  - name: options
+    required: false
+    param_type: object
+    description: Source-specific options; each selected action receives only option keys declared by its manifest.
+  - name: fresh
+    required: false
+    param_type: boolean
+    description: Require a fresh acquisition instead of allowing cached evidence.
+  - name: relevance_threshold
+    required: false
+    param_type: number
+    description: Minimum deterministic lexical relevance score from 0 through 1.
+  - name: deadline_ms
+    required: false
+    param_type: integer
+    description: Optional deadline narrowed beneath the configured controller maximum.
+  - name: max_attempts
+    required: false
+    param_type: integer
+    description: Optional attempt bound narrowed beneath the configured controller maximum.
+  - name: cost_budget_microunits
+    required: false
+    param_type: object
+    description: Optional positive per-commodity spend limits that can only narrow configured budgets.
+implementation:
+  type: compiled
+  provider_name: content_search
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 25
+  categories: [web, search, research]
+  composition_category: action
+  sandbox: none

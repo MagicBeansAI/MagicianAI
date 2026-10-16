@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "supported": [
+    "normalized_entity_state",
+    "query_data",
+    "optimistic_idempotent_mutation",
+    "schema_derived_action_form",
+    "bounded_detail_form_section_list_table_surface",
+    "action_launch_and_run_recovery",
+    "strict_restart_recovery_store",
+    "bounded_monotonic_change_iteration",
+    "cross_app_composition",
+    "bounded_composition_chain",
+    "composition_cursor_subscription",
+    "reviewed_memory_contribution",
+    "candidate_publication_and_update_migration",
+    "encrypted_data_and_combined_portability",
+    "executable_exact_recipe_fixture_subset",
+    "authority_free_toolskill_pure_transform",
+    "time_math_date_range",
+    "vendored_private_procedure",
+    "agent_as_tool",
+    "browser_observe_snapshot",
+    "browser_reviewed_origin_navigate",
+    "browser_fresh_observation_scroll",
+    "browser_fresh_observation_click"
+  ],
+  "recipe_ready_nodes": ["query", "get", "map", "validate", "emit_value", "sequence", "parallel", "switch"]
+}

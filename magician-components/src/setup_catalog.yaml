@@ -1,0 +1,207 @@
+schema_version: magician.setup-catalog.v1
+
+# Add integrations here when they fit an existing driver. Components bind from
+# graph.yaml; skills bind from metadata.magician.setup in SKILL.md. Product code
+# changes only when an integration needs a new interaction primitive.
+setups:
+  ollama-runtime:
+    label: Processing privacy and local models
+    driver:
+      kind: model_runtime
+      privacy_path: /api/magician/v2/settings/privacy
+      generation_path: /api/magician/v2/settings/local-generation
+      local_feature: private-processing
+      modes:
+        - id: local
+          label: Keep sensitive processing on this Magician machine
+          description: Classification, distillation, and monitors use the selected local model. Memory embeddings always remain local.
+          local_generation: true
+        - id: cloud
+          label: Use configured remote models for processing
+          description: Classification, distillation, and monitors use the configured remote profiles. The required PPLX memory embedder still runs locally.
+
+  browser-extension:
+    label: Magican Browser Extension
+    driver:
+      kind: browser_extension
+      bundle_resource: browser-extension
+      management_url: chrome://extensions
+      probe_path: /health
+      probe_needle: '"extension_connected":true'
+
+  # The one CuaDriver release Magician installs, fetched from its own release
+  # tag and checked by hash before anything runs. The first file of each list is
+  # the entry script; the helpers sit beside it so the official installer uses
+  # them from disk instead of the moving copies on cua.ai. The same pin lives in
+  # scripts/setup-cua-driver.py; scripts/test-cua-setup.py fails if they differ.
+  # 0.28.3 is skipped: its macOS CuaDriver.app shipped unsigned.
+  cua-driver:
+    label: Desktop computer use
+    driver:
+      kind: cua_driver
+      version: "0.28.2"
+      unix_installer:
+        - name: install.sh
+          url: https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/install.sh
+          sha256: 317ba3a49fdba10f2a7f1b9f392c1bc1b7657f3aae85e1e2e43684cf17a1bf3b
+        - name: _install-rust.sh
+          url: https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/_install-rust.sh
+          sha256: c3b4423dd4290f65f03579013f2c350e5a08b03458c9ae34ac4904865ec3f833
+        - name: _install-common.sh
+          url: https://raw.githubusercontent.com/trycua/cua/cua-driver-rs-v0.28.2/libs/cua-driver/scripts/_install-common.sh
+          sha256: 5bc3aa010eb8667a099b582a9ada9a8f93001745b842cc7cf3cc6c472520cf29
+      windows_installer:
+        - name: install.ps1
+          url: https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/install.ps1
+          sha256: 3e770fa8c351b80db99ae6b080f696a22f844534498bf44d45816cbd05eb0c3f
+        - name: _install-common.psm1
+          url: https://raw.githubusercontent.com/trycua/cua/cua-driver-rs-v0.28.2/libs/cua-driver/scripts/_install-common.psm1
+          sha256: 324bca98ad19f0487d4afd36a9e2d06478fcfb8e1e20225cdd8ec8ef5150e720
+
+  google-workspace:
+    label: Google Workspace account
+    driver:
+      kind: managed_bot
+      bot: gmail-{profile}
+      start: [auth]
+      fields:
+        - id: expected_email
+          label: Expected Google email
+          kind: email
+          required: true
+          env: GWS_EXPECTED_EMAIL
+          placeholder: name@example.com
+          help: Magician refuses a different Google identity for this profile.
+      fixed_env:
+        GWS_CONFIG_DIR: ../../auth/gws-{profile}
+        GWS_PROFILE_LABEL: "{profile_label}"
+        GWS_REQUIRE_MANAGED_AUTH: "true"
+      login_url_hosts: [accounts.google.com]
+
+  telegram-self:
+    label: Telegram personal account
+    driver:
+      kind: managed_bot
+      bot: telegram-self
+      start: [bot, auth]
+      input:
+        id: two_factor_password
+        label: Two-factor password, if enabled
+        kind: password
+        placeholder: Enter after scanning the QR
+        help: This value is sent only to the active login process and is not stored.
+        max_bytes: 4096
+
+  whatsapp:
+    label: WhatsApp paired account
+    driver:
+      kind: managed_bot
+      bot: whatsapp
+      start: [bot]
+
+  governed-mcp-oauth:
+    label: Provider account
+    driver:
+      kind: governed_oauth
+
+  google-oauth-client:
+    label: Google OAuth Desktop client
+    driver:
+      kind: configuration_file
+      field_label: Google OAuth Desktop client JSON
+      accept: application/json,.json
+      destination: "{data_root}/client_secret.json"
+      validator: google_oauth_desktop_client
+      max_bytes: 1048576
+
+# Host bootstrap belongs here rather than in Desktop conditionals. Profiles
+# describe only the programs needed before the engine-backed component and
+# Skillshub catalogs can take over. Container images carry their own Node and
+# Python runtimes; the macOS host still needs Python for credential-custody
+# provisioning. A native macOS backend also needs the shared Skillshub runtime
+# foundations.
+host_prerequisites:
+  homebrew:
+    order: 10
+    label: Homebrew
+    bins: [brew]
+    install: { kind: homebrew }
+  python3:
+    order: 20
+    label: Python 3
+    bins: [python3]
+    install: { kind: homebrew_formula, formula: python@3 }
+  linux-python3:
+    order: 25
+    label: Python 3
+    bins: [python3]
+    install:
+      kind: manual
+      install_hint: Install Python 3 with this Linux distribution's package manager, then restart Magican setup.
+  node:
+    order: 30
+    label: Node.js and npm
+    bins: [node, npm]
+    install: { kind: homebrew_formula, formula: node }
+  uv:
+    order: 40
+    label: uv Python package manager
+    bins: [uv]
+    install: { kind: homebrew_formula, formula: uv }
+
+host_prerequisite_profiles:
+  macos_container: [homebrew, python3]
+  macos_native: [homebrew, python3, node, uv]
+  linux_container: [linux-python3]
+
+# External harnesses are operator-installed programs. Desktop may detect them,
+# explain their prerequisites, and select a Ready harness for supported runtime
+# surfaces, but it must never run these installers itself.
+harnesses:
+  codex:
+    order: 10
+    label: Codex
+    binary: codex
+    coding_engine: codex_app_server
+    plane_engine: codex_app_server
+    config_key: coding.codex.enabled
+    refresh_path: /api/magician/v2/coding/engines/codex_app_server/refresh
+    install_url: https://github.com/openai/codex
+    install_hint: Install Codex CLI outside Magican, run it once, and complete ChatGPT sign-in.
+    surfaces: [vibedev, chat, agentic_runs, background_model_calls]
+
+  claude-code:
+    order: 20
+    label: Claude Code
+    binary: claude
+    coding_engine: claude_code
+    plane_engine: claude_code
+    config_key: coding.claude.enabled
+    refresh_path: /api/magician/v2/coding/engines/claude_code/refresh
+    install_url: https://docs.anthropic.com/en/docs/claude-code/getting-started
+    install_hint: Install Claude Code outside Magican, launch it, and complete Claude or Console sign-in.
+    surfaces: [vibedev, chat, agentic_runs, background_model_calls]
+
+  grok:
+    order: 30
+    label: Grok Build
+    binary: grok
+    coding_engine: grok_acp
+    plane_engine: grok
+    config_key: coding.grok.enabled
+    refresh_path: /api/magician/v2/coding/engines/grok_acp/refresh
+    install_url: https://docs.x.ai/build/overview
+    install_hint: Install Grok Build outside Magican, launch it, and complete xAI sign-in.
+    surfaces: [vibedev, chat, agentic_runs, background_model_calls]
+
+  antigravity:
+    order: 40
+    label: Antigravity
+    binary: agy
+    coding_engine: agy_cli
+    plane_engine: agy
+    config_key: coding.agy.enabled
+    refresh_path: /api/magician/v2/coding/engines/agy_cli/refresh
+    install_url: https://codelabs.developers.google.com/antigravity-cli-hands-on
+    install_hint: Install Antigravity CLI outside Magican, launch agy, and complete Google sign-in.
+    surfaces: [vibedev, chat, agentic_runs, background_model_calls]

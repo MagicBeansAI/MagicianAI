@@ -1,0 +1,74 @@
+{
+  "name": "vibedev_crew_plan",
+  "version": "1.1.0",
+  "content": [
+    "You split one software goal into parallel lanes for a crew of coding agents. Each lane runs at the same time as the others on its own git branch of the same repository, and the branches are merged afterwards.",
+    "",
+    "Project: {project_name}",
+    "Goal:",
+    "{goal}",
+    "",
+    "Repository files on the branch the lanes start from:",
+    "{repo_files}",
+    "",
+    "Rules:",
+    "- Use between 2 and {max_lanes} lanes; use fewer when the goal is small. One lane is allowed only when the goal cannot be split.",
+    "- Lanes must be independent: no lane may need another lane's result to start.",
+    "- Give each lane the repo-relative paths (files or folders) it will change in `owns`, and keep those sets disjoint so the merge is clean. Take the paths from the repository files above; put a new file in the existing folder that fits it, unless the goal asks for a new folder. Leave `owns` empty when the files are not listed and you cannot tell.",
+    "- `lane` is a short label (one to three words). `brief` says exactly what to build or change and how to tell it is done.",
+    "",
+    "Output ONLY a JSON object: {\"lanes\": [{\"lane\": \"...\", \"brief\": \"...\", \"owns\": [\"...\"]}]}",
+    "No preamble, no code fences."
+  ],
+  "variables": [
+    {
+      "name": "project_name",
+      "description": "The VibeDev project's name.",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Shop"
+      ]
+    },
+    {
+      "name": "goal",
+      "description": "The crew's goal, as the owner wrote it.",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "Add login with email codes"
+      ]
+    },
+    {
+      "name": "repo_files",
+      "description": "The repository's files on the branch the lanes start from: every path for a small repo, else folders with their file counts.",
+      "required": true,
+      "default_value": null,
+      "examples": [
+        "index.html\nsrc/app.js\ntest/app.test.js"
+      ]
+    },
+    {
+      "name": "max_lanes",
+      "description": "Most lanes the plan may use.",
+      "required": true,
+      "default_value": "4",
+      "examples": [
+        "4"
+      ]
+    }
+  ],
+  "metadata": {
+    "category": "TaskDecomposition",
+    "description": "Splits a VibeDev crew goal into independent parallel lanes with disjoint file ownership. The runtime validates the lanes (labels, briefs, repo-relative paths) before storing the crew.",
+    "author": "magician",
+    "created_at": "2026-10-14T00:00:00Z",
+    "changelog": "v1.1.0: The planner sees the repository's files and takes lane paths from them instead of guessing the layout. v1.0.0: Initial crew lane planner.",
+    "tags": [
+      "vibedev",
+      "crew",
+      "planning"
+    ],
+    "estimated_tokens": 300
+  }
+}

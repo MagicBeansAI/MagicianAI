@@ -1,0 +1,188 @@
+{
+  "schema_version": "tool-runtime.phase5g-conformance.v1",
+  "production_routing_enabled": false,
+  "component_versions": {
+    "magician_mcp_client": "0.1.20",
+    "tool_runtime_core": "0.1.59",
+    "magician": "0.6.1146"
+  },
+  "official_runner": {
+    "package": "@modelcontextprotocol/conformance",
+    "version": "0.2.0-alpha.10",
+    "integrity": "sha512-0V/HZDdWHcg6j0zVBzBsXcPZ571IVi6umKgTpnBhtTx/jm/LONmGF6cIWL2k4Xjyps0OiHV6B37nj2s0pUg0nQ==",
+    "expected_failures": []
+  },
+  "official_sdk": {
+    "crate": "rmcp",
+    "crate_version": "3.1.0",
+    "release_tag": "rmcp-v3.1.0",
+    "git_commit": "1f9358eddca42d3a510c70ae6446dd6548c7c856"
+  },
+  "official_client_runs": [
+    {
+      "id": "mcp-client-2025-11-25",
+      "mode": "client",
+      "suite": "all",
+      "spec_version": "2025-11-25",
+      "transport": "streamable_http"
+    },
+    {
+      "id": "mcp-client-2026-07-28",
+      "mode": "client",
+      "suite": "all",
+      "spec_version": "2026-07-28",
+      "transport": "streamable_http"
+    }
+  ],
+  "gates": [
+    {
+      "id": "official_protocol_auth_backcompat",
+      "evidence": [
+        {
+          "path": "scripts/mcp-conformance/run-official-client-conformance.sh",
+          "symbols": [
+            "--spec-version 2025-11-25",
+            "--spec-version 2026-07-28",
+            "--suite all",
+            "--mode client",
+            "CARGO_TARGET_DIR=target cargo build -p mcp-conformance",
+            "./target/debug/conformance-client"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "supported_transport_boundaries",
+      "evidence": [
+        {
+          "path": "magician-mcp-client/src/stdio_transport.rs",
+          "symbols": [
+            "oversized_stdio_frame_is_rejected_before_json_decoding",
+            "bounded_stdio_accepts_a_small_valid_json_rpc_message"
+          ]
+        },
+        {
+          "path": "magician-mcp-client/src/http_transport.rs",
+          "symbols": [
+            "streamable_http_rejects_oversized_json_before_decoding",
+            "oversized_sse_event_fails_before_sse_payload_is_retained"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oauth_fake_provider",
+      "evidence": [
+        {
+          "path": "magician-mcp-client/src/oauth_coordinator.rs",
+          "symbols": [
+            "callback_completes_after_restart_from_exact_durable_route",
+            "exact_issuer_mismatch_stops_before_browser_launch",
+            "status_refresh_and_logout_are_secret_free_and_preserve_omitted_scopes",
+            "scope_upgrade_unions_grants_and_rejects_duplicate_or_malformed_requests",
+            "independent_resource_endpoints_and_profiles_never_cross_callbacks_or_refresh"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "discovery_continuation_and_subscription_adversarial",
+      "evidence": [
+        {
+          "path": "magician-mcp-client/src/client.rs",
+          "symbols": [
+            "discovery_rejects_repeated_and_endless_cursors",
+            "request_timeout_notifies_server_cancellation",
+            "official_task_lifecycle_updates_input_and_retains_until_terminal_get",
+            "governed_manual_driver_completes_state_sampling_form_and_roots_rounds",
+            "notification_subscriptions_are_default_off_and_exactly_acknowledged",
+            "transport_loss_during_sdk_retry_consumes_the_dispatched_revision"
+          ]
+        },
+        {
+          "path": "magician-mcp-client/src/catalog_projection.rs",
+          "symbols": [
+            "any_eligible_invalid_schema_rejects_the_whole_candidate_with_value_free_error",
+            "aggregate_raw_schema_budget_rejects_annotation_amplification"
+          ]
+        },
+        {
+          "path": "magician-mcp-client/src/catalog_owner.rs",
+          "symbols": [
+            "duplicate_namespace_and_cross_catalog_tool_collision_fail_atomically"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "official_sdk_ownership",
+      "evidence": [
+        {
+          "path": "Cargo.toml",
+          "symbols": [
+            "rmcp = { version = \"=3.1.0\", default-features = false }"
+          ]
+        },
+        {
+          "path": "magician-mcp-client/src/client.rs",
+          "symbols": [
+            "peer.send_cancellable_request",
+            "auto_lifecycle_prefers_stateless_2026_and_calls_discovered_tool",
+            "auto_lifecycle_falls_back_only_to_declared_legacy_version"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "browser_profile_isolation",
+      "evidence": [
+        {
+          "path": "tool-runtime-core/src/browser_profile_adapter.rs",
+          "symbols": [
+            "ready_profile_requires_fresh_two_step_dispatch_authority",
+            "profile_scope_alias_revision_and_session_class_are_exact",
+            "implicit_controller_owned_profile_is_bound_without_exporting_an_alias"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native_permission_states",
+      "evidence": [
+        {
+          "path": "tool-runtime-core/src/native_permission_adapter.rs",
+          "symbols": [
+            "authoritative_states_have_exact_status_and_guidance",
+            "denied_restricted_unavailable_and_observation_error_remain_distinct",
+            "repeated_projection_is_iterative_on_a_small_stack"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "delegated_grant_binding",
+      "evidence": [
+        {
+          "path": "magician/src/magician_v2/secrets/credential_material_adapter.rs",
+          "symbols": [
+            "delegated_adapter_preserves_exact_binding_and_replay_semantics",
+            "concurrent_delegated_redemption_has_exactly_one_winner",
+            "delegated_adapter_rejects_agent_provider_route_scope_and_expiry_drift"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cross_strategy_adversarial_matrix",
+      "evidence": [
+        {
+          "path": "tool-runtime-core/src/strategy_adapter.rs",
+          "symbols": [
+            "complete_cross_strategy_auth_and_invalidation_matrix_fails_closed",
+            "contract_and_status_walks_remain_iterative_on_a_small_stack"
+          ]
+        }
+      ]
+    }
+  ]
+}

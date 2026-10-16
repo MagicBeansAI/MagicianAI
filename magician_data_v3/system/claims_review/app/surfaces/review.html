@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claims review</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f5f7;
+      --panel: #ffffff;
+      --ink: #202228;
+      --muted: #676d78;
+      --line: #d9dce2;
+      --accent: #315fce;
+      --accent-soft: #e8efff;
+      --danger: #a33931;
+      --warning: #916a19;
+      --success: #26714a;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 58px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .topbar h1 { margin: 0; font-size: 17px; }
+    .topbar p { margin: 0; color: var(--muted); font-size: 12px; }
+    .topbar .spacer { flex: 1; }
+    .button {
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--ink);
+    }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .button.danger { border-color: #d4a5a1; color: var(--danger); }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      padding: 8px 16px 0;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .tab {
+      padding: 8px 11px;
+      border: 0;
+      border-bottom: 3px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); font-weight: 650; }
+    main { padding: 16px; }
+    .panel[hidden] { display: none; }
+    .panel-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, .8fr); gap: 14px; }
+    .card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+    }
+    .card > header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .card > header h2 { margin: 0; font-size: 14px; }
+    .card > header .count { margin-left: auto; color: var(--muted); font-size: 12px; }
+    .card-body { padding: 14px; }
+    .empty { margin: 0; padding: 18px; color: var(--muted); text-align: center; }
+    .rows { display: grid; gap: 7px; padding: 8px; }
+    .row {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+      text-align: left;
+    }
+    .row:hover { border-color: #aeb8d2; }
+    .row[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
+    .row strong, .row small { display: block; }
+    .row small { margin-top: 3px; color: var(--muted); }
+    .row .badge { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 999px; background: #edf0f4; font-size: 11px; }
+    .detail h3 { margin: 0 0 6px; font-size: 16px; }
+    .detail .claim-copy { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height:45vh; overflow:auto; }
+    dl { display: grid; grid-template-columns: minmax(90px, .35fr) 1fr; gap: 6px 10px; margin: 0; }
+    dt { color: var(--muted); font-size: 12px; }
+    dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .action-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .notice { padding: 10px; border: 1px solid #d9c48e; border-radius: 8px; background: #fff7df; color: #684d14; }
+    .notice strong { display: block; }
+    .table-wrap { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    td { overflow-wrap: anywhere; }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    input, select, textarea {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--ink);
+      font-weight: 400;
+    }
+    textarea { min-height: 100px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    pre {
+      max-height: 300px;
+      overflow: auto;
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f0f2f5;
+      color: #252932;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    #status { min-height: 30px; padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); color: var(--muted); }
+    #status[data-state="error"] { color: var(--danger); }
+    #status[data-state="ok"] { color: var(--success); }
+    .boot-notice { max-width: 680px; margin: 40px auto; padding: 18px; }
+    @media (max-width: 760px) {
+      .panel-grid, .form-grid { grid-template-columns: 1fr; }
+      .topbar p { display: none; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15171b;
+        --panel: #202329;
+        --ink: #f1f3f7;
+        --muted: #aab0bc;
+        --line: #373b44;
+        --accent: #7fa1ff;
+        --accent-soft: #273759;
+      }
+      .notice { border-color: #6c5d31; background: #352e1b; color: #ead79e; }
+      pre { background: #17191e; color: #e7e9ee; }
+      .row .badge { background: #343944; }
+    }
+    /* Match the native Crew / Observe review workspace. */
+    body { background: var(--bg); }
+    #app { max-width:1360px; margin:0 auto; padding:24px 24px 64px; }
+    .topbar { position:static; align-items:flex-start; border:1px solid var(--line); border-radius:12px; padding:22px 24px; background:radial-gradient(ellipse at top right,var(--accent-soft),transparent 65%),var(--panel); }
+    .topbar h1 { font-size:28px; letter-spacing:-.035em; margin:7px 0; }
+    .topbar p { font-size:14px; }
+    .eyebrow { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:650; }
+    .tabs { margin-top:18px; padding:0; background:transparent; gap:18px; }
+    .tab { padding:14px 0; border-bottom-width:2px; }
+    main { padding:20px 0; }
+    .panel-grid { grid-template-columns:minmax(280px,.85fr) minmax(0,1.35fr); gap:20px; }
+    .card { box-shadow:none; }
+    .card > header { padding:16px 20px; }
+    .card-body { padding:22px; }
+    .rows { gap:0; padding:0; }
+    .row { padding:16px 18px; border:0; border-bottom:1px solid var(--line); border-left:3px solid transparent; border-radius:0; }
+    .row[aria-current="true"] { border-left-color:var(--accent); }
+    .row strong { font-size:14px; line-height:1.6; font-weight:500; }
+    .row small { font-size:11px; margin-top:10px; }
+    .detail .claim-copy { border-left:3px solid var(--accent); background:var(--accent-soft); border-radius:0 8px 8px 0; padding:18px; line-height:1.75; }
+    .button { min-height:36px; font-size:12px; font-weight:600; }
+    #status { border:1px solid var(--line); border-radius:8px; padding:12px 16px; }
+    @media(max-width:1000px) { .panel-grid { grid-template-columns:1fr; } #claims-list { max-height:400px; overflow:auto; } }
+    @media(max-width:600px) { #app { padding:12px; } .topbar { flex-wrap:wrap; padding:16px; } }
+  </style>
+</head>
+<body>
+  <div class="card boot-notice" id="boot-notice">
+    <div class="card-body">
+      <strong>Opening the reviewed claims console…</strong>
+      <p>This notice remains if the host refuses the verified script or bridge session.</p>
+    </div>
+  </div>
+  <div id="app" hidden>
+    <header class="topbar">
+      <div>
+        <span class="eyebrow">External conversations · App view</span>
+        <h1>Claims Review</h1>
+        <p>Know what was said. Check the source. Keep a clear record.</p>
+      </div>
+      <span class="spacer"></span>
+      <button type="button" class="button primary" id="sync-claims">Sync claim register</button>
+      <button type="button" class="button" id="next-claims" disabled>Sync next page</button>
+      <button type="button" class="button" id="first-claims" disabled>Sync first page</button>
+      <button type="button" class="button" id="refresh">Refresh view</button>
+    </header>
+    <nav class="tabs" aria-label="Review sections">
+      <button class="tab" type="button" role="tab" aria-selected="true" data-panel="claims">Review queue</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="commitments">Commitments</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="context">Correction context</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="activity">Activity</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="ingest">Add a conversation</button>
+    </nav>
+    <main>
+      <section class="panel" id="panel-claims" role="tabpanel">
+        <div class="panel-grid">
+          <article class="card">
+            <header><h2>Synced statements</h2><span class="count" id="claims-count">0</span></header>
+            <div class="rows" id="claims-list"></div>
+          </article>
+          <article class="card detail">
+            <header><h2>The exact words</h2></header>
+            <div class="card-body" id="claim-detail"><p class="empty">Select a claim to review it.</p></div>
+          </article>
+        </div>
+      </section>
+      <section class="panel" id="panel-commitments" role="tabpanel" hidden>
+        <article class="card">
+          <header><h2>Commitment register</h2><span class="count" id="commitments-count">0</span></header>
+          <div class="table-wrap"><table><thead><tr><th>Term</th><th>Status</th><th>Audience</th><th>Named person</th><th>Revision</th><th>Review</th></tr></thead><tbody id="commitments-body"></tbody></table></div>
+        </article>
+      </section>
+      <section class="panel" id="panel-context" role="tabpanel" hidden>
+        <div class="panel-grid">
+          <article class="card"><header><h2>Correction history</h2></header><div class="rows" id="evidence-list"></div></article>
+          <article class="card"><header><h2>Entity context</h2></header><div class="rows" id="entities-list"></div></article>
+        </div>
+      </section>
+      <section class="panel" id="panel-activity" role="tabpanel" hidden>
+        <div class="panel-grid">
+          <article class="card"><header><h2>Decision ledger</h2></header><div class="rows" id="decisions-list"></div></article>
+          <article class="card"><header><h2>Signed destination receipts</h2></header><div class="rows" id="receipts-list"></div></article>
+        </div>
+      </section>
+      <section class="panel" id="panel-ingest" role="tabpanel" hidden>
+        <div class="panel-grid">
+          <article class="card">
+            <header><h2>Submit structured ingest</h2></header>
+            <div class="card-body">
+              <div class="notice"><strong>Attribution is manual.</strong>Assign every utterance to an explicit speaker key and map every key to a named person. This console never guesses speakers from pasted prose.</div>
+              <form id="ingest-form">
+                <div class="form-grid">
+                  <label>Ingest id<input id="ingest-id" required maxlength="128" autocomplete="off"></label>
+                  <label>Audience kind<input id="audience-kind" required maxlength="64" autocomplete="off"></label>
+                  <label>Audience id<input id="audience-id" required maxlength="256" autocomplete="off"></label>
+                </div>
+                <label>Why this transcript is outward-facing<input id="outwardness-reason" required maxlength="1024" autocomplete="off"></label>
+                <label>Speaker map — one <code>speaker-key = Named Person</code> per line<textarea id="speaker-map" required spellcheck="false" placeholder="owner = Owner&#10;client = Priya"></textarea></label>
+                <label>Utterances — one <code>speaker-key | exact words</code> per line<textarea id="utterances" required spellcheck="false" placeholder="owner | We will send the revision Friday.&#10;client | That works for us."></textarea></label>
+                <button type="submit" class="button primary">Submit governed stage_ingest action</button>
+              </form>
+            </div>
+          </article>
+          <article class="card">
+            <header><h2>Submitted governed action</h2></header>
+            <div class="card-body">
+              <p class="notice">The frame sends only the exact input below. The authenticated host mints the canonical invocation and stamps the authoritative actor, revisions, grants, scope, and provenance. Authoritative ingest remains host-only and creates an act row even when it extracts zero claims.</p>
+              <pre id="prepared-action">No action prepared.</pre>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+    <footer id="status" data-state="busy">Starting…</footer>
+  </div>
+  <script src="review.js"></script>
+</body>
+</html>

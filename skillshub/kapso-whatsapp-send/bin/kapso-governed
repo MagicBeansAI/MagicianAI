@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Kapso WhatsApp identity adapter (shared shape by kapso-whatsapp-read and
+# kapso-whatsapp-send; each skill keeps its own copy so the runtime can
+# preserve one fixed sending/reading identity policy).
+#
+# Auth: the kapso CLI reads KAPSO_API_KEY directly from the environment
+# (project-scoped — "no browser"). The universal runtime resolves the exact
+# scope-owned secret only after authorization and injects it into this process.
+#
+# --phone-number-id injection: the kapso CLI is project-scoped, so most
+# reads work without a number. But the per-number subcommands REQUIRE one
+# and do NOT honor any env default. This send-only adapter always injects the
+# reviewed Presto number and rejects caller-supplied number selectors, so an
+# escape-hatch argv cannot silently change the sending identity.
+#
+# --output json: JSON is already the CLI default for every subcommand; we
+# inject it explicitly when absent so output is machine-readable regardless
+# of any future default change.
+set -euo pipefail
+: "${KAPSO_API_KEY:?KAPSO_API_KEY not set — run: make -C skillshub setup-env}"
+export KAPSO_API_KEY
+
+# Reject any attempt to replace the fixed sending identity and detect whether
+# the caller already selected output formatting.
+has_output_flag=false
+for a in "$@"; do
+  case "$a" in
+    --phone-number-id | --phone-number-id=* | --phone-number | --phone-number=*)
+      echo "kapso-whatsapp-send: caller-supplied sender identity is forbidden" >&2
+      exit 64 ;;
+    --output | --output=*)
+      has_output_flag=true ;;
+  esac
+done
+
+inject=(--phone-number-id "${KAPSO_PHONE_NUMBER_ID:?KAPSO_PHONE_NUMBER_ID not set}")
+if [ "$has_output_flag" = false ]; then
+  inject+=(--output json)
+fi
+
+# Expand the injected-args array safely even when empty (set -u would treat
+# "${inject[@]}" on an empty array as an unbound variable on bash < 4.4).
+exec kapso "$@" ${inject[@]+"${inject[@]}"}

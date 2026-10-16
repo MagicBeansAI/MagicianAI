@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launch screen. The mark is @drawable/splash_icon at the system splash's
+     canvas size (288dp), centred, so it sits exactly where the Android 12+
+     system splash drew it; the name, build and tagline fade in under it. -->
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/md_theme_light_background">
+
+    <ImageView
+        android:id="@+id/splashMark"
+        android:layout_width="288dp"
+        android:layout_height="288dp"
+        android:layout_centerInParent="true"
+        android:src="@drawable/splash_icon"
+        android:contentDescription="@string/app_name" />
+
+    <!-- The canvas has 78dp of empty space under the 132dp square. -->
+    <LinearLayout
+        android:id="@+id/splashText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/splashMark"
+        android:layout_marginTop="-62dp"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="@color/text_high_emphasis"
+            android:textSize="30sp"
+            android:textStyle="bold"
+            android:letterSpacing="-0.02" />
+
+        <TextView
+            android:id="@+id/splashVersion"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textColor="@color/text_disabled"
+            android:textSize="11sp"
+            android:fontFamily="monospace" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/splash_tagline"
+            android:textColor="@color/text_medium_emphasis"
+            android:textSize="13sp"
+            android:letterSpacing="0.03" />
+    </LinearLayout>
+</RelativeLayout>

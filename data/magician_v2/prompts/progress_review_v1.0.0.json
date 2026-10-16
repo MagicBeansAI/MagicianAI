@@ -1,0 +1,35 @@
+{
+  "name": "progress_review",
+  "version": "1.0.0",
+  "content": [
+    "REQUIREMENT (success criteria):",
+    "{success_criteria}",
+    "",
+    "GOAL:",
+    "{goal}",
+    "",
+    "PROGRESS: {streak} consecutive read-only / inspection steps out of {cap} before this run is force-concluded. Total iterations so far: {iterations}.",
+    "",
+    "WORK SO FAR:",
+    "{work_summary}",
+    "",
+    "Decide the single next step for this run. Return STRICT JSON only (no prose, no code fences) as a JSON object with these fields:",
+    "- closeness: integer 0-100, how close the work is to satisfying the requirement.",
+    "- assessment: one skeptical sentence on whether it is really converging.",
+    "- decision: exactly one of continue, converge, redirect, escalate.",
+    "- steer_message: a specific directive for the run. For converge, tell it to STOP researching and synthesise and emit the deliverable now. For continue, name exactly what is still missing. For redirect, give the better approach. Leave empty for escalate.",
+    "- missing: array of strings naming what still blocks the deliverable.",
+    "",
+    "Prefer converge if enough evidence already exists to produce the deliverable. Use continue only if genuinely closer than before. Use escalate if blocked or the requirement cannot be met from here."
+  ],
+  "variables": ["success_criteria", "goal", "streak", "cap", "iterations", "work_summary"],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "User prompt for the adversarial progress reviewer: judges closeness to the requirement given the work so far and returns a structured continue/converge/redirect/escalate verdict.",
+    "author": "magician",
+    "created_at": "2026-07-11T00:00:00Z",
+    "changelog": "v1.0.0: initial adversarial progress reviewer user prompt.",
+    "tags": ["agentic", "reviewer", "progress", "steer", "user-prompt"],
+    "estimated_tokens": 260
+  }
+}

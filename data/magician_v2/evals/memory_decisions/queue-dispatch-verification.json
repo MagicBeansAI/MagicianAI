@@ -1,0 +1,96 @@
+{
+  "status": "implementation_and_operator_rollout_verified",
+  "tests": {
+    "magicllm_dispatch": 178,
+    "model_dispatch": 6,
+    "classification_fallback": 12,
+    "engine_classification_fallback": 1,
+    "contract": 6,
+    "review_evaluator": 8,
+    "docs_guard": "passed",
+    "markdown_link_guard": "passed; no added dangling links",
+    "memory_report": 38,
+    "host_before_discovery_metric": 334,
+    "full_engine_and_decision_crate": 135,
+    "optional_provider_live_test_ignored": 1,
+    "host_current_source": 335,
+    "comms_current_source": 11,
+    "canonical_cost_reader": 48,
+    "check_all": "passed; debug host build continues",
+    "host_rail_current_source": 125,
+    "api_rail_current_source": 10,
+    "shared_pricing_helper": "8 real decision receipt prices exactly match ledger; unknown model/usage fixtures stay unpriced",
+    "test_decision_memory": "passed: 6 contract, 135 engine/decision, 335 host, 11 comms, 38 report"
+  },
+  "debug_engine_build": "passed with mlx and onnx",
+  "real_evidence": [
+    "queue-jev-concurrent.json",
+    "queue-kev4-concurrent.json",
+    "queue-jev-review/summary.json",
+    "queue-kev4-review/summary.json",
+    "queue-kev4-cancellation.json",
+    "queue-combined-review/summary.json",
+    "queue-outage-review/summary.json",
+    "queue-endpoint-restored.json",
+    "queue-owner-accounting-failure.json",
+    "queue-owner-workflows-v2/summary.json",
+    "queue-host-outage-verification.json",
+    "shared-pricing-helper-verification.json",
+    "queue-post-deploy/summary.json",
+    "queue-action-smoke.json"
+  ],
+  "limits": [
+    "Queues are process-local and in-memory.",
+    "Only confident local answers apply; host outage probes accepted one operation and deferred two below 0.75.",
+    "Direct API evaluation calls bypass the Magician ledger; their prices use its shared Rust pricing function and dated registry.",
+    "Empirical production qualification remains incomplete; activation uses the operator override."
+  ],
+  "remaining": [],
+  "previous_gate_failure": "SSD1 ran out of space; host tests passed before comms/check-all/engine stages hit ENOSPC. Freed old generated artifacts; retrying.",
+  "real_owner_attempt": {
+    "path": "/Volumes/build/magician/tmp/memory-human-review-20260927/queue-owner-workflows",
+    "semantics_passed": 7,
+    "semantics_total": 7,
+    "accounting": "FAILED: canonical reader did not allow local cost_source; source fix and focused regression pending",
+    "automatic_fallback_enabled": false
+  },
+  "local_pricing_reader_diagnostic": {
+    "source": "retained real workflow Parquet rows",
+    "old_predicate_rejected_rows": 1,
+    "corrected_predicate_rejected_rows": 0,
+    "cost_source": "local",
+    "known_cost_usd": 0.0,
+    "rust_regression": "passed with all 48 canonical cost-reader tests"
+  },
+  "rollout_check": {
+    "repo_and_live_memory_policies_match": 9,
+    "kev4_thresholds": 0.75,
+    "fallback_models": [
+      "kev-4b"
+    ],
+    "isolated_engine_health": {
+      "contract_version": 4,
+      "status": "ok",
+      "engine_version": "0.4.0"
+    }
+  },
+  "corrected_owner_replay": {
+    "semantics": "7/7 passed",
+    "accounting": "14 unique physical calls; zero capture gaps",
+    "jev_calls": 7,
+    "kev4_calls": 1,
+    "required_text_calls": 6,
+    "llm_decision_fallbacks": 0
+  },
+  "debug_host_build": "passed; deployed under supervisor",
+  "qualification": "INCOMPLETE: original held-out/destructive-label sample requirements and paired economic qualification remain unmet; operator amendment explicitly permits gated rollout without claiming these qualifications.",
+  "deployment": {
+    "host": "debug binary built, staged and running under supervisor",
+    "engine": "v4 / 0.4.0 healthy; nine Jev\u2192Kev-4B memory routes",
+    "host_health": "healthy",
+    "magicutor_health": "healthy",
+    "test_engines": "stopped",
+    "repo_live_memory_policies_match": true,
+    "committed": false
+  }
+}

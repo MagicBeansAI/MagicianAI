@@ -1,0 +1,18 @@
+{
+  "name": "Magican",
+  "origin": "https://next.magican.ai",
+  "source": "https://github.com/MagicBeansAI/MagicianAI",
+  "image": { "path": "/og-image.png", "width": 1200, "height": 630, "alt": "Magican's star mascot and More You tagline" },
+  "pages": {
+    "/": { "title": "Magican — More You | Personal AI under your control", "description": "Your personal AI for work, play and side quests. Connect your apps, choose your models and stay in control. Powered by the open-source Magician platform." },
+    "/manifesto": { "title": "Personal Intelligence is your asset — Magican", "description": "Why personal intelligence should be yours: choose your models, control your context and decide how your AI works. Read the Magican manifesto." },
+    "/privacy": { "title": "Privacy — Magican", "description": "What Magican stores, what it sends to models and connected services, where your data lives, and the controls you have over your personal AI." },
+    "/terms": { "title": "Terms — Magican", "description": "Terms for using Magican: your content, connected services, permissions, responsibilities and the limitations of a personal AI in beta." }
+  },
+  "explain": {
+    "origin": "https://explain.magican.ai",
+    "title": "How Magican works — Explore the open-source architecture",
+    "description": "Open Magican's interactive 3D architecture. Explore its server, agents, tools and connected devices, or follow a request through a narrated tour.",
+    "overviewTitle": "How Magican works — Architecture and features in plain text"
+  }
+}

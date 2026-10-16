@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="360dp"
+    android:height="8dp"
+    android:viewportWidth="360"
+    android:viewportHeight="8">
+
+    <!-- Wave-shaped divider -->
+    <path
+        android:fillColor="@color/divider"
+        android:pathData="M0,4 Q45,0 90,4 T180,4 T270,4 T360,4 L360,6 Q315,8 270,6 T180,6 T90,6 T0,6 Z" />
+
+    <!-- Subtle highlight -->
+    <path
+        android:fillAlpha="0.3"
+        android:fillColor="@color/primary"
+        android:pathData="M0,2 Q45,0 90,2 T180,2 T270,2 T360,2 L360,3 Q315,4 270,3 T180,3 T90,3 T0,3 Z" />
+</vector>

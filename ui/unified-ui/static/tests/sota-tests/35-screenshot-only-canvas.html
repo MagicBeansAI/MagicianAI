@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Screenshot-Only Canvas Targets (Phase 4 SoTA)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #d63384, #b02a6c);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        .vision-banner {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            border-left: 6px solid #ff9800;
+            color: #5a4500;
+            padding: 14px 18px;
+            border-radius: 6px;
+            margin: 0 0 20px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .vision-banner strong { color: #4a3500; }
+        .vision-banner code {
+            background: rgba(0, 0, 0, 0.06);
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .goal-section {
+            background: #f9d6e6;
+            border-left: 4px solid #d63384;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #831a4f; }
+        .goal-section code {
+            background: rgba(214, 51, 132, 0.1);
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        canvas {
+            display: block;
+            margin: 15px auto;
+            background: white;
+            border: 2px solid #d63384;
+            border-radius: 4px;
+            cursor: crosshair;
+        }
+        .result-box {
+            background: #fff;
+            border: 1px dashed #d63384;
+            border-radius: 4px;
+            padding: 10px 14px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 13px;
+            color: #333;
+            min-height: 1.8em;
+        }
+        .status-controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-top: 12px;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .status-btn { font-size: 12px; padding: 4px 10px; cursor: pointer; }
+        .results-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #343a40;
+            color: white;
+            padding: 16px 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .stats { display: flex; gap: 30px; }
+        .stat { text-align: center; }
+        .stat-value { font-size: 28px; font-weight: bold; }
+        .stat-label { font-size: 12px; opacity: 0.7; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+    </style>
+</head>
+<body>
+    <!--
+      Screenshot-only SoTA fixture. Each test case asks the agent to
+      observe a canvas via SCREENSHOT (not via the accessibility tree
+      / `snapshot` primitive). The canvas content is drawn imperatively
+      with `ctx.fill*` / `ctx.fillText` and exposes nothing to the DOM
+      — `snapshot` returns just `<canvas>` and the visible answer is
+      strictly in pixels.
+
+      Two reasons this matters in production:
+        - Confirms the inner-loop image-turn route to Yutori N1.5
+          actually fires (vision-specialist on screenshot turns; see
+          `magician/magician-config.yaml::agent_browser_inner_loop`).
+        - Verifies the Yutori translator end-to-end: model emits
+          native `left_click [coords]` in 1000×1000 normalised space,
+          magicllm denormalises to viewport pixels, magician's
+          translator rewrites to `agent-browser mouse move/down/up`.
+
+      Each case has page-owned evidence — the canvas registers a real
+      mousedown via CDP, hit-tests against the target geometry, and
+      flips `data-status="pass"` on success plus updates the
+      `#test-N-result` banner with the click coords. No subjective
+      judgement.
+    -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "35-screenshot-only-canvas",
+        "phase": "Phase 4",
+        "title": "Screenshot-Only Canvas Targets",
+        "description": "Three canvas-only test cases that force screenshot observation. Designed to exercise the Yutori N1.5 vision-specialist route on screenshot turns through the agent_browser_inner_loop operation.",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 4: Screenshot-Only Canvas Targets</h1>
+        <p>Three deterministic canvas tests that have NO DOM affordances — observation has to go through the screenshot path. Exercises the Yutori N1.5 image-turn route end-to-end.</p>
+    </div>
+
+    <div class="vision-banner">
+        <strong>Important:</strong> For every test below, observe the canvas via <code>screenshot</code> (NOT via <code>snapshot</code> / accessibility tree). The canvases draw their content imperatively, so DOM-based observation reveals nothing. This is intentional — the test is the screenshot path.
+    </div>
+
+    <!-- Test Case 1: Click the red circle (color disambiguation) -->
+    <div class="test-case" id="test-1" data-test-id="35-click-red-circle" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Click the RED circle on the canvas</h3>
+            <span class="test-case-id">35-click-red-circle</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Three filled circles render on the canvas: one red, one green, one blue. They are positioned at different points each page load. <strong>Use <code>screenshot</code> to observe their positions, identify the RED one, and click its centre.</strong> Do not call <code>snapshot</code>; the canvas exposes no DOM children.
+        </div>
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="result-success"><code>#test-1-result</code> starts with "SUCCESS:" and includes the click coordinates</li>
+                <li data-check="data-status-pass">The test case has <code>data-status="pass"</code></li>
+            </ul>
+        </div>
+        <canvas id="canvas-1" width="600" height="240"></canvas>
+        <div class="result-box" id="test-1-result">Pending — click the red circle on canvas-1</div>
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Click the largest square (size disambiguation) -->
+    <div class="test-case" id="test-2" data-test-id="35-click-largest-square" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Click the LARGEST square on the canvas</h3>
+            <span class="test-case-id">35-click-largest-square</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Three same-coloured squares render on the canvas at different sizes and positions. <strong>Use <code>screenshot</code> to compare their sizes and click the centre of the LARGEST one.</strong> Don't try <code>snapshot</code> — there are no DOM elements; the squares exist only as pixels.
+        </div>
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="result-success"><code>#test-2-result</code> starts with "SUCCESS:" and includes the click coordinates</li>
+                <li data-check="data-status-pass">The test case has <code>data-status="pass"</code></li>
+            </ul>
+        </div>
+        <canvas id="canvas-2" width="600" height="240"></canvas>
+        <div class="result-box" id="test-2-result">Pending — click the largest square on canvas-2</div>
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Click the word PASS rendered as canvas pixels -->
+    <div class="test-case" id="test-3" data-test-id="35-click-pass-word" data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Click the word "PASS" rendered on the canvas</h3>
+            <span class="test-case-id">35-click-pass-word</span>
+        </div>
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> The canvas renders three words via <code>ctx.fillText</code>: "FAIL", "SKIP", and "PASS" — at random positions. The text is pixels only; <code>snapshot</code> returns nothing useful. <strong>Use <code>screenshot</code> to read the canvas, locate the word "PASS", and click somewhere inside its bounding box.</strong>
+        </div>
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="result-success"><code>#test-3-result</code> starts with "SUCCESS:" and includes the click coordinates</li>
+                <li data-check="data-status-pass">The test case has <code>data-status="pass"</code></li>
+            </ul>
+        </div>
+        <canvas id="canvas-3" width="600" height="240"></canvas>
+        <div class="result-box" id="test-3-result">Pending — click the word "PASS" on canvas-3</div>
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Screenshot-Only Canvas</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ── Test status management ─────────────────────────────────
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Deterministic-but-non-trivial layout: seed the random per-
+        // page-load using `Date.now()` so successive runs differ but
+        // a single load is consistent. The agent must screenshot
+        // each page-load fresh; cached coords from a prior run
+        // won't work.
+        function rng(seed) {
+            let s = seed >>> 0;
+            return function() {
+                s = (s * 1664525 + 1013904223) >>> 0;
+                return s / 0xffffffff;
+            };
+        }
+        function pickPositions(rand, count, canvasW, canvasH, minSpacing) {
+            const positions = [];
+            let attempts = 0;
+            while (positions.length < count && attempts < 200) {
+                const x = 60 + rand() * (canvasW - 120);
+                const y = 60 + rand() * (canvasH - 120);
+                const ok = positions.every(p => Math.hypot(p.x - x, p.y - y) >= minSpacing);
+                if (ok) positions.push({ x, y });
+                attempts += 1;
+            }
+            return positions;
+        }
+
+        // ── Canvas 1: three coloured circles (red / green / blue) ──
+        const canvas1 = document.getElementById('canvas-1');
+        const ctx1 = canvas1.getContext('2d');
+        const seed1 = Date.now();
+        const rand1 = rng(seed1);
+        const positions1 = pickPositions(rand1, 3, canvas1.width, canvas1.height, 130);
+        const colours1 = ['#dc3545', '#28a745', '#007bff'];
+        // Shuffle which colour goes to which position so the agent
+        // really has to look at colour, not position.
+        for (let i = colours1.length - 1; i > 0; i--) {
+            const j = Math.floor(rand1() * (i + 1));
+            [colours1[i], colours1[j]] = [colours1[j], colours1[i]];
+        }
+        const radius1 = 50;
+        const targetRed1 = (() => {
+            const idx = colours1.indexOf('#dc3545');
+            return positions1[idx];
+        })();
+        positions1.forEach((pos, i) => {
+            ctx1.beginPath();
+            ctx1.arc(pos.x, pos.y, radius1, 0, 2 * Math.PI);
+            ctx1.fillStyle = colours1[i];
+            ctx1.fill();
+        });
+        canvas1.addEventListener('mousedown', (event) => {
+            const rect = canvas1.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            const dist = Math.hypot(x - targetRed1.x, y - targetRed1.y);
+            if (dist <= radius1) {
+                setTestStatus('test-1', 'pass');
+                document.getElementById('test-1-result').textContent =
+                    `SUCCESS: clicked the red circle at (${Math.round(x)}, ${Math.round(y)}); target centre (${Math.round(targetRed1.x)}, ${Math.round(targetRed1.y)})`;
+            } else {
+                document.getElementById('test-1-result').textContent =
+                    `Miss: clicked (${Math.round(x)}, ${Math.round(y)}); red circle centre is at (${Math.round(targetRed1.x)}, ${Math.round(targetRed1.y)})`;
+            }
+        });
+
+        // ── Canvas 2: three blue squares of different sizes ────────
+        const canvas2 = document.getElementById('canvas-2');
+        const ctx2 = canvas2.getContext('2d');
+        const seed2 = Date.now() + 7;
+        const rand2 = rng(seed2);
+        const positions2 = pickPositions(rand2, 3, canvas2.width, canvas2.height, 140);
+        const sizes2 = [40, 70, 100];
+        // Shuffle sizes to positions so the largest isn't always
+        // the rightmost / leftmost.
+        for (let i = sizes2.length - 1; i > 0; i--) {
+            const j = Math.floor(rand2() * (i + 1));
+            [sizes2[i], sizes2[j]] = [sizes2[j], sizes2[i]];
+        }
+        const targetSquareIdx2 = sizes2.indexOf(Math.max(...sizes2));
+        const targetSquare2 = positions2[targetSquareIdx2];
+        const targetSize2 = sizes2[targetSquareIdx2];
+        positions2.forEach((pos, i) => {
+            const half = sizes2[i] / 2;
+            ctx2.fillStyle = '#0d6efd';
+            ctx2.fillRect(pos.x - half, pos.y - half, sizes2[i], sizes2[i]);
+        });
+        canvas2.addEventListener('mousedown', (event) => {
+            const rect = canvas2.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            const half = targetSize2 / 2;
+            const inside =
+                x >= targetSquare2.x - half &&
+                x <= targetSquare2.x + half &&
+                y >= targetSquare2.y - half &&
+                y <= targetSquare2.y + half;
+            if (inside) {
+                setTestStatus('test-2', 'pass');
+                document.getElementById('test-2-result').textContent =
+                    `SUCCESS: clicked the largest square (size=${targetSize2}px) at (${Math.round(x)}, ${Math.round(y)}); centre (${Math.round(targetSquare2.x)}, ${Math.round(targetSquare2.y)})`;
+            } else {
+                document.getElementById('test-2-result').textContent =
+                    `Miss: clicked (${Math.round(x)}, ${Math.round(y)}); largest square centre is at (${Math.round(targetSquare2.x)}, ${Math.round(targetSquare2.y)})`;
+            }
+        });
+
+        // ── Canvas 3: three words rendered with fillText ───────────
+        const canvas3 = document.getElementById('canvas-3');
+        const ctx3 = canvas3.getContext('2d');
+        const seed3 = Date.now() + 19;
+        const rand3 = rng(seed3);
+        ctx3.font = 'bold 36px sans-serif';
+        ctx3.textBaseline = 'middle';
+        ctx3.textAlign = 'center';
+        const positions3 = pickPositions(rand3, 3, canvas3.width, canvas3.height, 170);
+        const words3 = ['FAIL', 'SKIP', 'PASS'];
+        // Shuffle word→position mapping
+        for (let i = words3.length - 1; i > 0; i--) {
+            const j = Math.floor(rand3() * (i + 1));
+            [words3[i], words3[j]] = [words3[j], words3[i]];
+        }
+        const passIdx3 = words3.indexOf('PASS');
+        const targetPass3 = positions3[passIdx3];
+        // Draw each word in a different colour so the agent can
+        // distinguish them visually even if anti-aliasing makes
+        // small letters fuzzy.
+        const wordColours3 = ['#dc3545', '#6c757d', '#198754']; // FAIL=red, SKIP=grey, PASS=green
+        words3.forEach((word, i) => {
+            ctx3.fillStyle =
+                word === 'FAIL' ? wordColours3[0] :
+                word === 'SKIP' ? wordColours3[1] :
+                wordColours3[2];
+            ctx3.fillText(word, positions3[i].x, positions3[i].y);
+        });
+        // Bounding box for the PASS word — measureText gives width;
+        // height is approximated from the font size.
+        const passMetrics3 = ctx3.measureText('PASS');
+        const passW3 = passMetrics3.width;
+        const passH3 = 36; // matches the font size
+        canvas3.addEventListener('mousedown', (event) => {
+            const rect = canvas3.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            const inside =
+                x >= targetPass3.x - passW3 / 2 - 8 &&
+                x <= targetPass3.x + passW3 / 2 + 8 &&
+                y >= targetPass3.y - passH3 / 2 - 8 &&
+                y <= targetPass3.y + passH3 / 2 + 8;
+            if (inside) {
+                setTestStatus('test-3', 'pass');
+                document.getElementById('test-3-result').textContent =
+                    `SUCCESS: clicked the word "PASS" at (${Math.round(x)}, ${Math.round(y)}); word centre (${Math.round(targetPass3.x)}, ${Math.round(targetPass3.y)})`;
+            } else {
+                document.getElementById('test-3-result').textContent =
+                    `Miss: clicked (${Math.round(x)}, ${Math.round(y)}); the word "PASS" is centred at (${Math.round(targetPass3.x)}, ${Math.round(targetPass3.y)})`;
+            }
+        });
+    </script>
+
+    <!-- Shared SoTA harness: strips manual Pass/Fail radios, wires Reset,
+         auto-detects completion, and owns #passed-count via updateSummary. -->
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>

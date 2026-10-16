@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""A rustc entrypoint below mbx's cache, sharing the host's compiler gate."""
+import os
+from pathlib import Path
+import sys
+
+compiler = os.environ.get("MAGICIAN_REAL_RUSTC")
+gate = os.environ.get("RUSTC_JOB_GATE")
+if not compiler or not Path(compiler).is_file():
+    raise SystemExit("rustc-gated: MAGICIAN_REAL_RUSTC must name the real compiler")
+if gate and Path(gate).is_file():
+    os.execv(gate, [gate, compiler, *sys.argv[1:]])
+os.execv(compiler, [compiler, *sys.argv[1:]])

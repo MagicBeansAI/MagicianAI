@@ -1,0 +1,180 @@
+name: forget_memory
+description: >-
+  Find and delete memory entries (tier fields OR whole episode files) that
+  semantically match a query. Two-phase confirm-token flow protects against
+  over-deletion — `dry_run: true` (default) returns the candidates that WOULD
+  be deleted with a `confirm_token`; pass that token back with `dry_run: false`
+  to commit. Each match carries `kind: "tier_field" | "episode"` plus
+  `semantic_memory_type` and `temperature_tier` so the LLM can show the user
+  exactly what's about to vanish.
+version: "1.2.0"
+guide: |
+  Tool name: `forget_memory`
+
+  Use when the user asks you to forget a specific topic, retract a
+  preference, or clean up stale memory entries. Ranks candidates by
+  the same lancedb hybrid backend `search_memory` uses, so "forget
+  about my comics preferences" surfaces the same candidates the
+  prompt's auto-injected `memory_tiers_block` was ranking.
+
+  ## Coverage
+
+  Same surface coverage as `search_memory`:
+
+  - **Tier fields** across user-scope, agent-scope (including
+    `personality_profile`), and agent-goal-scope (across every
+    goal).
+  - **Native episodes** — one episode file per ranked match.
+
+  Each match's `kind` field tells you which surface the commit will target,
+  `semantic_memory_type` identifies its typed memory lane (`user_preference`,
+  `procedure`, `entity`, `episode`, etc.), and `temperature_tier` identifies
+  its current working-set placement:
+
+  - `"tier_field"` → the commit removes the specific field at
+    `delete_target.json_pointer` inside `delete_target.source_path`.
+    The rest of the tier file stays intact.
+  - `"episode"` → the commit removes the entire episode file at
+    `delete_target.source_path` (`removal_mode: "whole_file"`).
+    The episode is gone; consolidation that already extracted info
+    into tiers from this episode is unaffected.
+
+  ## How deletion actually works
+
+  Each ranked candidate carries `source_path` (the backing JSON file
+  under `<workspace>/scopes/{p}/{w}/memory/...`) and `json_pointer`
+  (RFC 6901 location within the file, OR empty for episodes).
+  Commit path:
+
+  - **`kind: "tier_field"`** → open file → remove at
+    `json_pointer` → atomic write back (tmpfile + fsync + rename).
+    Other entries in the tier stay untouched.
+  - **`kind: "episode"`** → `tokio::fs::remove_file(source_path)`.
+    File-already-absent races (another delete already removed it,
+    consolidator archived it) count as success rather than skip —
+    the end state is what we wanted.
+
+  After every successful commit batch:
+  - The lancedb derived memory index is marked dirty so it rebuilds
+    without the deleted entries on the next refresh.
+  - If any episode file was removed, the per-agent
+    `episode_index.json` cache is invalidated (`last_rebuilt = None`)
+    under the canonical episode-index lock so the next
+    `load_native_episodes_filtered` rebuilds from a directory scan
+    instead of trusting stale entries.
+
+  Backing files are the source of truth; the indexes are just
+  search/scoring caches.
+
+  ## Two-phase delete
+
+  The tool defaults to `dry_run: true`. The first call returns the
+  candidates that WOULD be deleted and a `confirm_token` (a hash of
+  the candidates' content). To commit:
+
+  1. Call with `dry_run: true, query: "comics"` → response carries
+     `matches[]` plus `confirm_token: "blake3-abcd…"`.
+  2. Show the matches to the user / confirm intent.
+  3. Call again with `dry_run: false, query: "comics", confirm:
+     "blake3-abcd…"`. The token must match the current top matches
+     for the same query — if memory shifted between the dry-run and
+     commit (another tool wrote/deleted in the interim), the token
+     mismatches and the call rejects with `status: "stale_confirm"`.
+
+  This forces the LLM to confirm exactly what will be deleted before
+  committing. Skipping the dry-run step (passing `dry_run: false`
+  with `confirm: ""` or wrong) is rejected.
+
+  ## Inputs
+
+  - `query` (required) — free-form text to match against memory.
+  - `tier` (optional) — restrict search/delete to one tier name. Same
+    semantics as `search_memory`'s `tier`. `user.<name>` selects a
+    user-scope tier explicitly.
+  - `limit` (optional) — how many top matches to delete in one call.
+    Clamped to [1, 10]. Defaults to 1. Smaller defaults bias toward
+    precision over recall (delete one entry at a time unless the LLM
+    is sure).
+  - `dry_run` (optional, default `true`) — when true, returns the
+    matches WITHOUT deleting. When false, requires `confirm`.
+  - `confirm` (required iff `dry_run: false`) — the `confirm_token`
+    from a prior `dry_run: true` call against the same query.
+
+  ## Outputs
+
+  Dry-run response shape:
+    `status: "ok"`, `mode: "dry_run"`, `count`, `matches[]`,
+    `confirm_token`, `note`. The `matches[]` shape mirrors
+    `search_memory` plus `delete_target` (source_path + json_pointer
+    that the commit would mutate).
+
+  Commit response shape (success):
+    `status: "ok"`, `mode: "committed"`, `deleted_count`, `deleted[]`
+    (the actually-removed entries with their prior content_hash for
+    audit), `skipped[]` (candidates the token authorised but couldn't
+    delete — file disappeared, pointer no longer resolves, etc.).
+
+  Failure responses:
+    - `status: "error"` with `reason` — validation failure (missing
+      query, missing confirm, etc.).
+    - `status: "stale_confirm"` — `confirm` doesn't match the current
+      top matches. Re-issue the dry_run to get a fresh token.
+
+  ## Failure modes
+
+  - Memory resolver not configured → `status: "error"`.
+  - Source file missing or unreadable → entry goes to `skipped[]` not
+    `deleted[]`. The rest of the batch still proceeds.
+  - JSON pointer no longer resolves (concurrent write removed it
+    already) → skipped, logged.
+
+  ## Safety notes
+
+  - Tier filter is your friend. If the user says "forget my comics
+    preferences", call with `tier: "user.preferences"` (or whichever
+    fits) so you don't accidentally remove unrelated agent-scope
+    insights that happen to mention comics.
+  - Default `limit: 1` is deliberate. Bumping to 10 with a fuzzy
+    query is the most common way to over-delete.
+  - Lower the user's effective `confirm_token` exposure: do NOT
+    persist the token across turns. Use it in the immediate next
+    call and discard.
+parameters:
+  - name: query
+    required: true
+    param_type: string
+    description: Free-form text describing what to forget. Same ranking backend as `search_memory`.
+  - name: tier
+    required: false
+    param_type: string
+    description: Optional tier name to scope the forget to one tier. `user.<name>` selects a user-scope tier; bare names default to agent-scope.
+    default: ""
+  - name: limit
+    required: false
+    param_type: integer
+    description: Max matches to delete in one call. Clamped to [1, 10]. Defaults to 1.
+    default: "1"
+  - name: dry_run
+    required: false
+    param_type: boolean
+    description: When true (default), returns candidates that WOULD be deleted plus a `confirm_token`. When false, deletes them.
+    default: "true"
+  - name: confirm
+    required: false
+    param_type: string
+    description: >-
+      The `confirm_token` returned by a prior `dry_run: true` call against the
+      same query. Required when `dry_run: false`.
+    default: ""
+implementation:
+  type: compiled
+  provider_name: forget_memory
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 15
+  categories:
+    - memory
+    - write
+    - delete
+  composition_category: action
+  sandbox: none

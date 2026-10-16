@@ -1,0 +1,65 @@
+name: higgsfield
+version: 0.1.0
+description: |
+  Run the authenticated Higgsfield CLI for model/workflow discovery, media
+  generation, uploads, Marketing Studio, Soul, product, marketplace, game,
+  website, and account-status operations. Pass exact argv tokens; generation
+  calls should normally include --wait.
+parameters:
+- name: args
+  required: true
+  param_type: string
+  description: |
+    Exact argv tokens after `higgsfield`. Examples:
+    `["model","list","--json"]`,
+    `["model","get","gpt_image_2","--json"]`, or
+    `["generate","create","gpt_image_2","--prompt","...","--wait"]`.
+    Do not invoke auth login/logout or change the billing workspace.
+- name: timeout_secs
+  required: false
+  param_type: integer
+  description: Wall-clock timeout. Use up to 1800 seconds for long media jobs.
+  default: '1200'
+native_action_schemas:
+  run:
+    description: |
+      Run one Higgsfield CLI command. Discover unfamiliar models with an
+      unfiltered `model list --json` and then `model get <job_type> --json`.
+      Add `--wait` to generation calls so terminal output is returned in the
+      same action. Never perform auth or workspace mutations autonomously.
+    parameters:
+    - args
+    - timeout_secs
+    required:
+    - args
+    parameter_overrides:
+      args:
+        type: array
+        items:
+          type: string
+        description: Exact argv tokens after `higgsfield`, one token per item.
+      timeout_secs:
+        type: integer
+        description: Wall-clock timeout in seconds.
+        default: 1200
+    skip_tool_name: true
+    timeout_secs: 1800
+implementation:
+  type: primitive
+  command:
+  - sh
+  - '{skill_runtime_root}/scripts/run.sh'
+  timeout_secs: 1800
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 1800
+  categories:
+  - image
+  - video
+  - audio
+  - 3d
+  - generation
+  - creative
+  - marketing
+  composition_category: media_operations
+  sandbox: shell

@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Hybrid Diagram Connector Workflows</title>
+    <link rel="stylesheet" href="./sota-canvas-fixtures.css">
+    <style>
+        .test-header {
+            background: linear-gradient(135deg, #1b5cff, #0f7e73);
+        }
+
+        .connector-board {
+            position: relative;
+            min-height: 320px;
+            background:
+                radial-gradient(circle at 18px 18px, rgba(23, 62, 133, 0.08) 2px, transparent 0) 0 0 / 36px 36px,
+                linear-gradient(180deg, #f8fbff 0%, #eff5fb 100%);
+            border-radius: 18px;
+            overflow: hidden;
+        }
+
+        .connector-board svg {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .connector-node {
+            position: absolute;
+            width: 210px;
+            border-radius: 16px;
+            background: linear-gradient(180deg, #ffffff 0%, #ebf2ff 100%);
+            border: 1px solid #b9c9e5;
+            box-shadow: 0 14px 28px rgba(40, 64, 112, 0.14);
+            padding: 14px;
+            user-select: none;
+        }
+
+        .connector-node strong {
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .connector-node.source {
+            left: 44px;
+            top: 86px;
+        }
+
+        .connector-node.target {
+            right: 48px;
+            top: 128px;
+        }
+
+        .connector-node.node-drag-source,
+        .connector-handle {
+            cursor: crosshair;
+        }
+
+        .connector-handle,
+        .connector-target {
+            position: absolute;
+            top: 50%;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            transform: translateY(-50%);
+            border: 3px solid #ffffff;
+            box-shadow: 0 6px 14px rgba(26, 40, 72, 0.2);
+        }
+
+        .connector-handle {
+            right: -9px;
+            background: #2150ff;
+        }
+
+        .connector-target {
+            left: -9px;
+            background: #0e9e65;
+        }
+
+        .connector-target.connected {
+            box-shadow: 0 0 0 8px rgba(14, 158, 101, 0.18);
+        }
+
+        .connector-node.node-drag-target.connected {
+            box-shadow: 0 0 0 8px rgba(14, 158, 101, 0.18), 0 14px 28px rgba(40, 64, 112, 0.14);
+        }
+
+        .connector-callout {
+            position: absolute;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%);
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(8, 31, 78, 0.9);
+            color: #ffffff;
+            font-weight: 600;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .connector-callout.visible {
+            opacity: 1;
+        }
+
+        .event-trace {
+            margin-top: 12px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: rgba(10, 26, 62, 0.9);
+            color: #dbe7ff;
+        }
+
+        .event-trace strong {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 12px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .event-trace pre {
+            margin: 0;
+            max-height: 180px;
+            overflow: auto;
+            white-space: pre-wrap;
+            font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        }
+    </style>
+</head>
+<body>
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "31-hybrid-diagram-connectors",
+        "phase": "Phase 4",
+        "title": "Hybrid Diagram Connector Workflows",
+        "description": "Hybrid DOM-over-SVG connector drags with broad card-to-card and precise handle-to-handle variants.",
+        "totalTests": 2
+    }
+    </script>
+
+    <div class="page-shell">
+        <div class="test-header">
+            <h1>Hybrid Diagram Connector Workflows</h1>
+            <p>These fixtures isolate the DOM-over-SVG connector cases from the pure canvas benchmark so mouse-vs-pointer drag handling can be debugged independently.</p>
+            <div class="results-summary">
+                <div class="summary-pill">Passed<strong id="passed-count">0</strong></div>
+                <div class="summary-pill">Failed<strong id="failed-count">0</strong></div>
+                <div class="summary-pill">Pending<strong id="pending-count">2</strong></div>
+            </div>
+        </div>
+
+        <div class="fixture-grid">
+            <section class="test-case" id="test-1" data-test-id="31-connector-link" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">1. Draw a connector from Gateway to Approval</h2>
+                    <span class="test-case-id">31-connector-link</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Drag from anywhere inside the <span class="kbd">Gateway Ready</span> card to anywhere inside the <span class="kbd">Approval Queue</span> card to create a release connector.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Broad Node Connector Surface</h3>
+                            <p class="caption">This hybrid surface uses DOM cards over an SVG path layer and should accept a broad node-to-node drag.</p>
+                        </div>
+                        <button class="surface-btn" type="button" id="reset-node-connector-board">Reset surface</button>
+                    </div>
+                    <div class="workspace-surface connector-board" id="node-connector-board">
+                        <span class="surface-label">Hybrid Connector Surface</span>
+                        <svg viewBox="0 0 900 320" preserveAspectRatio="none">
+                            <path id="node-connector-path" d="" fill="none" stroke="#2150ff" stroke-width="5" stroke-linecap="round"></path>
+                        </svg>
+                        <div class="connector-node source node-drag-source" id="node-connector-source">
+                            <strong>Gateway Ready</strong>
+                            <div class="caption">Start the connector from anywhere inside this card.</div>
+                        </div>
+                        <div class="connector-node target node-drag-target" id="node-connector-target">
+                            <strong>Approval Queue</strong>
+                            <div class="caption">Release anywhere inside this card to arm the release connector.</div>
+                        </div>
+                        <div class="connector-callout" id="node-connector-callout">Release connector armed</div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="connector-path-visible">A visible path should connect the source node to the target node.</li>
+                        <li data-check="target-armed">The Approval Queue card should enter the connected state and show the release callout.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="event-trace">
+                    <strong>Input trace</strong>
+                    <pre id="pointer-trace-test-1">Awaiting node-to-node input events.</pre>
+                </div>
+                <div class="status-controls" data-status-controls="test-1">
+                    <button class="status-btn reset" type="button" id="reset-node-connector-status" data-status-reset="test-1">Reset</button>
+                </div>
+            </section>
+
+            <section class="test-case" id="test-2" data-test-id="31-connector-link-precise" data-status="pending">
+                <div class="test-case-header">
+                    <h2 class="test-case-title">2. Draw a precise connector from Gateway to Approval</h2>
+                    <span class="test-case-id">31-connector-link-precise</span>
+                </div>
+                <div class="goal-section" data-goal>
+                    <strong>Goal:</strong> Drag from the blue connector handle on the <span class="kbd">Gateway Ready</span> card to the green target handle on <span class="kbd">Approval Queue</span> to create a release connector.
+                </div>
+                <div class="workspace-card">
+                    <div class="workspace-toolbar">
+                        <div>
+                            <h3>Precise Handle Connector Surface</h3>
+                            <p class="caption">This variant requires a tighter handle-to-handle path drag on the same hybrid DOM-over-SVG surface.</p>
+                        </div>
+                        <button class="surface-btn" type="button" id="reset-connector-board">Reset surface</button>
+                    </div>
+                    <div class="workspace-surface connector-board" id="connector-board">
+                        <span class="surface-label">Hybrid Connector Surface</span>
+                        <svg viewBox="0 0 900 320" preserveAspectRatio="none">
+                            <path id="connector-path" d="" fill="none" stroke="#2150ff" stroke-width="5" stroke-linecap="round"></path>
+                        </svg>
+                        <div class="connector-node source" id="connector-source">
+                            <strong>Gateway Ready</strong>
+                            <div class="caption">Start the connector here.</div>
+                            <div class="connector-handle" id="connector-handle" aria-label="Connector handle"></div>
+                        </div>
+                        <div class="connector-node target" id="connector-target-node">
+                            <strong>Approval Queue</strong>
+                            <div class="caption">Drop the connector on this target.</div>
+                            <div class="connector-target" id="connector-target" aria-label="Connector target"></div>
+                        </div>
+                        <div class="connector-callout" id="connector-callout">Release connector armed</div>
+                    </div>
+                </div>
+                <div class="verify-section">
+                    <strong>Verification:</strong>
+                    <ul>
+                        <li data-check="connector-path-visible">A visible path should connect the source node to the target node.</li>
+                        <li data-check="target-armed">The target handle should enter the connected state and show the release callout.</li>
+                    </ul>
+                </div>
+                <div class="fixture-result" aria-live="polite"></div>
+                <div class="event-trace">
+                    <strong>Input trace</strong>
+                    <pre id="pointer-trace-test-2">Awaiting precise handle input events.</pre>
+                </div>
+                <div class="status-controls" data-status-controls="test-2">
+                    <button class="status-btn reset" type="button" id="reset-connector-status" data-status-reset="test-2">Reset</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="./sota-test-harness.js"></script>
+    <script>
+        (function () {
+            const connectorViewBoxWidth = 900;
+            const connectorViewBoxHeight = 320;
+
+            const nodeConnectorBoard = document.getElementById("node-connector-board");
+            const nodeConnectorSource = document.getElementById("node-connector-source");
+            const nodeConnectorTarget = document.getElementById("node-connector-target");
+            const nodeConnectorPath = document.getElementById("node-connector-path");
+            const nodeConnectorCallout = document.getElementById("node-connector-callout");
+
+            const connectorBoard = document.getElementById("connector-board");
+            const connectorHandle = document.getElementById("connector-handle");
+            const connectorTarget = document.getElementById("connector-target");
+            const connectorPath = document.getElementById("connector-path");
+            const connectorCallout = document.getElementById("connector-callout");
+
+            let nodeConnectorState = null;
+            let preciseConnectorState = null;
+            let lastPointerInputAt = 0;
+            let nodeMouseTracking = false;
+            let nodePointerTracking = false;
+            let preciseMouseTracking = false;
+            let precisePointerTracking = false;
+
+            function describeNode(node) {
+                if (!node) return "null";
+                if (node === document) return "document";
+                if (node === window) return "window";
+                if (!(node instanceof Element)) return String(node.nodeName || node);
+                const id = node.id ? "#" + node.id : "";
+                const classes = typeof node.className === "string" && node.className.trim()
+                    ? "." + node.className.trim().split(/\s+/).slice(0, 2).join(".")
+                    : "";
+                return node.tagName.toLowerCase() + id + classes;
+            }
+
+            function clearPointerTrace(testId, label) {
+                const trace = document.getElementById("pointer-trace-" + testId);
+                if (!trace) return;
+                trace.textContent = label;
+            }
+
+            function appendPointerTrace(testId, line) {
+                const trace = document.getElementById("pointer-trace-" + testId);
+                if (!trace) return;
+                const existing = trace.textContent.startsWith("Awaiting") ? [] : trace.textContent.split("\n");
+                existing.push(line);
+                trace.textContent = existing.slice(-14).join("\n");
+            }
+
+            function tracePointerEvent(testId, label, event, localRectElement) {
+                if ((event.type === "pointermove" || event.type === "mousemove") && event.buttons === 0) return;
+                const rect = localRectElement?.getBoundingClientRect ? localRectElement.getBoundingClientRect() : null;
+                const localX = rect ? (event.clientX - rect.left).toFixed(1) : "?";
+                const localY = rect ? (event.clientY - rect.top).toFixed(1) : "?";
+                const hit = document.elementFromPoint(event.clientX, event.clientY);
+                const path = typeof event.composedPath === "function"
+                    ? event.composedPath().slice(0, 4).map(describeNode).join(" -> ")
+                    : "";
+                appendPointerTrace(
+                    testId,
+                    `${label} ${event.type} target=${describeNode(event.target)} current=${describeNode(event.currentTarget)} hit=${describeNode(hit)} xy=(${event.clientX.toFixed(1)},${event.clientY.toFixed(1)}) local=(${localX},${localY}) buttons=${event.buttons} path=${path}`
+                );
+            }
+
+            function traceMessage(testId, line) {
+                appendPointerTrace(testId, line);
+            }
+
+            function attachInputTrace(target, testId, label, localRectElement) {
+                ["pointerdown", "pointermove", "pointerup", "mousedown", "mousemove", "mouseup"].forEach((type) => {
+                    target.addEventListener(
+                        type,
+                        function (event) {
+                            tracePointerEvent(testId, label, event, localRectElement || target);
+                        },
+                        true
+                    );
+                });
+            }
+
+            function markPointerInput(event) {
+                if (event.type.startsWith("pointer")) {
+                    lastPointerInputAt = Date.now();
+                }
+            }
+
+            function shouldIgnoreCompatMouse(event) {
+                return event.type.startsWith("mouse") && Date.now() - lastPointerInputAt < 400;
+            }
+
+            function inputTokenForEvent(event) {
+                return event.type.startsWith("pointer") ? "pointer:" + event.pointerId : "mouse";
+            }
+
+            function safeSetPointerCapture(target, event, testId, label) {
+                if (!event.type.startsWith("pointer")) return;
+                try {
+                    target.setPointerCapture(event.pointerId);
+                } catch (error) {
+                    traceMessage(testId, `${label} setPointerCapture failed: ${error.name}`);
+                }
+            }
+
+            function safeReleasePointerCapture(target, event, testId, label) {
+                if (!event.type.startsWith("pointer")) return;
+                try {
+                    target.releasePointerCapture(event.pointerId);
+                } catch (error) {
+                    traceMessage(testId, `${label} releasePointerCapture failed: ${error.name}`);
+                }
+            }
+
+            function beginNodeMouseTracking() {
+                if (nodeMouseTracking) return;
+                nodeMouseTracking = true;
+                document.addEventListener("mousemove", onNodeConnectorMove, true);
+                document.addEventListener("mouseup", onNodeConnectorUp, true);
+            }
+
+            function endNodeMouseTracking() {
+                if (!nodeMouseTracking) return;
+                nodeMouseTracking = false;
+                document.removeEventListener("mousemove", onNodeConnectorMove, true);
+                document.removeEventListener("mouseup", onNodeConnectorUp, true);
+            }
+
+            function beginNodePointerTracking() {
+                if (nodePointerTracking) return;
+                nodePointerTracking = true;
+                document.addEventListener("pointermove", onNodeConnectorMove, true);
+                document.addEventListener("pointerup", onNodeConnectorUp, true);
+                document.addEventListener("pointercancel", onNodeConnectorCancel, true);
+            }
+
+            function endNodePointerTracking() {
+                if (!nodePointerTracking) return;
+                nodePointerTracking = false;
+                document.removeEventListener("pointermove", onNodeConnectorMove, true);
+                document.removeEventListener("pointerup", onNodeConnectorUp, true);
+                document.removeEventListener("pointercancel", onNodeConnectorCancel, true);
+            }
+
+            function beginPreciseMouseTracking() {
+                if (preciseMouseTracking) return;
+                preciseMouseTracking = true;
+                document.addEventListener("mousemove", onConnectorMove, true);
+                document.addEventListener("mouseup", onConnectorUp, true);
+            }
+
+            function endPreciseMouseTracking() {
+                if (!preciseMouseTracking) return;
+                preciseMouseTracking = false;
+                document.removeEventListener("mousemove", onConnectorMove, true);
+                document.removeEventListener("mouseup", onConnectorUp, true);
+            }
+
+            function beginPrecisePointerTracking() {
+                if (precisePointerTracking) return;
+                precisePointerTracking = true;
+                document.addEventListener("pointermove", onConnectorMove, true);
+                document.addEventListener("pointerup", onConnectorUp, true);
+                document.addEventListener("pointercancel", onConnectorCancel, true);
+            }
+
+            function endPrecisePointerTracking() {
+                if (!precisePointerTracking) return;
+                precisePointerTracking = false;
+                document.removeEventListener("pointermove", onConnectorMove, true);
+                document.removeEventListener("pointerup", onConnectorUp, true);
+                document.removeEventListener("pointercancel", onConnectorCancel, true);
+            }
+
+            function boardClientPointToConnectorSvg(board, clientX, clientY) {
+                const boardRect = board.getBoundingClientRect();
+                return {
+                    x: ((clientX - boardRect.left) / Math.max(boardRect.width, 1)) * connectorViewBoxWidth,
+                    y: ((clientY - boardRect.top) / Math.max(boardRect.height, 1)) * connectorViewBoxHeight
+                };
+            }
+
+            function anchorCenterForBoard(element, board) {
+                const rect = element.getBoundingClientRect();
+                const boardRect = board.getBoundingClientRect();
+                return {
+                    x: ((rect.left - boardRect.left + rect.width / 2) / Math.max(boardRect.width, 1)) * connectorViewBoxWidth,
+                    y: ((rect.top - boardRect.top + rect.height / 2) / Math.max(boardRect.height, 1)) * connectorViewBoxHeight
+                };
+            }
+
+            function connectorPathFrom(start, end) {
+                const midX = start.x + (end.x - start.x) / 2;
+                return "M " + start.x + " " + start.y + " C " + midX + " " + start.y + " " + midX + " " + end.y + " " + end.x + " " + end.y;
+            }
+
+            function updateNodeConnectorChecks(connected) {
+                setCheckState("test-1", "connector-path-visible", connected ? "pass" : "pending");
+                setCheckState("test-1", "target-armed", connected ? "pass" : "pending");
+                nodeConnectorTarget.classList.toggle("connected", connected);
+                nodeConnectorCallout.classList.toggle("visible", connected);
+                setResult(
+                    "test-1",
+                    connected ? "Connector created between the Gateway Ready and Approval Queue cards." : "Drag from anywhere in Gateway Ready to anywhere in Approval Queue.",
+                    connected ? "success" : "info"
+                );
+                if (connected) {
+                    setTestStatus("test-1", "pass");
+                }
+            }
+
+            function updateConnectorChecks(connected) {
+                setCheckState("test-2", "connector-path-visible", connected ? "pass" : "pending");
+                setCheckState("test-2", "target-armed", connected ? "pass" : "pending");
+                connectorTarget.classList.toggle("connected", connected);
+                connectorCallout.classList.toggle("visible", connected);
+                setResult(
+                    "test-2",
+                    connected ? "Connector created between Gateway Ready and Approval Queue." : "Drag from the blue handle to the green target.",
+                    connected ? "success" : "info"
+                );
+                if (connected) {
+                    setTestStatus("test-2", "pass");
+                }
+            }
+
+            function resetNodeConnectorBoard() {
+                nodeConnectorState = null;
+                endNodeMouseTracking();
+                endNodePointerTracking();
+                nodeConnectorPath.setAttribute("d", "");
+                nodeConnectorTarget.classList.remove("connected");
+                nodeConnectorCallout.classList.remove("visible");
+                setTestStatus("test-1", null);
+                setCheckState("test-1", "connector-path-visible", "pending");
+                setCheckState("test-1", "target-armed", "pending");
+                setResult("test-1", "Drag from anywhere in Gateway Ready to anywhere in Approval Queue.", "info");
+                clearPointerTrace("test-1", "Awaiting node-to-node input events.");
+            }
+
+            function resetConnectorBoard() {
+                preciseConnectorState = null;
+                endPreciseMouseTracking();
+                endPrecisePointerTracking();
+                connectorPath.setAttribute("d", "");
+                connectorTarget.classList.remove("connected");
+                connectorCallout.classList.remove("visible");
+                setTestStatus("test-2", null);
+                setCheckState("test-2", "connector-path-visible", "pending");
+                setCheckState("test-2", "target-armed", "pending");
+                setResult("test-2", "Drag from the blue handle to the green target.", "info");
+                clearPointerTrace("test-2", "Awaiting precise handle input events.");
+            }
+
+            function onNodeConnectorDown(event) {
+                if (shouldIgnoreCompatMouse(event)) return;
+                if (event.type === "mousedown" && event.button !== 0) return;
+                markPointerInput(event);
+                const start = boardClientPointToConnectorSvg(nodeConnectorBoard, event.clientX, event.clientY);
+                nodeConnectorState = { token: inputTokenForEvent(event), start };
+                safeSetPointerCapture(nodeConnectorSource, event, "test-1", "handler node");
+                if (event.type === "pointerdown") beginNodePointerTracking();
+                if (event.type === "mousedown") beginNodeMouseTracking();
+                nodeConnectorPath.setAttribute("d", connectorPathFrom(start, start));
+                traceMessage("test-1", `handler node ${event.type} accepted localStart=(${start.x.toFixed(1)},${start.y.toFixed(1)})`);
+            }
+
+            function onNodeConnectorMove(event) {
+                if (!nodeConnectorState || nodeConnectorState.token !== inputTokenForEvent(event)) return;
+                if ((event.type === "pointermove" || event.type === "mousemove") && event.buttons === 0) return;
+                markPointerInput(event);
+                const point = boardClientPointToConnectorSvg(nodeConnectorBoard, event.clientX, event.clientY);
+                nodeConnectorPath.setAttribute("d", connectorPathFrom(nodeConnectorState.start, point));
+            }
+
+            function onNodeConnectorUp(event) {
+                if (!nodeConnectorState || nodeConnectorState.token !== inputTokenForEvent(event)) return;
+                markPointerInput(event);
+                safeReleasePointerCapture(nodeConnectorSource, event, "test-1", "handler node");
+                if (event.type === "pointerup") endNodePointerTracking();
+                if (event.type === "mouseup") endNodeMouseTracking();
+                const targetRect = nodeConnectorTarget.getBoundingClientRect();
+                const insideTarget =
+                    event.clientX >= targetRect.left &&
+                    event.clientX <= targetRect.right &&
+                    event.clientY >= targetRect.top &&
+                    event.clientY <= targetRect.bottom;
+                if (insideTarget) {
+                    const end = boardClientPointToConnectorSvg(nodeConnectorBoard, event.clientX, event.clientY);
+                    nodeConnectorPath.setAttribute("d", connectorPathFrom(nodeConnectorState.start, end));
+                    updateNodeConnectorChecks(true);
+                    traceMessage("test-1", `handler node ${event.type} insideTarget=true end=(${end.x.toFixed(1)},${end.y.toFixed(1)}) targetRect=(${targetRect.left.toFixed(1)},${targetRect.top.toFixed(1)})-(${targetRect.right.toFixed(1)},${targetRect.bottom.toFixed(1)})`);
+                } else {
+                    nodeConnectorPath.setAttribute("d", "");
+                    updateNodeConnectorChecks(false);
+                    traceMessage("test-1", `handler node ${event.type} insideTarget=false targetRect=(${targetRect.left.toFixed(1)},${targetRect.top.toFixed(1)})-(${targetRect.right.toFixed(1)},${targetRect.bottom.toFixed(1)})`);
+                }
+                nodeConnectorState = null;
+            }
+
+            function onNodeConnectorCancel(event) {
+                if (!nodeConnectorState || nodeConnectorState.token !== inputTokenForEvent(event)) return;
+                safeReleasePointerCapture(nodeConnectorSource, event, "test-1", "handler node");
+                endNodePointerTracking();
+                endNodeMouseTracking();
+                nodeConnectorPath.setAttribute("d", "");
+                updateNodeConnectorChecks(false);
+                traceMessage("test-1", `handler node ${event.type} cancelled`);
+                nodeConnectorState = null;
+            }
+
+            function onConnectorDown(event) {
+                if (shouldIgnoreCompatMouse(event)) return;
+                if (event.type === "mousedown" && event.button !== 0) return;
+                markPointerInput(event);
+                const start = anchorCenterForBoard(connectorHandle, connectorBoard);
+                preciseConnectorState = { token: inputTokenForEvent(event), start };
+                safeSetPointerCapture(connectorHandle, event, "test-2", "handler precise");
+                if (event.type === "pointerdown") beginPrecisePointerTracking();
+                if (event.type === "mousedown") beginPreciseMouseTracking();
+                connectorPath.setAttribute("d", connectorPathFrom(start, start));
+                traceMessage("test-2", `handler precise ${event.type} accepted start=(${start.x.toFixed(1)},${start.y.toFixed(1)})`);
+            }
+
+            function onConnectorMove(event) {
+                if (!preciseConnectorState || preciseConnectorState.token !== inputTokenForEvent(event)) return;
+                if ((event.type === "pointermove" || event.type === "mousemove") && event.buttons === 0) return;
+                markPointerInput(event);
+                const point = boardClientPointToConnectorSvg(connectorBoard, event.clientX, event.clientY);
+                connectorPath.setAttribute("d", connectorPathFrom(preciseConnectorState.start, point));
+            }
+
+            function onConnectorUp(event) {
+                if (!preciseConnectorState || preciseConnectorState.token !== inputTokenForEvent(event)) return;
+                markPointerInput(event);
+                safeReleasePointerCapture(connectorHandle, event, "test-2", "handler precise");
+                if (event.type === "pointerup") endPrecisePointerTracking();
+                if (event.type === "mouseup") endPreciseMouseTracking();
+                const targetRect = connectorTarget.getBoundingClientRect();
+                const insideTarget =
+                    event.clientX >= targetRect.left &&
+                    event.clientX <= targetRect.right &&
+                    event.clientY >= targetRect.top &&
+                    event.clientY <= targetRect.bottom;
+                if (insideTarget) {
+                    const end = anchorCenterForBoard(connectorTarget, connectorBoard);
+                    connectorPath.setAttribute("d", connectorPathFrom(preciseConnectorState.start, end));
+                    updateConnectorChecks(true);
+                    traceMessage("test-2", `handler precise ${event.type} insideTarget=true end=(${end.x.toFixed(1)},${end.y.toFixed(1)}) targetRect=(${targetRect.left.toFixed(1)},${targetRect.top.toFixed(1)})-(${targetRect.right.toFixed(1)},${targetRect.bottom.toFixed(1)})`);
+                } else {
+                    connectorPath.setAttribute("d", "");
+                    updateConnectorChecks(false);
+                    traceMessage("test-2", `handler precise ${event.type} insideTarget=false targetRect=(${targetRect.left.toFixed(1)},${targetRect.top.toFixed(1)})-(${targetRect.right.toFixed(1)},${targetRect.bottom.toFixed(1)})`);
+                }
+                preciseConnectorState = null;
+            }
+
+            function onConnectorCancel(event) {
+                if (!preciseConnectorState || preciseConnectorState.token !== inputTokenForEvent(event)) return;
+                safeReleasePointerCapture(connectorHandle, event, "test-2", "handler precise");
+                endPrecisePointerTracking();
+                endPreciseMouseTracking();
+                connectorPath.setAttribute("d", "");
+                updateConnectorChecks(false);
+                traceMessage("test-2", `handler precise ${event.type} cancelled`);
+                preciseConnectorState = null;
+            }
+
+            nodeConnectorSource.addEventListener("pointerdown", onNodeConnectorDown);
+            nodeConnectorSource.addEventListener("pointermove", onNodeConnectorMove);
+            nodeConnectorSource.addEventListener("pointerup", onNodeConnectorUp);
+            nodeConnectorSource.addEventListener("mousedown", onNodeConnectorDown);
+
+            connectorHandle.addEventListener("pointerdown", onConnectorDown);
+            connectorHandle.addEventListener("pointermove", onConnectorMove);
+            connectorHandle.addEventListener("pointerup", onConnectorUp);
+            connectorHandle.addEventListener("mousedown", onConnectorDown);
+
+            attachInputTrace(nodeConnectorBoard, "test-1", "board", nodeConnectorBoard);
+            attachInputTrace(nodeConnectorSource, "test-1", "source", nodeConnectorBoard);
+            attachInputTrace(nodeConnectorTarget, "test-1", "target", nodeConnectorBoard);
+            attachInputTrace(connectorBoard, "test-2", "board", connectorBoard);
+            attachInputTrace(connectorHandle, "test-2", "handle", connectorBoard);
+            attachInputTrace(connectorTarget, "test-2", "target", connectorBoard);
+
+            document.getElementById("reset-node-connector-board").addEventListener("click", resetNodeConnectorBoard);
+            document.getElementById("reset-node-connector-status").addEventListener("click", resetNodeConnectorBoard);
+            document.getElementById("reset-connector-board").addEventListener("click", resetConnectorBoard);
+            document.getElementById("reset-connector-status").addEventListener("click", resetConnectorBoard);
+
+            resetNodeConnectorBoard();
+            resetConnectorBoard();
+        })();
+    </script>
+</body>
+</html>

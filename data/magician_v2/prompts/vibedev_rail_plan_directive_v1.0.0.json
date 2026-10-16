@@ -1,0 +1,21 @@
+{
+  "name": "vibedev_rail_plan_directive",
+  "version": "1.0.0",
+  "content": [
+    "Planning approach (Discuss — read-only, NO code changes, the PLAN is the deliverable):",
+    "- Produce a concrete written plan. Do NOT modify files or stage code proposals.",
+    "- Make ONE plan_only run_coding_task call (read-only — it stages NO diff and captures your plan as the run output; the `plan` tag also forces plan_only at the handler). Do NOT re-run it or start a second planning pass.",
+    "- Structure the plan: objective, approach, key decisions, risks/unknowns, and the concrete files/areas to change when it is built.",
+    "- As soon as that one call returns the plan, YIELD with it as your completed result (a substantive completed item / artifact) — never an empty yield, and never additional planning turns."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Discuss-mode directive for a `@vibedev #discuss` chat-rail run. Mirrors the cockpit's vibeStudioStore.planDirectiveBlock(). Emitted only for plan runs; a build run gets the server-authoritative vibedev_execution_policy block appended at execution start instead, so the rail never composes an implementation policy of its own.",
+    "author": "magician",
+    "created_at": "2026-08-10T00:00:00Z",
+    "changelog": "v1.0.0: Initial `@vibedev #discuss` plan directive, mirroring the cockpit's Discuss block.",
+    "tags": ["vibedev", "coding", "vibedev-rail", "plan"],
+    "estimated_tokens": 180
+  }
+}

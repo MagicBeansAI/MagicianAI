@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test: Parent-Frame Occlusion (Phase 0.5)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .test-header {
+            background: linear-gradient(135deg, #6f42c1, #5a32a3);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-header h1 { margin: 0 0 10px 0; }
+        .test-header p { margin: 0; opacity: 0.9; }
+
+        .test-case {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .test-case[data-status="pass"] {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-case[data-status="fail"] {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        .test-case[data-status="running"] {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .test-case-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        .test-case-title { margin: 0; color: #333; }
+        .test-case-id {
+            background: #e9ecef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        .goal-section {
+            background: #cce5ff;
+            border-left: 4px solid #007bff;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .goal-section strong { color: #004085; }
+
+        .verify-section {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .verify-section strong { color: #155724; }
+        .verify-section ul { margin: 5px 0 0 0; padding-left: 20px; }
+
+        .status-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .status-btn.reset { background: #6c757d; color: white; }
+        .status-btn.reset:hover { background: #545b62; }
+
+        iframe { border: 2px solid #007bff; border-radius: 4px; }
+        .iframe-container { margin: 15px 0; position: relative; }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 500px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        .modal h2 { margin-top: 0; color: #dc3545; }
+        .modal button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .modal button.dismiss { background: #6c757d; }
+        .modal button:hover { opacity: 0.9; }
+        .btn { padding: 10px 20px; margin: 5px; cursor: pointer; border-radius: 4px; border: none; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-warning { background: #ffc107; color: #333; }
+
+        .results-summary {
+            background: #333;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .results-summary .stats { display: flex; gap: 20px; }
+        .results-summary .stat { text-align: center; }
+        .results-summary .stat-value { font-size: 24px; font-weight: bold; }
+        .results-summary .stat-label { font-size: 12px; opacity: 0.8; }
+        .stat.passed .stat-value { color: #28a745; }
+        .stat.failed .stat-value { color: #dc3545; }
+        .stat.pending .stat-value { color: #ffc107; }
+
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+
+        .control-panel {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Test Page Metadata (machine-readable) -->
+    <script type="application/json" id="test-metadata">
+    {
+        "testId": "02-parent-occlusion",
+        "phase": "Phase 0.5",
+        "title": "Parent-Frame Occlusion Detection",
+        "description": "Tests detection when a modal in the parent frame covers iframe content",
+        "totalTests": 3
+    }
+    </script>
+
+    <div class="test-header">
+        <h1>Phase 0.5: Parent-Frame Occlusion Detection</h1>
+        <p>Test the agent's ability to detect when elements are covered by overlays, modals, or other parent-frame elements.</p>
+    </div>
+
+    <!-- Test Controls -->
+    <div class="control-panel">
+        <strong>Test Controls:</strong>
+        <button class="btn btn-warning" onclick="showModal()">Show Blocking Modal</button>
+        <button class="btn btn-primary" onclick="hideModal()">Hide Modal</button>
+        <button class="btn btn-warning" onclick="document.getElementById('floating-banner').style.display='block'">Show Floating Banner</button>
+    </div>
+
+    <!-- Test Case 1: Detect Occluded Elements -->
+    <div class="test-case"
+         id="test-1"
+         data-test-id="02-detect-occlusion"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 1: Detect Occluded Elements</h3>
+            <span class="test-case-id">02-detect-occlusion</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click "Show Blocking Modal" above, then attempt to click the "Submit Form" button inside the iframe below. The agent should detect that the button is blocked by the modal.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="occlusion-detected">Agent detects that the iframe content is occluded by the modal</li>
+                <li data-check="no-blind-click">Agent does NOT attempt to click the hidden button immediately</li>
+                <li data-check="reports-blocked">Agent reports that the element is not clickable/visible OR offers to dismiss modal first</li>
+            </ul>
+        </div>
+
+        <div class="iframe-container">
+            <iframe
+                id="occluded-iframe"
+                srcdoc='
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <style>
+                            body { font-family: sans-serif; padding: 20px; background: #e8f4fd; }
+                            .content { background: white; padding: 20px; border-radius: 8px; }
+                            button { background: #28a745; color: white; border: none; padding: 15px 30px; border-radius: 4px; font-size: 16px; cursor: pointer; }
+                            button:hover { background: #218838; }
+                            input { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; margin: 10px 0; width: 200px; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="content">
+                            <h3>Iframe Content</h3>
+                            <p>This content is inside the iframe.</p>
+                            <input type="text" placeholder="Type here" aria-label="Text input inside iframe" data-testid="iframe-input">
+                            <br>
+                            <button data-testid="iframe-submit" aria-label="Submit button inside iframe" onclick="alert(&quot;Submit clicked!&quot;)">Submit Form</button>
+                        </div>
+</body>
+                    </html>
+                '
+                style="width:100%; height:250px; border:2px solid #28a745; border-radius:4px;">
+            </iframe>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-1">
+            <button class="status-btn reset" type="button" data-status-reset="test-1">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 2: Dismiss Modal and Click -->
+    <div class="test-case"
+         id="test-2"
+         data-test-id="02-dismiss-and-click"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 2: Dismiss Modal and Click</h3>
+            <span class="test-case-id">02-dismiss-and-click</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> With the modal shown, close the modal by clicking the "Close" button on it, then click the "Submit Form" button inside the iframe.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="modal-closed">Agent clicks the "Close" button on the modal to dismiss it</li>
+                <li data-check="modal-disappears">Modal disappears from the page</li>
+                <li data-check="submit-clicked">Agent then successfully clicks the Submit button in the iframe</li>
+            </ul>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-2">
+            <button class="status-btn reset" type="button" data-status-reset="test-2">Reset</button>
+        </div>
+    </div>
+
+    <!-- Test Case 3: Partial Occlusion -->
+    <div class="test-case"
+         id="test-3"
+         data-test-id="02-partial-occlusion"
+         data-status="pending">
+        <div class="test-case-header">
+            <h3 class="test-case-title">Test 3: Partial Occlusion Detection</h3>
+            <span class="test-case-id">02-partial-occlusion</span>
+        </div>
+
+        <div class="goal-section" data-goal>
+            <strong>Goal:</strong> Click "Show Floating Banner" above to show a floating element that partially covers the iframe. Then click the "Right Button" inside the iframe below.
+        </div>
+
+        <div class="verify-section" data-verify>
+            <strong>Verification:</strong>
+            <ul>
+                <li data-check="left-visible">Left Button should be clickable (not occluded)</li>
+                <li data-check="right-occluded">Right Button may be partially occluded by the banner</li>
+                <li data-check="handles-partial">Agent handles partial occlusion appropriately (dismisses banner or reports issue)</li>
+            </ul>
+        </div>
+
+        <div class="iframe-container" style="position: relative;">
+            <iframe
+                srcdoc='
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <style>
+                            body { font-family: sans-serif; padding: 20px; background: #fff3cd; }
+                            .buttons { display: flex; gap: 20px; flex-wrap: wrap; }
+                            button { padding: 15px 30px; font-size: 14px; cursor: pointer; border: none; border-radius: 4px; }
+                            .left-btn { background: #17a2b8; color: white; }
+                            .right-btn { background: #6f42c1; color: white; }
+                        </style>
+                    </head>
+                    <body>
+                        <h3>Two Buttons</h3>
+                        <div class="buttons">
+                            <button class="left-btn" data-testid="left-button" onclick="alert(&quot;Left clicked!&quot;)">Left Button (Visible)</button>
+                            <button class="right-btn" data-testid="right-button" onclick="alert(&quot;Right clicked!&quot;)">Right Button (May be occluded)</button>
+                        </div>
+                    </body>
+                    </html>
+                '
+                style="width:100%; height:150px; border:2px solid #ffc107; border-radius:4px;">
+            </iframe>
+
+            <!-- Floating element that covers part of iframe -->
+            <div id="floating-banner"
+                 style="display:none; position:absolute; top:50px; right:20px; background:#dc3545; color:white; padding:15px; border-radius:4px; z-index:100; box-shadow: 0 2px 10px rgba(0,0,0,0.2);">
+                <strong>Special Offer!</strong>
+                <p style="margin:5px 0 0 0; font-size:12px;">This banner covers part of the iframe</p>
+                <button onclick="document.getElementById('floating-banner').style.display='none'" style="margin-top:10px; padding:5px 10px; cursor:pointer;">Dismiss</button>
+            </div>
+        </div>
+
+        <div class="status-controls" data-status-controls="test-3">
+            <button class="status-btn reset" type="button" data-status-reset="test-3">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="results-summary" id="results-summary">
+        <div>
+            <strong>Test Results</strong>
+            <div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Parent-Frame Occlusion Tests</div>
+        </div>
+        <div class="stats">
+            <div class="stat passed">
+                <div class="stat-value" id="passed-count">0</div>
+                <div class="stat-label">Passed</div>
+            </div>
+            <div class="stat failed">
+                <div class="stat-value" id="failed-count">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat pending">
+                <div class="stat-value" id="pending-count">3</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Overlay -->
+    <div id="modal-overlay" class="modal-overlay">
+        <div class="modal">
+            <h2>Important Notice</h2>
+            <p>This modal is blocking access to the iframe content below.</p>
+            <p>The agent should detect this occlusion and handle it appropriately.</p>
+            <button onclick="hideModal()" data-testid="modal-close">Close</button>
+            <button class="dismiss" onclick="hideModal()" data-testid="modal-dismiss">Dismiss</button>
+        </div>
+    </div>
+
+    <script>
+        // Modal controls
+        function showModal() {
+            document.getElementById('modal-overlay').classList.add('active');
+        }
+        function hideModal() {
+            document.getElementById('modal-overlay').classList.remove('active');
+        }
+
+        // --- Genuine success detection (Tests 2 and 3) ---
+        // Detection fires only on the real target actions described by each
+        // test goal + its [data-check] items. setCheckState is provided by the
+        // harness; calls are guarded so the page works with the harness absent.
+        function markCheck(testId, checkName) {
+            if (typeof window.setCheckState === 'function') {
+                window.setCheckState(testId, checkName, 'pass');
+            }
+        }
+
+        // Track that the modal was actually shown (so a Close click counts as a
+        // genuine dismissal of a real occluder, not a no-op on an absent modal).
+        let modalWasShown = false;
+        (function instrumentModal() {
+            const origShow = window.showModal;
+            window.showModal = function () {
+                modalWasShown = true;
+                return origShow.apply(this, arguments);
+            };
+        })();
+
+        // Test 2: dismiss modal via "Close", then click iframe Submit.
+        // modal-close click -> modal-closed + (verified) modal-disappears.
+        document.addEventListener('click', (event) => {
+            const closeBtn = event.target.closest && event.target.closest('[data-testid="modal-close"]');
+            if (!closeBtn) return;
+            if (!modalWasShown) return; // only counts as a dismissal if it was open
+            const overlay = document.getElementById('modal-overlay');
+            // hideModal() (the button's own onclick) removes 'active' synchronously;
+            // confirm the occluder is actually gone before crediting either check.
+            requestAnimationFrame(() => {
+                markCheck('test-2', 'modal-closed');
+                if (overlay && !overlay.classList.contains('active')) {
+                    markCheck('test-2', 'modal-disappears');
+                }
+            });
+        });
+
+        // srcdoc iframes inherit this document's origin, so their content is
+        // same-origin and scriptable. Wire listeners onto the real buttons once
+        // each iframe finishes loading.
+        function wireIframeButtons() {
+            // Test 2 iframe: Submit button.
+            const occludedIframe = document.getElementById('occluded-iframe');
+            const wireOccluded = () => {
+                try {
+                    const doc = occludedIframe.contentDocument;
+                    if (!doc) return;
+                    const submitBtn = doc.querySelector('[data-testid="iframe-submit"]');
+                    if (submitBtn && !submitBtn.dataset.sotaWired) {
+                        submitBtn.dataset.sotaWired = '1';
+                        submitBtn.addEventListener('click', () => {
+                            // Genuine final success of Test 2: the actual Submit
+                            // button inside the iframe was clicked.
+                            markCheck('test-2', 'submit-clicked');
+                        });
+                    }
+                } catch (_) { /* cross-origin guard */ }
+            };
+            if (occludedIframe) {
+                wireOccluded();
+                occludedIframe.addEventListener('load', wireOccluded);
+            }
+
+            // Test 3 iframe: Left / Right buttons (the only iframe without an id).
+            const test3 = document.getElementById('test-3');
+            const partialIframe = test3 && test3.querySelector('iframe');
+            const wirePartial = () => {
+                try {
+                    const doc = partialIframe.contentDocument;
+                    if (!doc) return;
+                    const leftBtn = doc.querySelector('[data-testid="left-button"]');
+                    const rightBtn = doc.querySelector('[data-testid="right-button"]');
+                    if (leftBtn && !leftBtn.dataset.sotaWired) {
+                        leftBtn.dataset.sotaWired = '1';
+                        leftBtn.addEventListener('click', () => {
+                            // Left Button proven reachable (not occluded).
+                            markCheck('test-3', 'left-visible');
+                        });
+                    }
+                    if (rightBtn && !rightBtn.dataset.sotaWired) {
+                        rightBtn.dataset.sotaWired = '1';
+                        rightBtn.addEventListener('click', () => {
+                            // Genuine target action of Test 3: the Right Button
+                            // (the one that may be occluded by the banner) was
+                            // successfully clicked.
+                            markCheck('test-3', 'right-occluded');
+                        });
+                    }
+                } catch (_) { /* cross-origin guard */ }
+            };
+            if (partialIframe) {
+                wirePartial();
+                partialIframe.addEventListener('load', wirePartial);
+            }
+        }
+
+        // Test 3: handling partial occlusion = dismissing the banner that covers
+        // the iframe. The banner Dismiss button has an inline onclick that hides
+        // it; capture that genuine handling action here.
+        document.addEventListener('click', (event) => {
+            const banner = document.getElementById('floating-banner');
+            if (!banner) return;
+            const dismissBtn = event.target.closest && event.target.closest('#floating-banner button');
+            if (!dismissBtn) return;
+            // Only counts if the banner was actually showing (a real occluder).
+            const wasVisible = banner.style.display === 'block';
+            requestAnimationFrame(() => {
+                if (wasVisible && banner.style.display === 'none') {
+                    markCheck('test-3', 'handles-partial');
+                }
+            });
+        });
+
+        // Test status management
+        function setTestStatus(testId, status) {
+            const testCase = document.getElementById(testId);
+            if (testCase) {
+                testCase.dataset.status = status;
+                updateResultsSummary();
+            }
+        }
+
+        function updateResultsSummary() {
+            const testCases = document.querySelectorAll('.test-case');
+            let passed = 0, failed = 0, pending = 0;
+
+            testCases.forEach(tc => {
+                switch(tc.dataset.status) {
+                    case 'pass': passed++; break;
+                    case 'fail': failed++; break;
+                    default: pending++; break;
+                }
+            });
+
+            document.getElementById('passed-count').textContent = passed;
+            document.getElementById('failed-count').textContent = failed;
+            document.getElementById('pending-count').textContent = pending;
+        }
+
+        // Initialize
+        updateResultsSummary();
+        if (document.readyState === 'loading') {
+            window.addEventListener('DOMContentLoaded', wireIframeButtons);
+        } else {
+            wireIframeButtons();
+        }
+        window.addEventListener('load', wireIframeButtons);
+    </script>
+
+    <script>
+        (() => {
+            function normalizeManualStatus(status) {
+                return status === 'pass' || status === 'fail' || status === 'running' ? status : 'pending';
+            }
+
+            function syncManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                document.querySelectorAll('[data-status-radio="' + testId + '"]').forEach((radio) => {
+                    radio.checked = normalized !== 'pending' && radio.value === normalized;
+                });
+            }
+
+            function syncAllManualStatuses() {
+                document.querySelectorAll('.test-case').forEach((testCase) => {
+                    syncManualStatus(testCase.id, testCase.dataset.status);
+                });
+            }
+
+            function applyManualStatus(testId, status) {
+                const normalized = normalizeManualStatus(status);
+                if (typeof window.setTestStatus === 'function') {
+                    window.setTestStatus(testId, normalized);
+                } else {
+                    const testCase = document.getElementById(testId);
+                    if (testCase) testCase.dataset.status = normalized;
+                }
+                const testCase = document.getElementById(testId);
+                syncManualStatus(testId, testCase?.dataset.status || normalized);
+            }
+
+            function installStatusSyncWrapper() {
+                if (typeof window.setTestStatus !== 'function' || window.setTestStatus.__sotaRadioWrapped) return;
+                const originalSetTestStatus = window.setTestStatus;
+                window.setTestStatus = function wrappedSetTestStatus(testId, status) {
+                    const result = originalSetTestStatus.apply(this, arguments);
+                    const testCase = document.getElementById(testId);
+                    syncManualStatus(testId, testCase?.dataset.status || status);
+                    return result;
+                };
+                window.setTestStatus.__sotaRadioWrapped = true;
+            }
+
+            document.addEventListener('change', (event) => {
+                const radio = event.target.closest?.('[data-status-radio]');
+                if (!radio || !radio.checked) return;
+                applyManualStatus(radio.dataset.statusRadio, radio.value);
+            });
+
+            document.addEventListener('click', (event) => {
+                const reset = event.target.closest?.('[data-status-reset]');
+                if (!reset) return;
+                applyManualStatus(reset.dataset.statusReset, 'pending');
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            window.addEventListener('load', () => {
+                installStatusSyncWrapper();
+                syncAllManualStatuses();
+            });
+            installStatusSyncWrapper();
+        })();
+    </script>
+    <script src="./sota-test-harness.js"></script>
+</body>
+</html>
